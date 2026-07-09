@@ -19,16 +19,16 @@ const HintPpem = snail.HintPpem;
 const HintError = snail.HintError;
 const GlyphCurves = snail.GlyphCurves;
 
-const Key = packed struct(u64) {
+const Key = struct {
     ppem_x_26_6: u32,
-    ppem_y_26_6: u16,
+    ppem_y_26_6: u32,
     glyph_id: u16,
 };
 
 inline fn keyFor(ppem: HintPpem, glyph_id: u16) Key {
     return .{
         .ppem_x_26_6 = ppem.x_26_6,
-        .ppem_y_26_6 = @intCast(ppem.y_26_6 & 0xFFFF),
+        .ppem_y_26_6 = ppem.y_26_6,
         .glyph_id = glyph_id,
     };
 }
@@ -127,7 +127,7 @@ pub const HintedGlyphCache = struct {
         defer dropped_curves.deinit(self.allocator);
         var it = self.curves.iterator();
         while (it.next()) |kv| {
-            if (kv.key_ptr.ppem_x_26_6 == ppem.x_26_6 and kv.key_ptr.ppem_y_26_6 == @as(u16, @intCast(ppem.y_26_6 & 0xFFFF))) {
+            if (kv.key_ptr.ppem_x_26_6 == ppem.x_26_6 and kv.key_ptr.ppem_y_26_6 == ppem.y_26_6) {
                 dropped_curves.append(self.allocator, kv.key_ptr.*) catch continue;
             }
         }
@@ -142,7 +142,7 @@ pub const HintedGlyphCache = struct {
         defer dropped_advances.deinit(self.allocator);
         var ait = self.advances.iterator();
         while (ait.next()) |kv| {
-            if (kv.key_ptr.ppem_x_26_6 == ppem.x_26_6 and kv.key_ptr.ppem_y_26_6 == @as(u16, @intCast(ppem.y_26_6 & 0xFFFF))) {
+            if (kv.key_ptr.ppem_x_26_6 == ppem.x_26_6 and kv.key_ptr.ppem_y_26_6 == ppem.y_26_6) {
                 dropped_advances.append(self.allocator, kv.key_ptr.*) catch continue;
             }
         }
