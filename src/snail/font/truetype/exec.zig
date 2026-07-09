@@ -28,7 +28,6 @@ pub const Error = error{
     CallDepthExceeded,
     InvalidFunctionDefinition,
     ExecutionLimitExceeded,
-    DivisionByZero,
 };
 
 pub const Environment = tt_graphics.Environment;
@@ -177,6 +176,10 @@ pub const Context = struct {
     sp: usize = 0,
     steps: u32 = 0,
     call_depth: u32 = 0,
+    /// Debug-only dispatch trampoline slot (see `executeCode`). Handlers record
+    /// their continuation pc here instead of recursing when guaranteed tail
+    /// calls are unavailable. Unused on the Release tail-call path.
+    next_pc: ?usize = null,
     /// Per-distance-type rounding compensations indexed by `distance_type`
     /// (gray, black, white, undef) of MIRP/MDRP/ROUND. Bias added to the
     /// magnitude before rounding to model ink-spread compensation. FreeType
@@ -273,9 +276,24 @@ pub const Context = struct {
 
     fn executeCode(self: *Context, code: []const u8, steps: *u32) Error!void {
         if (code.len == 0) return;
-        try self.countStep(steps);
-        const op = code[0];
-        return tail_dispatch[op](self, code, 1, steps);
+        if (comptime tail_calls_supported) {
+            try self.countStep(steps);
+            return tail_dispatch[code[0]](self, code, 1, steps);
+        }
+        // Debug builds can't guarantee tail calls, so the recursive dispatch
+        // chain would burn one native frame per instruction *executed* (loops
+        // included) and overflow the stack on long programs. Trampoline: each
+        // handler records its continuation via `dispatchNext` and returns here.
+        // Save/restore the slot so nested executions (CALL) don't clobber ours.
+        const saved = self.next_pc;
+        defer self.next_pc = saved;
+        self.next_pc = 0;
+        while (self.next_pc) |pc| {
+            if (pc >= code.len) break;
+            try self.countStep(steps);
+            self.next_pc = null;
+            try tail_dispatch[code[pc]](self, code, pc + 1, steps);
+        }
     }
 
     fn executeOp(self: *Context, code: []const u8, pc: *usize, op_pc: usize, op: u8, steps: *u32) Error!void {
@@ -732,7 +750,7 @@ pub const Context = struct {
         const result: i32 = switch (op) {
             .add => @as(i32, @truncate(@as(i64, pair.lhs) + @as(i64, pair.rhs))),
             .sub => @as(i32, @truncate(@as(i64, pair.lhs) - @as(i64, pair.rhs))),
-            .div => try div26Dot6(pair.lhs, pair.rhs),
+            .div => div26Dot6(pair.lhs, pair.rhs),
             .mul => mul26Dot6(pair.lhs, pair.rhs),
             .max => @max(pair.lhs, pair.rhs),
             .min => @min(pair.lhs, pair.rhs),
@@ -1386,14 +1404,14 @@ inline fn dispatchNext(
     pc: usize,
     steps: *u32,
 ) Error!void {
-    if (pc >= code.len) return;
-    try self.countStep(steps);
-    const op = code[pc];
     if (comptime tail_calls_supported) {
-        return @call(.always_tail, tail_dispatch[op], .{ self, code, pc + 1, steps });
-    } else {
-        return tail_dispatch[op](self, code, pc + 1, steps);
+        if (pc >= code.len) return;
+        try self.countStep(steps);
+        return @call(.always_tail, tail_dispatch[code[pc]], .{ self, code, pc + 1, steps });
     }
+    // Debug: hand the continuation back to `executeCode`'s trampoline loop,
+    // which does the bounds check + step accounting, instead of recursing.
+    self.next_pc = pc;
 }
 
 /// Fallback for reserved/invalid opcodes. Routes through `executeOp` so
@@ -1686,8 +1704,12 @@ fn lerpReferenceCoord(org: i32, org1: i32, org2: i32, cur1: i32, cur2: i32) i32 
     return @truncate(@as(i64, cur1) + @divTrunc(numerator, @as(i64, org2) - @as(i64, org1)));
 }
 
-fn div26Dot6(lhs: i32, rhs: i32) Error!i32 {
-    if (rhs == 0) return Error.DivisionByZero;
+fn div26Dot6(lhs: i32, rhs: i32) i32 {
+    // Division by zero saturates rather than aborting the glyph, matching
+    // FreeType's Ins_DIV and this interpreter's malformed-input tolerance
+    // elsewhere (OOB CVT reads → 0, OOB writes dropped) — one bad DIV
+    // shouldn't drop the whole glyph to unhinted.
+    if (rhs == 0) return if (lhs < 0) -0x7FFFFFFF else 0x7FFFFFFF;
     return @truncate(@divTrunc(@as(i64, lhs) * 64, rhs));
 }
 

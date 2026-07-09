@@ -88,7 +88,6 @@ pub const HintError = error{
     CallDepthExceeded,
     InvalidFunctionDefinition,
     ExecutionLimitExceeded,
-    DivisionByZero,
     // Font-table parse (mirrors truetype/tables.zig ParseError).
     InvalidFont,
     MissingRequiredTable,
