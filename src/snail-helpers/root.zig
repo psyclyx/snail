@@ -30,6 +30,11 @@ pub const hintedShapedRunPicture = text_picture_mod.hintedShapedRunPicture;
 pub const ShapedRunOptions = text_picture_mod.ShapedRunOptions;
 pub const HintedShapedRunOptions = text_picture_mod.HintedShapedRunOptions;
 pub const ShapedRunError = text_picture_mod.ShapedRunError;
+/// Unified run placement (supersedes the two builders above).
+pub const placeRun = text_picture_mod.placeRun;
+pub const RunPlacement = text_picture_mod.RunPlacement;
+pub const HintMode = text_picture_mod.HintMode;
+pub const RunSnap = text_picture_mod.RunSnap;
 
 const path_shape_mod = @import("path_shape.zig");
 pub const PathShapeCache = path_shape_mod.PathShapeCache;
