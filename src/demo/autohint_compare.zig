@@ -144,32 +144,58 @@ pub const Compare = struct {
                 .em = em,
                 .color = text_color,
             }),
-            .tt => return helpers.hintedShapedRunPicture(frame_alloc, shaped, .{
-                .baseline = .{ .x = left, .y = baseline },
-                .em = em,
-                .ppem_26_6 = ppem_26_6,
-                .color = text_color,
-            }),
-            .auto => {
-                // Base curves are em-space + a warp record; place at integer
-                // pens (mono → uniform advance) so x-stems land on the grid.
-                const mono_adv = monoAdvancePx(shaped, em);
-                const origin_left = @round(left);
-                const buf = try frame_alloc.alloc(snail.Shape, shaped.glyphs.len);
-                for (shaped.glyphs, 0..) |g, i| {
-                    const origin_x = if (mono_adv) |adv|
-                        origin_left + @as(f32, @floatFromInt(i)) * adv
-                    else
-                        @round(left + em * g.x_offset);
-                    buf[i] = .{
-                        .key = autoKey(g.font_id, g.glyph_id, ppem_26_6),
-                        .local_transform = .{ .xx = em, .xy = 0, .tx = origin_x, .yx = 0, .yy = -em, .ty = baseline },
-                        .local_color = text_color,
-                    };
-                }
-                return helpers.Picture.fromOwnedSlice(frame_alloc, buf);
+            // Both hinted modes place glyphs at INTEGER pens (mono → uniform
+            // rounded advance) so grid-fit stems land on the pixel grid. This
+            // matters for tt too: the TrueType outline is grid-fit assuming an
+            // integer origin, so a fractional pen smears the crispness — the
+            // same reason auto_light snaps origins. They differ only in the
+            // record key and the curve space: auto's base curves are em-space
+            // (scale = em); tt's baked curves are ppem-px space (scale =
+            // em/ppem_px).
+            .auto => return self.placeMonoRow(frame_alloc, shaped, .auto, ppem_26_6, em, em, left, baseline),
+            .tt => {
+                const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
+                const scale = if (ppem_px > 0) em / ppem_px else em;
+                return self.placeMonoRow(frame_alloc, shaped, .tt, ppem_26_6, em, scale, left, baseline);
             },
         }
+    }
+
+    /// Place a hinted row at rounded integer pens. `scale` is the local
+    /// transform's uniform scale (curve-space → world); `mode` selects the
+    /// record key namespace.
+    fn placeMonoRow(
+        self: *Compare,
+        frame_alloc: Allocator,
+        shaped: *const snail.ShapedText,
+        mode: Mode,
+        ppem_26_6: u32,
+        em: f32,
+        scale: f32,
+        left: f32,
+        baseline: f32,
+    ) !helpers.Picture {
+        _ = self;
+        const mono_adv = monoAdvancePx(shaped, em);
+        const origin_left = @round(left);
+        const buf = try frame_alloc.alloc(snail.Shape, shaped.glyphs.len);
+        for (shaped.glyphs, 0..) |g, i| {
+            const origin_x = if (mono_adv) |adv|
+                origin_left + @as(f32, @floatFromInt(i)) * adv
+            else
+                @round(left + em * g.x_offset);
+            const key = switch (mode) {
+                .auto => autoKey(g.font_id, g.glyph_id, ppem_26_6),
+                .tt => snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6),
+                .unhinted => unreachable,
+            };
+            buf[i] = .{
+                .key = key,
+                .local_transform = .{ .xx = scale, .xy = 0, .tx = origin_x, .yx = 0, .yy = -scale, .ty = baseline },
+                .local_color = text_color,
+            };
+        }
+        return helpers.Picture.fromOwnedSlice(frame_alloc, buf);
     }
 
     /// Ensure the atlas holds: unhinted curves for the tag + sample glyphs
