@@ -674,8 +674,13 @@ pub const Context = struct {
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {
-            const arg = try self.pop();
+            // Each pair is [arg, point] with the point number on top: pop it
+            // first, then the exception byte. (FreeType reads stack[args+1]
+            // as the point and stack[args] as the arg.) Reversing them treats
+            // the exception byte as a point index -> InvalidPoint whenever the
+            // delta actually fires (i.e. at its encoded ppem).
             const point = try self.popU32();
+            const arg = try self.pop();
             if (self.deltaDistance(arg, base_offset)) |distance| {
                 try zone_ptr.shiftVector(freedom, point, distance);
             }
@@ -687,8 +692,9 @@ pub const Context = struct {
 
         var i: u32 = 0;
         while (i < count) : (i += 1) {
-            const arg = try self.pop();
+            // Same [arg, index] layout as DELTAP: CVT index on top, arg below.
             const raw_index = try self.pop();
+            const arg = try self.pop();
             if (self.deltaDistance(arg, base_offset)) |distance| {
                 self.cvtWrite(raw_index, addWrap(self.cvtRead(raw_index), distance));
             }
@@ -870,8 +876,12 @@ pub const Context = struct {
         const point_zone = try self.zone(self.graphics.zp1);
         const target = try ref_zone.coordinateVector(projection, self.graphics.rp0, false);
 
+        // A zero loop count is a valid no-op (SLOOP can set it to 0): the
+        // looped instruction runs zero times and pops nothing. Matching the
+        // TrueType spec / FreeType here is load-bearing — e.g. DejaVu's '2'
+        // ends a conditional block with SLOOP 0 then SHP, and clamping to an
+        // error corrupts the machine mid-glyph.
         const count = self.graphics.loop_count;
-        if (count == 0) return Error.StackUnderflow;
         var i: u32 = 0;
         while (i < count) : (i += 1) {
             try point_zone.moveToVector(projection, freedom, try self.popU32(), target);
@@ -892,8 +902,12 @@ pub const Context = struct {
         const cur1 = try zone0.coordinateVector(projection, self.graphics.rp1, false);
         const cur2 = try zone1.coordinateVector(projection, self.graphics.rp2, false);
 
+        // A zero loop count is a valid no-op (SLOOP can set it to 0): the
+        // looped instruction runs zero times and pops nothing. Matching the
+        // TrueType spec / FreeType here is load-bearing — e.g. DejaVu's '2'
+        // ends a conditional block with SLOOP 0 then SHP, and clamping to an
+        // error corrupts the machine mid-glyph.
         const count = self.graphics.loop_count;
-        if (count == 0) return Error.StackUnderflow;
         var i: u32 = 0;
         while (i < count) : (i += 1) {
             const point = try self.popU32();
@@ -1021,8 +1035,12 @@ pub const Context = struct {
     }
 
     fn shiftLoopPoints(self: *Context, zone_ptr: *PointZone, freedom: tt_graphics.Vector, distance: i32) Error!void {
+        // A zero loop count is a valid no-op (SLOOP can set it to 0): the
+        // looped instruction runs zero times and pops nothing. Matching the
+        // TrueType spec / FreeType here is load-bearing — e.g. DejaVu's '2'
+        // ends a conditional block with SLOOP 0 then SHP, and clamping to an
+        // error corrupts the machine mid-glyph.
         const count = self.graphics.loop_count;
-        if (count == 0) return Error.StackUnderflow;
         var i: u32 = 0;
         while (i < count) : (i += 1) {
             try zone_ptr.shiftVector(freedom, try self.popU32(), distance);
@@ -1037,8 +1055,12 @@ pub const Context = struct {
         freedom: tt_graphics.Vector,
         distance: i32,
     ) Error!void {
+        // A zero loop count is a valid no-op (SLOOP can set it to 0): the
+        // looped instruction runs zero times and pops nothing. Matching the
+        // TrueType spec / FreeType here is load-bearing — e.g. DejaVu's '2'
+        // ends a conditional block with SLOOP 0 then SHP, and clamping to an
+        // error corrupts the machine mid-glyph.
         const count = self.graphics.loop_count;
-        if (count == 0) return Error.StackUnderflow;
         var i: u32 = 0;
         while (i < count) : (i += 1) {
             try zone_ptr.shiftProjectedVector(projection, freedom, try self.popU32(), distance);
@@ -2278,15 +2300,18 @@ test "tt executor applies delta point and cvt exceptions" {
     };
     ctx.setZones(&zones);
 
+    // Each delta pair is pushed as [arg, point/cvt-index] (bottom→top), then
+    // the pair count on top — matching the TrueType stack layout where the
+    // point number sits above the exception byte.
     try ctx.execute(&.{
-        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=3 → 8) = +16/64 px
-        0xB2, 0, 0x39, 1, 0x5D,
-        // DELTAC1: ppem 12, low=6 → -2 steps × 8 = -16/64 px
-        0xB2, 0, 0x36, 1, 0x73,
+        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=3 → 8) = +16/64 px, point 0
+        0xB2, 0x39, 0, 1, 0x5D,
+        // DELTAC1: ppem 12, low=6 → -2 steps × 8 = -16/64 px, cvt 0
+        0xB2, 0x36, 0, 1, 0x73,
         0xB0, 10, 0x5E, // SDB 10
         0xB0, 4, 0x5F, // SDS 4
-        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=4 → 4) = +8/64 px
-        0xB2, 1, 0x29, 1, 0x5D,
+        // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=4 → 4) = +8/64 px, point 1
+        0xB2, 0x29, 1, 1, 0x5D,
     });
 
     try std.testing.expectEqual(@as(i32, 16), glyph_points[0].x);

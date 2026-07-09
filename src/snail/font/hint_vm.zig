@@ -324,6 +324,24 @@ fn deinitSlot(allocator: std.mem.Allocator, slot: *MachineSlot) void {
 
 const testing = std.testing;
 
+test "HintVm hints DejaVu digits and letters across small ppems" {
+    // Regression net for two TT-interpreter bugs that only surfaced on real
+    // fonts at small sizes: SLOOP-0 handling (DejaVu '2' -> StackUnderflow at
+    // every size) and DELTAP/DELTAC pop order (DejaVu 'a','m','r','0' ->
+    // InvalidPoint below ~12px, where the delta exceptions fire).
+    const font_data = @import("assets").dejavu_sans_mono;
+    var font = try Font.init(font_data);
+    var hinter = try HintVm.init(testing.allocator, &font);
+    defer hinter.deinit();
+    for ("2amr0Hngoe13") |ch| {
+        for ([_]u32{ 8, 9, 10, 11, 12, 16 }) |px| {
+            const gid = try font.glyphIndex(ch);
+            var c = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, HintPpem.uniform(px * 64));
+            c.deinit();
+        }
+    }
+}
+
 test "HintVm init fails cleanly on fonts without hinting" {
     var font = Font.init(&[_]u8{ 0, 0, 0, 0 }) catch |e| {
         try testing.expect(e == error.InvalidFont or e == error.UnexpectedEof);
