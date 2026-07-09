@@ -103,6 +103,7 @@ pub const AtlasPage = @import("atlas/page.zig").AtlasPage;
 const atlas_mod = @import("atlas.zig");
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasEntry = atlas_mod.Entry;
+pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintKnots = atlas_mod.AutohintKnots;
 pub const CompositeMode = atlas_mod.CompositeMode;
 pub const AtlasLayer = atlas_mod.Layer;

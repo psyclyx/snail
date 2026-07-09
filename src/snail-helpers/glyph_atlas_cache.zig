@@ -71,7 +71,7 @@ pub const GlyphAtlasCache = struct {
     stored: std.AutoHashMapUnmanaged(RecordKey, Stored),
     clock: u64,
 
-    pub const InsertError = snail.Atlas.InsertError;
+    pub const InsertError = snail.AtlasInsertError;
 
     pub const Stats = struct {
         resident: u32,
@@ -196,9 +196,15 @@ pub const GlyphAtlasCache = struct {
 
     // ── internals ──────────────────────────────────────────────────────────
 
-    /// Extend the atlas with one stored record, committing it on success.
+    /// Extend the atlas with one stored record, committing it on success. The
+    /// initial atlas is empty (`Atlas.empty`, no pool), so the first insert
+    /// seeds it via `Atlas.from` on our pool; subsequent ones `extend`.
     fn tryExtend(self: *GlyphAtlasCache, key: RecordKey, stored: *Stored) InsertError!void {
-        const grown = try self.atlas.extend(self.allocator, &.{storedEntry(key, stored.*)});
+        const entry = storedEntry(key, stored.*);
+        const grown = if (self.atlas.pool == null)
+            try snail.Atlas.from(self.allocator, self.pool, &.{entry})
+        else
+            try self.atlas.extend(self.allocator, &.{entry});
         self.atlas.deinit();
         self.atlas = grown;
         self.commit(key, stored);
