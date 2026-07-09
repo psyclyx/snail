@@ -41,6 +41,10 @@ pub const HintedGlyphCache = struct {
     font_id: u32,
     curves: std.AutoHashMapUnmanaged(Key, GlyphCurves),
     advances: std.AutoHashMapUnmanaged(Key, i32),
+    /// Per-ppem `Prepared` (the fpgm/prep result) that the pure `HintVm`
+    /// hints from. Cached here — the VM itself is stateless — so `fpgm`/`prep`
+    /// runs once per size, amortized across every glyph and every frame.
+    prepareds: std.AutoHashMapUnmanaged(HintPpem, HintVm.Prepared),
 
     pub const Stats = struct {
         glyph_count: u32,
@@ -56,6 +60,7 @@ pub const HintedGlyphCache = struct {
             .font_id = font_id,
             .curves = .{},
             .advances = .{},
+            .prepareds = .{},
         };
     }
 
@@ -64,7 +69,20 @@ pub const HintedGlyphCache = struct {
         while (it.next()) |c| c.deinit();
         self.curves.deinit(self.allocator);
         self.advances.deinit(self.allocator);
+        var pit = self.prepareds.valueIterator();
+        while (pit.next()) |p| p.deinit();
+        self.prepareds.deinit(self.allocator);
         self.* = undefined;
+    }
+
+    /// The cached `Prepared` for `ppem`, running fpgm/prep on first use.
+    fn preparedFor(self: *HintedGlyphCache, ppem: HintPpem) HintError!*const HintVm.Prepared {
+        const gop = try self.prepareds.getOrPut(self.allocator, ppem);
+        if (!gop.found_existing) {
+            errdefer _ = self.prepareds.remove(ppem);
+            gop.value_ptr.* = try self.vm.prepare(ppem);
+        }
+        return gop.value_ptr;
     }
 
     /// Return the cached curves for `(glyph_id, ppem)`, calling
@@ -82,7 +100,8 @@ pub const HintedGlyphCache = struct {
         const gop = try self.curves.getOrPut(self.allocator, key);
         if (!gop.found_existing) {
             errdefer _ = self.curves.remove(key);
-            gop.value_ptr.* = try self.vm.hintGlyph(allocator, scratch, glyph_id, ppem);
+            const prepared = try self.preparedFor(ppem);
+            gop.value_ptr.* = try self.vm.hintGlyph(allocator, scratch, prepared, glyph_id);
         }
         return gop.value_ptr;
     }
@@ -95,7 +114,8 @@ pub const HintedGlyphCache = struct {
     ) HintError!i32 {
         const key = keyFor(ppem, glyph_id);
         if (self.advances.get(key)) |a| return a;
-        const adv = try self.vm.hintedAdvance(glyph_id, ppem);
+        const prepared = try self.preparedFor(ppem);
+        const adv = try self.vm.hintedAdvance(prepared, glyph_id);
         try self.advances.put(self.allocator, key, adv);
         return adv;
     }
@@ -127,15 +147,24 @@ pub const HintedGlyphCache = struct {
             }
         }
         for (dropped_advances.items) |k| _ = self.advances.remove(k);
+
+        // Drop the (expensive) Prepared for this size too — nothing at this
+        // ppem remains resident.
+        if (self.prepareds.fetchRemove(ppem)) |r| {
+            var p = r.value;
+            p.deinit();
+        }
     }
 
-    /// Drop every cached curve and advance, regardless of ppem. The
-    /// underlying `HintVm`'s per-ppem machine cache is untouched.
+    /// Drop every cached curve, advance, and Prepared, regardless of ppem.
     pub fn clear(self: *HintedGlyphCache) void {
         var it = self.curves.valueIterator();
         while (it.next()) |c| c.deinit();
         self.curves.clearRetainingCapacity();
         self.advances.clearRetainingCapacity();
+        var pit = self.prepareds.valueIterator();
+        while (pit.next()) |p| p.deinit();
+        self.prepareds.clearRetainingCapacity();
     }
 
     /// Closure adapter: returns an `AdvanceProvider` whose

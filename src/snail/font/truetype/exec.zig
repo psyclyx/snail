@@ -218,6 +218,25 @@ pub const Context = struct {
         self.graphics = .{};
     }
 
+    /// Reset only the per-glyph graphics fields to their glyph-program
+    /// defaults, keeping prep-established values (round mode, cut-ins, …).
+    /// Every glyph program starts here regardless of what prep left, matching
+    /// FreeType's TT_Run_Context — without it a font whose prep ends with a
+    /// non-default projection (DejaVu Sans Mono leaves projection=Y) runs the
+    /// whole glyph on the wrong axis.
+    pub fn resetGraphicsForGlyph(self: *Context) void {
+        self.graphics.projection = tt_graphics.Vector.x_axis;
+        self.graphics.freedom = tt_graphics.Vector.x_axis;
+        self.graphics.dual_projection = tt_graphics.Vector.x_axis;
+        self.graphics.rp0 = 0;
+        self.graphics.rp1 = 0;
+        self.graphics.rp2 = 0;
+        self.graphics.zp0 = .glyph;
+        self.graphics.zp1 = .glyph;
+        self.graphics.zp2 = .glyph;
+        self.graphics.loop_count = 1;
+    }
+
     pub fn reset(self: *Context) void {
         self.sp = 0;
         self.steps = 0;

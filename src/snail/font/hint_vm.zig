@@ -1,36 +1,25 @@
 //! TrueType bytecode hinting wrapped as a `GlyphCurves` producer.
 //!
-//! The TT VM (`src/snail/font/truetype/`) stays verbatim. This module trims
-//! the wrapper layer down to a single producer call: given a glyph and a
-//! ppem, return the hinted curves in the same `GlyphCurves` shape that the
-//! unhinted and path producers emit. The atlas then consumes them the same
-//! way it consumes anything else.
+//! `HintVm` is a PURE producer over an immutable per-ppem state:
 //!
-//! `HintVm` owns two collocated caches, both keyed by ppem and reset
-//! together by `evictPpem` / `clear`:
+//!   var prepared = try vm.prepare(ppem);   // runs fpgm/prep once (expensive)
+//!   const curves = try vm.hintGlyph(alloc, scratch, &prepared, glyph_id);
 //!
-//! 1. **`HintMachine` state.** fpgm/prep execution is expensive
-//!    (thousands of cycles per ppem); amortizing across glyphs at the
-//!    same size is the justified-exception cache the plan calls out.
-//! 2. **`GlyphTopologyCache`.** Holds parsed glyph outlines (the
-//!    `glyf`-table read; ppem-independent in content but stored per
-//!    ppem to share the slot's allocator / lifetime). Saves re-parsing
-//!    each glyph on every advance/render at the same size.
+//! `hintGlyph` is a function of `(prepared, glyph_id)` — a glyph program's
+//! rare CVT/storage write is copy-on-write-scoped to the call, so `prepared`
+//! is never mutated. That makes the output safe to memoize and lets the caller
+//! own the `Prepared`-per-ppem cache (see `helpers.HintedGlyphCache`). The VM
+//! itself holds no per-ppem state — only reusable per-font scratch and a
+//! ppem-independent parsed-outline cache, both created lazily. This is the
+//! deliberate absence of the "one justified exception" cache: hinting stays
+//! pure, and the state that used to live here is now an explicit value.
 //!
-//! Both caches surface in `HintVmStats` (`ppem_count`, `machine_bytes`,
-//! `topology_glyph_count`) so callers can budget memory and evict.
+//! `HintVmStats` reports just the reusable scratch footprint + parsed-outline
+//! count; per-ppem accounting belongs to whoever caches the `Prepared`s.
 //!
-//! Output memoization — packed `GlyphCurves` bytes and hinted advances
-//! keyed by `(ppem, glyph_id)` — is *not* in core. It lives in
-//! `helpers.HintedGlyphCache`, which wraps `HintVm` and supplies the
-//! `AdvanceProvider` closure for shape-time advance lookups.
-//!
-//! Thread safety: not thread-safe. `hintGlyph` / `hintedAdvance` /
-//! `warmPpem` mutate the per-ppem machine cache on the read path, and
-//! `evictPpem` / `clear` / `deinit` drop slots concurrent callers may
-//! still be inside. Construct one `HintVm` per thread that needs hinting;
-//! immutable snapshots between threads are not supported. The TT VM
-//! itself does not block on I/O, so per-thread instances scale linearly.
+//! Thread safety: not thread-safe (the reusable scratch is shared across
+//! calls). Construct one `HintVm` per thread; `Prepared` values are immutable
+//! and safe to hold, but hinting from one requires that thread's `HintVm`.
 
 const std = @import("std");
 const tt_vm = @import("truetype/vm.zig");
@@ -64,13 +53,9 @@ pub const HintPpem = struct {
 };
 
 pub const HintVmStats = struct {
-    /// Number of distinct ppems with cached VM state.
-    ppem_count: u32,
-    /// Bytes held by per-ppem `HintMachine` slots (the fpgm/prep amortization).
-    machine_bytes: usize,
-    /// Total `(ppem, glyph_id)` topology entries across all ppem slots.
-    /// Grows with the per-ppem glyph working set; cleared by
-    /// `evictPpem` / `clear` together with `machine_bytes`.
+    /// Bytes held by the reusable per-font scratch (0 until first use).
+    scratch_bytes: usize,
+    /// Parsed glyph-outline entries in the ppem-independent topology cache.
     topology_glyph_count: u32,
 };
 
@@ -141,91 +126,83 @@ fn isInErrorSet(comptime S: type, comptime name: []const u8) bool {
     return false;
 }
 
-const MachineSlot = struct {
-    machine: *tt_hint.HintMachine,
-    topology: tt_hint.GlyphTopologyCache,
-};
-
 pub const HintVm = struct {
     allocator: std.mem.Allocator,
     program: tt_vm.Program,
-    machines: std.AutoHashMapUnmanaged(HintPpem, MachineSlot),
+    /// Per-font reusable scratch + parsed-outline cache. Created lazily so the
+    /// internal `*Program` binds to a stable `&self.program`. No per-ppem state
+    /// lives here — that's `Prepared`, produced by `prepare` and owned (and
+    /// cached) by the caller. So the VM is pure: `hintGlyph` is a function of
+    /// `(prepared, glyph_id)`, and its output is safe to memoize.
+    machine: ?*tt_hint.HintMachine = null,
+    topology: ?*tt_hint.GlyphTopologyCache = null,
+
+    /// Immutable per-ppem state (the fpgm/prep result). Cache one per ppem.
+    pub const Prepared = tt_hint.Prepared;
 
     /// Inspect a font for hinting support. Returns `error.NoHinting` if the
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
     /// back to `font.extractCurves`.
     pub fn init(allocator: std.mem.Allocator, font: *const Font) !HintVm {
         const program = tt_vm.Program.init(font.inner.data) catch return error.NoHinting;
-        return .{
-            .allocator = allocator,
-            .program = program,
-            .machines = .{},
-        };
+        return .{ .allocator = allocator, .program = program };
     }
 
     pub fn deinit(self: *HintVm) void {
-        self.clear();
-        self.machines.deinit(self.allocator);
+        if (self.topology) |t| {
+            t.deinit();
+            self.allocator.destroy(t);
+        }
+        if (self.machine) |m| {
+            m.deinit();
+            self.allocator.destroy(m);
+        }
         self.* = undefined;
     }
 
-    /// Drop the per-ppem VM state for `ppem`. Curves already extracted
-    /// into atlases or held in helper caches keep working — the VM owns
-    /// neither.
-    pub fn evictPpem(self: *HintVm, ppem: HintPpem) void {
-        if (self.machines.fetchRemove(ppem)) |removed| {
-            var slot = removed.value;
-            deinitSlot(self.allocator, &slot);
-        }
+    fn ensureScratch(self: *HintVm) HintError!void {
+        if (self.machine != null) return;
+        const m = try self.allocator.create(tt_hint.HintMachine);
+        errdefer self.allocator.destroy(m);
+        m.* = try tt_hint.HintMachine.initForProgram(self.allocator, &self.program);
+        errdefer m.deinit();
+        const t = try self.allocator.create(tt_hint.GlyphTopologyCache);
+        errdefer self.allocator.destroy(t);
+        t.* = tt_hint.GlyphTopologyCache.initForProgram(self.allocator, &self.program);
+        self.machine = m;
+        self.topology = t;
     }
 
-    /// Drop every cached ppem.
-    pub fn clear(self: *HintVm) void {
-        var it = self.machines.iterator();
-        while (it.next()) |entry| {
-            var slot = entry.value_ptr.*;
-            deinitSlot(self.allocator, &slot);
-        }
-        self.machines.clearRetainingCapacity();
+    /// Run fpgm/prep at `ppem` and return the immutable per-ppem state. The
+    /// caller owns it — cache it and `deinit` it. Expensive (thousands of
+    /// cycles); amortize by caching per ppem (see `helpers.HintedGlyphCache`).
+    pub fn prepare(self: *HintVm, ppem: HintPpem) HintError!Prepared {
+        try self.ensureScratch();
+        return self.machine.?.prepare(self.allocator, .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 }, .{});
     }
 
-    /// Ensure the per-ppem machine state exists for `ppem` (parses + executes
-    /// fpgm/prep at this ppem if not already cached). Idempotent. Useful for
-    /// preheating common ppems at startup so the first glyph at that size
-    /// doesn't pay the setup cost.
-    pub fn warmPpem(self: *HintVm, ppem: HintPpem) HintError!void {
-        _ = try self.machineFor(ppem);
+    /// Hinted horizontal advance (26.6 px) for `glyph_id` from `prepared`.
+    pub fn hintedAdvance(self: *HintVm, prepared: *const Prepared, glyph_id: u16) HintError!i32 {
+        try self.ensureScratch();
+        return self.machine.?.glyphAdvanceX26Dot6(prepared, self.topology.?, glyph_id);
     }
 
-    /// Return the hinted horizontal advance for `glyph_id` at `ppem`, in
-    /// 26.6 fixed-point pixels. Runs the TT VM every call — output
-    /// memoization is the caller's job (typically
-    /// `helpers.HintedGlyphCache.advance`).
-    pub fn hintedAdvance(
-        self: *HintVm,
-        glyph_id: u16,
-        ppem: HintPpem,
-    ) HintError!i32 {
-        const slot = try self.machineFor(ppem);
-        return try slot.machine.glyphAdvanceX26Dot6(&slot.topology, glyph_id);
-    }
-
-    /// Run the TT VM for `glyph_id` at `ppem` and pack the result as
-    /// `GlyphCurves`. Caller owns the returned value.
+    /// Hint `glyph_id` from `prepared` and pack the result as `GlyphCurves`.
+    /// Pure in `(prepared, glyph_id)` — the result is safe to memoize.
     ///
-    /// `scratch` is used for VM-internal scratch state that does not need
-    /// to outlive the call. The returned `GlyphCurves` is allocated from
+    /// `scratch` is used for VM-internal scratch state that does not need to
+    /// outlive the call. The returned `GlyphCurves` is allocated from
     /// `allocator`.
     pub fn hintGlyph(
         self: *HintVm,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
+        prepared: *const Prepared,
         glyph_id: u16,
-        ppem: HintPpem,
     ) HintError!curves_mod.GlyphCurves {
-        const slot = try self.machineFor(ppem);
-        const executed = try slot.machine.executeCachedGlyph(&slot.topology, glyph_id);
-        var hint_value = try slot.machine.buildGlyphHint(scratch, glyph_id, executed);
+        try self.ensureScratch();
+        const executed = try self.machine.?.executeCachedGlyph(prepared, self.topology.?, glyph_id);
+        var hint_value = try self.machine.?.buildGlyphHint(scratch, glyph_id, executed);
         defer hint_value.deinit();
 
         if (hint_value.curves.len == 0) return curves_mod.GlyphCurves.empty(allocator);
@@ -275,52 +252,15 @@ pub const HintVm = struct {
         };
     }
 
-    /// Summary of the per-ppem machine cache (the one cache `HintVm`
-    /// keeps in core — see the rewrite plan's "one justified exception").
-    /// Useful for cache-pressure decisions: e.g. evict the oldest ppem
-    /// when `machine_bytes` crosses a budget.
+    /// Footprint of the reusable scratch + parsed-outline cache (not the
+    /// caller-owned `Prepared`s). For memory budgeting.
     pub fn stats(self: *const HintVm) HintVmStats {
-        var machine_bytes: usize = 0;
-        var topology_glyph_count: u32 = 0;
-        var it = self.machines.valueIterator();
-        while (it.next()) |slot| {
-            machine_bytes += slot.machine.byteSize();
-            topology_glyph_count += @intCast(slot.topology.map.count());
-        }
         return .{
-            .ppem_count = self.machines.count(),
-            .machine_bytes = machine_bytes,
-            .topology_glyph_count = topology_glyph_count,
+            .scratch_bytes = if (self.machine) |m| m.byteSize() else 0,
+            .topology_glyph_count = if (self.topology) |t| @intCast(t.map.count()) else 0,
         };
     }
-
-    fn machineFor(self: *HintVm, ppem: HintPpem) HintError!*MachineSlot {
-        const gop = try self.machines.getOrPut(self.allocator, ppem);
-        if (!gop.found_existing) {
-            const machine_ptr = try self.allocator.create(tt_hint.HintMachine);
-            errdefer self.allocator.destroy(machine_ptr);
-            machine_ptr.* = try tt_hint.HintMachine.initForProgram(self.allocator, &self.program, .{
-                .x_26_6 = ppem.x_26_6,
-                .y_26_6 = ppem.y_26_6,
-            });
-            errdefer machine_ptr.deinit();
-
-            const topology = tt_hint.GlyphTopologyCache.initForProgram(self.allocator, &self.program);
-
-            gop.value_ptr.* = .{
-                .machine = machine_ptr,
-                .topology = topology,
-            };
-        }
-        return gop.value_ptr;
-    }
 };
-
-fn deinitSlot(allocator: std.mem.Allocator, slot: *MachineSlot) void {
-    slot.topology.deinit();
-    slot.machine.deinit();
-    allocator.destroy(slot.machine);
-}
 
 const testing = std.testing;
 
@@ -333,10 +273,12 @@ test "HintVm hints DejaVu digits and letters across small ppems" {
     var font = try Font.init(font_data);
     var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
-    for ("2amr0Hngoe13") |ch| {
-        for ([_]u32{ 8, 9, 10, 11, 12, 16 }) |px| {
+    for ([_]u32{ 8, 9, 10, 11, 12, 16 }) |px| {
+        var prepared = try hinter.prepare(HintPpem.uniform(px * 64));
+        defer prepared.deinit();
+        for ("2amr0Hngoe13") |ch| {
             const gid = try font.glyphIndex(ch);
-            var c = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, HintPpem.uniform(px * 64));
+            var c = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, gid);
             c.deinit();
         }
     }
@@ -361,7 +303,9 @@ test "HintVm produces GlyphCurves for a hinted glyph" {
     const ppem = HintPpem.uniform(16 * 64);
     const glyph_id = try font.glyphIndex('A');
 
-    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, glyph_id, ppem);
+    var prepared = try hinter.prepare(ppem);
+    defer prepared.deinit();
+    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, glyph_id);
     defer curves.deinit();
 
     try testing.expect(curves.curve_count > 0);
@@ -370,81 +314,32 @@ test "HintVm produces GlyphCurves for a hinted glyph" {
     try testing.expect(curves.h_band_count > 0);
 }
 
-test "HintVm caches per-ppem VM state across calls" {
+test "HintVm is pure: one Prepared hints many glyphs, output is stable" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
     var hinter = try HintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
-    const ppem = HintPpem.uniform(12 * 64);
-    const gid_a = try font.glyphIndex('A');
-    const gid_b = try font.glyphIndex('B');
+    var prepared = try hinter.prepare(HintPpem.uniform(12 * 64));
+    defer prepared.deinit();
 
-    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_a, ppem);
-    defer c0.deinit();
-    try testing.expectEqual(@as(u32, 1), hinter.machines.count());
+    // Hinting 'A' then 'B' then 'A' again from the SAME const Prepared must be
+    // deterministic — the second 'A' matches the first, proving no cross-glyph
+    // state leaked (which is what makes the output safe to cache).
+    var a0 = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, try font.glyphIndex('A'));
+    defer a0.deinit();
+    var b0 = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, try font.glyphIndex('B'));
+    defer b0.deinit();
+    var a1 = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, try font.glyphIndex('A'));
+    defer a1.deinit();
 
-    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_b, ppem);
-    defer c1.deinit();
-    try testing.expectEqual(@as(u32, 1), hinter.machines.count());
-
-    const ppem_other = HintPpem.uniform(24 * 64);
-    var c2 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid_a, ppem_other);
-    defer c2.deinit();
-    try testing.expectEqual(@as(u32, 2), hinter.machines.count());
-}
-
-test "HintVm.stats reports ppem, machine bytes, and topology growth" {
-    const font_data = @import("assets").noto_sans_regular;
-    var font = try Font.init(font_data);
-
-    var hinter = try HintVm.init(testing.allocator, &font);
-    defer hinter.deinit();
-
-    try testing.expectEqual(@as(u32, 0), hinter.stats().ppem_count);
-    try testing.expectEqual(@as(u32, 0), hinter.stats().topology_glyph_count);
-
-    const ppem = HintPpem.uniform(16 * 64);
-    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, try font.glyphIndex('A'), ppem);
-    c0.deinit();
-    const after_a = hinter.stats();
-    try testing.expectEqual(@as(u32, 1), after_a.ppem_count);
-    try testing.expect(after_a.machine_bytes > 0);
-    try testing.expectEqual(@as(u32, 1), after_a.topology_glyph_count);
-
-    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, try font.glyphIndex('B'), ppem);
-    c1.deinit();
-    const after_b = hinter.stats();
-    try testing.expectEqual(@as(u32, 1), after_b.ppem_count);
-    try testing.expectEqual(@as(u32, 2), after_b.topology_glyph_count);
-
-    hinter.evictPpem(ppem);
-    const after_evict = hinter.stats();
-    try testing.expectEqual(@as(u32, 0), after_evict.ppem_count);
-    try testing.expectEqual(@as(u32, 0), after_evict.topology_glyph_count);
-}
-
-test "HintVm.evictPpem drops one cache entry without affecting others" {
-    const font_data = @import("assets").noto_sans_regular;
-    var font = try Font.init(font_data);
-
-    var hinter = try HintVm.init(testing.allocator, &font);
-    defer hinter.deinit();
-
-    const ppem_12 = HintPpem.uniform(12 * 64);
-    const ppem_24 = HintPpem.uniform(24 * 64);
-    const gid = try font.glyphIndex('A');
-
-    var c0 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem_12);
-    c0.deinit();
-    var c1 = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem_24);
-    c1.deinit();
-    try testing.expectEqual(@as(u32, 2), hinter.machines.count());
-
-    hinter.evictPpem(ppem_12);
-    try testing.expectEqual(@as(u32, 1), hinter.machines.count());
-    try testing.expect(hinter.machines.contains(ppem_24));
+    try testing.expectEqual(a0.curve_count, a1.curve_count);
+    try testing.expectEqualSlices(u16, a0.curve_bytes, a1.curve_bytes);
+    try testing.expect(a0.curve_count != b0.curve_count or !std.mem.eql(u16, a0.curve_bytes, b0.curve_bytes));
+    // The parsed-outline cache grew with the glyphs hinted (A, B).
+    try testing.expectEqual(@as(u32, 2), hinter.stats().topology_glyph_count);
+    try testing.expect(hinter.stats().scratch_bytes > 0);
 }
 
 test "HintVm hint output round-trips through an atlas" {
@@ -466,7 +361,9 @@ test "HintVm hint output round-trips through an atlas" {
 
     const ppem = HintPpem.uniform(18 * 64);
     const gid = try font.glyphIndex('M');
-    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, gid, ppem);
+    var prepared = try hinter.prepare(ppem);
+    defer prepared.deinit();
+    var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, gid);
     defer curves.deinit();
 
     const key = record_key_mod.hintedGlyph(0, gid, ppem.packed26Dot6());

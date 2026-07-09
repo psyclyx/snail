@@ -422,11 +422,13 @@ fn ensureHintedRunCurves(
 ) !bool {
     const hinter = fonts.hint_vm orelse return false;
     const ppem = snail.HintPpem.uniform(ppem_26_6);
+    var prepared = hinter.prepare(ppem) catch return false;
+    defer prepared.deinit();
     for (shaped.glyphs) |g| {
         if (g.face_index != 0) return false; // only face 0 is hintable
         const key = snail.recordKey.hintedGlyph(0, g.glyph_id, ppem_26_6);
         if (containsKey(build.entries.items, key)) continue;
-        const curves = hinter.hintGlyph(build.allocator, build.allocator, g.glyph_id, ppem) catch return false;
+        const curves = hinter.hintGlyph(build.allocator, build.allocator, &prepared, g.glyph_id) catch return false;
         try build.owned_curves.append(build.allocator, curves);
         try build.entries.append(build.allocator, .{
             .key = key,
@@ -899,7 +901,8 @@ fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_2
         const start = nowNs();
         var h = snail.HintVm.init(allocator, font) catch return 0;
         const ppem = snail.HintPpem.uniform(ppem_26_6);
-        h.warmPpem(ppem) catch return 0;
+        var prepared = h.prepare(ppem) catch return 0;
+        prepared.deinit();
         total += usFrom(start);
         h.deinit();
     }
@@ -907,23 +910,22 @@ fn timeHinterSetup(allocator: std.mem.Allocator, font: *const snail.Font, ppem_2
 }
 
 fn timeHinterExecute(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
-    // VM execute: the HintMachine for this ppem is left intact across
-    // iterations (fpgm + prep already ran during warmup), so the timed
-    // loop measures only per-glyph TT bytecode execution — no fpgm/prep,
-    // no curve build. The output advance is uncached at this layer
+    // VM execute: the size is prepared once (fpgm + prep), and the timed loop
+    // measures only per-glyph TT bytecode execution — no fpgm/prep, no curve
+    // build. The output advance is uncached at this layer
     // (helpers.HintedGlyphCache would memoize); each call re-runs the VM.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
-    // Warmup machine for this ppem (runs fpgm + prep once).
-    _ = h.hintedAdvance(0, ppem) catch 0;
+    var prepared = h.prepare(ppem) catch return 0;
+    defer prepared.deinit();
 
     var total: f64 = 0;
     for (0..PREP_RUNS) |_| {
         const start = nowNs();
         for (PRINTABLE_ASCII) |ch| {
             const gid = font.glyphIndex(ch) catch continue;
-            _ = h.hintedAdvance(gid, ppem) catch continue;
+            _ = h.hintedAdvance(&prepared, gid) catch continue;
         }
         total += usFrom(start);
     }
@@ -939,12 +941,14 @@ fn timeHinterFull(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26
         var scratch_arena = std.heap.ArenaAllocator.init(allocator);
         defer scratch_arena.deinit();
         const start = nowNs();
+        var prepared = h.prepare(ppem) catch continue;
         for (PRINTABLE_ASCII) |ch| {
             const gid = font.glyphIndex(ch) catch continue;
-            var curves = h.hintGlyph(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
+            var curves = h.hintGlyph(allocator, scratch_arena.allocator(), &prepared, gid) catch continue;
             _ = scratch_arena.reset(.retain_capacity);
             curves.deinit();
         }
+        prepared.deinit();
         total += usFrom(start);
     }
     return total / PREP_RUNS;
@@ -998,9 +1002,11 @@ fn timeHinterParagraphWarm(allocator: std.mem.Allocator, font: *const snail.Font
 }
 
 fn hintParagraph(h: *snail.HintVm, font: *const snail.Font, allocator: std.mem.Allocator, scratch_arena: *std.heap.ArenaAllocator, ppem: snail.HintPpem) !void {
+    var prepared = try h.prepare(ppem);
+    defer prepared.deinit();
     for (PARAGRAPH) |ch| {
         const gid = font.glyphIndex(ch) catch continue;
-        var curves = h.hintGlyph(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
+        var curves = h.hintGlyph(allocator, scratch_arena.allocator(), &prepared, gid) catch continue;
         _ = scratch_arena.reset(.retain_capacity);
         std.mem.doNotOptimizeAway(curves.curve_count);
         curves.deinit();

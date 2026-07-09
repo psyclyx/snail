@@ -92,69 +92,143 @@ pub const GlyphTopologyCache = struct {
     }
 };
 
-pub const HintMachine = struct {
+/// Immutable per-ppem hinting state: everything `fpgm` + `prep` produced at
+/// one size (scaled + post-prep CVT, the fpgm functions, post-prep storage and
+/// graphics defaults). Pure to hint from — `HintMachine.hintGlyph` never
+/// mutates it; a glyph program's rare CVT/storage write is COW-scoped to the
+/// run. A caller caches one per ppem; the atlas caches the resulting curves.
+pub const Prepared = struct {
     allocator: Allocator,
-    program: *const Program,
     size: tt_vm.SizeState,
-    stack: []i32,
-    storage: []i32,
-    storage_snapshot: []i32,
     function_entries: []tt_exec.Function,
     function_lookup: []?[]const u8,
     functions: tt_exec.FunctionDefs,
+    storage: []i32,
+    graphics: tt_exec.GraphicsState,
+
+    pub fn deinit(self: *Prepared) void {
+        self.allocator.free(self.function_entries);
+        self.allocator.free(self.function_lookup);
+        self.allocator.free(self.storage);
+        self.size.deinit();
+        self.* = undefined;
+    }
+
+    pub fn gridFits(self: *const Prepared) bool {
+        return self.size.grid_fit;
+    }
+
+    /// Approximate heap footprint, for caller eviction budgeting.
+    pub fn byteSize(self: *const Prepared) usize {
+        return self.storage.len * @sizeOf(i32) +
+            self.function_entries.len * @sizeOf(tt_exec.Function) +
+            self.function_lookup.len * @sizeOf(?[]const u8);
+    }
+};
+
+/// Reusable working buffers for one hinting thread — no per-ppem or per-glyph
+/// state, just scratch that `prepare`/`hintGlyph` overwrite. Sized once from
+/// the program's maxp; a caller keeps one and pairs it with any `Prepared`.
+/// `prepared` is a transient binding set for the duration of a hint call.
+pub const HintMachine = struct {
+    allocator: Allocator,
+    program: *const Program,
+    stack: []i32,
+    storage_work: []i32,
+    cvt_work: []i32,
     skip_cache: tt_exec.SkipCache,
     twilight_points: []tt_exec.Point,
     glyph_points: []tt_exec.Point,
     compound_contours: []tt_outline.ContourRange,
     zones: tt_exec.PointZones,
-    snapshot: tt_vm.ControlProgramSnapshot,
+    /// Bound to the `Prepared` being hinted for the current call only.
+    prepared: *const Prepared = undefined,
 
-    pub fn initForProgram(allocator: Allocator, program: *const Program, ppem: HintPpem) !HintMachine {
-        return initForProgramWithOptions(allocator, program, ppem, .{});
-    }
-
-    pub fn initForProgramWithOptions(
-        allocator: Allocator,
-        program: *const Program,
-        ppem: HintPpem,
-        options: HintOptions,
-    ) !HintMachine {
-        var machine = try allocateMachine(allocator, program, ppem, options);
-        errdefer machine.deinit();
-        try machine.runSetupPrograms();
-        return machine;
+    pub fn initForProgram(allocator: Allocator, program: *const Program) !HintMachine {
+        return allocateMachine(allocator, program);
     }
 
     pub fn deinit(self: *HintMachine) void {
         self.allocator.free(self.stack);
-        self.allocator.free(self.storage);
-        self.allocator.free(self.storage_snapshot);
-        self.allocator.free(self.function_entries);
-        self.allocator.free(self.function_lookup);
+        self.allocator.free(self.storage_work);
+        self.allocator.free(self.cvt_work);
         self.allocator.free(self.twilight_points);
         self.allocator.free(self.glyph_points);
         self.allocator.free(self.compound_contours);
         self.skip_cache.deinit();
-        self.size.deinit();
         self.* = undefined;
     }
 
-    /// Approximate heap footprint of this VM instance's allocations.
-    /// Sums the major arrays; the size-state and skip cache contributions
-    /// are estimated structurally. Used by `TrueTypeHintContext.byteFootprint`
-    /// so callers can decide eviction policies.
+    /// Approximate heap footprint of the reusable scratch.
     pub fn byteSize(self: *const HintMachine) usize {
         return self.stack.len * @sizeOf(i32) +
-            self.storage.len * @sizeOf(i32) +
-            self.storage_snapshot.len * @sizeOf(i32) +
-            self.function_entries.len * @sizeOf(tt_exec.Function) +
-            self.function_lookup.len * @sizeOf(?[]const u8) +
+            self.storage_work.len * @sizeOf(i32) +
+            self.cvt_work.len * @sizeOf(i32) +
             self.twilight_points.len * @sizeOf(tt_exec.Point) +
             self.glyph_points.len * @sizeOf(tt_exec.Point) +
             self.compound_contours.len * @sizeOf(tt_outline.ContourRange);
     }
 
-    pub fn hintGlyph(self: *HintMachine, allocator: Allocator, glyph_id: u16) !GlyphHint {
+    /// Run `fpgm` + `prep` at `ppem` and capture the immutable result. `alloc`
+    /// owns the returned `Prepared`; this scratch is used transiently.
+    pub fn prepare(self: *HintMachine, alloc: Allocator, ppem: HintPpem, options: HintOptions) !Prepared {
+        var size = try self.program.sizeState(alloc, .{
+            .ppem_x_26_6 = ppem.x_26_6,
+            .ppem_y_26_6 = ppem.y_26_6,
+            .cvt_headroom = options.cvt_headroom,
+        });
+        errdefer size.deinit();
+
+        const sizes = self.program.executionBufferSizes();
+        const function_entries = try alloc.alloc(tt_exec.Function, @max(sizes.functions, 1));
+        errdefer alloc.free(function_entries);
+        const function_lookup = try alloc.alloc(?[]const u8, functionLookupCapacity(sizes.functions));
+        errdefer alloc.free(function_lookup);
+        @memset(function_lookup, null);
+        var functions: tt_exec.FunctionDefs = .{ .entries = function_entries, .lookup = function_lookup };
+
+        const storage = try alloc.alloc(i32, self.storage_work.len);
+        errdefer alloc.free(storage);
+        @memset(storage, 0);
+
+        // The reusable CVT work buffer must cover this size's CVT for COW.
+        if (self.cvt_work.len < size.cvt.len) self.cvt_work = try self.allocator.realloc(self.cvt_work, size.cvt.len);
+
+        // fpgm defines functions; prep scales/writes CVT+storage+graphics.
+        var context = size.executionContext(.{ .stack = self.stack, .storage = storage }, .x, .{});
+        context.setSkipCache(&self.skip_cache);
+        context.setFunctions(&functions);
+        context.setZones(&self.zones);
+        try self.program.runFontProgram(&context);
+
+        context.reset();
+        context.resetGraphics();
+        context.setEnvironment(size.environment());
+        context.setFunctions(&functions);
+        context.setZones(&self.zones);
+        try self.program.runControlProgram(&context);
+
+        return .{
+            .allocator = alloc,
+            .size = size,
+            .function_entries = function_entries,
+            .function_lookup = function_lookup,
+            .functions = functions,
+            .storage = storage,
+            .graphics = context.graphics,
+        };
+    }
+
+    /// Bind the `Prepared` to hint from and make sure the reusable CVT work
+    /// buffer covers its CVT (for the COW). Called at every entry point.
+    fn bind(self: *HintMachine, prepared: *const Prepared) !void {
+        self.prepared = prepared;
+        if (self.cvt_work.len < prepared.size.cvt.len)
+            self.cvt_work = try self.allocator.realloc(self.cvt_work, prepared.size.cvt.len);
+    }
+
+    pub fn hintGlyph(self: *HintMachine, allocator: Allocator, prepared: *const Prepared, glyph_id: u16) !GlyphHint {
+        try self.bind(prepared);
         var topology = try self.program.loadGlyphTopology(allocator, glyph_id);
         defer topology.deinit();
         const executed = try self.executeTopology(glyph_id, &topology, null);
@@ -164,10 +238,11 @@ pub const HintMachine = struct {
     pub fn hintCachedGlyph(
         self: *HintMachine,
         allocator: Allocator,
+        prepared: *const Prepared,
         cache: *GlyphTopologyCache,
         glyph_id: u16,
     ) !GlyphHint {
-        const executed = try self.executeCachedGlyph(cache, glyph_id);
+        const executed = try self.executeCachedGlyph(prepared, cache, glyph_id);
         return self.buildGlyphHint(allocator, glyph_id, executed);
     }
 
@@ -175,9 +250,11 @@ pub const HintMachine = struct {
     /// The returned simple glyph view is invalidated by the next glyph execution.
     pub fn executeCachedGlyph(
         self: *HintMachine,
+        prepared: *const Prepared,
         cache: *GlyphTopologyCache,
         glyph_id: u16,
     ) !ExecutedGlyph {
+        try self.bind(prepared);
         return self.executeTopology(glyph_id, try cache.get(glyph_id), cache);
     }
 
@@ -199,17 +276,18 @@ pub const HintMachine = struct {
     /// texture construction.
     pub fn glyphAdvanceX26Dot6(
         self: *HintMachine,
+        prepared: *const Prepared,
         cache: *GlyphTopologyCache,
         glyph_id: u16,
     ) !i32 {
-        const executed = try self.executeCachedGlyph(cache, glyph_id);
+        const executed = try self.executeCachedGlyph(prepared, cache, glyph_id);
         return self.advanceX26Dot6FromExecuted(glyph_id, executed);
     }
 
     /// Pull the 26.6 px advance out of an `ExecutedGlyph` produced by
     /// `executeCachedGlyph`. Public so callers that already ran the VM
     /// (e.g. `hint()` building curves) can grab the advance without a
-    /// second execution.
+    /// second execution. Uses the `Prepared` bound by that execution.
     pub fn advanceX26Dot6FromExecuted(
         self: *const HintMachine,
         glyph_id: u16,
@@ -220,37 +298,31 @@ pub const HintMachine = struct {
                 const phantoms = try self.program.glyphPhantomMetrics(glyph_id);
                 const left = @as(i32, phantoms.x_min) - @as(i32, phantoms.left_side_bearing);
                 const right = left + @as(i32, phantoms.advance_width);
-                const env = self.size.environment();
+                const env = self.prepared.size.environment();
                 break :blk env.scaleFUnitsX(right) - env.scaleFUnitsX(left);
             },
             .simple => |hinted| hinted.advance_x_26_6,
         };
     }
 
-    pub fn gridFits(self: *const HintMachine) bool {
-        return self.size.grid_fit;
-    }
-
-    fn runSetupPrograms(self: *HintMachine) !void {
-        var context = self.makeContext();
-        context.setFunctions(&self.functions);
-        context.setZones(&self.zones);
-        try self.program.runFontProgram(&context);
-
-        context.reset();
-        context.resetGraphics();
-        context.setEnvironment(self.size.environment());
-        context.setFunctions(&self.functions);
-        context.setZones(&self.zones);
-        try self.program.runControlProgram(&context);
-        self.snapshot = try self.size.captureControlProgramSnapshot(&context, self.storage_snapshot);
-    }
-
+    /// Build the exec context for a glyph: reuse-scratch stack/points/zones,
+    /// alias the prepared CVT/storage with COW (so a glyph write can't mutate
+    /// the cached prepared state), and start graphics from the post-prep
+    /// defaults — the alias IS the per-glyph reset, no snapshot restore.
     fn makeContext(self: *HintMachine) tt_exec.Context {
-        var context = self.size.executionContext(.{
+        const p = self.prepared;
+        var context = tt_exec.Context.init(.{
             .stack = self.stack,
-            .storage = self.storage,
-        }, .x, .{});
+            .storage = p.storage,
+            .cvt = p.size.cvt,
+        }, .{});
+        context.cvt_pristine = p.size.cvt;
+        context.cvt_work = self.cvt_work[0..p.size.cvt.len];
+        context.storage_pristine = p.storage;
+        context.storage_work = self.storage_work[0..p.storage.len];
+        context.setEnvironment(p.size.environment());
+        context.graphics = p.graphics;
+        context.resetGraphicsForGlyph();
         context.setSkipCache(&self.skip_cache);
         return context;
     }
@@ -274,11 +346,11 @@ pub const HintMachine = struct {
         simple: *const tt_outline.SimpleGlyph,
     ) !tt_vm.HintedSimpleGlyph {
         var context = self.makeContext();
-        try self.snapshot.restore(&context);
-        context.setFunctions(&self.functions);
+        var funcs = self.prepared.functions;
+        context.setFunctions(&funcs);
         context.setZones(&self.zones);
 
-        return self.size.executeSimpleGlyph(
+        return self.prepared.size.executeSimpleGlyph(
             &context,
             &self.zones,
             self.glyph_points,
@@ -304,7 +376,7 @@ pub const HintMachine = struct {
         const instructions = compound.instructions;
 
         var builder = CompoundGlyphBuilder.init(
-            self.size.environment(),
+            self.prepared.size.environment(),
             self.glyph_points,
             self.compound_contours,
         );
@@ -313,10 +385,10 @@ pub const HintMachine = struct {
         const phantom_start = try builder.appendPhantoms(try self.program.glyphPhantomMetrics(metrics_id));
 
         var context = self.makeContext();
-        try self.snapshot.restore(&context);
-        context.setFunctions(&self.functions);
+        var funcs = self.prepared.functions;
+        context.setFunctions(&funcs);
         context.setZones(&self.zones);
-        return self.size.executeGlyphZone(
+        return self.prepared.size.executeGlyphZone(
             &context,
             &self.zones,
             builder.zone(),
@@ -433,16 +505,16 @@ pub const HintMachine = struct {
         const phantoms = try self.program.glyphPhantomMetrics(glyph_id);
         const left = @as(i32, phantoms.x_min) - @as(i32, phantoms.left_side_bearing);
         const right = left + @as(i32, phantoms.advance_width);
-        const env = self.size.environment();
+        const env = self.prepared.size.environment();
         return .{ .x = self.toEmX(env.scaleFUnitsX(right) - env.scaleFUnitsX(left)), .y = 0 };
     }
 
     fn ppemScaleX(self: *const HintMachine) f32 {
-        return 1.0 / @as(f32, @floatFromInt(self.size.request.ppem_x_26_6));
+        return 1.0 / @as(f32, @floatFromInt(self.prepared.size.request.ppem_x_26_6));
     }
 
     fn ppemScaleY(self: *const HintMachine) f32 {
-        return 1.0 / @as(f32, @floatFromInt(self.size.request.ppem_y_26_6));
+        return 1.0 / @as(f32, @floatFromInt(self.prepared.size.request.ppem_y_26_6));
     }
 
     fn toEmX(self: *const HintMachine, value_26_6: i32) f32 {
@@ -450,32 +522,16 @@ pub const HintMachine = struct {
     }
 };
 
-fn allocateMachine(
-    allocator: Allocator,
-    program: *const Program,
-    ppem: HintPpem,
-    options: HintOptions,
-) !HintMachine {
+fn allocateMachine(allocator: Allocator, program: *const Program) !HintMachine {
     const sizes = program.executionBufferSizes();
-    var size = try program.sizeState(allocator, .{
-        .ppem_x_26_6 = ppem.x_26_6,
-        .ppem_y_26_6 = ppem.y_26_6,
-        .cvt_headroom = options.cvt_headroom,
-    });
-    errdefer size.deinit();
 
     const stack = try allocator.alloc(i32, sizes.stack);
     errdefer allocator.free(stack);
-    const storage = try allocator.alloc(i32, @max(sizes.storage, 1));
-    errdefer allocator.free(storage);
-    @memset(storage, 0);
-    const storage_snapshot = try allocator.alloc(i32, storage.len);
-    errdefer allocator.free(storage_snapshot);
-    const function_entries = try allocator.alloc(tt_exec.Function, @max(sizes.functions, 1));
-    errdefer allocator.free(function_entries);
-    const function_lookup = try allocator.alloc(?[]const u8, functionLookupCapacity(sizes.functions));
-    errdefer allocator.free(function_lookup);
-    @memset(function_lookup, null);
+    // COW targets; `prepare`/`bind` grow cvt_work to the size's CVT length.
+    const storage_work = try allocator.alloc(i32, @max(sizes.storage, 1));
+    errdefer allocator.free(storage_work);
+    const cvt_work = try allocator.alloc(i32, 0);
+    errdefer allocator.free(cvt_work);
     const twilight_points = try allocator.alloc(tt_exec.Point, @max(sizes.twilight_points, 1));
     errdefer allocator.free(twilight_points);
     const glyph_points = try allocator.alloc(tt_exec.Point, @max(sizes.glyph_points, 1));
@@ -486,13 +542,9 @@ fn allocateMachine(
     return .{
         .allocator = allocator,
         .program = program,
-        .size = size,
         .stack = stack,
-        .storage = storage,
-        .storage_snapshot = storage_snapshot,
-        .function_entries = function_entries,
-        .function_lookup = function_lookup,
-        .functions = .{ .entries = function_entries, .lookup = function_lookup },
+        .storage_work = storage_work,
+        .cvt_work = cvt_work,
         .skip_cache = tt_exec.SkipCache.init(allocator),
         .twilight_points = twilight_points,
         .glyph_points = glyph_points,
@@ -501,7 +553,6 @@ fn allocateMachine(
             .twilight = tt_exec.PointZone.initTwilight(twilight_points),
             .glyph = .{ .points = glyph_points[0..0] },
         },
-        .snapshot = .{ .graphics = .{}, .storage = storage_snapshot },
     };
 }
 
@@ -749,13 +800,15 @@ test "hint machine keeps Noto Sans C shoulder in place" {
 
     const program = try Program.init(assets.noto_sans_regular);
     const font = try font_mod.Font.init(assets.noto_sans_regular);
-    var machine = try HintMachine.initForProgram(allocator, &program, HintPpem.uniform(26 * 64));
+    var machine = try HintMachine.initForProgram(allocator, &program);
     defer machine.deinit();
+    var prepared = try machine.prepare(allocator, HintPpem.uniform(26 * 64), .{});
+    defer prepared.deinit();
     var cache = GlyphTopologyCache.initForProgram(allocator, &program);
     defer cache.deinit();
 
     const glyph_id = try font.glyphIndex('C');
-    const executed = try machine.executeCachedGlyph(&cache, glyph_id);
+    const executed = try machine.executeCachedGlyph(&prepared, &cache, glyph_id);
     switch (executed) {
         .simple => |simple| {
             try std.testing.expect(simple.phantom_start > 24);
@@ -776,8 +829,10 @@ test "hint machine flattens compound glyphs" {
 
     const program = try Program.init(assets.noto_sans_regular);
     const font = try font_mod.Font.init(assets.noto_sans_regular);
-    var machine = try HintMachine.initForProgram(allocator, &program, HintPpem.uniform(12 * 64));
+    var machine = try HintMachine.initForProgram(allocator, &program);
     defer machine.deinit();
+    var prepared = try machine.prepare(allocator, HintPpem.uniform(12 * 64), .{});
+    defer prepared.deinit();
 
     for (samples) |codepoint| {
         const glyph_id = try font.glyphIndex(codepoint);
@@ -790,7 +845,7 @@ test "hint machine flattens compound glyphs" {
             else => continue,
         }
 
-        var hint = try machine.hintGlyph(allocator, glyph_id);
+        var hint = try machine.hintGlyph(allocator, &prepared, glyph_id);
         defer hint.deinit();
         try std.testing.expect(hint.advance.x > 0);
         try std.testing.expect(hint.curves.len > 0);

@@ -230,6 +230,13 @@ pub const Compare = struct {
         // Per-ppem auto + TrueType. Device ppem must match buildGrid's keys.
         for (grid_ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
+            // Run fpgm/prep once for this size; every glyph hints from it.
+            var tt_prepared: ?snail.HintVm.Prepared = if (self.tt) |*vm|
+                (vm.prepare(snail.HintPpem.uniform(ppem_26_6)) catch null)
+            else
+                null;
+            defer if (tt_prepared) |*p| p.deinit();
+
             for (shaped.glyphs) |g| {
                 if (g.font_id != self.font_id) continue;
 
@@ -248,27 +255,21 @@ pub const Compare = struct {
                     });
                 }
 
-                if (self.tt) |*vm| {
+                if (self.tt) |*vm| if (tt_prepared) |*prepared| {
                     const key_t = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
                     if (!self.atlas.contains(key_t) and !hasKey(entries.items, key_t)) {
                         // Output on `scratch` (persists to the atlas build); VM
                         // internals on a dedicated temp arena so they can't
-                        // alias the output. On failure, register an empty record
-                        // so the TT row still resolves rather than MissingRecord.
+                        // alias the output. Hinting is pure now, so a glyph that
+                        // errors can't corrupt anything — just register an empty
+                        // record so the TT row still resolves.
                         var tmp = std.heap.ArenaAllocator.init(self.allocator);
                         defer tmp.deinit();
-                        const hint_ppem = snail.HintPpem.uniform(ppem_26_6);
-                        const curves = vm.hintGlyph(scratch, tmp.allocator(), g.glyph_id, hint_ppem) catch blk: {
-                            // snail's TT VM can throw mid-execution on some
-                            // glyphs (e.g. DejaVu '2' -> StackUnderflow), which
-                            // leaves the per-ppem machine corrupted. Evict it so
-                            // later glyphs at this size get a fresh machine.
-                            vm.evictPpem(hint_ppem);
-                            break :blk snail.GlyphCurves.empty(scratch);
-                        };
+                        const curves = vm.hintGlyph(scratch, tmp.allocator(), prepared, g.glyph_id) catch
+                            snail.GlyphCurves.empty(scratch);
                         try entries.append(scratch, .{ .key = key_t, .curves = curves });
                     }
-                }
+                };
             }
         }
 

@@ -60,21 +60,7 @@ pub const ControlProgramSnapshot = struct {
         if (self.storage.len != context.storage.len) return error.InvalidStorageSnapshot;
         @memcpy(context.storage, self.storage);
         context.graphics = self.graphics;
-        // Per-glyph fields reset at the start of every glyph program, regardless
-        // of what prep left in the snapshot. FreeType's TT_Run_Context does the
-        // same thing — without it, fonts whose prep ends with a non-default
-        // projection vector (e.g. DejaVu Sans Mono leaves projection=Y) execute
-        // the entire glyph program with the wrong axis.
-        context.graphics.projection = tt_graphics.Vector.x_axis;
-        context.graphics.freedom = tt_graphics.Vector.x_axis;
-        context.graphics.dual_projection = tt_graphics.Vector.x_axis;
-        context.graphics.rp0 = 0;
-        context.graphics.rp1 = 0;
-        context.graphics.rp2 = 0;
-        context.graphics.zp0 = .glyph;
-        context.graphics.zp1 = .glyph;
-        context.graphics.zp2 = .glyph;
-        context.graphics.loop_count = 1;
+        context.resetGraphicsForGlyph();
         context.reset();
     }
 };
