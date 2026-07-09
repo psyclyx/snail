@@ -2,6 +2,7 @@ const std = @import("std");
 
 const bezier = @import("math/bezier.zig");
 const paint_mod = @import("paint.zig");
+const path_stroke = @import("path_stroke.zig");
 const target_mod = @import("target.zig");
 const vec = @import("math/vec.zig");
 
@@ -19,9 +20,9 @@ const Vec2 = vec.Vec2;
 // budgets, not caller-facing limits: hitting the cap yields a slightly
 // lower-fidelity tessellation rather than an error or truncation. Bumping
 // them trades work for accuracy.
-const kPathArcSplitMaxDepth: u8 = 8;
+pub const kPathArcSplitMaxDepth: u8 = 8;
 const kPathStrokeOffsetTolerance: f32 = 0.005;
-const kPathStrokeOffsetMaxDepth: u8 = 10;
+pub const kPathStrokeOffsetMaxDepth: u8 = 10;
 
 fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
     return .{
@@ -89,7 +90,7 @@ fn makePathArcConic(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32)
     });
 }
 
-fn appendAdaptiveArcCurve(
+pub fn appendAdaptiveArcCurve(
     path: *Path,
     center: Vec2,
     radii: Vec2,
@@ -131,19 +132,19 @@ fn pointsApproxEqual(a: Vec2, b: Vec2) bool {
     return @abs(a.x - b.x) <= 1e-4 and @abs(a.y - b.y) <= 1e-4;
 }
 
-fn cross2(a: Vec2, b: Vec2) f32 {
+pub fn cross2(a: Vec2, b: Vec2) f32 {
     return a.x * b.y - a.y * b.x;
 }
 
-fn perpLeft(v: Vec2) Vec2 {
+pub fn perpLeft(v: Vec2) Vec2 {
     return .{ .x = -v.y, .y = v.x };
 }
 
-fn signedAngleBetween(a: Vec2, b: Vec2) f32 {
+pub fn signedAngleBetween(a: Vec2, b: Vec2) f32 {
     return std.math.atan2(cross2(a, b), Vec2.dot(a, b));
 }
 
-fn lineIntersection(p0: Vec2, d0: Vec2, p1: Vec2, d1: Vec2) ?Vec2 {
+pub fn lineIntersection(p0: Vec2, d0: Vec2, p1: Vec2, d1: Vec2) ?Vec2 {
     const denom = cross2(d0, d1);
     if (@abs(denom) <= 1e-6) return null;
     const rel = Vec2.sub(p1, p0);
@@ -151,13 +152,13 @@ fn lineIntersection(p0: Vec2, d0: Vec2, p1: Vec2, d1: Vec2) ?Vec2 {
     return Vec2.add(p0, Vec2.scale(d0, t));
 }
 
-fn appendLineIfNeeded(path: *Path, point: Vec2) !void {
+pub fn appendLineIfNeeded(path: *Path, point: Vec2) !void {
     if (!pointsApproxEqual(path.requireContour().?.current_point, point)) {
         try path.lineTo(point);
     }
 }
 
-fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
+pub fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
     return switch (curve.kind) {
         .quadratic => .{
             .kind = .quadratic,
@@ -188,7 +189,7 @@ fn reverseCurveSegment(curve: CurveSegment) CurveSegment {
     };
 }
 
-fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
+pub fn curveUnitTangent(curve: CurveSegment, t: f32) Vec2 {
     return switch (curve.kind) {
         inline else => |k| curveUnitTangentKind(k, curve, t),
     };
@@ -225,7 +226,7 @@ inline fn offsetCurvePointKind(comptime kind: bezier.CurveKind, curve: CurveSegm
     return offsetPointAtKind(kind, curve, t, curveUnitTangentKind(kind, curve, t), offset);
 }
 
-fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
+pub fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
     return switch (curve.kind) {
         inline else => |k| offsetCurvePointKind(k, curve, t, offset),
     };
@@ -316,7 +317,7 @@ fn appendOffsetCurveApproxKind(
     try appendOffsetCurveApproxKind(kind, path, halves[1], offset, depth - 1, tangent_mid, tangent1);
 }
 
-fn appendOffsetCurveApprox(
+pub fn appendOffsetCurveApprox(
     path: *Path,
     curve: CurveSegment,
     offset: f32,
@@ -537,7 +538,7 @@ pub const Path = struct {
         return &self.contours.items[self.contours.items.len - 1];
     }
 
-    inline fn appendSegment(self: *Path, curve: CurveSegment) !void {
+    pub inline fn appendSegment(self: *Path, curve: CurveSegment) !void {
         switch (curve.kind) {
             inline else => |k| try self.appendSegmentKind(k, curve),
         }
@@ -626,9 +627,9 @@ pub const Path = struct {
 
         for (self.contours.items) |contour| {
             if (contour.closed) {
-                try buildClosedStrokeContours(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+                try path_stroke.buildClosedStrokeContours(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
             } else {
-                try buildOpenStrokeContour(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+                try path_stroke.buildOpenStrokeContour(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
             }
         }
 
@@ -675,240 +676,3 @@ pub const Path = struct {
         return @import("paths.zig").strokeToCurves(allocator, scratch, self, stroke);
     }
 };
-
-fn appendArcSeries(path: *Path, center: Vec2, radius: f32, start_angle: f32, end_angle: f32) !void {
-    if (@abs(end_angle - start_angle) <= 1e-6) return;
-    try appendAdaptiveArcCurve(path, center, Vec2.new(radius, radius), start_angle, end_angle, kPathArcSplitMaxDepth);
-}
-
-fn appendRoundJoin(path: *Path, center: Vec2, prev_normal: Vec2, next_normal: Vec2, half_width: f32) !void {
-    const start_angle = std.math.atan2(prev_normal.y, prev_normal.x);
-    const delta = signedAngleBetween(prev_normal, next_normal);
-    try appendArcSeries(path, center, half_width, start_angle, start_angle + delta);
-}
-
-fn appendRoundCap(path: *Path, center: Vec2, dir: Vec2, half_width: f32, start_cap: bool) !void {
-    const normal = perpLeft(dir);
-    const start_angle = if (start_cap)
-        std.math.atan2(-normal.y, -normal.x)
-    else
-        std.math.atan2(normal.y, normal.x);
-    try appendArcSeries(path, center, half_width, start_angle, start_angle - std.math.pi);
-}
-
-fn appendStrokeJoinForSide(
-    path: *Path,
-    center: Vec2,
-    prev_dir: Vec2,
-    next_dir: Vec2,
-    half_width: f32,
-    side: f32,
-    join: StrokeJoin,
-    miter_limit: f32,
-) !void {
-    const turn = cross2(prev_dir, next_dir);
-    const normal_prev = Vec2.scale(perpLeft(prev_dir), side);
-    const normal_next = Vec2.scale(perpLeft(next_dir), side);
-    const prev_offset = Vec2.add(center, Vec2.scale(normal_prev, half_width));
-    const next_offset = Vec2.add(center, Vec2.scale(normal_next, half_width));
-
-    if (@abs(turn) <= 1e-5) {
-        try appendLineIfNeeded(path, next_offset);
-        return;
-    }
-
-    const intersection = lineIntersection(prev_offset, prev_dir, next_offset, next_dir);
-    const is_outer = turn * side > 0.0;
-    if (!is_outer) {
-        if (intersection) |p| {
-            try appendLineIfNeeded(path, p);
-        }
-        try appendLineIfNeeded(path, next_offset);
-        return;
-    }
-
-    switch (join) {
-        .bevel => {
-            try appendLineIfNeeded(path, next_offset);
-        },
-        .round => {
-            try appendRoundJoin(path, center, normal_prev, normal_next, half_width);
-        },
-        .miter => {
-            if (intersection) |p| {
-                if (Vec2.length(Vec2.sub(p, center)) <= half_width * @max(miter_limit, 1.0)) {
-                    try appendLineIfNeeded(path, p);
-                    try appendLineIfNeeded(path, next_offset);
-                    return;
-                }
-            }
-            try appendLineIfNeeded(path, next_offset);
-        },
-    }
-}
-
-fn appendOffsetBoundaryCurve(
-    boundary: *Path,
-    curve: CurveSegment,
-    side: f32,
-    half_width: f32,
-) !void {
-    try appendOffsetCurveApprox(boundary, curve, side * half_width, kPathStrokeOffsetMaxDepth);
-}
-
-/// Append the offset-boundary curves for one side of a stroke into
-/// `dst`. The caller must have already `moveTo`'d to the boundary's
-/// start point (`offsetCurvePoint(curves[0], 0.0, side * stroke.width *
-/// 0.5)`), since we extend the existing contour rather than open a new
-/// one. Skips the intermediate Path that the owned-return wrapper
-/// allocates.
-fn buildOffsetBoundaryInto(
-    dst: *Path,
-    curves: []const CurveSegment,
-    closed: bool,
-    side: f32,
-    stroke: StrokeStyle,
-) !void {
-    if ((!closed and curves.len == 0) or stroke.width <= 1e-4) return;
-
-    const half_width = stroke.width * 0.5;
-
-    const first_curve = curves[0];
-    try appendOffsetBoundaryCurve(dst, first_curve, side, half_width);
-
-    if (curves.len > 1) {
-        for (1..curves.len) |i| {
-            const prev_curve = curves[i - 1];
-            const curve = curves[i];
-            try appendStrokeJoinForSide(
-                dst,
-                prev_curve.endPoint(),
-                curveUnitTangent(prev_curve, 1.0),
-                curveUnitTangent(curve, 0.0),
-                half_width,
-                side,
-                stroke.join,
-                stroke.miter_limit,
-            );
-            try appendOffsetBoundaryCurve(dst, curve, side, half_width);
-        }
-    }
-
-    if (closed) {
-        try appendStrokeJoinForSide(
-            dst,
-            curves[curves.len - 1].endPoint(),
-            curveUnitTangent(curves[curves.len - 1], 1.0),
-            curveUnitTangent(curves[0], 0.0),
-            half_width,
-            side,
-            stroke.join,
-            stroke.miter_limit,
-        );
-    }
-}
-
-/// Returns an owned Path containing the offset boundary. Used when the
-/// caller needs the boundary buffered so it can be appended reversed
-/// (eg. the right side of an open/closed stroke).
-fn buildOffsetBoundary(
-    allocator: std.mem.Allocator,
-    curves: []const CurveSegment,
-    closed: bool,
-    side: f32,
-    stroke: StrokeStyle,
-) !?Path {
-    if ((!closed and curves.len == 0) or stroke.width <= 1e-4) return null;
-
-    const half_width = stroke.width * 0.5;
-    var boundary = Path.init(allocator);
-    errdefer boundary.deinit();
-    const start_point = offsetCurvePoint(curves[0], 0.0, side * half_width);
-    try boundary.moveTo(start_point);
-    try buildOffsetBoundaryInto(&boundary, curves, closed, side, stroke);
-    return boundary;
-}
-
-fn appendBoundaryCurves(dst: *Path, src: *const Path, reverse: bool) !void {
-    if (!reverse) {
-        for (src.curves.items) |curve| {
-            dst.band_curve_count += 1;
-            try dst.appendSegment(curve);
-        }
-        return;
-    }
-    var i = src.curves.items.len;
-    while (i > 0) {
-        i -= 1;
-        dst.band_curve_count += 1;
-        try dst.appendSegment(reverseCurveSegment(src.curves.items[i]));
-    }
-}
-
-fn buildOpenStrokeContour(path: *Path, curves: []const CurveSegment, stroke: StrokeStyle) !void {
-    if (curves.len == 0 or stroke.width <= 1e-4) return;
-
-    // Right side needs to be appended reversed, so we still buffer it
-    // through an intermediate Path. The left side gets written straight
-    // into `path` further below.
-    var right = (try buildOffsetBoundary(path.allocator, curves, false, -1.0, stroke)) orelse return;
-    defer right.deinit();
-
-    const half_width = stroke.width * 0.5;
-    const start_dir = curveUnitTangent(curves[0], 0.0);
-    const end_dir = curveUnitTangent(curves[curves.len - 1], 1.0);
-    const start_center = if (stroke.cap == .square)
-        Vec2.sub(curves[0].p0, Vec2.scale(start_dir, half_width))
-    else
-        curves[0].p0;
-    const end_center = if (stroke.cap == .square)
-        Vec2.add(curves[curves.len - 1].endPoint(), Vec2.scale(end_dir, half_width))
-    else
-        curves[curves.len - 1].endPoint();
-    const start_left = Vec2.add(start_center, Vec2.scale(perpLeft(start_dir), half_width));
-    const start_right = Vec2.sub(start_center, Vec2.scale(perpLeft(start_dir), half_width));
-    const end_left = Vec2.add(end_center, Vec2.scale(perpLeft(end_dir), half_width));
-    const end_right = Vec2.sub(end_center, Vec2.scale(perpLeft(end_dir), half_width));
-    const left_start = offsetCurvePoint(curves[0], 0.0, 1.0 * half_width);
-    const right_start = right.curves.items[0].p0;
-    const right_end = right.curves.items[right.curves.items.len - 1].endPoint();
-
-    try path.moveTo(start_right);
-    switch (stroke.cap) {
-        .round => try appendRoundCap(path, curves[0].p0, start_dir, half_width, true),
-        .butt, .square => try appendLineIfNeeded(path, start_left),
-    }
-    try appendLineIfNeeded(path, left_start);
-    try buildOffsetBoundaryInto(path, curves, false, 1.0, stroke);
-    try appendLineIfNeeded(path, end_left);
-    switch (stroke.cap) {
-        .round => try appendRoundCap(path, curves[curves.len - 1].endPoint(), end_dir, half_width, false),
-        .butt, .square => try appendLineIfNeeded(path, end_right),
-    }
-    try appendLineIfNeeded(path, right_end);
-    try appendBoundaryCurves(path, &right, true);
-    try appendLineIfNeeded(path, right_start);
-    try path.close();
-}
-
-fn buildClosedStrokeContours(path: *Path, curves: []const CurveSegment, stroke: StrokeStyle) !void {
-    if (curves.len == 0 or stroke.width <= 1e-4) return;
-
-    const half_width = stroke.width * 0.5;
-    // Left side: written straight into `path`. Saves a per-curve copy
-    // through an intermediate Path.
-    const left_start = offsetCurvePoint(curves[0], 0.0, 1.0 * half_width);
-    try path.moveTo(left_start);
-    try buildOffsetBoundaryInto(path, curves, true, 1.0, stroke);
-    try path.close();
-
-    // Right side still needs an intermediate so it can be appended
-    // in reverse.
-    var right = (try buildOffsetBoundary(path.allocator, curves, true, -1.0, stroke)) orelse return;
-    defer right.deinit();
-
-    try path.moveTo(right.curves.items[right.curves.items.len - 1].endPoint());
-    try appendBoundaryCurves(path, &right, true);
-    try path.close();
-}
-
