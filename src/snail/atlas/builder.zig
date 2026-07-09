@@ -19,6 +19,8 @@ const curve_tex_format = @import("../render/format/curve_texture.zig");
 const band_tex_format = @import("../render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
 const autohint_format = @import("../render/format/autohint_record.zig");
+const autohint_warp = @import("../font/autohint/warp.zig");
+const bezier = @import("../math/bezier.zig");
 const paint_mod = @import("../paint.zig");
 const target_mod = @import("../target.zig");
 
@@ -43,6 +45,22 @@ const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
+
+/// The hinted-space extent of a warped glyph: forward-warp the base bbox
+/// corners through the per-axis knots and union with the base (the map is
+/// monotone, so a corner maps to a corner). The autohint quad must span this
+/// or a snapped edge pushed past the base outline clips; sampling is unchanged
+/// (it inverse-warps back into base space regardless of quad size).
+fn warpedBBox(base: bezier.BBox, knots: atlas_mod.AutohintKnots) bezier.BBox {
+    const xl = autohint_warp.forwardWarp(knots.x, base.min.x);
+    const xh = autohint_warp.forwardWarp(knots.x, base.max.x);
+    const yl = autohint_warp.forwardWarp(knots.y, base.min.y);
+    const yh = autohint_warp.forwardWarp(knots.y, base.max.y);
+    return .{
+        .min = .{ .x = @min(base.min.x, @min(xl, xh)), .y = @min(base.min.y, @min(yl, yh)) },
+        .max = .{ .x = @max(base.max.x, @max(xl, xh)), .y = @max(base.max.y, @max(yl, yh)) },
+    };
+}
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -410,7 +428,15 @@ pub const Builder = struct {
         if (entry.autohint) |knots| {
             if (entry.autohint_base) |base_key| {
                 const base_rec = self.lookup.get(base_key) orelse return error.MissingAutohintBase;
-                try self.lookupPut(entry.key, base_rec);
+                // The warp can move edges beyond the unhinted base outline (a
+                // snapped x-height apex sits above the natural apex; an overshoot
+                // dips below the baseline). The quad is in hinted space, so it
+                // must cover the WARPED extent or those edges clip against the
+                // base bbox. Sampling is unaffected — it inverse-warps back to
+                // base-outline coords regardless of the quad size.
+                var warped_rec = base_rec;
+                warped_rec.bbox = warpedBBox(base_rec.bbox, knots);
+                try self.lookupPut(entry.key, warped_rec);
                 try self.insertAutohintRecord(entry.key, base_rec.bands, knots);
                 return;
             }
@@ -467,7 +493,9 @@ pub const Builder = struct {
             .curve_texel = base_placement.curve_texel,
             .curve_count = base_placement.curve_count,
             .bands = base_placement.bands,
-            .bbox = bbox,
+            // A self-curved autohint entry is warped too — cover the warped
+            // extent so snapped edges don't clip (see the aliased branch above).
+            .bbox = if (entry.autohint) |knots| warpedBBox(bbox, knots) else bbox,
         };
 
         try self.lookupPut(entry.key, record);
