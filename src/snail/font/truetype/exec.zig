@@ -148,6 +148,17 @@ pub const Context = struct {
     stack: []i32,
     storage: []i32,
     cvt: []i32,
+    /// Copy-on-write source for `cvt`/`storage`. When `cvt`/`storage` alias a
+    /// pristine (const) buffer — the shared post-`prep` state hinting reuses
+    /// across glyphs — the first write memcpys it into the matching `*_work`
+    /// buffer and repoints, so a glyph program's (rare) CVT/storage write is
+    /// scoped to this run and never mutates the pristine cached state. An
+    /// empty `*_pristine` (the default) disables COW: writes hit `cvt`/`storage`
+    /// directly, preserving every existing caller's behaviour.
+    cvt_pristine: []const i32 = &.{},
+    cvt_work: []i32 = &.{},
+    storage_pristine: []const i32 = &.{},
+    storage_work: []i32 = &.{},
     limits: Limits,
     graphics: GraphicsState = .{},
     environment: Environment = .{},
@@ -368,6 +379,7 @@ pub const Context = struct {
             0x42 => {
                 const value = try self.pop();
                 const index = try checkedIndex(try self.pop(), self.storage.len, Error.InvalidStorageIndex);
+                self.cowStorage();
                 self.storage[index] = value;
             },
             0x43 => {
@@ -397,6 +409,22 @@ pub const Context = struct {
         }
     }
 
+    /// Copy-on-write the CVT before a mutation, if it still aliases a pristine
+    /// source. No-op once owned or when COW is disabled (`cvt_pristine` empty).
+    inline fn cowCvt(self: *Context) void {
+        if (self.cvt_pristine.len == 0 or self.cvt.ptr != self.cvt_pristine.ptr) return;
+        const n = self.cvt.len;
+        @memcpy(self.cvt_work[0..n], self.cvt);
+        self.cvt = self.cvt_work[0..n];
+    }
+
+    inline fn cowStorage(self: *Context) void {
+        if (self.storage_pristine.len == 0 or self.storage.ptr != self.storage_pristine.ptr) return;
+        const n = self.storage.len;
+        @memcpy(self.storage_work[0..n], self.storage);
+        self.storage = self.storage_work[0..n];
+    }
+
     /// Write to CVT bypassing the projection-ratio rescale. Used by WCVTF
     /// (0x70) — per FreeType, only the per-pixel write path (WCVTP/Move_CVT)
     /// applies stretching.
@@ -404,6 +432,7 @@ pub const Context = struct {
         if (raw_index < 0) return;
         const index: usize = @intCast(raw_index);
         if (index >= self.cvt.len) return;
+        self.cowCvt();
         self.cvt[index] = value;
     }
 
@@ -435,6 +464,7 @@ pub const Context = struct {
         if (raw_index < 0) return;
         const index: usize = @intCast(raw_index);
         if (index >= self.cvt.len) return;
+        self.cowCvt();
         if (!self.environment.isStretched()) {
             self.cvt[index] = value;
             return;
@@ -1813,6 +1843,36 @@ test "tt executor reads and writes storage and cvt" {
     try std.testing.expectEqual(@as(i32, 99), storage[2]);
     try std.testing.expectEqual(@as(i32, 88), cvt[1]);
     try expectStack(&ctx, &.{ 99, 88 });
+}
+
+test "cvt/storage writes copy-on-write over a pristine source" {
+    var stack: [16]i32 = undefined;
+    var pristine_storage: [4]i32 = .{ 1, 2, 3, 4 };
+    var pristine_cvt: [4]i32 = .{ 10, 20, 30, 40 };
+    var storage_work: [4]i32 = undefined;
+    var cvt_work: [4]i32 = undefined;
+
+    // Context reads through the pristine buffers; COW is armed by pointing the
+    // *_pristine slices at the same arrays and supplying *_work targets.
+    var ctx = Context.init(.{ .stack = &stack, .storage = &pristine_storage, .cvt = &pristine_cvt }, .{});
+    ctx.storage_pristine = &pristine_storage;
+    ctx.storage_work = &storage_work;
+    ctx.cvt_pristine = &pristine_cvt;
+    ctx.cvt_work = &cvt_work;
+
+    try ctx.execute(&.{
+        0xB1, 2, 99, 0x42, // WS storage[2] = 99
+        0xB1, 1, 88, 0x44, // WCVTP cvt[1] = 88
+    });
+
+    // The writes landed in the work buffers (COW copied the source first) ...
+    try std.testing.expectEqual(@as(i32, 99), storage_work[2]);
+    try std.testing.expectEqual(@as(i32, 88), cvt_work[1]);
+    try std.testing.expectEqual(@as(i32, 99), ctx.storage[2]);
+    try std.testing.expectEqual(@as(i32, 88), ctx.cvt[1]);
+    // ... while the pristine sources are untouched — safe to cache and reuse.
+    try std.testing.expectEqual(@as(i32, 3), pristine_storage[2]);
+    try std.testing.expectEqual(@as(i32, 20), pristine_cvt[1]);
 }
 
 test "tt executor tolerates out-of-bounds CVT reads and writes" {
