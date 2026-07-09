@@ -199,11 +199,17 @@ pub const Compare = struct {
 
                 const key_a = autoKey(g.font_id, g.glyph_id, ppem_26_6);
                 if (!self.atlas.contains(key_a) and !hasKey(entries.items, key_a)) {
-                    const base = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
                     const xk = try scratch.alloc(warp.Knot, warp.max_knots);
                     const yk = try scratch.alloc(warp.Knot, warp.max_knots);
                     const knots = try self.auto.glyphKnots(scratch, g.glyph_id, ppem_26_6, xk, yk);
-                    try entries.append(scratch, .{ .key = key_a, .curves = base.*, .autohint = .{ .x = knots.x, .y = knots.y } });
+                    // Alias the shared unhinted base (inserted above / already
+                    // in the atlas) — every ppem warps the one base copy.
+                    try entries.append(scratch, .{
+                        .key = key_a,
+                        .curves = snail.GlyphCurves.empty(scratch),
+                        .autohint = .{ .x = knots.x, .y = knots.y },
+                        .autohint_base = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id),
+                    });
                 }
 
                 if (self.tt) |*vm| {

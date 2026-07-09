@@ -404,6 +404,18 @@ pub const Builder = struct {
     pub fn insert(self: *Builder, entry: Entry) InsertError!void {
         if (self.lookup.contains(entry.key)) return;
 
+        // Aliased autohint: reuse an already-inserted base glyph's placement
+        // and bands, placing no curves of our own. The warp key then samples
+        // the shared base curves, so N per-ppem warps cost one curve copy.
+        if (entry.autohint) |knots| {
+            if (entry.autohint_base) |base_key| {
+                const base_rec = self.lookup.get(base_key) orelse return error.MissingAutohintBase;
+                try self.lookupPut(entry.key, base_rec);
+                try self.insertAutohintRecord(entry.key, base_rec.bands, knots);
+                return;
+            }
+        }
+
         const curves = entry.curves;
 
         if (curves.isEmpty()) {

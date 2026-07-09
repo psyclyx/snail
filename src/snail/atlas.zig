@@ -93,11 +93,19 @@ pub const Entry = struct {
     fill_rule: @import("target.zig").FillRule = .non_zero,
     extra_layers: []const Layer = &.{},
     composite_mode: CompositeMode = .source_over,
-    /// When set, the atlas also writes an autohint slab record (this entry's
-    /// base band entry + these knots) and remembers it in `autohint_lookup`,
-    /// so emit encodes a resolution-independent warped instance. `curves`
-    /// stays the shared unhinted base glyph. Mutually usable with `paint`.
+    /// When set, the atlas also writes an autohint slab record (the base
+    /// band entry + these knots) and remembers it in `autohint_lookup`, so
+    /// emit encodes a resolution-independent warped instance. Mutually
+    /// usable with `paint`.
     autohint: ?AutohintKnots = null,
+    /// For an autohint entry, the key of an already-inserted unhinted base
+    /// glyph whose curves+bands this warp samples. When set, the entry
+    /// places NO curves of its own (`curves` is ignored) — it aliases the
+    /// base record's placement — so N per-ppem warps over one glyph cost a
+    /// single curve copy, not N. The base key must be inserted earlier in
+    /// the same `from`/`extend` call or already present in the parent atlas.
+    /// Only meaningful together with `autohint`.
+    autohint_base: ?RecordKey = null,
 };
 
 pub const Layer = struct {
@@ -108,7 +116,7 @@ pub const Layer = struct {
 
 pub const CompositeMode = paint_mod.CompositeMode;
 
-pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{ RecordTooLargeForPage, NoPool };
+pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{ RecordTooLargeForPage, NoPool, MissingAutohintBase };
 
 pub const Atlas = struct {
     allocator: std.mem.Allocator,
@@ -610,6 +618,69 @@ test "extend dedups keys against existing atlas" {
     const old_rec = a.lookupRecord(k0).?;
     const new_rec = b.lookupRecord(k0).?;
     try testing.expectEqual(old_rec.curve_texel, new_rec.curve_texel);
+}
+
+test "autohint entry aliases a base glyph without copying curves" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var base_curves = try makeTestCurves(testing.allocator);
+    defer base_curves.deinit();
+
+    const base_key = record_key_mod.unhintedGlyph(0, 1);
+    // Two per-ppem warps over the one base glyph.
+    const warp_a = record_key_mod.hintedGlyph(0, 1, 12 * 64);
+    const warp_b = record_key_mod.hintedGlyph(0, 1, 16 * 64);
+    const knots = AutohintKnots{
+        .x = &.{ .{ .base = 0, .target = 0 }, .{ .base = 8, .target = 8 } },
+        .y = &.{ .{ .base = 0, .target = 0 }, .{ .base = 4, .target = 4 } },
+    };
+
+    var atlas = try Atlas.from(testing.allocator, pool, &.{
+        .{ .key = base_key, .curves = base_curves },
+        .{ .key = warp_a, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = base_key },
+        .{ .key = warp_b, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = base_key },
+    });
+    defer atlas.deinit();
+
+    // Three records, but the two warps alias the base placement, so only the
+    // base's curves were packed — a single page, base curve words only.
+    try testing.expectEqual(@as(u32, 3), atlas.recordCount());
+    try testing.expectEqual(@as(usize, 1), atlas.pageCount());
+
+    const base_rec = atlas.lookupRecord(base_key).?;
+    const a_rec = atlas.lookupRecord(warp_a).?;
+    const b_rec = atlas.lookupRecord(warp_b).?;
+    try testing.expectEqual(base_rec.curve_texel, a_rec.curve_texel);
+    try testing.expectEqual(base_rec.curve_texel, b_rec.curve_texel);
+    try testing.expectEqual(base_rec.curve_count, a_rec.curve_count);
+
+    // Each warp got its own autohint slab record.
+    try testing.expect(atlas.lookupAutohintRecord(warp_a) != null);
+    try testing.expect(atlas.lookupAutohintRecord(warp_b) != null);
+    try testing.expect(atlas.lookupAutohintRecord(base_key) == null);
+}
+
+test "autohint entry with a missing base key errors" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    const warp_key = record_key_mod.hintedGlyph(0, 1, 12 * 64);
+    const knots = AutohintKnots{
+        .x = &.{ .{ .base = 0, .target = 0 } },
+        .y = &.{ .{ .base = 0, .target = 0 } },
+    };
+    try testing.expectError(error.MissingAutohintBase, Atlas.from(testing.allocator, pool, &.{
+        .{ .key = warp_key, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = record_key_mod.unhintedGlyph(0, 99) },
+    }));
 }
 
 test "deinit releases pages back to the pool" {
