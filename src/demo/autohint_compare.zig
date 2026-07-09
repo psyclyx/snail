@@ -86,25 +86,39 @@ pub const Compare = struct {
         self.* = undefined;
     }
 
-    /// Build the full validation grid. `scratch` must outlive the atlas build
-    /// (the builder copies knots/curves in). Returns the picture; `self.atlas`
-    /// is extended with everything it references.
-    pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator) !helpers.Picture {
+    /// Device pixels per grid pixel. Hinting is a device-pixel operation:
+    /// grid ppems are logical sizes, but the warp must grid-fit to the real
+    /// framebuffer the GPU writes to, and glyphs must land on integer DEVICE
+    /// pens or the stems smear. On a fractional-scale HiDPI display, integer
+    /// logical pens map to fractional device pixels (52→78 but 69→103.5 at
+    /// 1.5×), which is exactly the "glyphs after the first sit on partial
+    /// boundaries" artefact. Pass `framebuffer_h / logical_h`; the caller then
+    /// draws this pass with a device-pixel projection.
+    fn devEm(ppem: f32, px_scale: f32) f32 {
+        return @round(ppem * px_scale);
+    }
+
+    /// Build the full validation grid in DEVICE pixels (see `px_scale`).
+    /// `scratch` must outlive the atlas build (the builder copies knots/curves
+    /// in). Returns the picture; `self.atlas` is extended with everything it
+    /// references. Draw the resulting pass with an `ortho(0, fb_w, fb_h, 0)`
+    /// projection so device coordinates map 1:1 to framebuffer pixels.
+    pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32) !helpers.Picture {
         const shaped = try self.shape_cache.shape(&self.faces, sample_text, .{});
 
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
         // (ppem, mode). Ensure everything the grid references in one pass.
         const tags = try self.shape_cache.shape(&self.faces, "unautt", .{});
-        try self.ensureAll(scratch, shaped, tags);
+        try self.ensureAll(scratch, shaped, tags, px_scale);
 
         var refs: std.ArrayList(*const helpers.Picture) = .empty;
-        const left_tag: f32 = 8;
-        const left_sample: f32 = 52;
-        const tag_em: f32 = 12;
+        const left_tag: f32 = 8 * px_scale;
+        const left_sample: f32 = 52 * px_scale;
+        const tag_em: f32 = 12 * px_scale;
 
-        var y: f32 = 26;
+        var y: f32 = 26 * px_scale;
         for (grid_ppems) |ppem| {
-            const em: f32 = @round(ppem);
+            const em: f32 = devEm(ppem, px_scale);
             const ppem_26_6: u32 = @intFromFloat(em * 64.0);
             for (modes) |mode| {
                 const baseline = @round(y) + em;
@@ -121,9 +135,9 @@ pub const Compare = struct {
                 const row = try frame_alloc.create(helpers.Picture);
                 row.* = try self.renderRow(frame_alloc, shaped, mode, ppem_26_6, em, left_sample, baseline);
                 try refs.append(frame_alloc, row);
-                y += em * 1.32 + 3;
+                y += em * 1.32 + 3 * px_scale;
             }
-            y += 9;
+            y += 9 * px_scale;
         }
         return helpers.Picture.concat(frame_alloc, refs.items);
     }
@@ -202,7 +216,7 @@ pub const Compare = struct {
     /// (ppem-independent), plus auto-light records and TrueType-baked curves
     /// for every (sample glyph, ppem). Knots/TT curves live on `scratch`; the
     /// atlas copies them during `extend`.
-    fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText) !void {
+    fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
         var entries: std.ArrayList(snail.AtlasEntry) = .empty;
         defer entries.deinit(scratch);
 
@@ -217,9 +231,9 @@ pub const Compare = struct {
             }
         }
 
-        // Per-ppem auto + TrueType.
+        // Per-ppem auto + TrueType. Device ppem must match buildGrid's keys.
         for (grid_ppems) |ppem| {
-            const ppem_26_6: u32 = @intFromFloat(@round(ppem) * 64.0);
+            const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             for (shaped.glyphs) |g| {
                 if (g.font_id != self.font_id) continue;
 

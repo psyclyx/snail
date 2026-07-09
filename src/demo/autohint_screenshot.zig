@@ -34,7 +34,8 @@ pub fn main() !void {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
 
-    var text_picture = try compare.buildGrid(arena.allocator(), scratch.allocator());
+    // Headless render is 1:1 logical→device, so device px scale is 1.
+    var text_picture = try compare.buildGrid(arena.allocator(), scratch.allocator(), 1.0);
     defer text_picture.deinit();
 
     var empty_atlas = snail.Atlas.empty(allocator);

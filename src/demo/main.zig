@@ -1039,6 +1039,17 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
                 .coverage_transfer = .{ .exponent = 1.0 },
             },
         };
+        // The autohint validation grid is hinted, so it must render in DEVICE
+        // pixels: a device-pixel projection (framebuffer 1:1) plus a device
+        // grid layout, so integer pens stay integer on the real pixel grid.
+        // (The logical HUD projection would map integer logical pens to
+        // fractional device pixels on a fractional-scale display.)
+        const compare_px_scale = viewport_h / h;
+        const compare_draw_state = snail.DrawState{
+            .mvp = snail.Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1),
+            .surface = draw_state.surface,
+            .raster = hud_draw_state.raster,
+        };
         // Compose the cached unhinted text shapes with per-frame hinted
         // shapes (baseline-snapped against the current world→pixel) into
         // a fresh Picture in `content_arena`. Pan with hinting on no
@@ -1058,7 +1069,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         _ = compare_scratch.reset(.retain_capacity);
         const compare_before = compare.atlas.recordCount();
         var compare_picture = if (compare_on)
-            try compare.buildGrid(compare_arena.allocator(), compare_scratch.allocator())
+            try compare.buildGrid(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale)
         else
             try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture.deinit();
@@ -1093,7 +1104,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             passes_buf[pass_count] = .{
                 .atlases = &compare_atlases,
                 .pictures = &compare_pictures,
-                .draw_state = hud_draw_state,
+                .draw_state = compare_draw_state,
                 .dirty = compare_dirty,
             };
             pass_count += 1;
