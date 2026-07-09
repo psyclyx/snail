@@ -20,6 +20,7 @@ const snail = @import("snail");
 pub const UnhintedGlyphCache = @import("unhinted_glyph_cache.zig").UnhintedGlyphCache;
 pub const HintedGlyphCache = @import("hinted_glyph_cache.zig").HintedGlyphCache;
 pub const ShapedRunCache = @import("shaped_run_cache.zig").ShapedRunCache;
+pub const GlyphAtlasCache = @import("glyph_atlas_cache.zig").GlyphAtlasCache;
 pub const Picture = @import("picture.zig").Picture;
 pub const computePictureBBox = @import("picture.zig").computeBBox;
 
