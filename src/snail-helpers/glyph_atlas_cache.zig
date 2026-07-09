@@ -5,9 +5,17 @@
 //! unbounded glyph set (many scripts, sizes, dynamically loaded fonts) would
 //! otherwise fill the pool and hit `error.OutOfLayers`. This helper turns the
 //! fixed pool into a bounded cache: it retains the source for every resident
-//! record, and when an insert would overflow the pool it drops the
-//! least-recently-used records and rebuilds the atlas from the hot set — the
-//! recycled pages then back the new snapshot.
+//! record, and reclaims by dropping the least-recently-used records and
+//! rebuilding the atlas from the hot set — the recycled pages then back the
+//! new snapshot.
+//!
+//! Allocation is split so cost is predictable. `tryEnsure` is the steady-state
+//! path: it only extends the live snapshot (HAMT path-copy + one curve dup on a
+//! miss) and returns `error.OutOfLayers` rather than reclaiming — no hidden
+//! O(resident) burst. `compact(fraction)` is the ONLY thing that rebuilds, and
+//! it runs when the caller asks, at a frame boundary it owns. `ensure` is the
+//! convenience that does `tryEnsure` + compact-on-full for callers that don't
+//! care where the burst lands.
 //!
 //! This is compaction-as-eviction: the natural fit for the snapshot model,
 //! and the answer to "is a fixed pool enough for arbitrary apps" — the pool
@@ -52,15 +60,16 @@ const Stored = struct {
     }
 };
 
+/// Fraction of resident records the convenience `ensure` drops per compaction
+/// round when the pool overflows. Explicit callers pass their own to `compact`.
+const default_compact_fraction: f32 = 0.25;
+
 pub const GlyphAtlasCache = struct {
     allocator: Allocator,
     pool: *snail.PagePool,
     atlas: snail.Atlas,
     stored: std.AutoHashMapUnmanaged(RecordKey, Stored),
     clock: u64,
-    /// Fraction of resident records dropped per eviction round when the pool
-    /// overflows. Rounds repeat until the pending insert fits.
-    evict_fraction: f32,
 
     pub const InsertError = snail.Atlas.InsertError;
 
@@ -79,7 +88,6 @@ pub const GlyphAtlasCache = struct {
             .atlas = snail.Atlas.empty(allocator),
             .stored = .{},
             .clock = 0,
-            .evict_fraction = 0.25,
         };
     }
 
@@ -92,7 +100,7 @@ pub const GlyphAtlasCache = struct {
     }
 
     /// The current atlas snapshot to render from. Valid until the next
-    /// `ensure` that triggers a rebuild.
+    /// `compact` (or an `ensure` that has to compact) rebuilds it.
     pub fn atlasPtr(self: *const GlyphAtlasCache) *const snail.Atlas {
         return &self.atlas;
     }
@@ -116,33 +124,56 @@ pub const GlyphAtlasCache = struct {
         return rec;
     }
 
-    /// Ensure `entry.key` is resident, copying its curves/knots into the
-    /// cache. Evicts least-recently-used records (rebuilding the atlas from
-    /// the survivors) if the pool is full. Touches the key.
+    /// Steady-state insert. Extends the live snapshot in place; NEVER rebuilds
+    /// or evicts. Returns `error.OutOfLayers` when the pool is full so the
+    /// caller decides when to reclaim. Cost is bounded and predictable: a HAMT
+    /// path-copy plus one curve/knot dup on a miss, or an LRU touch on a hit —
+    /// no O(resident) burst hides here. Touches the key.
     ///
     /// `entry.autohint_base`, when set, must already be resident (insert the
     /// unhinted base before its per-ppem warps) — mirrors the atlas builder.
     /// Paint/composite fields on `entry` are ignored (see the module scope).
-    pub fn ensure(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!void {
+    pub fn tryEnsure(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!void {
         if (self.stored.getPtr(entry.key)) |s| {
             self.clock += 1;
             s.used = self.clock;
             return;
         }
-
         var stored = try self.cloneEntry(entry);
         errdefer stored.deinit(self.allocator);
+        try self.tryExtend(entry.key, &stored);
+    }
 
-        // Fast path: try to extend the live snapshot in place.
-        if (self.tryExtend(entry.key, &stored)) {
+    /// Reclaim capacity: drop ~`fraction` of the coldest resident records and
+    /// rebuild the atlas once from the survivors. This is the ONLY O(resident)
+    /// allocation burst in the cache, and it happens only when the caller asks,
+    /// at a frame boundary it chooses. Returns the number of records evicted
+    /// (0 = nothing was evictable — everything is a live autohint base). Bases
+    /// still referenced by a surviving warp are never dropped.
+    pub fn compact(self: *GlyphAtlasCache, fraction: f32) InsertError!usize {
+        const before = self.stored.count();
+        _ = self.evictColdest(fraction, null);
+        try self.rebuildWith(undefined, null);
+        return before - self.stored.count();
+    }
+
+    /// Convenience: `tryEnsure`, and on `OutOfLayers` `compact` and retry until
+    /// it fits (or nothing more can be evicted). This is the burst-bearing call
+    /// — a latency-sensitive caller uses `tryEnsure` + an explicit `compact`
+    /// instead so the O(resident) rebuild lands on a boundary it controls.
+    pub fn ensure(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!void {
+        // Keep the pending warp's base warm so a compaction round won't drop it.
+        if (entry.autohint_base) |b| self.touch(b);
+        while (true) {
+            self.tryEnsure(entry) catch |err| switch (err) {
+                error.OutOfLayers => {
+                    if (try self.compact(default_compact_fraction) == 0) return error.OutOfLayers;
+                    continue;
+                },
+                else => return err,
+            };
             return;
-        } else |err| switch (err) {
-            error.OutOfLayers => {}, // fall through to evict + rebuild
-            else => return err,
         }
-
-        // Pool is full: drop cold records and rebuild until the newcomer fits.
-        try self.evictAndInsert(entry.key, &stored);
     }
 
     pub fn stats(self: *const GlyphAtlasCache) Stats {
@@ -188,34 +219,10 @@ pub const GlyphAtlasCache = struct {
         stored.* = undefined; // ownership moved into the map
     }
 
-    /// Repeatedly evict the coldest records and rebuild until `new` fits. If
-    /// it can't (nothing left to evict, or `new` is too large for even an
-    /// empty pool), restore a consistent atlas from the survivors and
-    /// propagate the error — the cache never ends up with an atlas that
-    /// disagrees with `stored`.
-    fn evictAndInsert(self: *GlyphAtlasCache, new_key: RecordKey, new: *Stored) InsertError!void {
-        while (true) {
-            const progressed = self.evictColdest(new.autohint_base);
-            self.rebuildWith(new_key, new) catch |err| switch (err) {
-                error.OutOfLayers => {
-                    if (progressed) continue; // evict more and retry
-                    self.rebuildWith(undefined, null) catch {}; // restore survivors
-                    return err;
-                },
-                else => {
-                    self.rebuildWith(undefined, null) catch {};
-                    return err;
-                },
-            };
-            return;
-        }
-    }
-
-    /// Drop roughly `evict_fraction` of resident records, coldest first,
-    /// protecting any autohint base still referenced by a survivor (or by the
-    /// pending insert, via `protect_base`). Returns true if at least one
-    /// record was removed.
-    fn evictColdest(self: *GlyphAtlasCache, protect_base: ?RecordKey) bool {
+    /// Drop roughly `fraction` of resident records, coldest first, protecting
+    /// any autohint base still referenced by a survivor (or by a pending insert,
+    /// via `protect_base`). Returns true if at least one record was removed.
+    fn evictColdest(self: *GlyphAtlasCache, fraction: f32, protect_base: ?RecordKey) bool {
         const n = self.stored.count();
         if (n == 0) return false;
 
@@ -233,7 +240,7 @@ pub const GlyphAtlasCache = struct {
         }.lt);
 
         // Bases referenced by surviving autohint entries must not be evicted.
-        var want: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(n)) * self.evict_fraction));
+        var want: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(n)) * fraction));
         if (want == 0) want = 1;
 
         var removed: u32 = 0;
@@ -468,4 +475,43 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
         _ = cache.ensure(.{ .key = recordKey.unhintedGlyph(1, @intCast(px)), .curves = oc }) catch {};
     }
     try testing.expect(cache.contains(base_key));
+}
+
+test "tryEnsure surfaces OutOfLayers without evicting; compact reclaims" {
+    var font = try snail.Font.init(assets.dejavu_sans_mono);
+    const pool = try testPool(2); // tiny: fills after a handful of glyphs
+    defer pool.deinit();
+    var cache = GlyphAtlasCache.init(testing.allocator, pool);
+    defer cache.deinit();
+
+    var filled: u32 = 0;
+    var hit_full = false;
+    for ("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789") |ch| {
+        const gid = try font.glyphIndex(ch);
+        var c = try font.extractCurves(testing.allocator, testing.allocator, gid);
+        defer c.deinit();
+        cache.tryEnsure(.{ .key = recordKey.unhintedGlyph(0, gid), .curves = c }) catch |e| {
+            try testing.expectEqual(error.OutOfLayers, e);
+            hit_full = true;
+            break;
+        };
+        filled += 1;
+    }
+    // The pool is small enough that we must have hit the wall ...
+    try testing.expect(hit_full);
+    // ... and tryEnsure NEVER evicts: everything placed so far is still resident.
+    try testing.expectEqual(filled, cache.stats().resident);
+
+    // Explicit compaction is the only thing that reclaims; it reports the drop.
+    const before = cache.stats().resident;
+    const evicted = try cache.compact(0.25);
+    try testing.expect(evicted > 0);
+    try testing.expectEqual(before - @as(u32, @intCast(evicted)), cache.stats().resident);
+
+    // A fresh tryEnsure now fits without any implicit rebuild.
+    const gid = try font.glyphIndex('!');
+    var c = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer c.deinit();
+    try cache.tryEnsure(.{ .key = recordKey.unhintedGlyph(0, gid), .curves = c });
+    try testing.expect(cache.lookupRecord(recordKey.unhintedGlyph(0, gid)) != null);
 }
