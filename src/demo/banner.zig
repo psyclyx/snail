@@ -124,23 +124,27 @@ pub const Content = struct {
         for (self.hinted_runs) |run| {
             const ppem_px = @as(f32, @floatFromInt(run.ppem_26_6)) / 64.0;
             const scale: f32 = if (ppem_px > 0.0) run.placement.size / ppem_px else 1.0;
-            const baseline_world = snail.Vec2{ .x = run.placement.x, .y = run.placement.y };
-            const baseline = if (world_to_pixel) |w2p|
-                snail.snap.baseline(baseline_world, w2p)
-            else
-                baseline_world;
+            const baseline = snail.Vec2{ .x = run.placement.x, .y = run.placement.y };
             for (run.glyphs) |g| {
-                const pen_x = baseline.x + run.placement.size * g.x_offset;
-                const pen_y = baseline.y + run.placement.size * g.y_offset;
+                // Snap each glyph ORIGIN to an integer device pixel (not just
+                // the baseline) — grid-fit stems smear otherwise for every
+                // glyph after the first. Rounds the position, so kerning
+                // survives. This is `RunSnap.origins`; the whole run could use
+                // `helpers.placeRun` if it weren't merged into one buffer here.
+                const world = snail.Vec2{
+                    .x = baseline.x + run.placement.size * g.x_offset,
+                    .y = baseline.y + run.placement.size * g.y_offset,
+                };
+                const origin = if (world_to_pixel) |w2p| snail.snap.origin(world, w2p) else world;
                 buf[cursor] = .{
                     .key = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, run.ppem_26_6),
                     .local_transform = .{
                         .xx = scale,
                         .xy = 0,
-                        .tx = pen_x,
+                        .tx = origin.x,
                         .yx = 0,
                         .yy = -scale,
-                        .ty = pen_y,
+                        .ty = origin.y,
                     },
                     .local_color = run.color,
                 };
