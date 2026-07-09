@@ -1700,14 +1700,6 @@ fn jumpTarget(code_len: usize, op_pc: usize, offset: i32) Error!usize {
     return @intCast(target);
 }
 
-fn skipToElseOrEif(code: []const u8, pc: usize) Error!usize {
-    return skipStructured(code, pc, true);
-}
-
-fn skipToEif(code: []const u8, pc: usize) Error!usize {
-    return skipStructured(code, pc, false);
-}
-
 /// Per-opcode inline-operand byte count. Positive values are a constant
 /// number of bytes to skip; negative sentinels mean "consult slow path".
 /// Built at comptime so the skip loop is a single table lookup per op.

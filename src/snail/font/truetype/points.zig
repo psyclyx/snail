@@ -97,15 +97,6 @@ pub const Zone = struct {
         return .{ .points = buffer };
     }
 
-    pub fn coordinate(self: *const Zone, direction: Direction, point: u32, original: bool) Error!i32 {
-        const p = try self.get(point);
-        const value = switch (direction.axis) {
-            .x => if (original) p.ox else p.x,
-            .y => if (original) p.oy else p.y,
-        };
-        return applySign(value, direction.sign);
-    }
-
     pub fn coordinateVector(self: *const Zone, vector: tt_graphics.Vector, point: u32, original: bool) Error!i32 {
         return projectPoint(try self.get(point), vector, original);
     }
@@ -128,14 +119,6 @@ pub const Zone = struct {
         p.x = addWrap(p.x, move_delta.x);
         p.y = addWrap(p.y, move_delta.y);
         touchPointVector(p, freedom);
-    }
-
-    pub fn setOriginalCoordinate(self: *Zone, direction: Direction, point: u32, target: i32) Error!void {
-        const p = try self.getMutable(point);
-        switch (direction.axis) {
-            .x => p.ox = applySign(target, direction.sign),
-            .y => p.oy = applySign(target, direction.sign),
-        }
     }
 
     pub fn setOriginalCoordinateVector(self: *Zone, projection: tt_graphics.Vector, point: u32, target: i32) Error!void {
@@ -216,10 +199,6 @@ pub const Zone = struct {
                 try self.shiftProjectedVector(projection, freedom, i, distance);
             }
         }
-    }
-
-    pub fn touch(self: *Zone, freedom: Direction, point: u32) Error!void {
-        touchPoint(try self.getMutable(point), freedom.axis);
     }
 
     pub fn untouch(self: *Zone, vector: tt_graphics.Vector, point: u32) Error!void {

@@ -24,16 +24,6 @@ pub const SizeRequest = struct {
     cvt_headroom: u32 = 0,
 };
 
-/// Deprecated — kept only for callers that haven't migrated. With a unified
-/// CVT (FreeType-style projection-aware scaling), the axis selection at
-/// context-creation time no longer affects CVT storage. Pass `.x` or `.y`
-/// to seed the initial projection vector; the choice only impacts the
-/// graphics state's starting axis, not which CVT buffer is used.
-pub const CvtAxis = enum {
-    x,
-    y,
-};
-
 pub const ExecutionBufferSizes = struct {
     stack: usize,
     storage: usize,
@@ -294,7 +284,6 @@ pub const SizeState = struct {
     pub fn executionContext(
         self: *SizeState,
         buffers: ExecutionBuffers,
-        axis: CvtAxis,
         limits: tt_exec.Limits,
     ) tt_exec.Context {
         var context = tt_exec.Context.init(.{
@@ -303,10 +292,7 @@ pub const SizeState = struct {
             .cvt = self.cvt,
         }, limits);
         context.setEnvironment(self.environment());
-        switch (axis) {
-            .x => context.graphics.setVectorToAxis(.x, .both),
-            .y => context.graphics.setVectorToAxis(.y, .both),
-        }
+        context.graphics.setVectorToAxis(.x, .both);
         return context;
     }
 
@@ -522,7 +508,8 @@ test "size state initializes execution context over caller buffers" {
     var context = size.executionContext(.{
         .stack = &stack,
         .storage = &storage,
-    }, .y, .{});
+    }, .{});
+    context.graphics.setVectorToAxis(.y, .both);
 
     try context.execute(&.{ 0xB1, 0, 50, 0x70, 0x4B });
     // CVT is stored in 26.6 px at the base ppem (max of x and y); for
@@ -546,7 +533,7 @@ test "control program snapshot restores glyph-start state" {
     var context = size.executionContext(.{
         .stack = &stack,
         .storage = &storage,
-    }, .x, .{});
+    }, .{});
     context.graphics.round_mode = .off;
 
     var snapshot_storage: [3]i32 = undefined;
@@ -589,7 +576,7 @@ test "program executes bundled font and control programs" {
     var context = size.executionContext(.{
         .stack = stack,
         .storage = storage,
-    }, .x, .{});
+    }, .{});
     context.setFunctions(&functions);
     context.setZones(&zones);
 
@@ -646,7 +633,7 @@ test "program executes bundled simple glyph instructions" {
     var context = size.executionContext(.{
         .stack = stack,
         .storage = storage,
-    }, .x, .{});
+    }, .{});
     context.setFunctions(&functions);
     context.setZones(&zones);
 
@@ -701,7 +688,7 @@ test "size state skips glyph instructions when grid fitting is disabled" {
     var context = size.executionContext(.{
         .stack = &stack,
         .storage = &storage,
-    }, .x, .{});
+    }, .{});
 
     _ = try size.executeGlyphZone(
         &context,

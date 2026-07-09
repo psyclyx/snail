@@ -1,18 +1,13 @@
-//! `auto_light` GlyphCurves producer — the CPU-baked path.
+//! `auto_light` warp-knot producer.
 //!
-//! Analogue of `HintVm.hintGlyph`: given a glyph and a ppem it returns a
-//! standard `GlyphCurves` (pixel-space, translate-only render), so it drops
-//! straight into the existing hinted text pipeline — same atlas key
-//! namespace, same `hintedShapedRunPicture` builder, same shaders. The only
-//! difference from the TrueType path is HOW the outline is grid-fitted: this
-//! runs the resolution-independent edge analysis + warp instead of the TT
-//! bytecode VM, so it works on any outline (incl. unhinted / CFF) uniformly.
-//!
-//! This is the "validate the look through the real pipeline" path from the
-//! de-risking plan. It re-warps per ppem (the analysis is cached, the warp is
-//! cheap); the eventual shipping path moves the warp into the shader so no
-//! per-ppem curves are baked at all. Same warp math (`warp.zig`), so what you
-//! see here is what the shader targets. See [[project_snail]].
+//! Given a glyph and a ppem, `glyphKnots` runs the resolution-independent
+//! edge analysis + blue-zone hinting and returns the per-axis warp `Knot`s
+//! that grid-fit the outline. Those knots are packed into an `autohint` atlas
+//! record (aliasing the shared unhinted base curves) and applied in the shader
+//! at sample time — no per-ppem curves are baked. The grid-fit is HOW this
+//! differs from the TrueType path (`HintVm`): resolution-independent edge
+//! analysis + warp (`warp.zig`) instead of the TT bytecode VM, so it works on
+//! any outline (incl. unhinted / CFF) uniformly. See [[project_autohint]].
 
 const std = @import("std");
 
@@ -22,16 +17,9 @@ const warp = @import("warp.zig");
 const outline = @import("../truetype/outline.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
-const bezier = @import("../../math/bezier.zig");
-const curves_mod = @import("../../atlas/curves.zig");
-const curve_tex = @import("../../render/format/curve_texture.zig");
-const band_tex = @import("../../render/format/band_texture.zig");
 
 const Allocator = std.mem.Allocator;
 const Vec2 = @import("../../math/vec.zig").Vec2;
-const CurveSegment = bezier.CurveSegment;
-const BBox = bezier.BBox;
-const GlyphCurves = curves_mod.GlyphCurves;
 
 /// Owns the ppem-independent analysis inputs for one font: the parsed
 /// program (outlines) and the derived blue zones. Cheap to keep alongside a
@@ -92,103 +80,8 @@ pub const AutoLight = struct {
         self.* = undefined;
     }
 
-    /// Produce grid-fitted curves for `glyph_id` at `ppem_26_6` (26.6 px).
-    /// `allocator` owns the result; `scratch` holds intermediates. Empty
-    /// glyphs return `GlyphCurves.empty`.
-    pub fn produce(
-        self: *AutoLight,
-        allocator: Allocator,
-        scratch: Allocator,
-        glyph_id: u16,
-        ppem_26_6: u32,
-    ) !GlyphCurves {
-        const ppem_px = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
-        const upm: f32 = @floatFromInt(self.font.units_per_em);
-        const px_per_unit = if (upm > 0) ppem_px / upm else 0;
-
-        // Resolve the glyph to a single flat outline: a compound (accented
-        // letters like é/ñ, which reference a base glyph + a mark glyph) is
-        // composed into one point/contour set; a simple glyph flattens to
-        // itself. Analysis and the warp then treat every glyph uniformly.
-        var pts: std.ArrayList(outline.Point) = .empty;
-        defer pts.deinit(scratch);
-        var contours: std.ArrayList(outline.ContourRange) = .empty;
-        defer contours.deinit(scratch);
-        try flattenGlyph(scratch, &self.program, glyph_id, &pts, &contours, 0);
-        if (pts.items.len == 0) return GlyphCurves.empty(allocator);
-
-        // Build the warp knots for both axes (FUnits).
-        var y_buf: [warp.max_knots]warp.Knot = undefined;
-        var x_buf: [warp.max_knots]warp.Knot = undefined;
-        var y_knots: ?[]const warp.Knot = null;
-        var x_knots: ?[]const warp.Knot = null;
-        {
-            const counts = try self.fillKnots(scratch, pts.items, contours.items, px_per_unit, &x_buf, &y_buf);
-            if (counts.ny > 0) y_knots = y_buf[0..counts.ny];
-            if (counts.nx > 0) x_knots = x_buf[0..counts.nx];
-        }
-
-        // Flatten every contour to pixel-space segments, warping first.
-        var segs: std.ArrayList(CurveSegment) = .empty;
-        defer segs.deinit(scratch);
-        var bbox = BBox{ .min = .{ .x = 0, .y = 0 }, .max = .{ .x = 0, .y = 0 } };
-        var have_bbox = false;
-
-        for (contours.items) |c| {
-            if (c.end <= c.start) continue;
-            const quads = try outline.contourToCurves(scratch, pts.items[c.start..c.end], 1.0);
-            defer scratch.free(quads);
-            for (quads) |q| {
-                const pq = bezier.QuadBezier{
-                    .p0 = warpScale(q.p0, x_knots, y_knots, px_per_unit),
-                    .p1 = warpScale(q.p1, x_knots, y_knots, px_per_unit),
-                    .p2 = warpScale(q.p2, x_knots, y_knots, px_per_unit),
-                };
-                accumBBox(&bbox, &have_bbox, pq);
-                try segs.append(scratch, CurveSegment.fromQuad(pq));
-            }
-        }
-
-        if (segs.items.len == 0) return GlyphCurves.empty(allocator);
-
-        const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(scratch, segs.items, .zero);
-        defer scratch.free(prepared);
-        const curve_count: u16 = @intCast(prepared.len);
-        const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
-        errdefer allocator.free(curve_bytes);
-
-        const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = curve_count, .offset = 0 };
-        const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
-            allocator,
-            scratch,
-            segs.items,
-            segs.items.len,
-            bbox,
-            entry,
-            .zero,
-            true,
-            prepared,
-            null,
-        );
-        errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
-
-        return .{
-            .allocator = allocator,
-            .curve_bytes = curve_bytes,
-            .band_bytes = bd.data,
-            .curve_count = curve_count,
-            .h_band_count = bd.h_band_count,
-            .v_band_count = bd.v_band_count,
-            .band_scale_x = bd.band_scale_x,
-            .band_scale_y = bd.band_scale_y,
-            .band_offset_x = bd.band_offset_x,
-            .band_offset_y = bd.band_offset_y,
-            .bbox = bbox,
-        };
-    }
-
     /// Analyse both axes of a flattened outline and fill the caller's knot
-    /// buffers (FUnits). Shared by `produce` (baked) and `glyphKnots` (runtime).
+    /// buffers (FUnits). Backs `glyphKnots`.
     fn fillKnots(
         self: *AutoLight,
         scratch: Allocator,
@@ -330,101 +223,14 @@ fn appendSimple(
     }
 }
 
-fn warpScale(p: Vec2, x_knots: ?[]const warp.Knot, y_knots: ?[]const warp.Knot, px_per_unit: f32) Vec2 {
-    const x = if (x_knots) |k| warp.forwardWarp(k, p.x) else p.x;
-    const y = if (y_knots) |k| warp.forwardWarp(k, p.y) else p.y;
-    return .{ .x = x * px_per_unit, .y = y * px_per_unit };
-}
-
-fn accumBBox(bbox: *BBox, have: *bool, q: bezier.QuadBezier) void {
-    inline for (.{ q.p0, q.p1, q.p2 }) |p| {
-        if (!have.*) {
-            bbox.* = .{ .min = p, .max = p };
-            have.* = true;
-        } else {
-            bbox.min = .{ .x = @min(bbox.min.x, p.x), .y = @min(bbox.min.y, p.y) };
-            bbox.max = .{ .x = @max(bbox.max.x, p.x), .y = @max(bbox.max.y, p.y) };
-        }
-    }
-}
-
 // ── tests ────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
 const assets = @import("assets");
-
-test "auto-light produces non-empty curves that round-trip through an atlas" {
-    const atlas_mod = @import("../../atlas.zig");
-    const record_key_mod = @import("../../atlas/record_key.zig");
-
-    var al = try AutoLight.init(testing.allocator, assets.dejavu_sans_mono);
-    defer al.deinit();
-
-    const ppem_26_6: u32 = 13 * 64;
-    const gid = try al.font.glyphIndex('e');
-
-    var curves = try al.produce(testing.allocator, testing.allocator, gid, ppem_26_6);
-    defer curves.deinit();
-
-    try testing.expect(curves.curve_count > 0);
-    try testing.expect(curves.curve_bytes.len > 0);
-    try testing.expect(curves.band_bytes.len > 0);
-    try testing.expect(curves.h_band_count > 0);
-
-    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 2,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 14,
-    });
-    defer pool.deinit();
-
-    const key = record_key_mod.hintedGlyph(0, gid, ppem_26_6);
-    var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
-    defer atlas.deinit();
-
-    const rec = atlas.lookupRecord(key) orelse return error.MissingRecord;
-    try testing.expect(rec.curve_count == curves.curve_count);
-}
-
-test "auto-light renders compound (accented) glyphs, not blank" {
-    var al = try AutoLight.init(testing.allocator, assets.dejavu_sans_mono);
-    defer al.deinit();
-
-    // é/ñ are compound glyphs (base letter + accent). They must flatten and
-    // produce curves rather than falling through to empty.
-    for ([_]u21{ 0x00E9, 0x00F1 }) |cp| {
-        const gid = try al.font.glyphIndex(cp);
-        var topo = try al.program.loadGlyphTopology(testing.allocator, gid);
-        const is_compound = topo == .compound;
-        topo.deinit();
-        try testing.expect(is_compound);
-
-        var curves = try al.produce(testing.allocator, testing.allocator, gid, 14 * 64);
-        defer curves.deinit();
-        // Base letter + accent -> more curves than the bare base 'e' (21).
-        try testing.expect(curves.curve_count > 21);
-    }
-}
 
 test "auto-light derives non-zero standard stem widths" {
     var al = try AutoLight.init(testing.allocator, assets.dejavu_sans_mono);
     defer al.deinit();
     try testing.expect(al.std_x > 0);
     try testing.expect(al.std_y > 0);
-}
-
-test "auto-light grid-fits the x-height flat top to a pixel boundary" {
-    var al = try AutoLight.init(testing.allocator, assets.dejavu_sans_mono);
-    defer al.deinit();
-
-    // At 13px the top of a flat lowercase should sit on (or within a hair
-    // of) an integer pixel row once warped. Compare bbox top of 'x'.
-    const ppem_26_6: u32 = 13 * 64;
-    const gid = try al.font.glyphIndex('x');
-    var curves = try al.produce(testing.allocator, testing.allocator, gid, ppem_26_6);
-    defer curves.deinit();
-
-    const top_px = curves.bbox.max.y; // pixel space
-    const frac = @abs(top_px - @round(top_px));
-    try testing.expect(frac < 0.12);
 }

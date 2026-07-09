@@ -166,7 +166,6 @@ pub const Gl33BackendCache = @import("render/backend/gl/backend_cache.zig").Gl33
 pub const Gl44BackendCache = @import("render/backend/gl/backend_cache.zig").Gl44BackendCache;
 pub const Gles30BackendCache = @import("render/backend/gl/backend_cache.zig").Gles30BackendCache;
 pub const VulkanBackendCache = @import("render/backend/vulkan/backend_cache.zig").VulkanBackendCache;
-pub const VulkanBackendCachePipelineShape = @import("render/backend/vulkan/backend_cache.zig").PipelineShape;
 
 pub const Path = @import("path.zig").Path;
 pub const coverage = @import("coverage.zig");

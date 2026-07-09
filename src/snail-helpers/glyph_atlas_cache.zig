@@ -152,8 +152,8 @@ pub const GlyphAtlasCache = struct {
     /// still referenced by a surviving warp are never dropped.
     pub fn compact(self: *GlyphAtlasCache, fraction: f32) InsertError!usize {
         const before = self.stored.count();
-        _ = self.evictColdest(fraction, null);
-        try self.rebuildWith(undefined, null);
+        self.evictColdest(fraction);
+        try self.rebuild();
         return before - self.stored.count();
     }
 
@@ -226,18 +226,17 @@ pub const GlyphAtlasCache = struct {
     }
 
     /// Drop roughly `fraction` of resident records, coldest first, protecting
-    /// any autohint base still referenced by a survivor (or by a pending insert,
-    /// via `protect_base`). Returns true if at least one record was removed.
-    fn evictColdest(self: *GlyphAtlasCache, fraction: f32, protect_base: ?RecordKey) bool {
+    /// any autohint base still referenced by a survivor.
+    fn evictColdest(self: *GlyphAtlasCache, fraction: f32) void {
         const n = self.stored.count();
-        if (n == 0) return false;
+        if (n == 0) return;
 
         // Collect (used, key) and sort ascending by recency.
         var list = std.ArrayList(struct { used: u64, key: RecordKey }).empty;
         defer list.deinit(self.allocator);
         var it = self.stored.iterator();
         while (it.next()) |kv| {
-            list.append(self.allocator, .{ .used = kv.value_ptr.used, .key = kv.key_ptr.* }) catch return false;
+            list.append(self.allocator, .{ .used = kv.value_ptr.used, .key = kv.key_ptr.* }) catch return;
         }
         std.mem.sort(@TypeOf(list.items[0]), list.items, {}, struct {
             fn lt(_: void, a: @TypeOf(list.items[0]), b: @TypeOf(list.items[0])) bool {
@@ -253,13 +252,11 @@ pub const GlyphAtlasCache = struct {
         var i: usize = 0;
         while (i < list.items.len and removed < want) : (i += 1) {
             const key = list.items[i].key;
-            if (protect_base) |b| if (b.eql(key)) continue; // base of the pending warp
             if (self.isReferencedBase(key)) continue; // keep bases of live warps
             var s = self.stored.fetchRemove(key).?.value;
             s.deinit(self.allocator);
             removed += 1;
         }
-        return removed > 0;
     }
 
     /// Is `key` the autohint base of some resident (non-evicted) warp record?
@@ -273,12 +270,12 @@ pub const GlyphAtlasCache = struct {
         return false;
     }
 
-    /// Rebuild the atlas from all resident records, plus `extra` when given,
-    /// ordered so autohint bases (always non-autohint entries) precede their
-    /// dependents. On success `extra` is moved into the resident map. On
-    /// failure the old snapshot is already gone (its pages had to recycle into
-    /// the rebuild), so callers restore via a second `rebuildWith(_, null)`.
-    fn rebuildWith(self: *GlyphAtlasCache, extra_key: RecordKey, extra: ?*Stored) InsertError!void {
+    /// Rebuild the atlas from all resident records, ordered so autohint bases
+    /// (always non-autohint entries) precede their dependents. On failure the
+    /// old snapshot is already gone (its pages recycled into the rebuild), so
+    /// the atlas is left empty; `compact` is the only caller and surfaces the
+    /// error.
+    fn rebuild(self: *GlyphAtlasCache) InsertError!void {
         var entries = std.ArrayList(snail.AtlasEntry).empty;
         defer entries.deinit(self.allocator);
 
@@ -287,18 +284,15 @@ pub const GlyphAtlasCache = struct {
         while (it.next()) |kv| {
             if (!kv.value_ptr.isAutohint()) try entries.append(self.allocator, storedEntry(kv.key_ptr.*, kv.value_ptr.*));
         }
-        if (extra) |e| if (!e.isAutohint()) try entries.append(self.allocator, storedEntry(extra_key, e.*));
         it = self.stored.iterator();
         while (it.next()) |kv| {
             if (kv.value_ptr.isAutohint()) try entries.append(self.allocator, storedEntry(kv.key_ptr.*, kv.value_ptr.*));
         }
-        if (extra) |e| if (e.isAutohint()) try entries.append(self.allocator, storedEntry(extra_key, e.*));
 
         // Drop the old snapshot first so its pages recycle into the rebuild.
         self.atlas.deinit();
         self.atlas = snail.Atlas.empty(self.allocator);
         self.atlas = try snail.Atlas.from(self.allocator, self.pool, entries.items);
-        if (extra) |e| self.commit(extra_key, e);
     }
 
     fn cloneEntry(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!Stored {

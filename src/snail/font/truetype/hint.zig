@@ -195,7 +195,7 @@ pub const HintMachine = struct {
         if (self.cvt_work.len < size.cvt.len) self.cvt_work = try self.allocator.realloc(self.cvt_work, size.cvt.len);
 
         // fpgm defines functions; prep scales/writes CVT+storage+graphics.
-        var context = size.executionContext(.{ .stack = self.stack, .storage = storage }, .x, .{});
+        var context = size.executionContext(.{ .stack = self.stack, .storage = storage }, .{});
         context.setSkipCache(&self.skip_cache);
         context.setFunctions(&functions);
         context.setZones(&self.zones);
@@ -479,7 +479,7 @@ pub const HintMachine = struct {
     ) !GlyphHint {
         // TT-execution points are in 26.6 fixed-point pixel coordinates at
         // the requested ppem. Scale by 1/64 to land in floating-point pixel
-        // space, which is what `hintedShapedRunPicture` (and the rest of
+        // space, which is what `placeRun` (and the rest of
         // the snail rendering pipeline) expects: hinted glyphs render
         // through a translate-only transform with no em scaling.
         const px_scale: f32 = 1.0 / 64.0;
