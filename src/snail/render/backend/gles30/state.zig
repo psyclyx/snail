@@ -233,7 +233,7 @@ pub const Gles30TextState = struct {
         const n = seg.shape_count;
         const m = seg.override_count;
         if (n == 0 or m == 0) return;
-        const WORDS_PER_OVERRIDE: usize = 8;
+        const WORDS_PER_OVERRIDE: usize = vertex.WORDS_PER_OVERRIDE;
         const expected = @as(usize, n) * vertex.WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
         if (seg_words.len != expected) return error.MalformedSegment;
 

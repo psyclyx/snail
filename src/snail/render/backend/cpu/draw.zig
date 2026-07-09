@@ -30,7 +30,7 @@ pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
 const WORDS_PER_INSTANCE: usize = vertex.WORDS_PER_INSTANCE;
-const WORDS_PER_OVERRIDE: usize = 8;
+const WORDS_PER_OVERRIDE: usize = vertex.WORDS_PER_OVERRIDE;
 
 pub const DrawError = error{
     /// Segment references a `PagePool` no entry in `caches` covers.
