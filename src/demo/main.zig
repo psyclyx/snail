@@ -1048,7 +1048,13 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const compare_draw_state = snail.DrawState{
             .mvp = snail.Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1),
             .surface = draw_state.surface,
-            .raster = hud_draw_state.raster,
+            // Grayscale text-AA gamma for the hinting view: boost partial
+            // coverage so anti-aliased edges don't read as stark grey next to
+            // pixel-aligned (solid) edges. Solid strokes are unchanged (1^x=1).
+            .raster = .{
+                .subpixel_order = hud_draw_state.raster.subpixel_order,
+                .coverage_transfer = .{ .exponent = 0.55 },
+            },
         };
         // Compose the cached unhinted text shapes with per-frame hinted
         // shapes (baseline-snapped against the current world→pixel) into
