@@ -26,6 +26,18 @@ const Edge = analysis.Edge;
 
 pub const BlueKind = enum { top, bottom };
 
+/// Tuning for blue-zone derivation. Exposed rather than baked in — pick
+/// explicitly per the project's no-magic-thresholds rule.
+/// See [[feedback_no_magic_thresholds]].
+pub const Params = struct {
+    /// Clamp the overshoot to this em fraction. Real overshoot is ~1%; anything
+    /// larger means a stray descender/ascender point slipped into the reference
+    /// set. Defence in depth beyond the curated `rounds` strings.
+    max_overshoot_em: f32 = 0.03,
+
+    pub const default: Params = .{};
+};
+
 /// Which reference letters define a zone, and whether it's a top or bottom
 /// alignment. `flats` set the reference height; `rounds` (o, e, C, …) measure
 /// the overshoot past it, and stand in as the reference when no flat is found.
@@ -130,6 +142,7 @@ pub fn deriveLatin(
     allocator: Allocator,
     program: *const vm.Program,
     font: *const ttf.Font,
+    params: Params,
 ) !Blues {
     var zones: std.ArrayList(Zone) = .empty;
     errdefer zones.deinit(allocator);
@@ -143,7 +156,7 @@ pub fn deriveLatin(
             // is ~1%; anything larger means a stray descender/ascender point
             // slipped into the reference set. Defence in depth beyond the
             // curated `rounds` strings.
-            const max_over = 0.03 * @as(f32, @floatFromInt(font.units_per_em));
+            const max_over = params.max_overshoot_em * @as(f32, @floatFromInt(font.units_per_em));
             const shoot = std.math.clamp(acc.overshoot() orelse ref, ref - max_over, ref + max_over);
             try zones.append(allocator, .{ .pos = ref, .shoot = shoot, .kind = spec.kind });
         }
@@ -203,7 +216,7 @@ test "derive Latin blues orders baseline below x-height below cap" {
     const program = try vm.Program.init(assets.noto_sans_regular);
     const font = try ttf.Font.init(assets.noto_sans_regular);
 
-    var blues = try deriveLatin(testing.allocator, &program, &font);
+    var blues = try deriveLatin(testing.allocator, &program, &font, .{});
     defer blues.deinit();
 
     const em: f32 = @floatFromInt(blues.units_per_em);
@@ -232,7 +245,7 @@ test "derive Latin blues orders baseline below x-height below cap" {
 test "baseline overshoot is a sane magnitude, not a descender tail" {
     const program = try vm.Program.init(assets.noto_sans_regular);
     const font = try ttf.Font.init(assets.noto_sans_regular);
-    var blues = try deriveLatin(testing.allocator, &program, &font);
+    var blues = try deriveLatin(testing.allocator, &program, &font, .{});
     defer blues.deinit();
 
     const em: f32 = @floatFromInt(blues.units_per_em);
@@ -247,7 +260,7 @@ test "assign links H baseline and cap edges to blue zones" {
     const program = try vm.Program.init(assets.noto_sans_regular);
     const font = try ttf.Font.init(assets.noto_sans_regular);
 
-    var blues = try deriveLatin(testing.allocator, &program, &font);
+    var blues = try deriveLatin(testing.allocator, &program, &font, .{});
     defer blues.deinit();
 
     const gid = try font.glyphIndex('H');

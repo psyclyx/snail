@@ -41,7 +41,7 @@ pub const AutoLight = struct {
     pub fn init(allocator: Allocator, font_data: []const u8) !AutoLight {
         const program = try vm.Program.init(font_data);
         const font = try ttf.Font.init(font_data);
-        const blues = try blue_mod.deriveLatin(allocator, &program, &font);
+        const blues = try blue_mod.deriveLatin(allocator, &program, &font, .{});
         var self: AutoLight = .{ .allocator = allocator, .program = program, .font = font, .blues = blues };
         self.std_x = self.deriveStandardWidth(.x, "Hnmurbdpq");
         self.std_y = self.deriveStandardWidth(.y, "EFHTLZ");
@@ -96,11 +96,11 @@ pub const AutoLight = struct {
         self.blues.assignEdges(ay.edges, self.blue_tol_em);
         var zbuf: [warp.max_knots]warp.BlueZone = undefined;
         const zones = self.blues.warpZones(&zbuf);
-        const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, y_buf);
+        const ny = warp.buildKnots(ay.edges, zones, px_per_unit, self.std_y, .{}, y_buf);
 
         var ax = try analysis.analyzeGlyph(scratch, pts, contours, self.font.units_per_em, self.params, .x);
         defer ax.deinit();
-        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, x_buf);
+        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, .{}, x_buf);
         return .{ .nx = nx, .ny = ny };
     }
 

@@ -57,38 +57,44 @@ pub const Sample = struct {
     inv_slope: f32,
 };
 
+/// Tuning for the grid-fit warp. Like `analysis.Params`, these heuristic
+/// thresholds are exposed rather than baked in — pick explicitly per the
+/// project's no-magic-thresholds rule. See [[feedback_no_magic_thresholds]].
+pub const Params = struct {
+    /// Fraction of the standard width within which a stem is considered "the
+    /// same weight" and pulled to it. Wide enough to unify normal-weight
+    /// stems, tight enough to leave genuinely bold/thin strokes on their own
+    /// measured width.
+    std_snap_ratio: f32 = 0.4,
+    /// Below this scaled overshoot (px), round apexes collapse onto the flat
+    /// reference — at small ppem a fractional-pixel overshoot just blurs the
+    /// line and makes round glyphs look mis-aligned, so it's suppressed. Above
+    /// it the overshoot is kept (optically correct at larger sizes).
+    overshoot_min_px: f32 = 0.5,
+    /// A stem is width-hinted (snapped to a whole pixel) only while its natural
+    /// width is below this many pixels. Below ~here a 1px snap sharpens thin
+    /// stems where AA can't; above it, snapping just over/under-thickens the
+    /// stem relative to the glyph's curves, so we leave it natural. This is
+    /// what makes hinting a small-size tool — it tapers off as the glyph grows.
+    stem_hint_max_px: f32 = 1.6,
+
+    pub const default: Params = .{};
+};
+
 fn snap(v: f32, px_per_unit: f32) f32 {
     if (px_per_unit <= 0) return v;
     return @round(v * px_per_unit) / px_per_unit;
 }
 
-/// Fraction of the standard width within which a stem is considered "the same
-/// weight" and pulled to it. Wide enough to unify normal-weight stems, tight
-/// enough to leave genuinely bold/thin strokes on their own measured width.
-const std_snap_ratio: f32 = 0.4;
-
-fn standardizeWidth(raw: f32, std_width: f32) f32 {
+fn standardizeWidth(raw: f32, std_width: f32, std_snap_ratio: f32) f32 {
     if (std_width > 0 and @abs(raw - std_width) <= std_snap_ratio * std_width) return std_width;
     return raw;
 }
 
-/// Below this scaled overshoot, round apexes collapse onto the flat reference
-/// — at small ppem a fractional-pixel overshoot just blurs the line and makes
-/// round glyphs look mis-aligned, so it's suppressed. Above it the overshoot
-/// is kept (optically correct at larger sizes).
-const overshoot_min_px: f32 = 0.5;
-
-/// A stem is width-hinted (snapped to a whole pixel) only while its natural
-/// width is below this many pixels. Below ~here a 1px snap sharpens thin stems
-/// where AA can't; above it, snapping just over/under-thickens the stem
-/// relative to the glyph's curves, so we leave it natural. This is what makes
-/// hinting a small-size tool — it tapers off as the glyph grows.
-const stem_hint_max_px: f32 = 1.6;
-
 /// Grid-fitted target for one edge: its own snapped position, or — when
 /// blue-linked — the shared fitted reference, plus the overshoot when the
 /// edge is a round apex and the overshoot survives the small-size cut-off.
-fn blueTarget(e: Edge, blues: []const BlueZone, px_per_unit: f32) f32 {
+fn blueTarget(e: Edge, blues: []const BlueZone, px_per_unit: f32, overshoot_min_px: f32) f32 {
     if (e.blue < 0 or @as(usize, @intCast(e.blue)) >= blues.len) return snap(e.pos, px_per_unit);
     const b = blues[@intCast(e.blue)];
     const ref_fit = snap(b.ref, px_per_unit);
@@ -110,10 +116,12 @@ pub fn buildKnots(
     blues: []const BlueZone,
     px_per_unit: f32,
     /// Font's dominant stem width for this axis (FUnits, 0 = disabled). Stems
-    /// within `std_snap_ratio` of it snap to a single shared pixel width so
-    /// the whole run reads as one even weight instead of some stems rounding
+    /// within `params.std_snap_ratio` of it snap to a single shared pixel width
+    /// so the whole run reads as one even weight instead of some stems rounding
     /// to 1px and others to 2px.
     std_width: f32,
+    /// Heuristic thresholds for the grid-fit (`.{}` = tuned Latin defaults).
+    params: Params,
     out: []Knot,
 ) usize {
     const n = edges.len;
@@ -125,7 +133,7 @@ pub fn buildKnots(
     // reference (so every glyph's baseline/x-height agree), with overshoot for
     // round apexes; everything else snaps to its own grid line.
     var target: [max_knots]f32 = undefined;
-    for (edges, 0..) |e, i| target[i] = blueTarget(e, blues, px_per_unit);
+    for (edges, 0..) |e, i| target[i] = blueTarget(e, blues, px_per_unit, params.overshoot_min_px);
 
     // Pass 2 — stems. A stem is width-hinted only when it's thin enough that
     // a whole-pixel snap is a legibility win (small ppem). Above that, snapping
@@ -137,8 +145,8 @@ pub fn buildKnots(
         if (!e.isStem()) continue;
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
-        const nominal = standardizeWidth(e.width, std_width);
-        if (nominal * px_per_unit >= stem_hint_max_px) continue; // too thick — natural
+        const nominal = standardizeWidth(e.width, std_width, params.std_snap_ratio);
+        if (nominal * px_per_unit >= params.stem_hint_max_px) continue; // too thick — natural
         const width_px = @max(@round(nominal * px_per_unit), 1.0);
         const width_units = width_px * grid;
         const lower_blue = edges[i].blue >= 0;
@@ -176,7 +184,7 @@ pub fn buildKnots(
         if (best < 0) continue;
         const j: usize = @intCast(best);
         if (hinted[j] or edges[j].blue >= 0) continue; // already an anchored knot
-        if (best_gap * px_per_unit >= stem_hint_max_px) continue; // thick — leave natural
+        if (best_gap * px_per_unit >= params.stem_hint_max_px) continue; // thick — leave natural
         const width_units = @max(@round(best_gap * px_per_unit), 1.0) * grid;
         target[j] = if (top) target[i] - width_units else target[i] + width_units;
         hinted[j] = true;
@@ -332,7 +340,7 @@ test "knots snap edges to the pixel grid and stay monotone" {
 
     var buf: [max_knots]Knot = undefined;
     // baseline + cap kept via blue link, stem pair kept as stems -> 4 knots.
-    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, .{}, &buf);
     try testing.expectEqual(@as(usize, 4), count);
 
     const knots = buf[0..count];
@@ -351,7 +359,7 @@ test "stem width quantises to a whole pixel, minimum one" {
     stemPair(&edges[0], &edges[1], 0, 1, 80);
 
     var buf: [max_knots]Knot = undefined;
-    _ = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    _ = buildKnots(&edges, &.{}, px_per_unit, 0, .{}, &buf);
     const width_px = (buf[1].target - buf[0].target) * px_per_unit;
     try testing.expectApproxEqAbs(@as(f32, 1.0), width_px, 1e-4);
 }
@@ -372,7 +380,7 @@ test "blue-linked edges snap to the shared rounded blue position" {
             return x.pos < y.pos;
         }
     }.lt);
-    _ = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    _ = buildKnots(&edges, &blues, px_per_unit, 0, .{}, &buf);
     const shared = snap(500, px_per_unit);
     // Both latch onto the same rounded reference (monotonic pass may lift the
     // second by one grid step, so check the lower one hit it exactly).
@@ -390,12 +398,12 @@ test "round apex overshoots at large ppem and flattens at small" {
 
     // ppem 100 (em 1000): overshoot 20 * 0.1 = 2px >= cutoff -> kept at ref+20.
     var big = [_]Edge{apex};
-    _ = buildKnots(&big, &blues, 100.0 / 1000.0, 0, &buf);
+    _ = buildKnots(&big, &blues, 100.0 / 1000.0, 0, .{}, &buf);
     try testing.expectApproxEqAbs(@as(f32, 520), buf[0].target, 1.0);
 
     // ppem 11: overshoot 20 * 0.011 = 0.22px < cutoff -> collapses to ref.
     var small = [_]Edge{apex};
-    _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, &buf);
+    _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, .{}, &buf);
     const ref_fit = @round(500.0 * (11.0 / 1000.0)) / (11.0 / 1000.0);
     try testing.expectApproxEqAbs(ref_fit, buf[0].target, 0.5);
 }
@@ -421,7 +429,7 @@ test "round apex on a blue keeps its stroke weight instead of compressing" {
     const blues = [_]BlueZone{.{ .ref = 548, .shoot = 560 }};
 
     var buf: [max_knots]Knot = undefined;
-    const n = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const n = buildKnots(&edges, &blues, px_per_unit, 0, .{}, &buf);
 
     // The companion (arch inner) is kept as its own knot ...
     try testing.expectEqual(@as(usize, 4), n);
@@ -436,7 +444,7 @@ test "inverse warp round-trips knot targets to their bases" {
     var edges = [_]Edge{ edge(0, -1), edge(300, -1), edge(380, 1), edge(700, 1) };
     stemPair(&edges[1], &edges[2], 1, 2, 80);
     var buf: [max_knots]Knot = undefined;
-    const count = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &.{}, px_per_unit, 0, .{}, &buf);
     const knots = buf[0..count];
 
     for (knots) |k| {
@@ -453,7 +461,7 @@ test "packed inverse warp matches the reference across the range" {
     stemPair(&edges[1], &edges[2], 1, 2, 80);
     const blues = [_]BlueZone{ .{ .ref = 0, .shoot = 0 }, .{ .ref = 700, .shoot = 700 } };
     var buf: [max_knots]Knot = undefined;
-    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, .{}, &buf);
     const knots = buf[0..count];
 
     var packed_buf: [1 + 2 * max_knots]f32 = undefined;
@@ -485,7 +493,7 @@ test "inverse warp is identity outside the edge range" {
 
 test "empty edge set yields identity" {
     var buf: [max_knots]Knot = undefined;
-    try testing.expectEqual(@as(usize, 0), buildKnots(&.{}, &.{}, 0.012, 0, &buf));
+    try testing.expectEqual(@as(usize, 0), buildKnots(&.{}, &.{}, 0.012, 0, .{}, &buf));
     const s = inverseWarp(&.{}, 123.0);
     try testing.expectApproxEqAbs(@as(f32, 123.0), s.base, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 1.0), s.inv_slope, 1e-6);
