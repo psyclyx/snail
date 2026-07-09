@@ -114,6 +114,15 @@ pub fn buildKnots(
     /// the whole run reads as one even weight instead of some stems rounding
     /// to 1px and others to 2px.
     std_width: f32,
+    /// Position-snap EVERY straight edge to the grid, not just width-hinted
+    /// stems. Set for the x-axis, where every edge is a genuine straight
+    /// vertical run (the analyser skips curves) so aligning them all keeps
+    /// verticals crisp and even — notably the lone left side of a round bowl
+    /// (the 'a'), which would otherwise stay soft next to the snapped stem.
+    /// Thick stems align on one edge and keep their natural width (no
+    /// quantise → no popping). Left false on the y-axis, where stray
+    /// horizontal apexes must interpolate (snapping them mangles e.g. '3').
+    snap_all_edges: bool,
     out: []Knot,
 ) usize {
     const n = edges.len;
@@ -138,7 +147,18 @@ pub fn buildKnots(
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
         const nominal = standardizeWidth(e.width, std_width);
-        if (nominal * px_per_unit >= stem_hint_max_px) continue; // too thick — natural
+        if (nominal * px_per_unit >= stem_hint_max_px) {
+            // Too thick to width-hint (would over-thicken vs the curves). On
+            // the x-axis still ALIGN it: snap the lower edge to the grid and
+            // carry the upper edge at the natural width, so the stem stays
+            // crisp and grid-locked without any width change.
+            if (snap_all_edges) {
+                target[j] = target[i] + e.width;
+                hinted[i] = true;
+                hinted[j] = true;
+            }
+            continue;
+        }
         const width_px = @max(@round(nominal * px_per_unit), 1.0);
         const width_units = width_px * grid;
         const lower_blue = edges[i].blue >= 0;
@@ -182,16 +202,17 @@ pub fn buildKnots(
         hinted[j] = true;
     }
 
-    // Pass 3 — keep only genuine features as knots: WIDTH-HINTED stem edges,
-    // blue-linked edges, and the weight-preserving companions from pass 2.5.
-    // Un-hinted thick stems, interior curve apexes, and stray edges are NOT
-    // snapped — they interpolate between the real knots (the same idea as
-    // TrueType's interpolate-untouched-points). This keeps baseline/x-height
-    // alignment at every size while stem-width crispness fades out as the
-    // glyph grows and AA already renders stems cleanly.
+    // Pass 3 — keep the genuine features as knots: WIDTH-HINTED stem edges,
+    // blue-linked edges, the weight-preserving companions from pass 2.5, and —
+    // when `snap_all_edges` — every straight edge (the x-axis case, so lone
+    // verticals like a bowl's left side align too). On the y-axis un-hinted
+    // thick stems, interior curve apexes, and stray edges are NOT snapped —
+    // they interpolate between the real knots (TrueType's interpolate-
+    // untouched-points), which keeps baseline/x-height alignment at every size
+    // without mangling round features.
     var count: usize = 0;
     for (edges, 0..) |e, i| {
-        const keep = hinted[i] or e.blue >= 0;
+        const keep = hinted[i] or e.blue >= 0 or (snap_all_edges and !e.round);
         if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
         count += 1;
@@ -332,7 +353,7 @@ test "knots snap edges to the pixel grid and stay monotone" {
 
     var buf: [max_knots]Knot = undefined;
     // baseline + cap kept via blue link, stem pair kept as stems -> 4 knots.
-    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, false, &buf);
     try testing.expectEqual(@as(usize, 4), count);
 
     const knots = buf[0..count];
@@ -351,7 +372,7 @@ test "stem width quantises to a whole pixel, minimum one" {
     stemPair(&edges[0], &edges[1], 0, 1, 80);
 
     var buf: [max_knots]Knot = undefined;
-    _ = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    _ = buildKnots(&edges, &.{}, px_per_unit, 0, false, &buf);
     const width_px = (buf[1].target - buf[0].target) * px_per_unit;
     try testing.expectApproxEqAbs(@as(f32, 1.0), width_px, 1e-4);
 }
@@ -372,7 +393,7 @@ test "blue-linked edges snap to the shared rounded blue position" {
             return x.pos < y.pos;
         }
     }.lt);
-    _ = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    _ = buildKnots(&edges, &blues, px_per_unit, 0, false, &buf);
     const shared = snap(500, px_per_unit);
     // Both latch onto the same rounded reference (monotonic pass may lift the
     // second by one grid step, so check the lower one hit it exactly).
@@ -390,12 +411,12 @@ test "round apex overshoots at large ppem and flattens at small" {
 
     // ppem 100 (em 1000): overshoot 20 * 0.1 = 2px >= cutoff -> kept at ref+20.
     var big = [_]Edge{apex};
-    _ = buildKnots(&big, &blues, 100.0 / 1000.0, 0, &buf);
+    _ = buildKnots(&big, &blues, 100.0 / 1000.0, 0, false, &buf);
     try testing.expectApproxEqAbs(@as(f32, 520), buf[0].target, 1.0);
 
     // ppem 11: overshoot 20 * 0.011 = 0.22px < cutoff -> collapses to ref.
     var small = [_]Edge{apex};
-    _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, &buf);
+    _ = buildKnots(&small, &blues, 11.0 / 1000.0, 0, false, &buf);
     const ref_fit = @round(500.0 * (11.0 / 1000.0)) / (11.0 / 1000.0);
     try testing.expectApproxEqAbs(ref_fit, buf[0].target, 0.5);
 }
@@ -421,7 +442,7 @@ test "round apex on a blue keeps its stroke weight instead of compressing" {
     const blues = [_]BlueZone{.{ .ref = 548, .shoot = 560 }};
 
     var buf: [max_knots]Knot = undefined;
-    const n = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const n = buildKnots(&edges, &blues, px_per_unit, 0, false, &buf);
 
     // The companion (arch inner) is kept as its own knot ...
     try testing.expectEqual(@as(usize, 4), n);
@@ -431,12 +452,43 @@ test "round apex on a blue keeps its stroke weight instead of compressing" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), stroke_px, 1e-3);
 }
 
+test "snap_all_edges aligns lone verticals and thick stems without popping" {
+    // Mimics the x-edges of 'a': a lone bowl-left vertical plus a thick right
+    // stem. On the x-axis every straight edge should become a grid-aligned
+    // knot so the bowl's left side is as crisp as the stem, and the thick stem
+    // must keep its natural width (aligned, not width-quantised).
+    const px_per_unit: f32 = 28.0 / 2048.0; // 28px em-2048: stem ~2.7px, "thick"
+    var edges = [_]Edge{
+        edge(200, 1), // lone bowl-left vertical
+        edge(850, 1), // stem lower
+        edge(1050, -1), // stem upper
+    };
+    stemPair(&edges[1], &edges[2], 1, 2, 200);
+
+    var buf: [max_knots]Knot = undefined;
+
+    // y-axis behaviour (snap_all_edges = false): the thick stem isn't
+    // width-hinted and the lone edge isn't a feature, so nothing is kept.
+    try testing.expectEqual(@as(usize, 0), buildKnots(&edges, &.{}, px_per_unit, 0, false, &buf));
+
+    // x-axis behaviour: all three edges kept and snapped.
+    const n = buildKnots(&edges, &.{}, px_per_unit, 0, true, &buf);
+    try testing.expectEqual(@as(usize, 3), n);
+    // Lone edge snapped to the grid.
+    try testing.expectApproxEqAbs(buf[0].target, snap(200, px_per_unit), 1e-4);
+    // Thick stem keeps its natural width (no quantise → no popping).
+    const width = buf[2].target - buf[1].target;
+    try testing.expectApproxEqAbs(@as(f32, 200), width, 1e-3);
+    // ... anchored on its lower edge's grid line.
+    try testing.expectApproxEqAbs(buf[1].target, snap(850, px_per_unit), 1e-4);
+}
+
 test "inverse warp round-trips knot targets to their bases" {
     const px_per_unit: f32 = 11.0 / 1000.0;
     var edges = [_]Edge{ edge(0, -1), edge(300, -1), edge(380, 1), edge(700, 1) };
     stemPair(&edges[1], &edges[2], 1, 2, 80);
     var buf: [max_knots]Knot = undefined;
-    const count = buildKnots(&edges, &.{}, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &.{}, px_per_unit, 0, false, &buf);
     const knots = buf[0..count];
 
     for (knots) |k| {
@@ -453,7 +505,7 @@ test "packed inverse warp matches the reference across the range" {
     stemPair(&edges[1], &edges[2], 1, 2, 80);
     const blues = [_]BlueZone{ .{ .ref = 0, .shoot = 0 }, .{ .ref = 700, .shoot = 700 } };
     var buf: [max_knots]Knot = undefined;
-    const count = buildKnots(&edges, &blues, px_per_unit, 0, &buf);
+    const count = buildKnots(&edges, &blues, px_per_unit, 0, false, &buf);
     const knots = buf[0..count];
 
     var packed_buf: [1 + 2 * max_knots]f32 = undefined;
@@ -485,7 +537,7 @@ test "inverse warp is identity outside the edge range" {
 
 test "empty edge set yields identity" {
     var buf: [max_knots]Knot = undefined;
-    try testing.expectEqual(@as(usize, 0), buildKnots(&.{}, &.{}, 0.012, 0, &buf));
+    try testing.expectEqual(@as(usize, 0), buildKnots(&.{}, &.{}, 0.012, 0, false, &buf));
     const s = inverseWarp(&.{}, 123.0);
     try testing.expectApproxEqAbs(@as(f32, 123.0), s.base, 1e-6);
     try testing.expectApproxEqAbs(@as(f32, 1.0), s.inv_slope, 1e-6);
