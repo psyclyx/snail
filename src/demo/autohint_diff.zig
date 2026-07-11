@@ -76,7 +76,9 @@ fn renderMode(
         .paths_picture = empty_pic,
         .text_picture = &pic,
     };
-    return harness.renderCpuToPixels(allocator, scene, W, H, .{});
+    // Match the demo's hinting-comparison view exactly (main.zig:1056) so the
+    // tool draws au/tt the same way the user sees them.
+    return harness.renderCpuToPixels(allocator, scene, W, H, .{ .coverage_exponent = 0.55 });
 }
 
 pub fn main() !void {
@@ -117,10 +119,18 @@ pub fn main() !void {
     const tt_ink = try allocator.alloc(u8, cell);
     defer allocator.free(tt_ink);
 
-    // Composite overlay (bottom-up, like the harness output): smallest ppem
-    // at the top of the image, so slot k counts down from the top.
+    // Three stacked composites (bottom-up, like the harness output; smallest
+    // ppem at the top so slot k counts down): plain grayscale au, plain
+    // grayscale tt, and the red/green overlay. The grayscale pair is what the
+    // demo actually shows — the overlay just localises where they differ.
+    const comp_au = try allocator.alloc(u8, cell * n * 4);
+    defer allocator.free(comp_au);
+    const comp_tt = try allocator.alloc(u8, cell * n * 4);
+    defer allocator.free(comp_tt);
     const composite = try allocator.alloc(u8, cell * n * 4);
     defer allocator.free(composite);
+    @memset(comp_au, 255);
+    @memset(comp_tt, 255);
     @memset(composite, 255);
 
     std.debug.print("auto_light vs TrueType disagreement (lower = closer)\n", .{});
@@ -180,7 +190,8 @@ pub fn main() !void {
 
         std.debug.print("  {d:>4}  {d:>2}  {d:>7}  {d:>7}   {d:>5.2},{d:>5.2}  {d:>7}\n", .{ ppem, @as(u32, @intFromFloat(em)), row_sum, row_cnt, best_dx, best_dy, best_res });
 
-        // Paint the overlay slot: red = TT-only, green = auto-only, gray = both.
+        // Paint each slot: plain grayscale au and tt (what the demo shows),
+        // plus the overlay (red = TT-only, green = auto-only, gray = both).
         const slot = (n - 1 - k) * H;
         for (0..H) |y| {
             for (0..W) |x| {
@@ -188,6 +199,12 @@ pub fn main() !void {
                 const a = au_ink[s];
                 const t = tt_ink[s];
                 const d = (slot + y) * W + x;
+                inline for (.{ .{ comp_au, a }, .{ comp_tt, t } }) |pair| {
+                    pair[0][d * 4 + 0] = 255 - pair[1];
+                    pair[0][d * 4 + 1] = 255 - pair[1];
+                    pair[0][d * 4 + 2] = 255 - pair[1];
+                    pair[0][d * 4 + 3] = 255;
+                }
                 composite[d * 4 + 0] = 255 - t;
                 composite[d * 4 + 1] = 255 - a;
                 composite[d * 4 + 2] = 255 - @max(a, t);
@@ -199,6 +216,8 @@ pub fn main() !void {
     std.debug.print("  total     {d:>7}\n", .{grand});
 
     _ = std.c.mkdir("zig-out", 0o755);
+    try support.screenshot.writeTga("zig-out/autohint-diff-au.tga", comp_au, W, @intCast(H * n));
+    try support.screenshot.writeTga("zig-out/autohint-diff-tt.tga", comp_tt, W, @intCast(H * n));
     try support.screenshot.writeTga(OUT_PATH, composite, W, @intCast(H * n));
-    std.debug.print("wrote {s} ({d}x{d})\n", .{ OUT_PATH, W, H * n });
+    std.debug.print("wrote {s} + -au/-tt ({d}x{d})\n", .{ OUT_PATH, W, H * n });
 }

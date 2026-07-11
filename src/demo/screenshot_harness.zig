@@ -62,11 +62,17 @@ pub fn flipRowsInPlace(allocator: std.mem.Allocator, pixels: []u8, width: u32, h
 /// Standard ortho draw state for the screenshot harness: grayscale AA,
 /// sRGB surface, ortho MVP matching the pixel rect.
 pub fn drawState(width: u32, height: u32) snail.DrawState {
+    return drawStateExp(width, height, 1.0);
+}
+
+/// `drawState` with an explicit coverage-transfer exponent (the demo's
+/// hinting-comparison view uses 0.55; screenshots default to 1.0).
+pub fn drawStateExp(width: u32, height: u32, exponent: f32) snail.DrawState {
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{
         .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
-        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
+        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = exponent } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
 }
@@ -107,6 +113,9 @@ pub const CpuOptions = struct {
     max_bindings: u32 = 4,
     layer_info_height: u32 = 64,
     max_images: u32 = 8,
+    /// Coverage-transfer exponent — match the demo's compare view (0.55) when
+    /// diffing hinting; leave at 1.0 for a faithful linear-coverage capture.
+    coverage_exponent: f32 = 1.0,
 };
 
 /// CPU end-to-end into a caller-owned buffer of the given `format` (stride =
@@ -185,7 +194,7 @@ pub fn renderCpuToPixels(
     var renderer = snail.CpuRenderer.init(pixels.ptr, width, height, stride);
     try snail.drawCpu(
         &renderer,
-        drawState(width, height),
+        drawStateExp(width, height, opts.coverage_exponent),
         .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
         &.{&cache},
         null,
