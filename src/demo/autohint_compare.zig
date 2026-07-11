@@ -17,8 +17,8 @@ const ShapedRunCache = helpers.ShapedRunCache;
 const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
 
-const sample_text = "Hamburg Λέξεις 0123";
-const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
+pub const sample_text = "Hamburg Λέξεις 0123";
+pub const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 
 const Mode = enum { unhinted, auto, tt };
 const modes = [_]Mode{ .unhinted, .auto, .tt };
@@ -90,7 +90,7 @@ pub const Compare = struct {
     /// 1.5×), which is exactly the "glyphs after the first sit on partial
     /// boundaries" artefact. Pass `framebuffer_h / logical_h`; the caller then
     /// draws this pass with a device-pixel projection.
-    fn devEm(ppem: f32, px_scale: f32) f32 {
+    pub fn devEm(ppem: f32, px_scale: f32) f32 {
         return @round(ppem * px_scale);
     }
 
@@ -181,7 +181,7 @@ pub const Compare = struct {
     /// (ppem-independent), plus auto-light records and TrueType-baked curves
     /// for every (sample glyph, ppem). Knots/TT curves live on `scratch`; the
     /// atlas copies them during `extend`.
-    fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
+    pub fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
         var entries: std.ArrayList(snail.AtlasEntry) = .empty;
         defer entries.deinit(scratch);
 

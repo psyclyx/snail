@@ -348,6 +348,24 @@ fn addScreenshotSteps(
     const autohint_shot_step = b.step("run-autohint-screenshot", "Render the auto-light autohint comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
     autohint_shot_step.dependOn(&run_autohint_shot.step);
 
+    // Auto-light vs TrueType agreement metric + overlay — CPU backend.
+    const autohint_diff_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_diff.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    const autohint_diff_exe = b.addExecutable(.{ .name = "snail-autohint-diff", .root_module = autohint_diff_mod });
+    const run_autohint_diff = b.addRunArtifact(autohint_diff_exe);
+    const autohint_diff_step = b.step("run-autohint-diff", "Render auto_light vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
+    autohint_diff_step.dependOn(&run_autohint_diff.step);
+
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/banner_screenshot.zig"),
