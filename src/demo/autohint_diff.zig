@@ -59,10 +59,11 @@ fn renderMode(
     shaped: *const snail.ShapedText,
     em: f32,
     x_off: f32,
+    y_off: f32,
     mode: @FieldType(helpers.RunPlacement, "mode"),
 ) ![]u8 {
     var pic = try helpers.placeRun(frame, shaped, null, .{
-        .baseline = .{ .x = left + x_off, .y = baseline },
+        .baseline = .{ .x = left + x_off, .y = baseline + y_off },
         .em = em,
         .color = ink_color,
         .mode = mode,
@@ -123,7 +124,7 @@ pub fn main() !void {
     @memset(composite, 255);
 
     std.debug.print("auto_light vs TrueType disagreement (lower = closer)\n", .{});
-    std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx  residual  (x-shift that best aligns au->tt)\n", .{});
+    std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx,dy residual  (rigid shift that best aligns au->tt; 0,0 => not a registration offset)\n", .{});
 
     var grand: u64 = 0;
     for (compare_mod.grid_ppems, 0..) |ppem, k| {
@@ -131,11 +132,11 @@ pub fn main() !void {
         const em = compare_mod.Compare.devEm(ppem, 1.0);
         const ppem_26_6: u32 = @intFromFloat(em * 64.0);
 
-        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } });
+        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } });
         defer allocator.free(tt);
         extractInk(tt, tt_ink);
 
-        const au = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
+        const au = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
         defer allocator.free(au);
         extractInk(au, au_ink);
 
@@ -148,29 +149,36 @@ pub fn main() !void {
         }
         grand += row_sum;
 
-        // Diagnostic: re-render au at sub-pixel x-offsets and find the shift
-        // that best matches tt. A small best_dx with a large residual drop =>
-        // the disagreement is horizontal *registration*, not shape.
+        // Diagnostic: re-render au over a grid of sub-pixel x/y offsets and
+        // find the rigid shift that best matches tt. A small best shift with a
+        // large residual drop => the disagreement is *registration*; 0,0
+        // optimal (as here) => it's genuine per-glyph phase/shape, not a global
+        // offset any single translation can fix.
         var best_dx: f32 = 0;
+        var best_dy: f32 = 0;
         var best_res: u64 = row_sum;
-        var off: f32 = -1.5;
-        while (off <= 1.5 + 1e-3) : (off += 0.25) {
-            if (@abs(off) < 1e-3) continue;
-            const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, off, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
-            defer allocator.free(shifted);
-            extractInk(shifted, au_ink);
-            var res: u64 = 0;
-            for (au_ink, tt_ink) |a, t| res += if (a > t) a - t else t - a;
-            if (res < best_res) {
-                best_res = res;
-                best_dx = off;
+        var oy: f32 = -1.5;
+        while (oy <= 1.5 + 1e-3) : (oy += 0.5) {
+            var ox: f32 = -1.5;
+            while (ox <= 1.5 + 1e-3) : (ox += 0.25) {
+                if (@abs(ox) < 1e-3 and @abs(oy) < 1e-3) continue;
+                const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, ox, oy, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
+                defer allocator.free(shifted);
+                extractInk(shifted, au_ink);
+                var res: u64 = 0;
+                for (au_ink, tt_ink) |a, t| res += if (a > t) a - t else t - a;
+                if (res < best_res) {
+                    best_res = res;
+                    best_dx = ox;
+                    best_dy = oy;
+                }
             }
         }
         // au_ink currently holds the last shifted render; restore the unshifted
         // one for the overlay below.
         extractInk(au, au_ink);
 
-        std.debug.print("  {d:>4}  {d:>2}  {d:>7}  {d:>7}    {d:>5.2}  {d:>7}\n", .{ ppem, @as(u32, @intFromFloat(em)), row_sum, row_cnt, best_dx, best_res });
+        std.debug.print("  {d:>4}  {d:>2}  {d:>7}  {d:>7}   {d:>5.2},{d:>5.2}  {d:>7}\n", .{ ppem, @as(u32, @intFromFloat(em)), row_sum, row_cnt, best_dx, best_dy, best_res });
 
         // Paint the overlay slot: red = TT-only, green = auto-only, gray = both.
         const slot = (n - 1 - k) * H;
