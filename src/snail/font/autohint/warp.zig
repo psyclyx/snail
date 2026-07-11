@@ -135,20 +135,28 @@ pub fn buildKnots(
     var target: [max_knots]f32 = undefined;
     for (edges, 0..) |e, i| target[i] = blueTarget(e, blues, px_per_unit, params.overshoot_min_px);
 
-    // Pass 2 — stems. A stem is width-hinted only when it's thin enough that
-    // a whole-pixel snap is a legibility win (small ppem). Above that, snapping
-    // would quantise a thick stem to an integer pixel width that no longer
-    // matches the (unhinted) curve weight, so the stems "pop" heavier than the
-    // rest of the glyph — leave those natural. `hinted` marks the survivors.
+    // Pass 2 — stems. Two independent grid-fits, because position and width
+    // are separate concerns:
+    //   * POSITION — always register the stem to the grid so its edges land on
+    //     pixel boundaries instead of floating at a fractional offset (blurry,
+    //     and out of phase with every other hinter). This is a pure crispness
+    //     win at any size and preserves weight, so it's what "light" hinting
+    //     wants even for thick stems.
+    //   * WIDTH — only quantise to a whole pixel while the stem is thin enough
+    //     that a 1px snap is a legibility win (small ppem). Above
+    //     `stem_hint_max_px` a thick stem keeps its natural width, so it doesn't
+    //     "pop" heavier than the glyph's curves; it's still position-registered.
+    // `hinted` marks the survivors kept as knots.
     var hinted = [_]bool{false} ** max_knots;
     for (edges, 0..) |e, i| {
         if (!e.isStem()) continue;
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
         const nominal = standardizeWidth(e.width, std_width, params.std_snap_ratio);
-        if (nominal * px_per_unit >= params.stem_hint_max_px) continue; // too thick — natural
-        const width_px = @max(@round(nominal * px_per_unit), 1.0);
-        const width_units = width_px * grid;
+        const width_units = if (nominal * px_per_unit >= params.stem_hint_max_px)
+            e.width // thick — natural width, position only
+        else
+            @max(@round(nominal * px_per_unit), 1.0) * grid; // thin — whole-pixel
         const lower_blue = edges[i].blue >= 0;
         const upper_blue = edges[j].blue >= 0;
         if (upper_blue and !lower_blue) {
