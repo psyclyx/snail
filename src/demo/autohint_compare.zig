@@ -38,23 +38,30 @@ pub const Compare = struct {
     faces: snail.Faces,
     font_id: u32,
     auto: snail.autohint.AutoLight,
-    /// The font's own TrueType hinting, if it has any (DejaVu does).
+    /// The font's own TrueType hinting, if it has any (DejaVu does; Noto Sans
+    /// Mono is unhinted, so this stays null and the tt row renders unhinted).
     tt: ?snail.HintVm,
+    /// Short display name for the font (e.g. "DejaVu", "Noto").
+    label: []const u8,
 
     shape_cache: ShapedRunCache,
     glyph_cache: UnhintedGlyphCache,
     atlas: snail.Atlas,
 
     pub fn init(allocator: Allocator, pool: *snail.PagePool) !Compare {
+        return initFont(allocator, pool, assets.dejavu_sans_mono, "DejaVu");
+    }
+
+    pub fn initFont(allocator: Allocator, pool: *snail.PagePool, font_bytes: []const u8, label: []const u8) !Compare {
         const font = try allocator.create(snail.Font);
         errdefer allocator.destroy(font);
-        font.* = try snail.Font.init(assets.dejavu_sans_mono);
+        font.* = try snail.Font.init(font_bytes);
 
         var faces = try snail.Faces.build(allocator, &.{.{ .font = font }});
         errdefer faces.deinit();
         const font_id = faces.fontIdForFace(0);
 
-        const auto = try snail.autohint.AutoLight.init(allocator, assets.dejavu_sans_mono);
+        const auto = try snail.autohint.AutoLight.init(allocator, font_bytes);
         const tt = snail.HintVm.init(allocator, font) catch null;
 
         return .{
@@ -65,6 +72,7 @@ pub const Compare = struct {
             .font_id = font_id,
             .auto = auto,
             .tt = tt,
+            .label = label,
             .shape_cache = ShapedRunCache.init(allocator),
             .glyph_cache = UnhintedGlyphCache.init(allocator, font),
             .atlas = snail.Atlas.empty(allocator),
@@ -100,17 +108,40 @@ pub const Compare = struct {
     /// references. Draw the resulting pass with an `ortho(0, fb_w, fb_h, 0)`
     /// projection so device coordinates map 1:1 to framebuffer pixels.
     pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32) !helpers.Picture {
+        return self.buildGridAt(frame_alloc, scratch, px_scale, 0);
+    }
+
+    /// `buildGrid` with a device-x origin so multiple fonts can sit side by
+    /// side. `column_width_px` (design units) is the horizontal span one grid
+    /// occupies — pass 0 for a single grid.
+    pub fn gridWidthPx(px_scale: f32) f32 {
+        return 400 * px_scale;
+    }
+
+    pub fn buildGridAt(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32, x0: f32) !helpers.Picture {
         const shaped = try self.shape_cache.shape(&self.faces, sample_text, .{});
 
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
-        // (ppem, mode). Ensure everything the grid references in one pass.
-        const tags = try self.shape_cache.shape(&self.faces, "unautt", .{});
+        // (ppem, mode). Fold the font-label header's letters into the tag run
+        // so ensureAll makes them resident too. Ensure everything in one pass.
+        const tags_str = try std.fmt.allocPrint(frame_alloc, "unautt{s}", .{self.label});
+        const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
         var refs: std.ArrayList(*const helpers.Picture) = .empty;
-        const left_tag: f32 = 8 * px_scale;
-        const left_sample: f32 = 52 * px_scale;
+        const left_tag: f32 = x0 + 8 * px_scale;
+        const left_sample: f32 = x0 + 52 * px_scale;
         const tag_em: f32 = 12 * px_scale;
+
+        // Column header: which font this grid is.
+        const head_shaped = try self.shape_cache.shape(&self.faces, self.label, .{});
+        const head = try frame_alloc.create(helpers.Picture);
+        head.* = try helpers.placeRun(frame_alloc, head_shaped, &self.faces, .{
+            .baseline = .{ .x = left_tag, .y = 14 * px_scale },
+            .em = tag_em,
+            .color = tag_color,
+        });
+        try refs.append(frame_alloc, head);
 
         var y: f32 = 26 * px_scale;
         for (grid_ppems) |ppem| {

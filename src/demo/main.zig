@@ -658,9 +658,14 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var hud_scratch = std.heap.ArenaAllocator.init(allocator);
     defer hud_scratch.deinit();
 
-    // Autohint comparison overlay (V toggles; G / F change ppem).
+    // Autohint comparison overlay (V toggles; G / F change ppem). Two fonts
+    // side by side: DejaVu (TT-hinted) and Noto Sans Mono (unhinted VF), so the
+    // au rows can be checked against a real hinting reference AND against a
+    // font that has none.
     var compare = try autohint_compare.Compare.init(allocator, content_cache.pool);
     defer compare.deinit();
+    var compare_noto = try autohint_compare.Compare.initFont(allocator, content_cache.pool, assets_data.noto_sans_mono, "Noto");
+    defer compare_noto.deinit();
     var compare_arena = std.heap.ArenaAllocator.init(allocator);
     defer compare_arena.deinit();
     var compare_scratch = std.heap.ArenaAllocator.init(allocator);
@@ -1074,19 +1079,26 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         _ = compare_arena.reset(.retain_capacity);
         _ = compare_scratch.reset(.retain_capacity);
         const compare_before = compare.atlas.recordCount();
+        const compare_noto_before = compare_noto.atlas.recordCount();
         var compare_picture = if (compare_on)
-            try compare.buildGrid(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale)
+            try compare.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, 0)
         else
             try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture.deinit();
-        const compare_dirty = compare.atlas.recordCount() != compare_before;
+        var compare_picture_noto = if (compare_on)
+            try compare_noto.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, autohint_compare.Compare.gridWidthPx(compare_px_scale))
+        else
+            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+        defer compare_picture_noto.deinit();
+        const compare_dirty = compare.atlas.recordCount() != compare_before or
+            compare_noto.atlas.recordCount() != compare_noto_before;
 
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
         const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &frame_text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
         const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
-        const compare_atlases = [_]*const snail.Atlas{&compare.atlas};
-        const compare_pictures = [_]*const snail_helpers.Picture{&compare_picture};
+        const compare_atlases = [_]*const snail.Atlas{ &compare.atlas, &compare_noto.atlas };
+        const compare_pictures = [_]*const snail_helpers.Picture{ &compare_picture, &compare_picture_noto };
 
         var passes_buf: [3]renderer_driver.Pass = undefined;
         var pass_count: usize = 0;

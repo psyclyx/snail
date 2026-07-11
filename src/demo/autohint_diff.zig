@@ -28,7 +28,6 @@ const W: u32 = 460;
 const H: u32 = 40;
 const left: f32 = 6;
 const baseline: f32 = 28;
-const OUT_PATH = "zig-out/autohint-diff.tga";
 
 // Pure black ink on the harness off-white background — max contrast so the
 // coverage ramp (and any disagreement in it) is as legible as possible.
@@ -81,6 +80,8 @@ fn renderMode(
     return harness.renderCpuToPixels(allocator, scene, W, H, .{ .coverage_exponent = 0.55 });
 }
 
+const assets = @import("assets");
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -93,9 +94,19 @@ pub fn main() !void {
     });
     defer pool.deinit();
 
-    var compare = try compare_mod.Compare.init(allocator, pool);
-    defer compare.deinit();
+    const fonts = [_]struct { bytes: []const u8, label: []const u8, slug: []const u8 }{
+        .{ .bytes = assets.dejavu_sans_mono, .label = "DejaVu Sans Mono (TT-hinted)", .slug = "dejavu" },
+        .{ .bytes = assets.noto_sans_mono, .label = "Noto Sans Mono (unhinted VF)", .slug = "noto" },
+    };
+    for (fonts) |f| {
+        var compare = try compare_mod.Compare.initFont(allocator, pool, f.bytes, f.label);
+        defer compare.deinit();
+        std.debug.print("\n######## {s} ########\n", .{f.label});
+        try runFont(allocator, pool, &compare, f.slug);
+    }
+}
 
+fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compare_mod.Compare, slug: []const u8) !void {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     var frame = std.heap.ArenaAllocator.init(allocator);
@@ -216,8 +227,14 @@ pub fn main() !void {
     std.debug.print("  total     {d:>7}\n", .{grand});
 
     _ = std.c.mkdir("zig-out", 0o755);
-    try support.screenshot.writeTga("zig-out/autohint-diff-au.tga", comp_au, W, @intCast(H * n));
-    try support.screenshot.writeTga("zig-out/autohint-diff-tt.tga", comp_tt, W, @intCast(H * n));
-    try support.screenshot.writeTga(OUT_PATH, composite, W, @intCast(H * n));
-    std.debug.print("wrote {s} + -au/-tt ({d}x{d})\n", .{ OUT_PATH, W, H * n });
+    var buf: [64]u8 = undefined;
+    for ([_]struct { suffix: []const u8, data: []u8 }{
+        .{ .suffix = "au", .data = comp_au },
+        .{ .suffix = "tt", .data = comp_tt },
+        .{ .suffix = "diff", .data = composite },
+    }) |o| {
+        const path = try std.fmt.bufPrintZ(&buf, "zig-out/autohint-{s}-{s}.tga", .{ slug, o.suffix });
+        try support.screenshot.writeTga(path, o.data, W, @intCast(H * n));
+    }
+    std.debug.print("  wrote zig-out/autohint-{s}-(au|tt|diff).tga ({d}x{d})\n", .{ slug, W, H * n });
 }

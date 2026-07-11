@@ -9,6 +9,7 @@ Files:
 
 - `NotoSans-Regular.ttf`
 - `NotoSans-Bold.ttf`
+- `NotoSansMono.ttf`
 - `NotoSansArabic-Regular.ttf`
 - `NotoSansDevanagari-Regular.ttf`
 - `NotoSansMongolian-Regular.ttf`
