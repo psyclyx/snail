@@ -76,7 +76,20 @@ pub const Params = struct {
     /// stems where AA can't; above it, snapping just over/under-thickens the
     /// stem relative to the glyph's curves, so we leave it natural. This is
     /// what makes hinting a small-size tool — it tapers off as the glyph grows.
+    /// Ignored when `full_stem_hint` is set.
     stem_hint_max_px: f32 = 1.6,
+    /// Width-hint EVERY stem to a whole pixel, ignoring `stem_hint_max_px`.
+    /// Crisper and heavier — matches TrueType's "all stems on solid pixels".
+    /// Used for the x-axis, where vertical-stem sharpness is the whole point;
+    /// the y-axis stays light (thick horizontals keep natural weight).
+    full_stem_hint: bool = false,
+    /// Position stems RELATIVE to the first (leftmost) stem by rounding their
+    /// inter-stem distance once, instead of snapping each stem's edge to the
+    /// grid independently. Independent snapping double-rounds the two ends of a
+    /// counter and can drift a glyph's width by a pixel (e.g. 'H' coming out a
+    /// column narrow); anchoring preserves the designed proportions. For the
+    /// blue-less axis (x) — assumes no blue-linked stems.
+    anchor_stem_positions: bool = false,
 
     pub const default: Params = .{};
 };
@@ -148,21 +161,39 @@ pub fn buildKnots(
     //     "pop" heavier than the glyph's curves; it's still position-registered.
     // `hinted` marks the survivors kept as knots.
     var hinted = [_]bool{false} ** max_knots;
+    var anchor_set = false;
+    var anchor_base: f32 = 0;
+    var anchor_target: f32 = 0;
     for (edges, 0..) |e, i| {
         if (!e.isStem()) continue;
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
         const nominal = standardizeWidth(e.width, std_width, params.std_snap_ratio);
-        const width_units = if (nominal * px_per_unit >= params.stem_hint_max_px)
-            e.width // thick — natural width, position only
+        const width_units = if (params.full_stem_hint or nominal * px_per_unit < params.stem_hint_max_px)
+            @max(@round(nominal * px_per_unit), 1.0) * grid // whole-pixel
         else
-            @max(@round(nominal * px_per_unit), 1.0) * grid; // thin — whole-pixel
-        const lower_blue = edges[i].blue >= 0;
-        const upper_blue = edges[j].blue >= 0;
-        if (upper_blue and !lower_blue) {
-            target[i] = target[j] - width_units;
-        } else {
+            e.width; // thick — natural width, position only
+        if (params.anchor_stem_positions) {
+            // Anchor to the first stem, then round each later stem's distance
+            // from it ONCE — preserves the glyph's counter widths instead of
+            // double-rounding both ends of every gap.
+            if (!anchor_set) {
+                target[i] = snap(e.pos, px_per_unit);
+                anchor_base = e.pos;
+                anchor_target = target[i];
+                anchor_set = true;
+            } else {
+                target[i] = anchor_target + @round((e.pos - anchor_base) * px_per_unit) * grid;
+            }
             target[j] = target[i] + width_units;
+        } else {
+            const lower_blue = edges[i].blue >= 0;
+            const upper_blue = edges[j].blue >= 0;
+            if (upper_blue and !lower_blue) {
+                target[i] = target[j] - width_units;
+            } else {
+                target[j] = target[i] + width_units;
+            }
         }
         hinted[i] = true;
         hinted[j] = true;
