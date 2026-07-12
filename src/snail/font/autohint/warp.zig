@@ -182,7 +182,10 @@ pub fn fitAxis(
             use_blues = axis_policy.@"align" == .blue_zones;
             params.overshoot_min_px = switch (axis_policy.overshoot) {
                 .preserve => 0,
-                .suppress_below_px => |threshold| threshold,
+                .suppress_below_px => |threshold| threshold: {
+                    if (!std.math.isFinite(threshold) or threshold < 0) return out[0..0];
+                    break :threshold threshold;
+                },
             };
         },
     }
@@ -632,6 +635,24 @@ test "fitAxis rejects zero NaN scale and feature overflow" {
     try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, 0, 0, &out).len);
     try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, std.math.nan(f32), 0, &out).len);
     try testing.expectEqual(@as(usize, 0), fitAxis(&too_many, TestFontFeatures{}, .x, policy, 13, 0, &out).len);
+}
+
+test "fitAxis rejects invalid overshoot suppression thresholds" {
+    var feature = [_]FeatureEdge{testFeature(0.2)};
+    var out: [max_knots]Knot = undefined;
+
+    try testing.expectEqual(@as(usize, 0), fitAxis(&feature, TestFontFeatures{}, .y, .{
+        .@"align" = .grid,
+        .overshoot = .{ .suppress_below_px = std.math.nan(f32) },
+    }, 13, 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&feature, TestFontFeatures{}, .y, .{
+        .@"align" = .grid,
+        .overshoot = .{ .suppress_below_px = std.math.inf(f32) },
+    }, 13, 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&feature, TestFontFeatures{}, .y, .{
+        .@"align" = .grid,
+        .overshoot = .{ .suppress_below_px = -0.1 },
+    }, 13, 0, &out).len);
 }
 
 test "fitAxis rejects malformed feature and font records" {
