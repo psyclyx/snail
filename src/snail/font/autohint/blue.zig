@@ -68,6 +68,13 @@ pub const Zone = struct {
     kind: BlueKind,
 };
 
+/// Serializable, em-normalized blue-zone facts. Size-specific fitting rounds
+/// these references later.
+pub const FeatureZone = struct {
+    ref: f32,
+    shoot: f32,
+};
+
 pub const Blues = struct {
     allocator: Allocator,
     units_per_em: u16,
@@ -76,6 +83,16 @@ pub const Blues = struct {
     pub fn deinit(self: *Blues) void {
         self.allocator.free(self.zones);
         self.* = undefined;
+    }
+
+    /// Copy the font-unit zones into an owned, em-normalized feature slice.
+    pub fn normalized(self: Blues, allocator: Allocator) ![]FeatureZone {
+        const result = try allocator.alloc(FeatureZone, self.zones.len);
+        const upm: f32 = @floatFromInt(self.units_per_em);
+        for (self.zones, result) |zone, *feature| {
+            feature.* = .{ .ref = zone.pos / upm, .shoot = zone.shoot / upm };
+        }
+        return result;
     }
 
     /// The zone list the warp consumes (reference + overshoot). Borrows `self`.

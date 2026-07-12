@@ -154,7 +154,13 @@ pub const autohint = struct {
     pub const warp = @import("font/autohint/warp.zig");
     pub const blue = @import("font/autohint/blue.zig");
     pub const producer = @import("font/autohint/producer.zig");
-    pub const AutoLight = @import("font/autohint/producer.zig").AutoLight;
+    pub const AutohintAnalyzer = producer.AutohintAnalyzer;
+    pub const GlyphFeatures = producer.GlyphFeatures;
+    pub const FontFeatures = producer.FontFeatures;
+    pub const FeatureEdge = analysis.FeatureEdge;
+    // Temporary source alias for in-tree callers; glyphKnots remains confined
+    // to the producer migration bridge and is not a standalone root export.
+    pub const AutoLight = producer.AutoLight;
 };
 
 pub const HintVm = @import("font/hint_vm.zig").HintVm;

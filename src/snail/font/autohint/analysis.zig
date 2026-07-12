@@ -67,6 +67,17 @@ pub const Params = struct {
 /// coordinates.
 pub const Axis = enum { y, x };
 
+/// Stable, serializable edge facts produced by outline analysis. Positions and
+/// widths are expressed as em fractions by the producer; fitting adds targets
+/// later without mutating these facts.
+pub const FeatureEdge = struct {
+    pos: f32,
+    width: f32,
+    stem: i16,
+    blue: i16,
+    flags: packed struct(u16) { round: bool, _reserved: u15 = 0 },
+};
+
 /// A near-axis-aligned run of the outline: a candidate contribution to an
 /// edge. Coordinates are stored generically: `pos` is the position along the
 /// snapped axis, `min`/`max` the extent along the other axis.
