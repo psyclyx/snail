@@ -128,6 +128,28 @@ pub fn buildKnots(
     edges: []const Edge,
     blues: []const BlueZone,
     px_per_unit: f32,
+    std_width: f32,
+    params: Params,
+    out: []Knot,
+) usize {
+    return buildKnotsReg(edges, blues, px_per_unit, std_width, params, std.math.nan(f32), out);
+}
+
+/// `buildKnots` plus a left-edge registration for the blue-less axis (x).
+///
+/// Flat-left letters (H/m/b) snap their left STEM to the grid, but round-left
+/// letters (a/c/e/o/g) have a curved bowl there — and curves aren't stem-hinted,
+/// so the bowl stays at its sub-pixel spot while the flats march to the grid,
+/// leaving the round a pixel out of the column (the "a pokes left" artefact).
+/// When `left_edge` (the glyph's leftmost outline coordinate, caller's units)
+/// sits clearly left of the leftmost snapped knot — i.e. there's a bowl, not a
+/// stem, on the left — register it as its OWN knot so the bowl snaps to the grid
+/// like a stem would. The stem knots are untouched (still crisp); only the soft
+/// bowl reflows by a sub-pixel. `NaN` disables it (the plain `buildKnots` path).
+pub fn buildKnotsReg(
+    edges: []const Edge,
+    blues: []const BlueZone,
+    px_per_unit: f32,
     /// Font's dominant stem width for this axis (FUnits, 0 = disabled). Stems
     /// within `params.std_snap_ratio` of it snap to a single shared pixel width
     /// so the whole run reads as one even weight instead of some stems rounding
@@ -135,6 +157,7 @@ pub fn buildKnots(
     std_width: f32,
     /// Heuristic thresholds for the grid-fit (`.{}` = tuned Latin defaults).
     params: Params,
+    left_edge: f32,
     out: []Knot,
 ) usize {
     const n = edges.len;
@@ -241,6 +264,19 @@ pub fn buildKnots(
         const keep = hinted[i] or e.blue >= 0;
         if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
+        count += 1;
+    }
+
+    // Pass 3.5 — round-left registration (see doc comment). Only when the glyph
+    // has a bowl clearly left of its leftmost snapped stem; flats (left_edge ≈
+    // first knot) and knot-less glyphs are untouched. Prepend it, snapped like a
+    // stem edge, so the bowl lands on the grid with the flats.
+    if (!std.math.isNan(left_edge) and count > 0 and count < out.len and
+        left_edge < out[0].base - 0.5 * grid)
+    {
+        var m = count;
+        while (m > 0) : (m -= 1) out[m] = out[m - 1];
+        out[0] = .{ .base = left_edge, .target = snap(left_edge, px_per_unit) };
         count += 1;
     }
 

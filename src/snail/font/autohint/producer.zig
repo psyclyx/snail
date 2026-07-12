@@ -101,13 +101,17 @@ pub const AutoLight = struct {
         var ax = try analysis.analyzeGlyph(scratch, pts, contours, self.font.units_per_em, self.params, .x);
         defer ax.deinit();
         // The x-axis hints HARD (unlike the light y-axis): every vertical stem
-        // snaps to a solid whole pixel, and stems are positioned relative to the
-        // first so glyph widths are preserved (matches TrueType). Vertical-stem
-        // crispness is the whole reason to hint x at all; there are no x blues.
-        const nx = warp.buildKnots(ax.edges, &.{}, px_per_unit, self.std_x, .{
+        // snaps to a solid whole pixel, stems are positioned relative to the
+        // first so glyph widths are preserved, and a round glyph's left bowl is
+        // registered to the grid too (leftmost outline x) so it doesn't get left
+        // a pixel behind the flats. Vertical-stem crispness is the whole reason
+        // to hint x at all; there are no x blues.
+        var min_x: f32 = std.math.inf(f32);
+        for (pts) |p| min_x = @min(min_x, @as(f32, @floatFromInt(p.x)));
+        const nx = warp.buildKnotsReg(ax.edges, &.{}, px_per_unit, self.std_x, .{
             .full_stem_hint = true,
             .anchor_stem_positions = true,
-        }, x_buf);
+        }, min_x, x_buf);
         return .{ .nx = nx, .ny = ny };
     }
 
