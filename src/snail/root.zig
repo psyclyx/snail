@@ -148,6 +148,8 @@ pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
 pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
 
 pub const autohint = struct {
+    pub const policy = @import("font/autohint/policy.zig");
+    pub const AutohintPolicy = policy.AutohintPolicy;
     pub const analysis = @import("font/autohint/analysis.zig");
     pub const warp = @import("font/autohint/warp.zig");
     pub const blue = @import("font/autohint/blue.zig");
@@ -194,6 +196,7 @@ test {
     _ = @import("path.zig");
     _ = @import("paths.zig");
     _ = @import("font/hint_vm.zig");
+    _ = @import("font/autohint/policy.zig");
     _ = @import("font/autohint/analysis.zig");
     _ = @import("font/autohint/warp.zig");
     _ = @import("font/autohint/blue.zig");
