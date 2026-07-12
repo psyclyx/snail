@@ -128,9 +128,33 @@ pub fn fitAxis(
 ) []Knot {
     if (!std.math.isFinite(pixels_per_em) or pixels_per_em <= 0 or
         features.len == 0 or features.len > max_knots or features.len > out.len or
-        font.blues.len > max_knots)
+        font.blues.len > max_knots or
+        !std.math.isFinite(font.std_x) or font.std_x < 0 or
+        !std.math.isFinite(font.std_y) or font.std_y < 0)
     {
         return out[0..0];
+    }
+    for (font.blues) |zone| {
+        if (!std.math.isFinite(zone.ref) or !std.math.isFinite(zone.shoot)) return out[0..0];
+    }
+    for (features, 0..) |feature, i| {
+        if (!std.math.isFinite(feature.pos) or !std.math.isFinite(feature.width) or feature.width < 0 or
+            feature.stem < -1 or feature.blue < -1 or
+            (feature.blue >= 0 and @as(usize, @intCast(feature.blue)) >= font.blues.len))
+        {
+            return out[0..0];
+        }
+        if (feature.stem >= 0) {
+            const partner_index: usize = @intCast(feature.stem);
+            if (partner_index >= features.len or partner_index == i) return out[0..0];
+            const partner = features[partner_index];
+            if (partner.stem != @as(i16, @intCast(i)) or
+                !std.math.isFinite(partner.pos) or partner.pos == feature.pos or
+                !std.math.isFinite(partner.width) or partner.width != feature.width)
+            {
+                return out[0..0];
+            }
+        }
     }
 
     var params: Params = .{};
@@ -145,6 +169,7 @@ pub fn fitAxis(
             }
             params.align_stem_positions = axis_policy.@"align" == .grid;
             params.anchor_stem_positions = axis_policy.positioning == .relative;
+            if (axis_policy.registration == .left_round_outline and !std.math.isFinite(left)) return out[0..0];
             left_edge = if (axis_policy.registration == .left_round_outline) left else std.math.nan(f32);
         },
         .y => {
@@ -212,6 +237,9 @@ pub fn fitAxis(
 
     const std_width = if (axis == .x) font.std_x else font.std_y;
     const count = buildKnotsReg(&edges, if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
+    for (out[0..count]) |knot| {
+        if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
+    }
     return out[0..count];
 }
 
@@ -604,6 +632,44 @@ test "fitAxis rejects zero NaN scale and feature overflow" {
     try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, 0, 0, &out).len);
     try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, std.math.nan(f32), 0, &out).len);
     try testing.expectEqual(@as(usize, 0), fitAxis(&too_many, TestFontFeatures{}, .x, policy, 13, 0, &out).len);
+}
+
+test "fitAxis rejects malformed feature and font records" {
+    const x_policy: policy_mod.XPolicy = .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+        .registration = .left_round_outline,
+    };
+    var out: [max_knots]Knot = undefined;
+
+    var bad_stem = [_]FeatureEdge{testFeature(0.2)};
+    bad_stem[0].stem = 1;
+    try testing.expectEqual(@as(usize, 0), fitAxis(&bad_stem, TestFontFeatures{}, .x, x_policy, 13, 0, &out).len);
+
+    var nonreciprocal = [_]FeatureEdge{ testFeature(0.2), testFeature(0.3) };
+    nonreciprocal[0].stem = 1;
+    try testing.expectEqual(@as(usize, 0), fitAxis(&nonreciprocal, TestFontFeatures{}, .x, x_policy, 13, 0, &out).len);
+
+    var bad_feature = [_]FeatureEdge{testFeature(std.math.nan(f32))};
+    try testing.expectEqual(@as(usize, 0), fitAxis(&bad_feature, TestFontFeatures{}, .x, x_policy, 13, 0, &out).len);
+    bad_feature[0] = testFeature(0.2);
+    bad_feature[0].width = std.math.inf(f32);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&bad_feature, TestFontFeatures{}, .x, x_policy, 13, 0, &out).len);
+    bad_feature[0] = testFeature(0.2);
+    bad_feature[0].blue = 0;
+    try testing.expectEqual(@as(usize, 0), fitAxis(&bad_feature, TestFontFeatures{}, .x, x_policy, 13, 0, &out).len);
+    var overflowing = [_]FeatureEdge{ testFeature(std.math.floatMax(f32) / 2), testFeature(std.math.floatMax(f32)) };
+    featureStemPair(&overflowing[0], &overflowing[1], 0, 1, 1);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&overflowing, TestFontFeatures{}, .x, x_policy, std.math.floatMax(f32), 0, &out).len);
+
+    try testing.expectEqual(@as(usize, 0), fitAxis(&[_]FeatureEdge{testFeature(0.2)}, TestFontFeatures{ .std_x = std.math.nan(f32) }, .x, x_policy, 13, 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&[_]FeatureEdge{testFeature(0.2)}, TestFontFeatures{ .std_y = -0.1 }, .x, x_policy, 13, 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&[_]FeatureEdge{testFeature(0.2)}, TestFontFeatures{}, .x, x_policy, 13, std.math.inf(f32), &out).len);
+
+    const bad_zones = [_]BlueZone{.{ .ref = 0, .shoot = std.math.nan(f32) }};
+    var blue_feature = [_]FeatureEdge{testFeature(0.2)};
+    blue_feature[0].blue = 0;
+    try testing.expectEqual(@as(usize, 0), fitAxis(&blue_feature, TestFontFeatures{ .blues = &bad_zones }, .y, .{ .@"align" = .blue_zones }, 13, 0, &out).len);
 }
 
 test "independent and relative positioning compose separately" {

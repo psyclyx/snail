@@ -273,6 +273,72 @@ test "repeated analysis has one result independent of size" {
     try testing.expectEqualSlices(FeatureEdge, a.y, b.y);
 }
 
+test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
+    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
+    defer analyzer.deinit();
+    const glyph_o = try analyzer.font.glyphIndex('o');
+    var feature_x: [warp.max_knots]FeatureEdge = undefined;
+    var feature_y: [warp.max_knots]FeatureEdge = undefined;
+    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_o, &feature_x, &feature_y);
+    const font = analyzer.fontFeatures();
+
+    var saw_round_bottom = false;
+    for (glyph.y) |feature| {
+        if (feature.flags.round and feature.blue >= 0 and
+            font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref)
+        {
+            saw_round_bottom = true;
+        }
+    }
+    try testing.expect(saw_round_bottom);
+
+    const Snapshot = struct {
+        ppem: u32,
+        y: []const warp.Knot,
+    };
+    const snapshots = [_]Snapshot{
+        .{ .ppem = 9, .y = &.{
+            .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.48293912, .target = 0.44444448 },
+            .{ .base = 0.55655926, .target = 0.5555556 },
+            .{ .base = 0, .target = 0.6666667 },
+        } },
+        .{ .ppem = 12, .y = &.{
+            .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.48293912, .target = 0.49999997 },
+            .{ .base = 0.55655926, .target = 0.5833333 },
+            .{ .base = 0, .target = 0.6666666 },
+        } },
+        .{ .ppem = 16, .y = &.{
+            .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.48293912, .target = 0.5 },
+            .{ .base = 0.55655926, .target = 0.5625 },
+            .{ .base = 0, .target = 0.625 },
+        } },
+        .{ .ppem = 28, .y = &.{
+            .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.55655926, .target = 0.53571427 },
+            .{ .base = 0, .target = 0.57142854 },
+        } },
+    };
+    const strong_policy: @import("policy.zig").AutohintPolicy = .{
+        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
+        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
+    };
+    for (snapshots) |snapshot| {
+        var x_out: [warp.max_knots]warp.Knot = undefined;
+        var y_out: [warp.max_knots]warp.Knot = undefined;
+        const scale: f32 = @floatFromInt(snapshot.ppem);
+        const fitted = warp.fitGlyph(glyph, font, strong_policy, .{ .x = scale, .y = scale }, &x_out, &y_out);
+        try testing.expectEqual(@as(usize, 0), fitted.x.len);
+        try testing.expectEqual(snapshot.y.len, fitted.y.len);
+        for (snapshot.y, fitted.y) |expected, actual| {
+            try testing.expectApproxEqAbs(expected.base, actual.base, 0.000001);
+            try testing.expectApproxEqAbs(expected.target, actual.target, 0.000001);
+        }
+    }
+}
+
 test "fitGlyph consumes normalized analysis without retaining targets" {
     var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
     defer analyzer.deinit();
