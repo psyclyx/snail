@@ -1,5 +1,6 @@
 .zig-cache/
 zig-out/
+.worktrees/
 /include/snail_generated.h
 /src/snail/c_api_generated.zig
 result
