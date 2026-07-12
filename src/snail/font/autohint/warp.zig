@@ -20,7 +20,10 @@
 const std = @import("std");
 
 const analysis = @import("analysis.zig");
+const policy_mod = @import("policy.zig");
+const Vec2 = @import("../../math/vec.zig").Vec2;
 const Edge = analysis.Edge;
+const FeatureEdge = analysis.FeatureEdge;
 
 /// Upper bound on edges fed to the warp. Glyphs with more horizontal
 /// features than this (dense CJK, ornate display faces) fall back to the
@@ -90,9 +93,136 @@ pub const Params = struct {
     /// column narrow); anchoring preserves the designed proportions. For the
     /// blue-less axis (x) — assumes no blue-linked stems.
     anchor_stem_positions: bool = false,
+    /// Keep each stem's analyzed width instead of quantizing it.
+    natural_stem_width: bool = false,
+    /// Register stem positions to the grid. When false, width fitting is
+    /// composed around the natural lower edge.
+    align_stem_positions: bool = true,
 
     pub const default: Params = .{};
 };
+
+fn AxisPolicy(comptime axis: analysis.Axis) type {
+    return switch (axis) {
+        .x => policy_mod.XPolicy,
+        .y => policy_mod.YPolicy,
+    };
+}
+
+pub const AxisKnots = struct {
+    x: []Knot,
+    y: []Knot,
+};
+
+/// Derive one axis's transient normalized warp from immutable feature facts.
+/// `font` is a `FontFeatures` value; it is structural here to avoid a module
+/// cycle with the producer that owns that record type.
+pub fn fitAxis(
+    features: []const FeatureEdge,
+    font: anytype,
+    comptime axis: analysis.Axis,
+    axis_policy: AxisPolicy(axis),
+    pixels_per_em: f32,
+    left: f32,
+    out: []Knot,
+) []Knot {
+    if (!std.math.isFinite(pixels_per_em) or pixels_per_em <= 0 or
+        features.len == 0 or features.len > max_knots or features.len > out.len or
+        font.blues.len > max_knots)
+    {
+        return out[0..0];
+    }
+
+    var params: Params = .{};
+    var use_blues = false;
+    var left_edge = std.math.nan(f32);
+    switch (axis) {
+        .x => {
+            if (axis_policy.@"align" == .none and axis_policy.stem_width == .natural and
+                axis_policy.positioning == .independent and axis_policy.registration == .none)
+            {
+                return out[0..0];
+            }
+            params.align_stem_positions = axis_policy.@"align" == .grid;
+            params.anchor_stem_positions = axis_policy.positioning == .relative;
+            left_edge = if (axis_policy.registration == .left_round_outline) left else std.math.nan(f32);
+        },
+        .y => {
+            if (axis_policy.@"align" == .none and axis_policy.stem_width == .natural and
+                axis_policy.overshoot == .preserve)
+            {
+                return out[0..0];
+            }
+            params.align_stem_positions = axis_policy.@"align" != .none;
+            use_blues = axis_policy.@"align" == .blue_zones;
+            params.overshoot_min_px = switch (axis_policy.overshoot) {
+                .preserve => 0,
+                .suppress_below_px => |threshold| threshold,
+            };
+        },
+    }
+    switch (axis_policy.stem_width) {
+        .natural => params.natural_stem_width = true,
+        .light => |light| {
+            if (!std.math.isFinite(light.std_snap_ratio) or !std.math.isFinite(light.max_px) or
+                light.std_snap_ratio < 0 or light.max_px < 0) return out[0..0];
+            params.std_snap_ratio = light.std_snap_ratio;
+            params.stem_hint_max_px = light.max_px;
+        },
+        .full => |full| {
+            if (!std.math.isFinite(full.std_snap_ratio) or full.std_snap_ratio < 0) return out[0..0];
+            params.std_snap_ratio = full.std_snap_ratio;
+            params.full_stem_hint = true;
+        },
+    }
+
+    var edges: [max_knots]Edge = undefined;
+    var zones: [max_knots]BlueZone = undefined;
+    if (use_blues) {
+        for (font.blues, 0..) |zone, i| zones[i] = .{ .ref = zone.ref, .shoot = zone.shoot };
+    }
+    for (features, 0..) |feature, i| {
+        const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < features.len and
+            features[@intCast(feature.stem)].pos > feature.pos;
+        const valid_blue = use_blues and feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < font.blues.len;
+        const bottom_blue = valid_blue and font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref;
+        var companion_dir: i8 = 1;
+        if (feature.stem < 0 and !valid_blue and use_blues) {
+            var nearest_gap = std.math.inf(f32);
+            for (features) |candidate| {
+                if (candidate.blue < 0 or @as(usize, @intCast(candidate.blue)) >= font.blues.len) continue;
+                const gap = @abs(candidate.pos - feature.pos);
+                if (gap >= nearest_gap) continue;
+                nearest_gap = gap;
+                const candidate_zone = font.blues[@intCast(candidate.blue)];
+                companion_dir = if (candidate_zone.shoot < candidate_zone.ref) 1 else -1;
+            }
+        }
+        edges[i] = .{
+            .pos = feature.pos,
+            .min = 0,
+            .max = 0,
+            .dir = if (partner_above or bottom_blue) -1 else companion_dir,
+            .stem = feature.stem,
+            .width = feature.width,
+            .blue = if (use_blues) feature.blue else if (axis_policy.@"align" != .none) feature.blue else -1,
+            .round = feature.flags.round,
+        };
+    }
+
+    const std_width = if (axis == .x) font.std_x else font.std_y;
+    const count = buildKnotsReg(&edges, if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
+    return out[0..count];
+}
+
+/// Fit both axes at draw time. The returned knot slices borrow caller-owned
+/// scratch buffers and must never be stored in an atlas record.
+pub fn fitGlyph(features: anytype, font: anytype, policy: policy_mod.AutohintPolicy, scale: Vec2, x_out: []Knot, y_out: []Knot) AxisKnots {
+    return .{
+        .x = fitAxis(features.x, font, .x, policy.x, scale.x, features.left, x_out),
+        .y = fitAxis(features.y, font, .y, policy.y, scale.y, 0, y_out),
+    };
+}
 
 fn snap(v: f32, px_per_unit: f32) f32 {
     if (px_per_unit <= 0) return v;
@@ -192,7 +322,9 @@ pub fn buildKnotsReg(
         const j: usize = @intCast(e.stem);
         if (j <= i) continue; // process each pair once, from its lower edge
         const nominal = standardizeWidth(e.width, std_width, params.std_snap_ratio);
-        const width_units = if (params.full_stem_hint or nominal * px_per_unit < params.stem_hint_max_px)
+        const width_units = if (params.natural_stem_width)
+            e.width
+        else if (params.full_stem_hint or nominal * px_per_unit < params.stem_hint_max_px)
             @max(@round(nominal * px_per_unit), 1.0) * grid // whole-pixel
         else
             e.width; // thick — natural width, position only
@@ -216,7 +348,8 @@ pub fn buildKnotsReg(
         } else {
             const lower_blue = edges[i].blue >= 0;
             const upper_blue = edges[j].blue >= 0;
-            if (upper_blue and !lower_blue) {
+            if (!params.align_stem_positions) target[i] = e.pos;
+            if (upper_blue and !lower_blue and params.align_stem_positions) {
                 target[i] = target[j] - width_units;
             } else {
                 target[j] = target[i] + width_units;
@@ -401,6 +534,142 @@ fn stemPair(lower: *Edge, upper: *Edge, li: usize, ui: usize, width: f32) void {
     lower.width = width;
     upper.stem = @intCast(li);
     upper.width = width;
+}
+
+const TestFontFeatures = struct {
+    blues: []const BlueZone = &.{},
+    std_x: f32 = 0,
+    std_y: f32 = 0,
+};
+
+fn testFeature(pos: f32) FeatureEdge {
+    return .{ .pos = pos, .width = 0, .stem = -1, .blue = -1, .flags = .{ .round = false } };
+}
+
+fn featureStemPair(lower: *FeatureEdge, upper: *FeatureEdge, li: usize, ui: usize, width: f32) void {
+    lower.stem = @intCast(ui);
+    lower.width = width;
+    upper.stem = @intCast(li);
+    upper.width = width;
+}
+
+test "identity x policy emits no knots" {
+    var features = [_]FeatureEdge{ testFeature(0.3), testFeature(0.38) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.08);
+    var out: [max_knots]Knot = undefined;
+    const knots = fitAxis(&features, TestFontFeatures{ .std_x = 0.08 }, .x, .{}, 13.0, 0, &out);
+    try testing.expectEqual(@as(usize, 0), knots.len);
+}
+
+test "light y policy leaves thick stem width natural" {
+    var features = [_]FeatureEdge{ testFeature(0.2), testFeature(0.4) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.2);
+    var out: [max_knots]Knot = undefined;
+    const knots = fitAxis(&features, TestFontFeatures{ .std_y = 0.08 }, .y, .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    }, 13.0, 0, &out);
+    try testing.expectEqual(@as(usize, 2), knots.len);
+    try testing.expectApproxEqAbs(@as(f32, 0.2), knots[1].target - knots[0].target, 1e-5);
+}
+
+test "strong x composition matches prior fitting" {
+    var features = [_]FeatureEdge{ testFeature(0.12), testFeature(0.20) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.08);
+    var out: [max_knots]Knot = undefined;
+    const knots = fitAxis(&features, TestFontFeatures{ .std_x = 0.08 }, .x, .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+        .positioning = .relative,
+        .registration = .left_round_outline,
+    }, 13.0, 0.02, &out);
+    try testing.expectEqual(@as(usize, 3), knots.len);
+    const expected = [_]Knot{
+        .{ .base = 0.02, .target = 0 },
+        .{ .base = 0.12, .target = 2.0 / 13.0 },
+        .{ .base = 0.20, .target = 3.0 / 13.0 },
+    };
+    for (expected, knots) |want, got| {
+        try testing.expectApproxEqAbs(want.base, got.base, 1e-5);
+        try testing.expectApproxEqAbs(want.target, got.target, 1e-5);
+    }
+}
+
+test "fitAxis rejects zero NaN scale and feature overflow" {
+    var one = [_]FeatureEdge{testFeature(0.2)};
+    var too_many = [_]FeatureEdge{testFeature(0)} ** (max_knots + 1);
+    var out: [max_knots]Knot = undefined;
+    const policy: policy_mod.XPolicy = .{ .@"align" = .grid };
+    try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, 0, 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&one, TestFontFeatures{}, .x, policy, std.math.nan(f32), 0, &out).len);
+    try testing.expectEqual(@as(usize, 0), fitAxis(&too_many, TestFontFeatures{}, .x, policy, 13, 0, &out).len);
+}
+
+test "independent and relative positioning compose separately" {
+    var features = [_]FeatureEdge{ testFeature(0.10), testFeature(0.18), testFeature(0.29), testFeature(0.37) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.08);
+    featureStemPair(&features[2], &features[3], 2, 3, 0.08);
+    const font = TestFontFeatures{ .std_x = 0.08 };
+    var independent_out: [max_knots]Knot = undefined;
+    var relative_out: [max_knots]Knot = undefined;
+    const independent = fitAxis(&features, font, .x, .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+    }, 13, 0, &independent_out);
+    const relative = fitAxis(&features, font, .x, .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+        .positioning = .relative,
+    }, 13, 0, &relative_out);
+    try testing.expectApproxEqAbs(@as(f32, 4.0 / 13.0), independent[2].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3.0 / 13.0), relative[2].target, 1e-5);
+}
+
+test "natural stem width is preserved while its position aligns" {
+    var features = [_]FeatureEdge{ testFeature(0.21), testFeature(0.29) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.08);
+    var out: [max_knots]Knot = undefined;
+    const knots = fitAxis(&features, TestFontFeatures{ .std_x = 0.08 }, .x, .{
+        .@"align" = .grid,
+        .stem_width = .natural,
+    }, 13, 0, &out);
+    try testing.expectApproxEqAbs(@as(f32, 0.08), knots[1].target - knots[0].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 3.0 / 13.0), knots[0].target, 1e-5);
+}
+
+test "blue-zone overshoot can be preserved or suppressed" {
+    const zones = [_]BlueZone{.{ .ref = 0.5, .shoot = 0.52 }};
+    var features = [_]FeatureEdge{testFeature(0.52)};
+    features[0].blue = 0;
+    features[0].flags.round = true;
+    const font = TestFontFeatures{ .blues = &zones };
+    var preserve_out: [max_knots]Knot = undefined;
+    var suppress_out: [max_knots]Knot = undefined;
+    const preserved = fitAxis(&features, font, .y, .{ .@"align" = .blue_zones }, 13, 0, &preserve_out);
+    const suppressed = fitAxis(&features, font, .y, .{
+        .@"align" = .blue_zones,
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    }, 13, 0, &suppress_out);
+    try testing.expectApproxEqAbs(@as(f32, 7.0 / 13.0 + 0.02), preserved[0].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 7.0 / 13.0), suppressed[0].target, 1e-5);
+}
+
+test "fitGlyph scales axes independently" {
+    var x = [_]FeatureEdge{testFeature(0.2)};
+    var y = [_]FeatureEdge{testFeature(0.5)};
+    x[0].blue = 0;
+    y[0].blue = 0;
+    const zones = [_]BlueZone{.{ .ref = 0.5, .shoot = 0.5 }};
+    const glyph = .{ .x = x[0..], .y = y[0..], .left = @as(f32, 0) };
+    var x_out: [max_knots]Knot = undefined;
+    var y_out: [max_knots]Knot = undefined;
+    const knots = fitGlyph(glyph, TestFontFeatures{ .blues = &zones }, .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones },
+    }, .{ .x = 0, .y = 13 }, &x_out, &y_out);
+    try testing.expectEqual(@as(usize, 0), knots.x.len);
+    try testing.expectEqual(@as(usize, 1), knots.y.len);
 }
 
 test "knots snap edges to the pixel grid and stay monotone" {
