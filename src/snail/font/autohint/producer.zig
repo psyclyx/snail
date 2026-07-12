@@ -2,9 +2,8 @@
 //!
 //! `AutohintAnalyzer` flattens each outline and emits stable, em-normalized
 //! edge facts. Pixel-size and policy-specific fitting happens later; this
-//! module retains no fitted targets. A temporary knot adapter at the bottom of
-//! the analyzer keeps pre-feature-record in-tree callers building during the
-//! migration.
+//! module retains no fitted targets. A private knot adapter remains only for
+//! parity coverage while pre-feature-record callers migrate.
 
 const std = @import("std");
 
@@ -134,10 +133,9 @@ pub const AutohintAnalyzer = struct {
         return .{ .x = x, .y = y, .left = min_x / upm };
     }
 
-    /// Temporary bridge for pre-feature-record callers. It derives immutable
-    /// features first, then invokes the existing fitter without retaining any
-    /// size-dependent state.
-    pub fn glyphKnots(
+    /// Test-only migration bridge. This is deliberately private so the
+    /// root-exported producer API cannot produce per-PPEM results.
+    fn legacyGlyphKnots(
         self: *AutohintAnalyzer,
         scratch: Allocator,
         glyph_id: u16,
@@ -153,8 +151,8 @@ pub const AutohintAnalyzer = struct {
 
         var x_edges: [warp.max_knots]analysis.Edge = undefined;
         var y_edges: [warp.max_knots]analysis.Edge = undefined;
-        featureEdgesForFitter(glyph.x, &x_edges);
-        featureEdgesForFitter(glyph.y, &y_edges);
+        featureEdgesForFitter(glyph.x, font_features.blues, &x_edges);
+        featureEdgesForFitter(glyph.y, font_features.blues, &y_edges);
         var zones: [warp.max_knots]warp.BlueZone = undefined;
         for (font_features.blues, 0..) |zone, i| zones[i] = .{ .ref = zone.ref, .shoot = zone.shoot };
 
@@ -167,10 +165,7 @@ pub const AutohintAnalyzer = struct {
     }
 };
 
-/// Source compatibility for in-tree users during the feature-record migration.
-pub const AutoLight = AutohintAnalyzer;
-
-pub const AxisKnots = struct {
+const AxisKnots = struct {
     x: []const warp.Knot,
     y: []const warp.Knot,
 };
@@ -189,21 +184,82 @@ fn convertEdges(edges: []const analysis.Edge, upm: f32, out: []FeatureEdge) []co
     return out[0..edges.len];
 }
 
-fn featureEdgesForFitter(features: []const FeatureEdge, out: []analysis.Edge) void {
+fn featureEdgesForFitter(features: []const FeatureEdge, zones: []const blue_mod.FeatureZone, out: []analysis.Edge) void {
     for (features, out[0..features.len]) |feature, *edge| {
         const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < features.len and
             features[@intCast(feature.stem)].pos > feature.pos;
+        // A blue zone's overshoot is outside its reference: below for bottom
+        // zones and above for top zones. This preserves the transient edge
+        // direction needed by the old round-apex companion heuristic without
+        // adding direction to the stable feature record.
+        const bottom_blue = feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < zones.len and
+            zones[@intCast(feature.blue)].shoot < zones[@intCast(feature.blue)].ref;
+        var companion_dir: i2 = 1;
+        if (feature.stem < 0 and feature.blue < 0) {
+            var nearest_gap = std.math.inf(f32);
+            for (features) |candidate| {
+                if (candidate.blue < 0 or @as(usize, @intCast(candidate.blue)) >= zones.len) continue;
+                const gap = @abs(candidate.pos - feature.pos);
+                if (gap >= nearest_gap) continue;
+                nearest_gap = gap;
+                const candidate_is_bottom = zones[@intCast(candidate.blue)].shoot < zones[@intCast(candidate.blue)].ref;
+                companion_dir = if (candidate_is_bottom) 1 else -1;
+            }
+        }
         edge.* = .{
             .pos = feature.pos,
             .min = 0,
             .max = 0,
-            .dir = if (partner_above) -1 else 1,
+            .dir = if (partner_above or bottom_blue) -1 else companion_dir,
             .stem = feature.stem,
             .width = feature.width,
             .blue = feature.blue,
             .round = feature.flags.round,
         };
     }
+}
+
+fn directGlyphKnotsForTest(
+    self: *AutohintAnalyzer,
+    scratch: Allocator,
+    glyph_id: u16,
+    ppem_26_6: u32,
+    x_buf: []warp.Knot,
+    y_buf: []warp.Knot,
+) !AxisKnots {
+    var pts: std.ArrayList(outline.Point) = .empty;
+    defer pts.deinit(scratch);
+    var contours: std.ArrayList(outline.ContourRange) = .empty;
+    defer contours.deinit(scratch);
+    try flattenGlyph(scratch, &self.program, glyph_id, &pts, &contours, 0);
+
+    const upm: f32 = @floatFromInt(self.font.units_per_em);
+    if (pts.items.len == 0 or upm <= 0) return .{ .x = x_buf[0..0], .y = y_buf[0..0] };
+    const px_per_unit = (@as(f32, @floatFromInt(ppem_26_6)) / 64.0) / upm;
+
+    var ay = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .y);
+    defer ay.deinit();
+    self.blues.assignEdges(ay.edges, self.blue_tol_em);
+    var zones: [warp.max_knots]warp.BlueZone = undefined;
+    const ny = warp.buildKnots(ay.edges, self.blues.warpZones(&zones), px_per_unit, self.std_y, .{}, y_buf);
+
+    var ax = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .x);
+    defer ax.deinit();
+    var min_x: f32 = std.math.inf(f32);
+    for (pts.items) |point| min_x = @min(min_x, @as(f32, @floatFromInt(point.x)));
+    const nx = warp.buildKnotsReg(ax.edges, &.{}, px_per_unit, self.std_x, .{
+        .full_stem_hint = true,
+        .anchor_stem_positions = true,
+    }, min_x, x_buf);
+    for (x_buf[0..nx]) |*knot| {
+        knot.base /= upm;
+        knot.target /= upm;
+    }
+    for (y_buf[0..ny]) |*knot| {
+        knot.base /= upm;
+        knot.target /= upm;
+    }
+    return .{ .x = x_buf[0..nx], .y = y_buf[0..ny] };
 }
 
 /// Resolve `glyph_id` (simple or compound) into a single flat point/contour
@@ -329,4 +385,41 @@ test "repeated analysis has one result independent of size" {
     const b = try analyzer.analyzeGlyph(testing.allocator, glyph_h, &xb2, &yb2);
     try testing.expectEqualSlices(FeatureEdge, a.x, b.x);
     try testing.expectEqualSlices(FeatureEdge, a.y, b.y);
+}
+
+test "private legacy fitting preserves round bottom direction" {
+    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
+    defer analyzer.deinit();
+    const glyph_o = try analyzer.font.glyphIndex('o');
+
+    var feature_x: [warp.max_knots]FeatureEdge = undefined;
+    var feature_y: [warp.max_knots]FeatureEdge = undefined;
+    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_o, &feature_x, &feature_y);
+    const zones = analyzer.fontFeatures().blues;
+    var saw_round_bottom = false;
+    for (glyph.y) |edge| {
+        if (edge.flags.round and edge.blue >= 0 and zones[@intCast(edge.blue)].shoot < zones[@intCast(edge.blue)].ref) {
+            saw_round_bottom = true;
+        }
+    }
+    try testing.expect(saw_round_bottom);
+
+    for ([_]u32{ 9, 12, 16, 28 }) |ppem| {
+        var legacy_x: [warp.max_knots]warp.Knot = undefined;
+        var legacy_y: [warp.max_knots]warp.Knot = undefined;
+        var direct_x: [warp.max_knots]warp.Knot = undefined;
+        var direct_y: [warp.max_knots]warp.Knot = undefined;
+        const legacy = try analyzer.legacyGlyphKnots(testing.allocator, glyph_o, ppem * 64, &legacy_x, &legacy_y);
+        const direct = try directGlyphKnotsForTest(&analyzer, testing.allocator, glyph_o, ppem * 64, &direct_x, &direct_y);
+        try testing.expectEqual(direct.x.len, legacy.x.len);
+        try testing.expectEqual(direct.y.len, legacy.y.len);
+        for (direct.x, legacy.x) |expected, actual| {
+            try testing.expectApproxEqAbs(expected.base, actual.base, 0.000001);
+            try testing.expectApproxEqAbs(expected.target, actual.target, 0.000001);
+        }
+        for (direct.y, legacy.y) |expected, actual| {
+            try testing.expectApproxEqAbs(expected.base, actual.base, 0.000001);
+            try testing.expectApproxEqAbs(expected.target, actual.target, 0.000001);
+        }
+    }
 }

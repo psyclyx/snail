@@ -158,9 +158,6 @@ pub const autohint = struct {
     pub const GlyphFeatures = producer.GlyphFeatures;
     pub const FontFeatures = producer.FontFeatures;
     pub const FeatureEdge = analysis.FeatureEdge;
-    // Temporary source alias for in-tree callers; glyphKnots remains confined
-    // to the producer migration bridge and is not a standalone root export.
-    pub const AutoLight = producer.AutoLight;
 };
 
 pub const HintVm = @import("font/hint_vm.zig").HintVm;

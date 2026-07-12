@@ -31,13 +31,65 @@ fn modeTag(m: Mode) []const u8 {
     };
 }
 
+// Temporary demo-local bridge while the runtime fitter is made feature-native.
+// It is intentionally absent from snail's root-exported producer API.
+fn legacyGlyphKnots(
+    analyzer: *snail.autohint.AutohintAnalyzer,
+    scratch: Allocator,
+    glyph_id: u16,
+    ppem_26_6: u32,
+    x_buf: []warp.Knot,
+    y_buf: []warp.Knot,
+) !struct { x: []const warp.Knot, y: []const warp.Knot } {
+    var x_features: [warp.max_knots]snail.autohint.FeatureEdge = undefined;
+    var y_features: [warp.max_knots]snail.autohint.FeatureEdge = undefined;
+    const glyph = try analyzer.analyzeGlyph(scratch, glyph_id, &x_features, &y_features);
+    const font = analyzer.fontFeatures();
+    const ppem = @as(f32, @floatFromInt(ppem_26_6)) / 64.0;
+
+    var x_edges: [warp.max_knots]snail.autohint.analysis.Edge = undefined;
+    var y_edges: [warp.max_knots]snail.autohint.analysis.Edge = undefined;
+    for (glyph.x, x_edges[0..glyph.x.len]) |feature, *edge| {
+        const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < glyph.x.len and
+            glyph.x[@intCast(feature.stem)].pos > feature.pos;
+        edge.* = .{ .pos = feature.pos, .min = 0, .max = 0, .dir = if (partner_above) -1 else 1, .stem = feature.stem, .width = feature.width, .blue = feature.blue, .round = feature.flags.round };
+    }
+    for (glyph.y, y_edges[0..glyph.y.len]) |feature, *edge| {
+        const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < glyph.y.len and
+            glyph.y[@intCast(feature.stem)].pos > feature.pos;
+        const bottom_blue = feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < font.blues.len and
+            font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref;
+        var companion_dir: i2 = 1;
+        if (feature.stem < 0 and feature.blue < 0) {
+            var nearest_gap = std.math.inf(f32);
+            for (glyph.y) |candidate| {
+                if (candidate.blue < 0 or @as(usize, @intCast(candidate.blue)) >= font.blues.len) continue;
+                const gap = @abs(candidate.pos - feature.pos);
+                if (gap >= nearest_gap) continue;
+                nearest_gap = gap;
+                const candidate_is_bottom = font.blues[@intCast(candidate.blue)].shoot < font.blues[@intCast(candidate.blue)].ref;
+                companion_dir = if (candidate_is_bottom) 1 else -1;
+            }
+        }
+        edge.* = .{ .pos = feature.pos, .min = 0, .max = 0, .dir = if (partner_above or bottom_blue) -1 else companion_dir, .stem = feature.stem, .width = feature.width, .blue = feature.blue, .round = feature.flags.round };
+    }
+    var zones: [warp.max_knots]warp.BlueZone = undefined;
+    for (font.blues, 0..) |zone, i| zones[i] = .{ .ref = zone.ref, .shoot = zone.shoot };
+    const nx = warp.buildKnotsReg(x_edges[0..glyph.x.len], &.{}, ppem, font.std_x, .{
+        .full_stem_hint = true,
+        .anchor_stem_positions = true,
+    }, glyph.left, x_buf);
+    const ny = warp.buildKnots(y_edges[0..glyph.y.len], zones[0..font.blues.len], ppem, font.std_y, .{}, y_buf);
+    return .{ .x = x_buf[0..nx], .y = y_buf[0..ny] };
+}
+
 pub const Compare = struct {
     allocator: Allocator,
     pool: *snail.PagePool,
     font: *snail.Font,
     faces: snail.Faces,
     font_id: u32,
-    auto: snail.autohint.AutoLight,
+    auto: snail.autohint.AutohintAnalyzer,
     /// The font's own TrueType hinting, if it has any (DejaVu does; Noto Sans
     /// Mono is unhinted, so this stays null and the tt row renders unhinted).
     tt: ?snail.HintVm,
@@ -61,7 +113,7 @@ pub const Compare = struct {
         errdefer faces.deinit();
         const font_id = faces.fontIdForFace(0);
 
-        const auto = try snail.autohint.AutoLight.init(allocator, font_bytes);
+        const auto = try snail.autohint.AutohintAnalyzer.init(allocator, font_bytes);
         const tt = snail.HintVm.init(allocator, font) catch null;
 
         return .{
@@ -244,7 +296,7 @@ pub const Compare = struct {
                 if (!self.atlas.contains(key_a) and !hasKey(entries.items, key_a)) {
                     const xk = try scratch.alloc(warp.Knot, warp.max_knots);
                     const yk = try scratch.alloc(warp.Knot, warp.max_knots);
-                    const knots = try self.auto.glyphKnots(scratch, g.glyph_id, ppem_26_6, xk, yk);
+                    const knots = try legacyGlyphKnots(&self.auto, scratch, g.glyph_id, ppem_26_6, xk, yk);
                     // Alias the shared unhinted base (inserted above / already
                     // in the atlas) — every ppem warps the one base copy.
                     try entries.append(scratch, .{

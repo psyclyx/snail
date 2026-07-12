@@ -441,8 +441,6 @@ test "GlyphAtlasCache keeps a hot glyph across many evictions" {
 
 test "GlyphAtlasCache protects an autohint base from eviction" {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
-    var auto = try snail.autohint.AutoLight.init(testing.allocator, assets.dejavu_sans_mono);
-    defer auto.deinit();
     const pool = try testPool(3);
     defer pool.deinit();
     var cache = GlyphAtlasCache.init(testing.allocator, pool);
@@ -457,15 +455,14 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
     // A run of per-ppem warps over the same base, interleaved with churn from
     // other glyphs. The base must survive so each warp can alias it.
     for ([_]u32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 }) |px| {
-        var xb: [snail.autohint.warp.max_knots]snail.autohint.warp.Knot = undefined;
-        var yb: [snail.autohint.warp.max_knots]snail.autohint.warp.Knot = undefined;
-        const knots = try auto.glyphKnots(testing.allocator, gid, px * 64, &xb, &yb);
+        const x_knots = [_]snail.autohint.warp.Knot{.{ .base = 0.1, .target = 0.1 }};
+        const y_knots = [_]snail.autohint.warp.Knot{.{ .base = 0.2, .target = 0.2 }};
         const warp_key = recordKey.autohintGlyph(0, gid, px * 64);
         cache.touch(base_key);
         try cache.ensure(.{
             .key = warp_key,
             .curves = snail.GlyphCurves.empty(testing.allocator),
-            .autohint = .{ .x = knots.x, .y = knots.y },
+            .autohint = .{ .x = &x_knots, .y = &y_knots },
             .autohint_base = base_key,
         });
         // Churn a throwaway glyph to pressure the pool.
