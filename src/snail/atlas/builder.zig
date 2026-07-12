@@ -20,7 +20,6 @@ const band_tex_format = @import("../render/format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
 const autohint_format = @import("../render/format/autohint_record.zig");
 const autohint_warp = @import("../font/autohint/warp.zig");
-const bezier = @import("../math/bezier.zig");
 const paint_mod = @import("../paint.zig");
 const target_mod = @import("../target.zig");
 
@@ -45,22 +44,6 @@ const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
-
-/// The hinted-space extent of a warped glyph: forward-warp the base bbox
-/// corners through the per-axis knots and union with the base (the map is
-/// monotone, so a corner maps to a corner). The autohint quad must span this
-/// or a snapped edge pushed past the base outline clips; sampling is unchanged
-/// (it inverse-warps back into base space regardless of quad size).
-fn warpedBBox(base: bezier.BBox, knots: atlas_mod.AutohintKnots) bezier.BBox {
-    const xl = autohint_warp.forwardWarp(knots.x, base.min.x);
-    const xh = autohint_warp.forwardWarp(knots.x, base.max.x);
-    const yl = autohint_warp.forwardWarp(knots.y, base.min.y);
-    const yh = autohint_warp.forwardWarp(knots.y, base.max.y);
-    return .{
-        .min = .{ .x = @min(base.min.x, @min(xl, xh)), .y = @min(base.min.y, @min(yl, yh)) },
-        .max = .{ .x = @max(base.max.x, @max(xl, xh)), .y = @max(base.max.y, @max(yl, yh)) },
-    };
-}
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -159,19 +142,30 @@ pub const Builder = struct {
         self.autohint_lookup = next;
     }
 
-    /// Append an autohint slab record (base band entry + both packed knot
-    /// runs) after the base glyph's normal record, and remember its slab
-    /// position. Shares `layer_info_buf` with paint records.
+    /// Append one immutable feature record after validating counts and slab
+    /// coordinates. Shares `layer_info_buf` with paint records.
     fn insertAutohintRecord(
         self: *Builder,
         key: RecordKey,
         bands: GlyphBandEntry,
-        knots: atlas_mod.AutohintKnots,
-    ) std.mem.Allocator.Error!void {
-        const record_floats = autohint_format.recordFloatCount(knots.x.len, knots.y.len);
+        analysis: atlas_mod.AutohintAnalysis,
+    ) InsertError!void {
+        if (analysis.glyph.x.len > autohint_warp.max_knots or
+            analysis.glyph.y.len > autohint_warp.max_knots or
+            analysis.font.blues.len > autohint_warp.max_knots)
+        {
+            return error.InvalidAutohintAnalysis;
+        }
+        const record_floats = autohint_format.recordFloatCount(
+            analysis.font.blues.len,
+            analysis.glyph.x.len,
+            analysis.glyph.y.len,
+        );
         const record_texels: u32 = @intCast((record_floats + 3) / 4);
         const texel_offset = self.layer_info_texels;
-        const new_texels = texel_offset + record_texels;
+        const new_texels = std.math.add(u32, texel_offset, record_texels) catch return error.LayerInfoTooLarge;
+        const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        if (new_texels > max_texels) return error.LayerInfoTooLarge;
         const need_floats = @as(usize, new_texels) * 4;
         if (self.layer_info_buf.items.len < need_floats) {
             try self.layer_info_buf.resize(self.allocator, need_floats);
@@ -186,7 +180,7 @@ pub const Builder = struct {
             .band_scale_y = bands.band_scale_y,
             .band_offset_x = bands.band_offset_x,
             .band_offset_y = bands.band_offset_y,
-        }, knots.x, knots.y);
+        }, analysis.font, analysis.glyph) catch return error.InvalidAutohintAnalysis;
         try self.autohintLookupPut(key, .{
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
@@ -423,21 +417,14 @@ pub const Builder = struct {
         if (self.lookup.contains(entry.key)) return;
 
         // Aliased autohint: reuse an already-inserted base glyph's placement
-        // and bands, placing no curves of our own. The warp key then samples
-        // the shared base curves, so N per-ppem warps cost one curve copy.
-        if (entry.autohint) |knots| {
+        // and bands, placing no curves of our own. A target-free analysis
+        // cannot define a static hinted-space expansion, so retain the base
+        // bbox; emit expands device bounds when fitting is applied.
+        if (entry.autohint) |analysis| {
             if (entry.autohint_base) |base_key| {
                 const base_rec = self.lookup.get(base_key) orelse return error.MissingAutohintBase;
-                // The warp can move edges beyond the unhinted base outline (a
-                // snapped x-height apex sits above the natural apex; an overshoot
-                // dips below the baseline). The quad is in hinted space, so it
-                // must cover the WARPED extent or those edges clip against the
-                // base bbox. Sampling is unaffected — it inverse-warps back to
-                // base-outline coords regardless of the quad size.
-                var warped_rec = base_rec;
-                warped_rec.bbox = warpedBBox(base_rec.bbox, knots);
-                try self.lookupPut(entry.key, warped_rec);
-                try self.insertAutohintRecord(entry.key, base_rec.bands, knots);
+                try self.lookupPut(entry.key, base_rec);
+                try self.insertAutohintRecord(entry.key, base_rec.bands, analysis);
                 return;
             }
         }
@@ -493,16 +480,16 @@ pub const Builder = struct {
             .curve_texel = base_placement.curve_texel,
             .curve_count = base_placement.curve_count,
             .bands = base_placement.bands,
-            // A self-curved autohint entry is warped too — cover the warped
-            // extent so snapped edges don't clip (see the aliased branch above).
-            .bbox = if (entry.autohint) |knots| warpedBBox(bbox, knots) else bbox,
+            // Target-free analyses retain the base bbox. Device-space emit
+            // supplies the conservative pixel expansion when fitting is used.
+            .bbox = bbox,
         };
 
         try self.lookupPut(entry.key, record);
 
-        // Autohint: warped instance over the shared base glyph.
-        if (entry.autohint) |knots| {
-            try self.insertAutohintRecord(entry.key, base_placement.bands, knots);
+        // Autohint: immutable analysis over the shared base glyph.
+        if (entry.autohint) |analysis| {
+            try self.insertAutohintRecord(entry.key, base_placement.bands, analysis);
         }
 
         // Skip layer-info entirely if there's no paint at all.

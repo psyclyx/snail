@@ -15,7 +15,7 @@ const band_tex_format = @import("render/format/band_texture.zig");
 const paint_mod = @import("paint.zig");
 const atlas_builder = @import("atlas/builder.zig");
 const hamt_mod = @import("util/hamt.zig");
-const autohint_warp = @import("font/autohint/warp.zig");
+const autohint = @import("font/autohint/producer.zig");
 
 const Builder = atlas_builder.Builder;
 
@@ -56,12 +56,12 @@ pub const PaintRecordInfo = struct {
     layer_count: u16 = 1,
 };
 
-/// Per-axis warp knots for an autohint entry. Borrowed by `from`/`extend`;
-/// the builder copies them into the layer-info slab, so they need only
-/// outlive the build call.
-pub const AutohintKnots = struct {
-    x: []const autohint_warp.Knot,
-    y: []const autohint_warp.Knot,
+/// Immutable, target-free analysis for an autohint entry. All values are
+/// em-normalized. The slices are borrowed by `from`/`extend`; the builder
+/// copies them into the layer-info slab during the build call.
+pub const AutohintAnalysis = struct {
+    font: autohint.FontFeatures,
+    glyph: autohint.GlyphFeatures,
 };
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
@@ -93,16 +93,15 @@ pub const Entry = struct {
     fill_rule: @import("target.zig").FillRule = .non_zero,
     extra_layers: []const Layer = &.{},
     composite_mode: CompositeMode = .source_over,
-    /// When set, the atlas also writes an autohint slab record (the base
-    /// band entry + these knots) and remembers it in `autohint_lookup`, so
-    /// emit encodes a resolution-independent warped instance. Mutually
-    /// usable with `paint`.
-    autohint: ?AutohintKnots = null,
+    /// When set, the atlas writes one immutable autohint feature record and
+    /// remembers it in `autohint_lookup`. PPEM and fitting policy are not
+    /// stored in the atlas. Mutually usable with `paint`.
+    autohint: ?AutohintAnalysis = null,
     /// For an autohint entry, the key of an already-inserted unhinted base
     /// glyph whose curves+bands this warp samples. When set, the entry
     /// places NO curves of its own (`curves` is ignored) — it aliases the
-    /// base record's placement — so N per-ppem warps over one glyph cost a
-    /// single curve copy, not N. The base key must be inserted earlier in
+    /// base record's placement — so the analysis and outline share one
+    /// curve copy. The base key must be inserted earlier in
     /// the same `from`/`extend` call or already present in the parent atlas.
     /// Only meaningful together with `autohint`.
     autohint_base: ?RecordKey = null,
@@ -116,7 +115,13 @@ pub const Layer = struct {
 
 pub const CompositeMode = paint_mod.CompositeMode;
 
-pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{ RecordTooLargeForPage, NoPool, MissingAutohintBase };
+pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{
+    RecordTooLargeForPage,
+    NoPool,
+    MissingAutohintBase,
+    InvalidAutohintAnalysis,
+    LayerInfoTooLarge,
+};
 
 pub const Atlas = struct {
     allocator: std.mem.Allocator,
@@ -364,7 +369,6 @@ pub const Atlas = struct {
         return builder.finish();
     }
 };
-
 
 // ---------------------------------------------------------------------------
 // Tests
@@ -620,7 +624,7 @@ test "extend dedups keys against existing atlas" {
     try testing.expectEqual(old_rec.curve_texel, new_rec.curve_texel);
 }
 
-test "autohint entry aliases a base glyph without copying curves" {
+test "one immutable autohint record serves multiple sizes and policies" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1024,
@@ -632,36 +636,38 @@ test "autohint entry aliases a base glyph without copying curves" {
     defer base_curves.deinit();
 
     const base_key = record_key_mod.unhintedGlyph(0, 1);
-    // Two per-ppem warps over the one base glyph.
-    const warp_a = record_key_mod.hintedGlyph(0, 1, 12 * 64);
-    const warp_b = record_key_mod.hintedGlyph(0, 1, 16 * 64);
-    const knots = AutohintKnots{
-        .x = &.{ .{ .base = 0, .target = 0 }, .{ .base = 8, .target = 8 } },
-        .y = &.{ .{ .base = 0, .target = 0 }, .{ .base = 4, .target = 4 } },
+    const analysis_key = record_key_mod.autohintGlyph(0, 1);
+    const blues = [_]@import("font/autohint/blue.zig").FeatureZone{.{ .ref = 0, .shoot = -0.01 }};
+    const x = [_]autohint.FeatureEdge{.{ .pos = 0.1, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
+    const y = [_]autohint.FeatureEdge{.{ .pos = 0.5, .width = 0.07, .stem = -1, .blue = 0, .flags = .{ .round = true } }};
+    const analysis = AutohintAnalysis{
+        .font = .{ .blues = &blues, .std_x = 0.08, .std_y = 0.07 },
+        .glyph = .{ .x = &x, .y = &y, .left = 0.02 },
     };
 
     var atlas = try Atlas.from(testing.allocator, pool, &.{
         .{ .key = base_key, .curves = base_curves },
-        .{ .key = warp_a, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = base_key },
-        .{ .key = warp_b, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = base_key },
+        .{ .key = analysis_key, .curves = GlyphCurves.empty(testing.allocator), .autohint = analysis, .autohint_base = base_key },
     });
     defer atlas.deinit();
 
-    // Three records, but the two warps alias the base placement, so only the
-    // base's curves were packed — a single page, base curve words only.
-    try testing.expectEqual(@as(u32, 3), atlas.recordCount());
-    try testing.expectEqual(@as(usize, 1), atlas.pageCount());
+    const pages_before = atlas.pageCount();
+    const slab_len_before = atlas.layer_info_data.?.len;
+    const root_12_light = atlas.lookupRecord(record_key_mod.autohintGlyph(0, 1)).?;
+    // PPEM and policy are synthetic draw-time inputs: neither changes the key
+    // used for this second lookup.
+    const ppem_26_6: u32 = 24 * 64;
+    const policy = @import("font/autohint/policy.zig").AutohintPolicy{ .x = .{ .@"align" = .grid } };
+    _ = ppem_26_6;
+    _ = policy;
+    const root_24_grid = atlas.lookupRecord(record_key_mod.autohintGlyph(0, 1)).?;
 
-    const base_rec = atlas.lookupRecord(base_key).?;
-    const a_rec = atlas.lookupRecord(warp_a).?;
-    const b_rec = atlas.lookupRecord(warp_b).?;
-    try testing.expectEqual(base_rec.curve_texel, a_rec.curve_texel);
-    try testing.expectEqual(base_rec.curve_texel, b_rec.curve_texel);
-    try testing.expectEqual(base_rec.curve_count, a_rec.curve_count);
-
-    // Each warp got its own autohint slab record.
-    try testing.expect(atlas.lookupAutohintRecord(warp_a) != null);
-    try testing.expect(atlas.lookupAutohintRecord(warp_b) != null);
+    try testing.expectEqual(@as(u32, 2), atlas.recordCount());
+    try testing.expectEqual(pages_before, atlas.pageCount());
+    try testing.expectEqual(slab_len_before, atlas.layer_info_data.?.len);
+    try testing.expectEqual(root_12_light, root_24_grid);
+    try testing.expectEqual(atlas.lookupRecord(base_key).?.curve_texel, root_24_grid.curve_texel);
+    try testing.expect(atlas.lookupAutohintRecord(analysis_key) != null);
     try testing.expect(atlas.lookupAutohintRecord(base_key) == null);
 }
 
@@ -673,13 +679,41 @@ test "autohint entry with a missing base key errors" {
     });
     defer pool.deinit();
 
-    const warp_key = record_key_mod.hintedGlyph(0, 1, 12 * 64);
-    const knots = AutohintKnots{
-        .x = &.{ .{ .base = 0, .target = 0 } },
-        .y = &.{ .{ .base = 0, .target = 0 } },
+    const analysis_key = record_key_mod.autohintGlyph(0, 1);
+    const analysis = AutohintAnalysis{
+        .font = .{ .blues = &.{}, .std_x = 0, .std_y = 0 },
+        .glyph = .{ .x = &.{}, .y = &.{}, .left = 0 },
     };
     try testing.expectError(error.MissingAutohintBase, Atlas.from(testing.allocator, pool, &.{
-        .{ .key = warp_key, .curves = GlyphCurves.empty(testing.allocator), .autohint = knots, .autohint_base = record_key_mod.unhintedGlyph(0, 99) },
+        .{ .key = analysis_key, .curves = GlyphCurves.empty(testing.allocator), .autohint = analysis, .autohint_base = record_key_mod.unhintedGlyph(0, 99) },
+    }));
+}
+
+test "autohint entry rejects oversized immutable analysis" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var base_curves = try makeTestCurves(testing.allocator);
+    defer base_curves.deinit();
+    const base_key = record_key_mod.unhintedGlyph(0, 1);
+    const FeatureEdge = autohint.FeatureEdge;
+    const max_knots = @import("font/autohint/warp.zig").max_knots;
+    const too_many = [_]FeatureEdge{.{ .pos = 0, .width = 0, .stem = -1, .blue = -1, .flags = .{ .round = false } }} ** (max_knots + 1);
+    try testing.expectError(error.InvalidAutohintAnalysis, Atlas.from(testing.allocator, pool, &.{
+        .{ .key = base_key, .curves = base_curves },
+        .{
+            .key = record_key_mod.autohintGlyph(0, 1),
+            .curves = GlyphCurves.empty(testing.allocator),
+            .autohint = .{
+                .font = .{ .blues = &.{}, .std_x = 0, .std_y = 0 },
+                .glyph = .{ .x = &too_many, .y = &.{}, .left = 0 },
+            },
+            .autohint_base = base_key,
+        },
     }));
 }
 

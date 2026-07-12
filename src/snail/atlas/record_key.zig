@@ -51,10 +51,8 @@ pub const ns = struct {
     pub const path_stroke: u32 = 4;
     /// Paint record (gradient, image): caller-chosen a, b, c.
     pub const paint_record: u32 = 5;
-    /// auto_light warp glyph at a specific ppem: a=font_id, b=glyph_id,
-    /// c=ppem_26_6. Distinct from `hinted_glyph` so an auto_light warp and a
-    /// TrueType-hinted glyph of the same size never collide, and no ppem bit
-    /// has to be stolen for a discriminator.
+    /// Immutable auto-light analysis: a=font_id, b=glyph_id, c=0. Distinct
+    /// from `hinted_glyph`; one analysis serves every PPEM and policy.
     pub const autohint_glyph: u32 = 6;
 
     /// First namespace reserved for caller use.
@@ -69,11 +67,10 @@ pub fn hintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
     return .{ .namespace = ns.hinted_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
 }
 
-/// Key for an auto_light warp glyph (shared base curves + per-ppem knots) at
-/// `ppem_26_6`. Its own namespace so it can't collide with the TrueType
-/// `hintedGlyph` key of the same glyph/size.
-pub fn autohintGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
-    return .{ .namespace = ns.autohint_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
+/// Key for an immutable auto-light glyph analysis. Size and fitting policy
+/// are draw-time inputs and therefore do not participate in atlas identity.
+pub fn autohintGlyph(font_id: u32, glyph_id: u16) RecordKey {
+    return .{ .namespace = ns.autohint_glyph, .a = font_id, .b = @intCast(glyph_id), .c = 0 };
 }
 
 test "record key equality and hash" {
@@ -91,7 +88,12 @@ test "user namespaces start at 1024" {
 
 test "autohint and truetype keys of the same glyph never collide" {
     const tt = hintedGlyph(3, 42, 12 * 64);
-    const au = autohintGlyph(3, 42, 12 * 64);
+    const au = autohintGlyph(3, 42);
     try std.testing.expect(!tt.eql(au));
     try std.testing.expect(tt.hash() != au.hash());
+}
+
+test "autohint key ignores size and policy" {
+    const key = autohintGlyph(3, 42);
+    try std.testing.expectEqual(@as(u32, 0), key.c);
 }

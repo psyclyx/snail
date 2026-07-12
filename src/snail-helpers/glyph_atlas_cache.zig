@@ -35,27 +35,33 @@ const snail = @import("snail");
 const Allocator = std.mem.Allocator;
 const RecordKey = snail.RecordKey;
 const GlyphCurves = snail.GlyphCurves;
-const Knot = snail.autohint.warp.Knot;
+const FeatureEdge = snail.autohint.FeatureEdge;
+const FeatureZone = snail.autohint.blue.FeatureZone;
 
 /// Everything needed to re-insert one record into a freshly rebuilt atlas,
 /// owned by the cache so a rebuild never depends on the caller's memory.
 const Stored = struct {
     curves: GlyphCurves,
-    x_knots: ?[]Knot,
-    y_knots: ?[]Knot,
+    x_features: ?[]FeatureEdge,
+    y_features: ?[]FeatureEdge,
+    blue_zones: ?[]FeatureZone,
+    std_x: f32,
+    std_y: f32,
+    left: f32,
     autohint_base: ?RecordKey,
     fill_rule: snail.FillRule,
     /// LRU stamp; larger is more recently used.
     used: u64,
 
     fn isAutohint(self: Stored) bool {
-        return self.x_knots != null or self.y_knots != null;
+        return self.x_features != null or self.y_features != null;
     }
 
     fn deinit(self: *Stored, allocator: Allocator) void {
         self.curves.deinit();
-        if (self.x_knots) |k| allocator.free(k);
-        if (self.y_knots) |k| allocator.free(k);
+        if (self.x_features) |features| allocator.free(features);
+        if (self.y_features) |features| allocator.free(features);
+        if (self.blue_zones) |zones| allocator.free(zones);
         self.* = undefined;
     }
 };
@@ -298,17 +304,31 @@ pub const GlyphAtlasCache = struct {
     fn cloneEntry(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!Stored {
         var curves = try cloneCurves(self.allocator, entry.curves);
         errdefer curves.deinit();
-        var x_knots: ?[]Knot = null;
-        var y_knots: ?[]Knot = null;
-        errdefer if (x_knots) |k| self.allocator.free(k);
+        var x_features: ?[]FeatureEdge = null;
+        var y_features: ?[]FeatureEdge = null;
+        var blue_zones: ?[]FeatureZone = null;
+        errdefer if (x_features) |features| self.allocator.free(features);
+        errdefer if (y_features) |features| self.allocator.free(features);
+        errdefer if (blue_zones) |zones| self.allocator.free(zones);
+        var std_x: f32 = 0;
+        var std_y: f32 = 0;
+        var left: f32 = 0;
         if (entry.autohint) |ah| {
-            x_knots = try self.allocator.dupe(Knot, ah.x);
-            y_knots = try self.allocator.dupe(Knot, ah.y);
+            x_features = try self.allocator.dupe(FeatureEdge, ah.glyph.x);
+            y_features = try self.allocator.dupe(FeatureEdge, ah.glyph.y);
+            blue_zones = try self.allocator.dupe(FeatureZone, ah.font.blues);
+            std_x = ah.font.std_x;
+            std_y = ah.font.std_y;
+            left = ah.glyph.left;
         }
         return .{
             .curves = curves,
-            .x_knots = x_knots,
-            .y_knots = y_knots,
+            .x_features = x_features,
+            .y_features = y_features,
+            .blue_zones = blue_zones,
+            .std_x = std_x,
+            .std_y = std_y,
+            .left = left,
             .autohint_base = entry.autohint_base,
             .fill_rule = entry.fill_rule,
             .used = 0,
@@ -319,8 +339,11 @@ pub const GlyphAtlasCache = struct {
 /// Build a borrowed `AtlasEntry` view over a stored record (no copy — the
 /// atlas builder copies the bytes it needs during `from`/`extend`).
 fn storedEntry(key: RecordKey, s: Stored) snail.AtlasEntry {
-    const autohint: ?snail.AutohintKnots = if (s.isAutohint())
-        .{ .x = s.x_knots orelse &.{}, .y = s.y_knots orelse &.{} }
+    const autohint: ?snail.AutohintAnalysis = if (s.isAutohint())
+        .{
+            .font = .{ .blues = s.blue_zones orelse &.{}, .std_x = s.std_x, .std_y = s.std_y },
+            .glyph = .{ .x = s.x_features orelse &.{}, .y = s.y_features orelse &.{}, .left = s.left },
+        }
     else
         null;
     return .{
@@ -455,14 +478,17 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
     // A run of per-ppem warps over the same base, interleaved with churn from
     // other glyphs. The base must survive so each warp can alias it.
     for ([_]u32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 }) |px| {
-        const x_knots = [_]snail.autohint.warp.Knot{.{ .base = 0.1, .target = 0.1 }};
-        const y_knots = [_]snail.autohint.warp.Knot{.{ .base = 0.2, .target = 0.2 }};
-        const warp_key = recordKey.autohintGlyph(0, gid, px * 64);
+        const x_features = [_]FeatureEdge{.{ .pos = 0.1, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
+        const y_features = [_]FeatureEdge{.{ .pos = 0.2, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
+        const warp_key = recordKey.autohintGlyph(0, gid);
         cache.touch(base_key);
         try cache.ensure(.{
             .key = warp_key,
             .curves = snail.GlyphCurves.empty(testing.allocator),
-            .autohint = .{ .x = &x_knots, .y = &y_knots },
+            .autohint = .{
+                .font = .{ .blues = &.{}, .std_x = 0.08, .std_y = 0.08 },
+                .glyph = .{ .x = &x_features, .y = &y_features, .left = 0 },
+            },
             .autohint_base = base_key,
         });
         // Churn a throwaway glyph to pressure the pool.

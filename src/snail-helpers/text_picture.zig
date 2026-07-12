@@ -63,7 +63,7 @@ pub const HintMode = union(enum) {
     pub fn key(self: HintMode, font_id: u32, glyph_id: u16) snail.RecordKey {
         return switch (self) {
             .unhinted => snail.recordKey.unhintedGlyph(font_id, glyph_id),
-            .auto_light => |m| snail.recordKey.autohintGlyph(font_id, glyph_id, m.ppem_26_6),
+            .auto_light => snail.recordKey.autohintGlyph(font_id, glyph_id),
             .truetype => |m| snail.recordKey.hintedGlyph(font_id, glyph_id, m.ppem_26_6),
         };
     }
