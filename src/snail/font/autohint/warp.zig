@@ -197,18 +197,22 @@ pub fn buildKnotsReg(
         else
             e.width; // thick — natural width, position only
         if (params.anchor_stem_positions) {
-            // Anchor to the first stem, then round each later stem's distance
-            // from it ONCE — preserves the glyph's counter widths instead of
-            // double-rounding both ends of every gap.
-            if (!anchor_set) {
-                target[i] = snap(e.pos, px_per_unit);
-                anchor_base = e.pos;
-                anchor_target = target[i];
-                anchor_set = true;
-            } else {
+            // Position each stem by rounding its PITCH — the inner-edge-to-
+            // inner-edge distance from the previous stem — exactly once, and
+            // accumulate. One round folds this stem's width and counter together
+            // (no double-rounding, so a 2-stem glyph like 'H' keeps its width),
+            // while accumulating rounded pitches keeps a 3-leg glyph like 'm'/'w'
+            // evenly spaced (round-from-the-first-stem would round 2·pitch and
+            // split it into a 1px + 2px counter).
+            if (anchor_set) {
                 target[i] = anchor_target + @round((e.pos - anchor_base) * px_per_unit) * grid;
+            } else {
+                target[i] = snap(e.pos, px_per_unit);
+                anchor_set = true;
             }
             target[j] = target[i] + width_units;
+            anchor_base = e.pos; // this stem's INNER edge → base for the next pitch
+            anchor_target = target[i];
         } else {
             const lower_blue = edges[i].blue >= 0;
             const upper_blue = edges[j].blue >= 0;
