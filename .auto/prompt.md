@@ -46,3 +46,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: natural-width relative x positioning with registration for the fourth policy. DejaVu policy worsened 819,196→889,710, though Noto improved strongly; relative positioning is not TT-like for this corpus.
 - Discarded: y grid alignment without blue zones (overshoot preserved for validity). DejaVu worsened 3,576,224→3,740,105 across all policies; font-global blues are essential. Noto again preferred less intervention.
 - Discarded: suppress all overshoots with a 10px threshold. Metrics were bit-identical; DejaVu/Noto overshoots are already suppressed throughout 9–14 PPEM.
+- Kept: disabled y standard-width substitution while retaining full pixel fitting (`std_snap_ratio=0`). DejaVu total improved 3,576,224→3,573,547; y -484, x-natural -693, each registered full mode -750. Noto unchanged. Synced demo policies.
