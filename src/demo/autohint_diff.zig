@@ -1,15 +1,15 @@
-//! Objective `auto_light`-vs-TrueType agreement metric for the hinting work.
+//! Objective strong xy autohint-policy-vs-TrueType agreement metric for the hinting work.
 //!
 //! For every ppem in the demo grid, this renders the sample string TWICE
 //! through the CPU backend at the same baseline/origin — once with the
-//! resolution-independent `auto_light` warp, once with the font's own
+//! explicit demo-local xy policy, once with the font's own
 //! TrueType hinting (the gold standard we're chasing). It then:
 //!
-//!   * prints a per-size disagreement score (summed |ink_au - ink_tt| and a
+//!   * prints a per-size disagreement score (summed |ink_xy - ink_tt| and a
 //!     count of pixels that differ by more than a visible margin), plus a
 //!     grand total — the single number to drive down while iterating; and
 //!   * writes zig-out/autohint-diff.tga, a red/green overlay where red is
-//!     auto_light-only ink, green is TrueType-only ink, and gray is where
+//!     xy-policy-only ink, green is TrueType-only ink, and gray is where
 //!     both agree — so the *location* of every disagreement is visible.
 //!
 //! Run with `zig build run-autohint-diff`. CPU-only (no GL/Wayland).
@@ -68,6 +68,19 @@ fn renderMode(
         .mode = mode,
         .snap = .columns,
     });
+    // Empty outlines intentionally have no autohint record; preserve their
+    // no-op shape on the resident unhinted key, as the comparison grid does.
+    if (mode == .autohint) {
+        const shapes = @constCast(pic.shapes);
+        for (shaped.glyphs, shapes) |glyph, *shape| {
+            const base_key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+            const base = atlas.lookupRecord(base_key) orelse return error.MissingRecord;
+            if (base.curve_count == 0) {
+                shape.key = base_key;
+                shape.autohint_policy = null;
+            }
+        }
+    }
     const scene = harness.Scene{
         .pool = pool,
         .paths_atlas = empty_atlas,
@@ -76,7 +89,7 @@ fn renderMode(
         .text_picture = &pic,
     };
     // Match the demo's hinting-comparison view exactly (main.zig:1056) so the
-    // tool draws au/tt the same way the user sees them.
+    // tool draws xy/tt the same way the user sees them.
     return harness.renderCpuToPixels(allocator, scene, W, H, .{ .coverage_exponent = 0.55 });
 }
 
@@ -112,10 +125,10 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     var frame = std.heap.ArenaAllocator.init(allocator);
     defer frame.deinit();
 
-    // Populate the atlas with every unhinted base, auto record and TT-baked
+    // Populate the atlas with every unhinted base, autohint analysis and TT-baked
     // glyph the grid references, at all grid ppems.
     const shaped = try compare.shape_cache.shape(&compare.faces, compare_mod.sample_text, .{});
-    const tags = try compare.shape_cache.shape(&compare.faces, "unautt", .{});
+    const tags = try compare.shape_cache.shape(&compare.faces, "unyxytt", .{});
     try compare.ensureAll(scratch.allocator(), shaped, tags, 1.0);
 
     var empty_atlas = snail.Atlas.empty(allocator);
@@ -125,27 +138,27 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
 
     const n = compare_mod.grid_ppems.len;
     const cell = @as(usize, W) * H;
-    const au_ink = try allocator.alloc(u8, cell);
-    defer allocator.free(au_ink);
+    const xy_ink = try allocator.alloc(u8, cell);
+    defer allocator.free(xy_ink);
     const tt_ink = try allocator.alloc(u8, cell);
     defer allocator.free(tt_ink);
 
     // Three stacked composites (bottom-up, like the harness output; smallest
-    // ppem at the top so slot k counts down): plain grayscale au, plain
+    // ppem at the top so slot k counts down): plain grayscale xy, plain
     // grayscale tt, and the red/green overlay. The grayscale pair is what the
     // demo actually shows — the overlay just localises where they differ.
-    const comp_au = try allocator.alloc(u8, cell * n * 4);
-    defer allocator.free(comp_au);
+    const comp_xy = try allocator.alloc(u8, cell * n * 4);
+    defer allocator.free(comp_xy);
     const comp_tt = try allocator.alloc(u8, cell * n * 4);
     defer allocator.free(comp_tt);
     const composite = try allocator.alloc(u8, cell * n * 4);
     defer allocator.free(composite);
-    @memset(comp_au, 255);
+    @memset(comp_xy, 255);
     @memset(comp_tt, 255);
     @memset(composite, 255);
 
-    std.debug.print("auto_light vs TrueType disagreement (lower = closer)\n", .{});
-    std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx,dy residual  (rigid shift that best aligns au->tt; 0,0 => not a registration offset)\n", .{});
+    std.debug.print("autohint xy policy vs TrueType disagreement (lower = closer)\n", .{});
+    std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx,dy residual  (rigid shift that best aligns xy->tt; 0,0 => not a registration offset)\n", .{});
 
     var grand: u64 = 0;
     for (compare_mod.grid_ppems, 0..) |ppem, k| {
@@ -157,20 +170,20 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
         defer allocator.free(tt);
         extractInk(tt, tt_ink);
 
-        const au = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
-        defer allocator.free(au);
-        extractInk(au, au_ink);
+        const xy = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .autohint = compare_mod.xy_policy });
+        defer allocator.free(xy);
+        extractInk(xy, xy_ink);
 
         var row_sum: u64 = 0;
         var row_cnt: u64 = 0;
-        for (au_ink, tt_ink) |a, t| {
+        for (xy_ink, tt_ink) |a, t| {
             const d = if (a > t) a - t else t - a;
             row_sum += d;
             if (d > 40) row_cnt += 1;
         }
         grand += row_sum;
 
-        // Diagnostic: re-render au over a grid of sub-pixel x/y offsets and
+        // Diagnostic: re-render xy over a grid of sub-pixel x/y offsets and
         // find the rigid shift that best matches tt. A small best shift with a
         // large residual drop => the disagreement is *registration*; 0,0
         // optimal (as here) => it's genuine per-glyph phase/shape, not a global
@@ -183,11 +196,11 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
             var ox: f32 = -1.5;
             while (ox <= 1.5 + 1e-3) : (ox += 0.25) {
                 if (@abs(ox) < 1e-3 and @abs(oy) < 1e-3) continue;
-                const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, ox, oy, .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } });
+                const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, ox, oy, .{ .autohint = compare_mod.xy_policy });
                 defer allocator.free(shifted);
-                extractInk(shifted, au_ink);
+                extractInk(shifted, xy_ink);
                 var res: u64 = 0;
-                for (au_ink, tt_ink) |a, t| res += if (a > t) a - t else t - a;
+                for (xy_ink, tt_ink) |a, t| res += if (a > t) a - t else t - a;
                 if (res < best_res) {
                     best_res = res;
                     best_dx = ox;
@@ -195,22 +208,22 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
                 }
             }
         }
-        // au_ink currently holds the last shifted render; restore the unshifted
+        // xy_ink currently holds the last shifted render; restore the unshifted
         // one for the overlay below.
-        extractInk(au, au_ink);
+        extractInk(xy, xy_ink);
 
         std.debug.print("  {d:>4}  {d:>2}  {d:>7}  {d:>7}   {d:>5.2},{d:>5.2}  {d:>7}\n", .{ ppem, @as(u32, @intFromFloat(em)), row_sum, row_cnt, best_dx, best_dy, best_res });
 
-        // Paint each slot: plain grayscale au and tt (what the demo shows),
-        // plus the overlay (red = TT-only, green = auto-only, gray = both).
+        // Paint each slot: plain grayscale xy and tt (what the demo shows),
+        // plus the overlay (red = TT-only, green = xy-policy-only, gray = both).
         const slot = (n - 1 - k) * H;
         for (0..H) |y| {
             for (0..W) |x| {
                 const s = y * W + x;
-                const a = au_ink[s];
+                const a = xy_ink[s];
                 const t = tt_ink[s];
                 const d = (slot + y) * W + x;
-                inline for (.{ .{ comp_au, a }, .{ comp_tt, t } }) |pair| {
+                inline for (.{ .{ comp_xy, a }, .{ comp_tt, t } }) |pair| {
                     pair[0][d * 4 + 0] = 255 - pair[1];
                     pair[0][d * 4 + 1] = 255 - pair[1];
                     pair[0][d * 4 + 2] = 255 - pair[1];
@@ -229,12 +242,12 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     _ = std.c.mkdir("zig-out", 0o755);
     var buf: [64]u8 = undefined;
     for ([_]struct { suffix: []const u8, data: []u8 }{
-        .{ .suffix = "au", .data = comp_au },
+        .{ .suffix = "xy", .data = comp_xy },
         .{ .suffix = "tt", .data = comp_tt },
         .{ .suffix = "diff", .data = composite },
     }) |o| {
         const path = try std.fmt.bufPrintZ(&buf, "zig-out/autohint-{s}-{s}.tga", .{ slug, o.suffix });
         try support.screenshot.writeTga(path, o.data, W, @intCast(H * n));
     }
-    std.debug.print("  wrote zig-out/autohint-{s}-(au|tt|diff).tga ({d}x{d})\n", .{ slug, W, H * n });
+    std.debug.print("  wrote zig-out/autohint-{s}-(xy|tt|diff).tga ({d}x{d})\n", .{ slug, W, H * n });
 }

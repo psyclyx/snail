@@ -1,10 +1,10 @@
 //! All-in-one hinting validation overlay for the interactive demo.
 //!
-//! Renders the same sample string in three hinting modes — unhinted,
-//! `auto_light` (this project's resolution-independent warp), and the font's
-//! built-in TrueType hinting — stacked across a spread of ppems. Lets you
-//! eyeball auto_light against the TrueType gold standard and the unhinted
-//! baseline at every size in one glance. Toggle with V. Drawn as a
+//! Renders the same sample string in four hinting modes — unhinted, explicit
+//! y-only and xy autohint policies, and the font's built-in TrueType hinting —
+//! stacked across a spread of ppems. Lets you compare both composable policies
+//! against the TrueType reference and unhinted baseline in one glance. Toggle
+//! with V. Drawn as a
 //! projection-only pass so it stays put while the world pans/zooms.
 
 const std = @import("std");
@@ -16,20 +16,53 @@ const Allocator = std.mem.Allocator;
 const ShapedRunCache = helpers.ShapedRunCache;
 const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
+const testing = std.testing;
 
 pub const sample_text = "Hamburg Λέξεις 0123";
 pub const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 
-const Mode = enum { unhinted, auto, tt };
-const modes = [_]Mode{ .unhinted, .auto, .tt };
+/// Demo choices, deliberately not library presets.
+pub const y_policy: snail.autohint.AutohintPolicy = .{
+    .x = .{
+        .@"align" = .none,
+        .stem_width = .natural,
+        .positioning = .independent,
+        .registration = .none,
+    },
+    .y = .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    },
+};
 
-fn modeTag(m: Mode) []const u8 {
-    return switch (m) {
-        .unhinted => "un",
-        .auto => "au",
-        .tt => "tt",
-    };
-}
+/// Strong demo policy: the same y fitting plus full relative x grid fitting.
+pub const xy_policy: snail.autohint.AutohintPolicy = .{
+    .x = .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+        .positioning = .relative,
+        .registration = .left_round_outline,
+    },
+    .y = .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    },
+};
+
+const Row = struct {
+    tag: []const u8,
+    mode: @FieldType(helpers.RunPlacement, "mode"),
+    snap: helpers.RunSnap,
+};
+
+const rows = [_]Row{
+    .{ .tag = "un", .mode = .unhinted, .snap = .none },
+    .{ .tag = "y", .mode = .{ .autohint = y_policy }, .snap = .none },
+    .{ .tag = "xy", .mode = .{ .autohint = xy_policy }, .snap = .columns },
+    .{ .tag = "tt", .mode = .{ .truetype = .{ .ppem_26_6 = 0 } }, .snap = .columns },
+};
 
 pub const Compare = struct {
     allocator: Allocator,
@@ -122,9 +155,9 @@ pub const Compare = struct {
         const shaped = try self.shape_cache.shape(&self.faces, sample_text, .{});
 
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
-        // (ppem, mode). Fold the font-label header's letters into the tag run
+        // (ppem, row). Fold the font-label header's letters into the tag run
         // so ensureAll makes them resident too. Ensure everything in one pass.
-        const tags_str = try std.fmt.allocPrint(frame_alloc, "unautt{s}", .{self.label});
+        const tags_str = try std.fmt.allocPrint(frame_alloc, "unyxytt{s}", .{self.label});
         const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
@@ -147,10 +180,10 @@ pub const Compare = struct {
         for (grid_ppems) |ppem| {
             const em: f32 = devEm(ppem, px_scale);
             const ppem_26_6: u32 = @intFromFloat(em * 64.0);
-            for (modes) |mode| {
+            for (rows) |row_desc| {
                 const baseline = @round(y) + em;
-                // Mode tag (fixed-size, unhinted).
-                const tag_shaped = try self.shape_cache.shape(&self.faces, modeTag(mode), .{});
+                // Row tag (fixed-size, unhinted).
+                const tag_shaped = try self.shape_cache.shape(&self.faces, row_desc.tag, .{});
                 const tag = try frame_alloc.create(helpers.Picture);
                 tag.* = try helpers.placeRun(frame_alloc, tag_shaped, &self.faces, .{
                     .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
@@ -160,7 +193,7 @@ pub const Compare = struct {
                 try refs.append(frame_alloc, tag);
                 // The sample in this mode.
                 const row = try frame_alloc.create(helpers.Picture);
-                row.* = try self.renderRow(frame_alloc, shaped, mode, ppem_26_6, em, left_sample, baseline);
+                row.* = try self.renderRow(frame_alloc, shaped, row_desc, ppem_26_6, em, left_sample, baseline);
                 try refs.append(frame_alloc, row);
                 y += em * 1.32 + 3 * px_scale;
             }
@@ -173,42 +206,43 @@ pub const Compare = struct {
         self: *Compare,
         frame_alloc: Allocator,
         shaped: *const snail.ShapedText,
-        mode: Mode,
+        row_desc: Row,
         ppem_26_6: u32,
         em: f32,
         left: f32,
         baseline: f32,
     ) !helpers.Picture {
-        _ = self;
         // Grid layout is already in device pixels (see buildGrid), so the
-        // world→device transform is identity — placeRun's `columns` snap then
-        // just rounds to integer device pens. Hinted modes assert monospace
-        // (it's DejaVu Sans Mono); unhinted places at natural sub-pixel pens.
-        const base = helpers.RunPlacement{
+        // world→device transform is identity and column snapping rounds to
+        // integer device pens. The y-only row keeps natural x positioning.
+        const mode: @FieldType(helpers.RunPlacement, "mode") = switch (row_desc.mode) {
+            .truetype => .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
+            else => row_desc.mode,
+        };
+        const picture = try helpers.placeRun(frame_alloc, shaped, null, .{
             .baseline = .{ .x = left, .y = baseline },
             .em = em,
             .color = text_color,
-        };
-        return switch (mode) {
-            .unhinted => helpers.placeRun(frame_alloc, shaped, null, base),
-            .auto => helpers.placeRun(frame_alloc, shaped, null, .{
-                .baseline = base.baseline,
-                .em = em,
-                .color = text_color,
-                .mode = .{ .auto_light = .{ .ppem_26_6 = ppem_26_6 } },
-                .snap = .columns,
-            }),
-            .tt => helpers.placeRun(frame_alloc, shaped, null, .{
-                .baseline = base.baseline,
-                .em = em,
-                .color = text_color,
-                .mode = .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
-                .snap = .columns,
-            }),
-        };
+            .mode = mode,
+            .snap = row_desc.snap,
+        });
+        // An empty outline has no bands to back an autohint record. Keep its
+        // no-op shape on the shared unhinted key so emit-time lookup succeeds
+        // without manufacturing size/policy-specific whitespace records.
+        if (mode == .autohint) {
+            const shapes = @constCast(picture.shapes);
+            for (shaped.glyphs, shapes) |glyph, *shape| {
+                const base = try self.glyph_cache.getOrInsert(self.allocator, frame_alloc, glyph.glyph_id);
+                if (base.curve_count == 0) {
+                    shape.key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+                    shape.autohint_policy = null;
+                }
+            }
+        }
+        return picture;
     }
 
-    /// Ensure the atlas holds unhinted curves and one immutable auto-light
+    /// Ensure the atlas holds unhinted curves and one immutable autohint
     /// analysis per sample glyph, plus TrueType-baked curves for each PPEM.
     /// Feature slices and TT curves live on `scratch`; the atlas copies them.
     pub fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
@@ -226,8 +260,28 @@ pub const Compare = struct {
             }
         }
 
-        // Immutable auto analysis is deduplicated across this PPEM loop;
-        // TrueType curves remain size-specific.
+        // Immutable analysis is populated exactly once per unique sample
+        // glyph, independent of policy and PPEM.
+        for (shaped.glyphs) |g| {
+            if (g.font_id != self.font_id) continue;
+            const key_a = autoKey(g.font_id, g.glyph_id);
+            if (self.atlas.contains(key_a) or hasKey(entries.items, key_a)) continue;
+            // Whitespace has no bands for an autohint record to alias.
+            const base = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
+            if (base.curve_count == 0) continue;
+
+            const x_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
+            const y_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
+            const glyph = try self.auto.analyzeGlyph(scratch, g.glyph_id, x_features, y_features);
+            try entries.append(scratch, .{
+                .key = key_a,
+                .curves = snail.GlyphCurves.empty(scratch),
+                .autohint = .{ .font = self.auto.fontFeatures(), .glyph = glyph },
+                .autohint_base = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id),
+            });
+        }
+
+        // Only TrueType preparation and baked curves remain PPEM-specific.
         for (grid_ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             // Run fpgm/prep once for this size; every glyph hints from it.
@@ -239,21 +293,6 @@ pub const Compare = struct {
 
             for (shaped.glyphs) |g| {
                 if (g.font_id != self.font_id) continue;
-
-                const key_a = autoKey(g.font_id, g.glyph_id);
-                if (!self.atlas.contains(key_a) and !hasKey(entries.items, key_a)) {
-                    const x_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
-                    const y_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
-                    const glyph = try self.auto.analyzeGlyph(scratch, g.glyph_id, x_features, y_features);
-                    // Alias the shared unhinted base; all sizes and policies
-                    // fit this one immutable record at draw time.
-                    try entries.append(scratch, .{
-                        .key = key_a,
-                        .curves = snail.GlyphCurves.empty(scratch),
-                        .autohint = .{ .font = self.auto.fontFeatures(), .glyph = glyph },
-                        .autohint_base = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id),
-                    });
-                }
 
                 if (self.tt) |*vm| if (tt_prepared) |*prepared| {
                     const key_t = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
@@ -296,4 +335,66 @@ const tag_color = [4]f32{ 0.45, 0.48, 0.55, 1.0 };
 fn hasKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
+}
+
+test "comparison contains four policy rows" {
+    try testing.expectEqualStrings("un", rows[0].tag);
+    try testing.expectEqualStrings("y", rows[1].tag);
+    try testing.expectEqualStrings("xy", rows[2].tag);
+    try testing.expectEqualStrings("tt", rows[3].tag);
+}
+
+test "comparison setup reuses autohint analysis across grid PPEMs" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 8,
+        .curve_words_per_page = 1 << 18,
+        .band_words_per_page = 1 << 16,
+    });
+    defer pool.deinit();
+
+    var compare = try Compare.init(testing.allocator, pool);
+    defer compare.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+
+    const shaped = try compare.shape_cache.shape(&compare.faces, sample_text, .{});
+    const tags = try compare.shape_cache.shape(&compare.faces, "unyxyttDejaVu", .{});
+    try compare.ensureAll(scratch.allocator(), shaped, tags, 1.0);
+
+    var sample_glyphs: std.AutoHashMap(u16, void) = .init(testing.allocator);
+    defer sample_glyphs.deinit();
+    for (shaped.glyphs) |glyph| {
+        if (glyph.font_id != compare.font_id) continue;
+        const base = try compare.glyph_cache.getOrInsert(testing.allocator, scratch.allocator(), glyph.glyph_id);
+        if (base.curve_count != 0) try sample_glyphs.put(glyph.glyph_id, {});
+    }
+
+    var it = sample_glyphs.keyIterator();
+    while (it.next()) |glyph_id| {
+        const analysis_key = autoKey(compare.font_id, glyph_id.*);
+        try testing.expect(compare.atlas.lookupAutohintRecord(analysis_key) != null);
+        if (compare.tt != null) {
+            for (grid_ppems) |ppem| {
+                const ppem_26_6: u32 = @intFromFloat(Compare.devEm(ppem, 1.0) * 64.0);
+                try testing.expect(compare.atlas.contains(snail.recordKey.hintedGlyph(compare.font_id, glyph_id.*, ppem_26_6)));
+            }
+        }
+    }
+
+    // A policy/size-independent analysis key means exactly one autohint slab
+    // record is reachable for each unique sample glyph.
+    try testing.expectEqual(sample_glyphs.count(), countAutohintRecords(&compare, shaped));
+}
+
+fn countAutohintRecords(compare: *const Compare, shaped: *const snail.ShapedText) u32 {
+    var count: u32 = 0;
+    for (shaped.glyphs, 0..) |glyph, i| {
+        if (glyph.font_id != compare.font_id) continue;
+        for (shaped.glyphs[0..i]) |prior| {
+            if (prior.font_id == glyph.font_id and prior.glyph_id == glyph.glyph_id) break;
+        } else {
+            if (compare.atlas.lookupAutohintRecord(autoKey(glyph.font_id, glyph.glyph_id)) != null) count += 1;
+        }
+    }
+    return count;
 }

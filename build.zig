@@ -284,6 +284,21 @@ fn addTestSteps(
     const run_helpers_unit_tests = b.addRunArtifact(helpers_unit_tests);
     test_step.dependOn(&run_helpers_unit_tests.step);
 
+    const autohint_compare_test_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_compare.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-helpers", .module = modules.snail_helpers },
+        },
+    });
+    const autohint_compare_tests = b.addTest(.{ .root_module = autohint_compare_test_module });
+    const run_autohint_compare_tests = b.addRunArtifact(autohint_compare_tests);
+    test_step.dependOn(&run_autohint_compare_tests.step);
+
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
     const valgrind_test_module = createCoreTestModule(
         b,
@@ -329,7 +344,7 @@ fn addScreenshotSteps(
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
-    // Auto-light autohint comparison — CPU backend.
+    // Composable autohint policy comparison — CPU backend.
     const autohint_shot_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/autohint_screenshot.zig"),
         .target = config.target,
@@ -345,10 +360,10 @@ fn addScreenshotSteps(
     configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, modules.vk_shaders);
     const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
     const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
-    const autohint_shot_step = b.step("run-autohint-screenshot", "Render the auto-light autohint comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
+    const autohint_shot_step = b.step("run-autohint-screenshot", "Render the composable autohint policy comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
     autohint_shot_step.dependOn(&run_autohint_shot.step);
 
-    // Auto-light vs TrueType agreement metric + overlay — CPU backend.
+    // Autohint xy policy vs TrueType agreement metric + overlay — CPU backend.
     const autohint_diff_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/autohint_diff.zig"),
         .target = config.target,
@@ -363,7 +378,7 @@ fn addScreenshotSteps(
     });
     const autohint_diff_exe = b.addExecutable(.{ .name = "snail-autohint-diff", .root_module = autohint_diff_mod });
     const run_autohint_diff = b.addRunArtifact(autohint_diff_exe);
-    const autohint_diff_step = b.step("run-autohint-diff", "Render auto_light vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
+    const autohint_diff_step = b.step("run-autohint-diff", "Render the autohint xy policy vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
     autohint_diff_step.dependOn(&run_autohint_diff.step);
 
     // Banner screenshot — full interactive-demo scene through CPU backend.

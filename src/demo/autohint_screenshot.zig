@@ -1,7 +1,7 @@
 //! Headless CPU+GL render of the hinting-validation grid, for verifying
 //! hinting quality without the interactive Wayland loop. Writes
-//! zig-out/autohint-screenshot{,-gl}.tga. Each ppem shows three rows:
-//! unhinted (un), auto_light (au), then the font's TrueType hinting (tt).
+//! zig-out/autohint-screenshot{,-gl}.tga. Each ppem shows four rows in
+//! V-overlay order: unhinted (un), y-only (y), strong xy (xy), TrueType (tt).
 
 const std = @import("std");
 const snail = @import("snail");
@@ -11,7 +11,7 @@ const harness = @import("screenshot_harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
 const W: u32 = 840;
-const H: u32 = 720;
+const H: u32 = 1120;
 const OUT_PATH = "zig-out/autohint-screenshot.tga";
 
 pub fn main() !void {

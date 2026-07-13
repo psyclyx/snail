@@ -660,8 +660,8 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
     // Autohint comparison overlay (V toggles; G / F change ppem). Two fonts
     // side by side: DejaVu (TT-hinted) and Noto Sans Mono (unhinted VF), so the
-    // au rows can be checked against a real hinting reference AND against a
-    // font that has none.
+    // y/xy rows can be checked against a real hinting reference AND against
+    // a font that has none.
     var compare = try autohint_compare.Compare.init(allocator, content_cache.pool);
     defer compare.deinit();
     var compare_noto = try autohint_compare.Compare.initFont(allocator, content_cache.pool, assets_data.noto_sans_mono, "Noto");
@@ -880,7 +880,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (window.isKeyPressed(KEY_V)) {
             compare_on = !compare_on;
-            std.debug.print("\nautohint-validation={s} (rows per size: un=unhinted, au=auto_light, tt=truetype)\n", .{if (compare_on) "on" else "off"});
+            std.debug.print("\nautohint-validation={s} (rows per size: un=unhinted, y=y-only policy, xy=xy policy, tt=truetype)\n", .{if (compare_on) "on" else "off"});
         }
         if (window.isKeyPressed(KEY_T)) {
             timing_enabled = !timing_enabled;
@@ -1074,8 +1074,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         );
         const compose_us = (wayland.getTime() - compose_t0) * 1_000_000.0;
         // Autohint comparison overlay (screen-space, projection-only like the
-        // HUD). Built only when toggled on; the atlas grows per new (glyph,
-        // ppem) so a `dirty` on growth triggers re-upload.
+        // HUD). Built only when toggled on; immutable autohint analysis is
+        // shared across PPEMs, while TrueType records remain per-PPEM. A
+        // `dirty` on first growth triggers re-upload.
         _ = compare_arena.reset(.retain_capacity);
         _ = compare_scratch.reset(.retain_capacity);
         const compare_before = compare.atlas.recordCount();
