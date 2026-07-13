@@ -633,7 +633,7 @@ pub fn main() !void {
 }
 
 fn mainLoop(allocator: std.mem.Allocator) !void {
-    const window = try wayland.Window.init(1280, 720, "snail");
+    const window = try wayland.Window.init(1280, autohint_compare.default_viewport_height, "snail");
     defer window.deinit();
 
     var active = try renderer_driver.Driver.init(allocator, window, renderer_driver.defaultKind());

@@ -20,6 +20,24 @@ const testing = std.testing;
 
 pub const sample_text = "Hamburg Λέξεις 0123";
 pub const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
+/// Shared by the interactive V overlay and its headless screenshot. The grid
+/// ends at about 1044 logical pixels, so the default viewport leaves margin.
+pub const default_viewport_height: u32 = 1120;
+
+const grid_top: f32 = 26;
+const row_leading: f32 = 1.32;
+const row_gap: f32 = 3;
+const ppem_gap: f32 = 9;
+
+pub fn gridHeightPx(px_scale: f32) f32 {
+    var y = grid_top * px_scale;
+    for (grid_ppems) |ppem| {
+        const em = Compare.devEm(ppem, px_scale);
+        y += rows.len * (em * row_leading + row_gap * px_scale);
+        y += ppem_gap * px_scale;
+    }
+    return y;
+}
 
 /// Demo choices, deliberately not library presets.
 pub const y_policy: snail.autohint.AutohintPolicy = .{
@@ -176,7 +194,7 @@ pub const Compare = struct {
         });
         try refs.append(frame_alloc, head);
 
-        var y: f32 = 26 * px_scale;
+        var y: f32 = grid_top * px_scale;
         for (grid_ppems) |ppem| {
             const em: f32 = devEm(ppem, px_scale);
             const ppem_26_6: u32 = @intFromFloat(em * 64.0);
@@ -195,9 +213,9 @@ pub const Compare = struct {
                 const row = try frame_alloc.create(helpers.Picture);
                 row.* = try self.renderRow(frame_alloc, shaped, row_desc, ppem_26_6, em, left_sample, baseline);
                 try refs.append(frame_alloc, row);
-                y += em * 1.32 + 3 * px_scale;
+                y += em * row_leading + row_gap * px_scale;
             }
-            y += 9 * px_scale;
+            y += ppem_gap * px_scale;
         }
         return helpers.Picture.concat(frame_alloc, refs.items);
     }
@@ -260,8 +278,11 @@ pub const Compare = struct {
             }
         }
 
-        // Immutable analysis is populated exactly once per unique sample
-        // glyph, independent of policy and PPEM.
+        // Immutable analysis is populated exactly once per unique non-empty
+        // sample glyph, independent of policy and PPEM. Empty outlines are the
+        // explicit exception: they have no curves or bands, emit no instance,
+        // and stay on the shared unhinted key with a null policy rather than
+        // manufacturing an analysis record.
         for (shaped.glyphs) |g| {
             if (g.font_id != self.font_id) continue;
             const key_a = autoKey(g.font_id, g.glyph_id);
@@ -337,11 +358,12 @@ fn hasKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
     return false;
 }
 
-test "comparison contains four policy rows" {
+test "comparison contains four policy rows and fits the default viewport" {
     try testing.expectEqualStrings("un", rows[0].tag);
     try testing.expectEqualStrings("y", rows[1].tag);
     try testing.expectEqualStrings("xy", rows[2].tag);
     try testing.expectEqualStrings("tt", rows[3].tag);
+    try testing.expect(gridHeightPx(1.0) <= @as(f32, @floatFromInt(default_viewport_height)));
 }
 
 test "comparison setup reuses autohint analysis across grid PPEMs" {
@@ -384,6 +406,57 @@ test "comparison setup reuses autohint analysis across grid PPEMs" {
     // A policy/size-independent analysis key means exactly one autohint slab
     // record is reachable for each unique sample glyph.
     try testing.expectEqual(sample_glyphs.count(), countAutohintRecords(&compare, shaped));
+}
+
+test "empty outlines remain shared unhinted no-op shapes" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 8,
+        .curve_words_per_page = 1 << 18,
+        .band_words_per_page = 1 << 16,
+    });
+    defer pool.deinit();
+
+    var compare = try Compare.init(testing.allocator, pool);
+    defer compare.deinit();
+    var frame = std.heap.ArenaAllocator.init(testing.allocator);
+    defer frame.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+
+    const shaped = try compare.shape_cache.shape(&compare.faces, sample_text, .{});
+    const tags = try compare.shape_cache.shape(&compare.faces, "unyxyttDejaVu", .{});
+    try compare.ensureAll(scratch.allocator(), shaped, tags, 1.0);
+
+    var empty_index: ?usize = null;
+    for (shaped.glyphs, 0..) |glyph, i| {
+        const base = try compare.glyph_cache.getOrInsert(testing.allocator, scratch.allocator(), glyph.glyph_id);
+        if (base.curve_count == 0) {
+            empty_index = i;
+            break;
+        }
+    }
+    const i = empty_index orelse return error.TestExpectedEmptyOutline;
+    const glyph = shaped.glyphs[i];
+    const base_key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+    const base_record = compare.atlas.lookupRecord(base_key).?;
+    try testing.expectEqual(@as(u32, 0), base_record.curve_count);
+    try testing.expectEqual(@as(u16, 0), base_record.bands.h_band_count);
+    try testing.expectEqual(@as(u16, 0), base_record.bands.v_band_count);
+    try testing.expect(compare.atlas.lookupAutohintRecord(autoKey(glyph.font_id, glyph.glyph_id)) == null);
+
+    var picture = try compare.renderRow(frame.allocator(), shaped, rows[1], 12 * 64, 12, 0, 12);
+    defer picture.deinit();
+    const shape = picture.shapes[i];
+    try testing.expect(shape.key.eql(base_key));
+    try testing.expectEqual(@as(?snail.autohint.AutohintPolicy, null), shape.autohint_policy);
+
+    var words: [snail.WORDS_PER_INSTANCE]u32 = undefined;
+    var segments: [1]snail.DrawSegment = undefined;
+    var word_len: usize = 0;
+    var segment_len: usize = 0;
+    _ = try snail.emit.emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &compare.atlas, &.{shape}, .identity, .{ 1, 1, 1, 1 });
+    try testing.expectEqual(@as(usize, 0), word_len);
+    try testing.expectEqual(@as(usize, 0), segment_len);
 }
 
 fn countAutohintRecords(compare: *const Compare, shaped: *const snail.ShapedText) u32 {
