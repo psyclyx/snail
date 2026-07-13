@@ -584,134 +584,180 @@ fn featureStemPair(lower: *FeatureEdge, upper: *FeatureEdge, li: usize, ui: usiz
     upper.width = width;
 }
 
-// Host-side equivalent of snailDecodeAutohintPolicy +
-// snailFitAutohintAxis. It intentionally starts from the seven GPU words and
-// immutable feature tuples rather than calling fitAxis, so fixture comparisons
-// exercise shader policy decoding and feature-to-knot evaluation as a unit.
-fn glslHostFitAxis(
-    features: []const FeatureEdge,
-    font: TestFontFeatures,
-    comptime axis: analysis.Axis,
-    words: [7]u32,
-    scale: f32,
-    left: f32,
-    out: []Knot,
-) []Knot {
-    const policy = policy_mod.AutohintPolicy.unpack(words) catch return out[0..0];
-    if (!std.math.isFinite(font.std_x) or font.std_x < 0 or
-        !std.math.isFinite(font.std_y) or font.std_y < 0 or
-        !std.math.isFinite(scale) or scale <= 0 or features.len == 0 or
-        features.len > max_knots or features.len > out.len or font.blues.len > max_knots)
-    {
-        return out[0..0];
-    }
-    for (font.blues) |zone| {
-        if (!std.math.isFinite(zone.ref) or !std.math.isFinite(zone.shoot)) return out[0..0];
-    }
+// Independent host translation of snailDecodeAutohintPolicy +
+// snailFitAutohintAxis. This oracle does not call CPU decoding or fitting helpers.
+const GlslHostPolicy = struct {
+    x_align: u32,
+    x_stem: u32,
+    x_positioning: u32,
+    x_registration: u32,
+    y_align: u32,
+    y_stem: u32,
+    y_overshoot: u32,
+    x_ratio: f32,
+    x_max_px: f32,
+    y_ratio: f32,
+    y_max_px: f32,
+    overshoot_min_px: f32,
+};
+
+fn glslHostDecodePolicy(words: [7]u32) ?GlslHostPolicy {
+    if (words[0] & ~@as(u32, 0xff) != 0 or words[1] & ~@as(u32, 0x3f) != 0) return null;
+    const p: GlslHostPolicy = .{
+        .x_align = words[0] & 3,
+        .x_stem = (words[0] >> 2) & 3,
+        .x_positioning = (words[0] >> 4) & 3,
+        .x_registration = (words[0] >> 6) & 3,
+        .y_align = words[1] & 3,
+        .y_stem = (words[1] >> 2) & 3,
+        .y_overshoot = (words[1] >> 4) & 3,
+        .x_ratio = @bitCast(words[2]),
+        .x_max_px = @bitCast(words[3]),
+        .y_ratio = @bitCast(words[4]),
+        .y_max_px = @bitCast(words[5]),
+        .overshoot_min_px = @bitCast(words[6]),
+    };
+    if (p.x_align > 1 or p.x_stem > 2 or p.x_positioning > 1 or p.x_registration > 1 or
+        p.y_align > 2 or p.y_stem > 2 or p.y_overshoot > 1 or
+        (p.x_stem != 0 and (!std.math.isFinite(p.x_ratio) or p.x_ratio < 0)) or
+        (p.x_stem == 1 and (!std.math.isFinite(p.x_max_px) or p.x_max_px < 0)) or
+        (p.y_stem != 0 and (!std.math.isFinite(p.y_ratio) or p.y_ratio < 0)) or
+        (p.y_stem == 1 and (!std.math.isFinite(p.y_max_px) or p.y_max_px < 0)) or
+        (p.y_overshoot == 1 and (!std.math.isFinite(p.overshoot_min_px) or p.overshoot_min_px < 0)) or
+        (p.x_positioning == 1 and p.x_align == 0) or (p.y_overshoot == 1 and p.y_align != 2)) return null;
+    return p;
+}
+
+fn glslHostSnap(value: f32, scale: f32) f32 {
+    return @round(value * scale) / scale;
+}
+
+fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, comptime axis: analysis.Axis, words: [7]u32, scale: f32, left: f32, out: []Knot) []Knot {
+    const policy = glslHostDecodePolicy(words) orelse return out[0..0];
+    if (!std.math.isFinite(font.std_x) or font.std_x < 0 or !std.math.isFinite(font.std_y) or font.std_y < 0 or
+        !std.math.isFinite(scale) or scale <= 0 or features.len == 0 or features.len > max_knots or
+        features.len > out.len or font.blues.len > max_knots) return out[0..0];
+    const use_blues = axis == .y and policy.y_align == 2;
+    if ((axis == .x and policy.x_align == 0 and policy.x_stem == 0 and policy.x_positioning == 0 and policy.x_registration == 0) or
+        (axis == .y and policy.y_align == 0 and policy.y_stem == 0 and policy.y_overshoot == 0)) return out[0..0];
+    if (axis == .x and policy.x_registration == 1 and !std.math.isFinite(left)) return out[0..0];
+    for (font.blues) |zone| if (!std.math.isFinite(zone.ref) or !std.math.isFinite(zone.shoot)) return out[0..0];
     for (features, 0..) |feature, i| {
         if (!std.math.isFinite(feature.pos) or !std.math.isFinite(feature.width) or feature.width < 0 or
             feature.stem < -1 or feature.blue < -1 or
-            (feature.blue >= 0 and @as(usize, @intCast(feature.blue)) >= font.blues.len))
-        {
-            return out[0..0];
-        }
+            (feature.blue >= 0 and @as(usize, @intCast(feature.blue)) >= font.blues.len)) return out[0..0];
         if (feature.stem >= 0) {
-            const partner_index: usize = @intCast(feature.stem);
-            if (partner_index >= features.len or partner_index == i) return out[0..0];
-            const partner = features[partner_index];
-            if (partner.stem != @as(i16, @intCast(i)) or !std.math.isFinite(partner.pos) or
-                partner.pos == feature.pos or !std.math.isFinite(partner.width) or partner.width != feature.width)
-            {
-                return out[0..0];
-            }
+            const j: usize = @intCast(feature.stem);
+            if (j >= features.len or j == i or features[j].stem != @as(i16, @intCast(i)) or
+                !std.math.isFinite(features[j].pos) or features[j].pos == feature.pos or
+                !std.math.isFinite(features[j].width) or features[j].width != feature.width) return out[0..0];
         }
     }
 
-    var params: Params = .{};
-    var use_blues = false;
-    var left_edge = std.math.nan(f32);
-    switch (axis) {
-        .x => {
-            if (policy.x.@"align" == .none and policy.x.stem_width == .natural and
-                policy.x.positioning == .independent and policy.x.registration == .none)
-            {
-                return out[0..0];
-            }
-            params.align_stem_positions = policy.x.@"align" == .grid;
-            params.anchor_stem_positions = policy.x.positioning == .relative;
-            if (policy.x.registration == .left_round_outline and !std.math.isFinite(left)) return out[0..0];
-            left_edge = if (policy.x.registration == .left_round_outline) left else std.math.nan(f32);
-            switch (policy.x.stem_width) {
-                .natural => params.natural_stem_width = true,
-                .light => |light| {
-                    params.std_snap_ratio = light.std_snap_ratio;
-                    params.stem_hint_max_px = light.max_px;
-                },
-                .full => |full| {
-                    params.std_snap_ratio = full.std_snap_ratio;
-                    params.full_stem_hint = true;
-                },
-            }
-        },
-        .y => {
-            if (policy.y.@"align" == .none and policy.y.stem_width == .natural and policy.y.overshoot == .preserve) {
-                return out[0..0];
-            }
-            params.align_stem_positions = policy.y.@"align" != .none;
-            use_blues = policy.y.@"align" == .blue_zones;
-            params.overshoot_min_px = switch (policy.y.overshoot) {
-                .preserve => 0,
-                .suppress_below_px => |threshold| threshold,
-            };
-            switch (policy.y.stem_width) {
-                .natural => params.natural_stem_width = true,
-                .light => |light| {
-                    params.std_snap_ratio = light.std_snap_ratio;
-                    params.stem_hint_max_px = light.max_px;
-                },
-                .full => |full| {
-                    params.std_snap_ratio = full.std_snap_ratio;
-                    params.full_stem_hint = true;
-                },
-            }
-        },
-    }
-
-    var edges: [max_knots]Edge = undefined;
-    var zones: [max_knots]BlueZone = undefined;
-    if (use_blues) {
-        for (font.blues, 0..) |zone, i| zones[i] = zone;
-    }
+    var targets: [max_knots]f32 = undefined;
+    var dirs: [max_knots]i8 = undefined;
+    var hinted = [_]bool{false} ** max_knots;
+    const overshoot_limit = if (axis == .y and policy.y_overshoot == 1) policy.overshoot_min_px else 0;
     for (features, 0..) |feature, i| {
         const partner_above = feature.stem >= 0 and features[@intCast(feature.stem)].pos > feature.pos;
         const valid_blue = use_blues and feature.blue >= 0;
         const bottom_blue = valid_blue and font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref;
         var companion_dir: i8 = 1;
         if (feature.stem < 0 and !valid_blue and use_blues) {
-            var nearest_gap = std.math.inf(f32);
+            var nearest = std.math.floatMax(f32);
             for (features) |candidate| {
                 if (candidate.blue < 0) continue;
                 const gap = @abs(candidate.pos - feature.pos);
-                if (gap >= nearest_gap) continue;
-                nearest_gap = gap;
+                if (gap >= nearest) continue;
+                nearest = gap;
                 const zone = font.blues[@intCast(candidate.blue)];
                 companion_dir = if (zone.shoot < zone.ref) 1 else -1;
             }
         }
-        edges[i] = .{
-            .pos = feature.pos,
-            .min = 0,
-            .max = 0,
-            .dir = if (partner_above or bottom_blue) -1 else companion_dir,
-            .stem = feature.stem,
-            .width = feature.width,
-            .blue = if (use_blues) feature.blue else if (axis == .x and policy.x.@"align" != .none) feature.blue else -1,
-            .round = feature.flags.round,
-        };
+        dirs[i] = if (partner_above or bottom_blue) -1 else companion_dir;
+        if (valid_blue) {
+            const zone = font.blues[@intCast(feature.blue)];
+            targets[i] = glslHostSnap(zone.ref, scale);
+            if (feature.flags.round and @abs((zone.shoot - zone.ref) * scale) >= overshoot_limit) targets[i] += zone.shoot - zone.ref;
+        } else targets[i] = glslHostSnap(feature.pos, scale);
     }
 
+    const grid = 1.0 / scale;
+    const stem_mode = if (axis == .x) policy.x_stem else policy.y_stem;
+    const ratio = if (axis == .x) policy.x_ratio else policy.y_ratio;
+    const max_px = if (axis == .x) policy.x_max_px else policy.y_max_px;
+    const align_positions = if (axis == .x) policy.x_align == 1 else policy.y_align != 0;
+    const relative = axis == .x and policy.x_positioning == 1;
     const standard_width = if (axis == .x) font.std_x else font.std_y;
-    const count = buildKnotsReg(edges[0..features.len], if (use_blues) zones[0..font.blues.len] else &.{}, scale, standard_width, params, left_edge, out);
+    var anchor_set = false;
+    var anchor_base: f32 = 0;
+    var anchor_target: f32 = 0;
+    for (features, 0..) |feature, i| {
+        if (feature.stem < 0) continue;
+        const j: usize = @intCast(feature.stem);
+        if (j <= i) continue;
+        const nominal = if (standard_width > 0 and @abs(feature.width - standard_width) <= ratio * standard_width) standard_width else feature.width;
+        var width_units = feature.width;
+        if (stem_mode == 2 or (stem_mode == 1 and nominal * scale < max_px)) width_units = @max(@round(nominal * scale), 1.0) * grid;
+        if (relative) {
+            if (anchor_set) targets[i] = anchor_target + @round((feature.pos - anchor_base) * scale) * grid else {
+                targets[i] = glslHostSnap(feature.pos, scale);
+                anchor_set = true;
+            }
+            targets[j] = targets[i] + width_units;
+            anchor_base = feature.pos;
+            anchor_target = targets[i];
+        } else {
+            // Retain decoded blue indices for y-grid, exactly as the shader does.
+            const lower_blue = feature.blue >= 0;
+            const upper_blue = features[j].blue >= 0;
+            if (!align_positions) targets[i] = feature.pos;
+            if (upper_blue and !lower_blue and align_positions) targets[i] = targets[j] - width_units else targets[j] = targets[i] + width_units;
+        }
+        hinted[i] = true;
+        hinted[j] = true;
+    }
+
+    const companion_max = if (stem_mode == 1) max_px else 1.6;
+    for (features, 0..) |feature, i| {
+        const axis_aligned = if (axis == .x) policy.x_align != 0 else policy.y_align != 0;
+        if (!axis_aligned or feature.blue < 0 or !feature.flags.round or hinted[i]) continue;
+        const top = dirs[i] > 0;
+        var best: ?usize = null;
+        var best_gap = std.math.floatMax(f32);
+        for (features, 0..) |candidate, k| {
+            if (k == i or dirs[k] == dirs[i]) continue;
+            const gap = if (top) feature.pos - candidate.pos else candidate.pos - feature.pos;
+            if (gap <= 0 or gap >= best_gap) continue;
+            best_gap = gap;
+            best = k;
+        }
+        const j = best orelse continue;
+        if (hinted[j] or features[j].blue >= 0 or best_gap * scale >= companion_max) continue;
+        const width_units = @max(@round(best_gap * scale), 1.0) * grid;
+        targets[j] = if (top) targets[i] - width_units else targets[i] + width_units;
+        hinted[j] = true;
+    }
+
+    var count: usize = 0;
+    for (features, 0..) |feature, i| {
+        const axis_aligned = if (axis == .x) policy.x_align != 0 else policy.y_align != 0;
+        if (!hinted[i] and !(axis_aligned and feature.blue >= 0)) continue;
+        out[count] = .{ .base = feature.pos, .target = targets[i] };
+        count += 1;
+    }
+    if (axis == .x and policy.x_registration == 1 and count > 0 and count < max_knots and count < out.len and
+        left < out[0].base - 0.5 * grid)
+    {
+        var i = count;
+        while (i > 0) : (i -= 1) out[i] = out[i - 1];
+        out[0] = .{ .base = left, .target = glslHostSnap(left, scale) };
+        count += 1;
+    }
+    var i: usize = 1;
+    while (i < count) : (i += 1) {
+        if (out[i].target <= out[i - 1].target) out[i].target = out[i - 1].target + grid;
+    }
     for (out[0..count]) |knot| {
         if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
     }
@@ -763,6 +809,13 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
         const gpu = glslHostFitAxis(&blue_features, blue_font, .y, fixture_policy.pack(), 13, 0, &glsl_buf);
         try expectGlslFixtureAxis(cpu, gpu, &probes);
     }
+
+    // Y-grid retains blue indices for knot selection and stem anchoring even
+    // though it does not use blue-zone reference targets.
+    const y_grid_policy: policy_mod.AutohintPolicy = .{ .y = .{ .@"align" = .grid } };
+    const y_grid_cpu = fitAxis(&blue_features, blue_font, .y, y_grid_policy.y, 13, 0, &cpu_buf);
+    const y_grid_glsl = glslHostFitAxis(&blue_features, blue_font, .y, y_grid_policy.pack(), 13, 0, &glsl_buf);
+    try expectGlslFixtureAxis(y_grid_cpu, y_grid_glsl, &probes);
 
     // Full-width relative x with multiple stems and left registration.
     var full_features = [_]FeatureEdge{ testFeature(0.10), testFeature(0.18), testFeature(0.29), testFeature(0.37) };
