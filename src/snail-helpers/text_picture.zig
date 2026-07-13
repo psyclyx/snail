@@ -161,7 +161,7 @@ pub fn placeRun(
         const buf = try allocator.alloc(Shape, shaped.glyphs.len);
         errdefer allocator.free(buf);
         for (shaped.glyphs, 0..) |g, i| {
-            buf[i] = placedShape(placer.originFor(g, i), scale, p.mode.key(g.font_id, g.glyph_id), p.color);
+            buf[i] = placedShape(placer.originFor(g, i), scale, p.mode.key(g.font_id, g.glyph_id), p.color, p.mode);
         }
         return Picture.fromOwnedSlice(allocator, buf);
     }
@@ -180,18 +180,26 @@ pub fn placeRun(
         if (iter.count() > 0) {
             while (iter.next()) |layer| {
                 const layer_color: [4]f32 = if (layer.color[0] < 0) p.color else layer.color;
-                try shapes.append(allocator, placedShape(origin, scale, snail.recordKey.unhintedGlyph(g.font_id, layer.glyph_id), layer_color));
+                try shapes.append(allocator, placedShape(origin, scale, snail.recordKey.unhintedGlyph(g.font_id, layer.glyph_id), layer_color, p.mode));
             }
         } else {
-            try shapes.append(allocator, placedShape(origin, scale, snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id), p.color));
+            try shapes.append(allocator, placedShape(origin, scale, snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id), p.color, p.mode));
         }
     }
     return Picture.from(allocator, shapes.items);
 }
 
-inline fn placedShape(origin: Vec2, scale: f32, key: snail.RecordKey, color: [4]f32) Shape {
+inline fn placedShape(origin: Vec2, scale: f32, key: snail.RecordKey, color: [4]f32, mode: anytype) Shape {
+    const policy: ?snail.autohint.policy.AutohintPolicy = switch (mode) {
+        .auto_light => .{
+            .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
+            .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
+        },
+        else => null,
+    };
     return .{
         .key = key,
+        .autohint_policy = policy,
         .local_transform = .{ .xx = scale, .xy = 0, .tx = origin.x, .yx = 0, .yy = -scale, .ty = origin.y },
         .local_color = color,
     };

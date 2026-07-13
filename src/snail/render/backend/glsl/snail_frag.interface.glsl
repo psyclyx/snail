@@ -3,6 +3,8 @@ in vec4 v_tint;
 in vec2 v_texcoord;
 flat in vec4 v_banding;
 flat in ivec4 v_glyph;
+flat in uvec4 v_policy0;
+flat in uvec3 v_policy1;
 
 uniform sampler2DArray u_curve_tex;
 uniform usampler2DArray u_band_tex;

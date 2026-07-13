@@ -246,13 +246,13 @@ pub const Gles30TextState = struct {
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo_replicated);
         gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
         if (self.replicated_shape_divisor != m) {
-            inline for (0..7) |i| gl.glVertexAttribDivisor(@intCast(i), m);
-            inline for (7..10) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
+            inline for (0..9) |i| gl.glVertexAttribDivisor(@intCast(i), m);
+            inline for (9..12) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
             self.replicated_shape_divisor = m;
         }
 
         const allow_subpixel = false; // GLES3 has no dual-source blend.
-        const shape_words_view = seg_words[0..@as(usize, n) * vertex.WORDS_PER_INSTANCE];
+        const shape_words_view = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
 
         var run_start: usize = 0;
         while (run_start < n) {
@@ -312,12 +312,16 @@ pub const Gles30TextState = struct {
         gl.glEnableVertexAttribArray(5);
         gl.glVertexAttribPointer(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "tint")));
         gl.glEnableVertexAttribArray(6);
-        gl.glVertexAttribPointer(7, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 0));
+        gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy")));
         gl.glEnableVertexAttribArray(7);
-        gl.glVertexAttribPointer(8, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 16));
+        gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy") + 16));
         gl.glEnableVertexAttribArray(8);
-        gl.glVertexAttribPointer(9, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, @ptrFromInt(override_base + 24));
+        gl.glVertexAttribPointer(9, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 0));
         gl.glEnableVertexAttribArray(9);
+        gl.glVertexAttribPointer(10, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, @ptrFromInt(override_base + 16));
+        gl.glEnableVertexAttribArray(10);
+        gl.glVertexAttribPointer(11, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, @ptrFromInt(override_base + 24));
+        gl.glEnableVertexAttribArray(11);
     }
 
     fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
@@ -433,10 +437,14 @@ fn setupVertexAttribs() void {
     setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
     setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
     setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "tint"));
+    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy")));
+    gl.glEnableVertexAttribArray(7);
+    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy") + 16));
+    gl.glEnableVertexAttribArray(8);
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..7) |i| {
+    inline for (0..9) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
 }

@@ -49,7 +49,7 @@ fn vertexInputBinding() vk.VkVertexInputBindingDescription {
     };
 }
 
-fn vertexInputAttributes() [7]vk.VkVertexInputAttributeDescription {
+fn vertexInputAttributes() [9]vk.VkVertexInputAttributeDescription {
     return .{
         .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
         .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
@@ -58,12 +58,14 @@ fn vertexInputAttributes() [7]vk.VkVertexInputAttributeDescription {
         .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
         .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
         .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
+        .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(vertex.Instance, "policy") },
+        .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R32G32B32_UINT, .offset = @offsetOf(vertex.Instance, "policy") + 16 },
     };
 }
 
 fn vertexInputState(
     binding: *const vk.VkVertexInputBindingDescription,
-    attrs: *const [7]vk.VkVertexInputAttributeDescription,
+    attrs: *const [9]vk.VkVertexInputAttributeDescription,
 ) vk.VkPipelineVertexInputStateCreateInfo {
     return std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
@@ -184,7 +186,7 @@ fn graphicsPipelineInfo(
 
 fn replicatedVertexInputBindings() [2]vk.VkVertexInputBindingDescription {
     return .{
-        // Binding 0: shape stream. Stride 64 = one Instance. The
+        // Binding 0: shape stream. Stride 92 = one Instance. The
         // hardware-instance divisor M is filled in by the divisor state
         // chain (see `replicatedDivisorState`).
         .{ .binding = 0, .stride = vertex.BYTES_PER_INSTANCE, .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE },
@@ -193,7 +195,7 @@ fn replicatedVertexInputBindings() [2]vk.VkVertexInputBindingDescription {
     };
 }
 
-fn replicatedVertexInputAttributes() [10]vk.VkVertexInputAttributeDescription {
+fn replicatedVertexInputAttributes() [12]vk.VkVertexInputAttributeDescription {
     return .{
         .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
         .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
@@ -202,10 +204,12 @@ fn replicatedVertexInputAttributes() [10]vk.VkVertexInputAttributeDescription {
         .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
         .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
         .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
+        .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(vertex.Instance, "policy") },
+        .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R32G32B32_UINT, .offset = @offsetOf(vertex.Instance, "policy") + 16 },
         // Override stream attributes (binding 1).
-        .{ .location = 7, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
-        .{ .location = 8, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
-        .{ .location = 9, .binding = 1, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = 24 },
+        .{ .location = 9, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 0 },
+        .{ .location = 10, .binding = 1, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = 16 },
+        .{ .location = 11, .binding = 1, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = 24 },
     };
 }
 
@@ -219,7 +223,7 @@ fn replicatedDivisorState(divisor_descs: *const [1]vk.VkVertexInputBindingDiviso
 
 fn replicatedVertexInputState(
     bindings: *const [2]vk.VkVertexInputBindingDescription,
-    attrs: *const [10]vk.VkVertexInputAttributeDescription,
+    attrs: *const [12]vk.VkVertexInputAttributeDescription,
     divisor_state: *const vk.VkPipelineVertexInputDivisorStateCreateInfoEXT,
 ) vk.VkPipelineVertexInputStateCreateInfo {
     return std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{

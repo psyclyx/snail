@@ -6,6 +6,8 @@ layout(location = 1) in vec2 v_texcoord;
 layout(location = 2) flat in vec4 v_banding;
 layout(location = 3) flat in ivec4 v_glyph;
 layout(location = 4) in vec4 v_tint;
+layout(location = 5) flat in uvec4 v_policy0;
+layout(location = 6) flat in uvec3 v_policy1;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_curve_tex;
 layout(set = 0, binding = 1) uniform usampler2DArray u_band_tex;

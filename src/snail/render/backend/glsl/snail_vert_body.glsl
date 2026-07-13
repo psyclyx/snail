@@ -68,6 +68,8 @@ void main() {
     uint gz = a_glyph.x;
     uint gw = a_glyph.y;
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
+    v_policy0 = a_policy0;
+    v_policy1 = a_policy1;
     v_banding = a_bnd;
     // sRGB decode the per-instance color and tint at the vertex stage:
     // these are constant across all four corners of the glyph quad

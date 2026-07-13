@@ -126,3 +126,11 @@ pub const fragment_shader_text_subpixel_dual =
     gl330_text_subpixel_interface ++
     "\n" ++
     shared_text_subpixel_body;
+
+test "GL 330 autohint source carries policy and bounded transient fitter" {
+    const std = @import("std");
+    try std.testing.expect(std.mem.indexOf(u8, vertex_shader, "a_policy0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, vertex_shader_replicated, "a_policy1") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment_shader_autohint, "snailDecodeAutohintPolicy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment_shader_autohint, "snailFitAutohintAxis") != null);
+}

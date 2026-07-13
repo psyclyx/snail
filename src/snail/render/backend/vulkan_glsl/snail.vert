@@ -8,10 +8,12 @@ layout(location = 3) in uvec2 a_glyph; // gz, gw packed
 layout(location = 4) in vec4 a_bnd;    // band scale x, scale y, offset x, offset y
 layout(location = 5) in vec4 a_col;    // base color RGBA
 layout(location = 6) in vec4 a_tint;   // instance tint RGBA
+layout(location = 7) in uvec4 a_policy0;
+layout(location = 8) in uvec3 a_policy1;
 #ifdef SNAIL_REPLICATED
-layout(location = 7) in vec4 b_xform_a;
-layout(location = 8) in vec4 b_xform_b;
-layout(location = 9) in vec4 b_tint;
+layout(location = 9) in vec4 b_xform_a;
+layout(location = 10) in vec4 b_xform_b;
+layout(location = 11) in vec4 b_tint;
 #endif
 
 layout(push_constant) uniform PushConstants {
@@ -25,6 +27,8 @@ layout(location = 1) out vec2 v_texcoord;
 layout(location = 2) flat out vec4 v_banding;
 layout(location = 3) flat out ivec4 v_glyph;
 layout(location = 4) out vec4 v_tint;
+layout(location = 5) flat out uvec4 v_policy0;
+layout(location = 6) flat out uvec3 v_policy1;
 
 #define SNAIL_VERTEX_INDEX gl_VertexIndex
 #define SNAIL_MVP mvp

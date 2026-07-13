@@ -133,6 +133,14 @@ test "GLSL render ABI constants match Zig constants" {
     try expectGlslConst(glsl, "SNAIL_HINT_RECORD_FLAG_UNORDERED_BANDS", hint_record_flag_unordered_bands);
 }
 
+test "autohint GLSL derives transient targets from immutable features" {
+    const glsl = @embedFile("../backend/glsl/snail_autohint_warp.glsl");
+    try std.testing.expect(std.mem.indexOf(u8, glsl, "snailDecodeAutohintPolicy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl, "snailFitAutohintAxis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl, "storedTarget") == null);
+    try std.testing.expect(std.mem.indexOf(u8, glsl, "SNAIL_AH_MAX_KNOTS = 32") != null);
+}
+
 fn expectGlslConst(glsl: []const u8, name: []const u8, value: anytype) !void {
     const needle = try std.fmt.allocPrint(std.testing.allocator, "const int {s} = {d};", .{ name, value });
     defer std.testing.allocator.free(needle);

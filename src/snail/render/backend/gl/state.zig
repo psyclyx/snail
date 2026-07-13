@@ -482,8 +482,8 @@ fn TextStateFor(comptime backend: Backend) type {
                 gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo_replicated);
                 gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
                 if (self.replicated_shape_divisor != m) {
-                    inline for (0..7) |i| gl.glVertexAttribDivisor(@intCast(i), m);
-                    inline for (7..10) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
+                    inline for (0..9) |i| gl.glVertexAttribDivisor(@intCast(i), m);
+                    inline for (9..12) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
                     self.replicated_shape_divisor = m;
                 }
             }
@@ -782,10 +782,14 @@ fn setupVertexAttribs() void {
     setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
     setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
     setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "tint"));
+    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy")));
+    gl.glEnableVertexAttribArray(7);
+    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy") + 16));
+    gl.glEnableVertexAttribArray(8);
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..7) |i| {
+    inline for (0..9) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
 }
@@ -805,6 +809,12 @@ fn setupVertexArrayAttribs(vao: gl.GLuint) void {
     setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
     setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
     setupVertexArrayAttrib(vao, 6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "tint"));
+    gl.glEnableVertexArrayAttrib(vao, 7);
+    gl.glVertexArrayAttribIFormat(vao, 7, 4, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy")));
+    gl.glVertexArrayAttribBinding(vao, 7, 0);
+    gl.glEnableVertexArrayAttrib(vao, 8);
+    gl.glVertexArrayAttribIFormat(vao, 8, 3, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy") + 16));
+    gl.glVertexArrayAttribBinding(vao, 8, 0);
 }
 
 fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl.GLenum, normalized: gl.GLboolean, offset: usize) void {
@@ -815,7 +825,7 @@ fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl
 
 /// DSA setup for the replicated VAO: same shape attributes as the
 /// heterogeneous VAO bound to binding 0 (configurable divisor M), plus
-/// override attributes 7-9 bound to binding 1 (divisor 1).
+/// policy attributes 7-8 on binding 0 and override attributes 9-11 on binding 1.
 fn setupReplicatedVertexArrayAttribs(vao: gl.GLuint) void {
     // Shape attributes, binding 0.
     setupVertexArrayAttrib(vao, 0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "rect"));
@@ -827,21 +837,27 @@ fn setupReplicatedVertexArrayAttribs(vao: gl.GLuint) void {
     setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
     setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
     setupVertexArrayAttrib(vao, 6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "tint"));
+    gl.glEnableVertexArrayAttrib(vao, 7);
+    gl.glVertexArrayAttribIFormat(vao, 7, 4, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy")));
+    gl.glVertexArrayAttribBinding(vao, 7, 0);
+    gl.glEnableVertexArrayAttrib(vao, 8);
+    gl.glVertexArrayAttribIFormat(vao, 8, 3, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy") + 16));
+    gl.glVertexArrayAttribBinding(vao, 8, 0);
     // Override attributes, binding 1. Layout matches `emit.writeOverride`:
     // bytes 0-15  = vec4 (xx, xy, tx, yx)
     // bytes 16-23 = vec2 (yy, ty); the shader reads only the first two
     //               components of b_xform_b, so byte 24-31 (packed tint
     //               + pad) safely cohabit the same vec4 slot.
     // bytes 24-27 = packed u8x4 tint (read as b_tint with normalized u8)
-    gl.glEnableVertexArrayAttrib(vao, 7);
-    gl.glVertexArrayAttribFormat(vao, 7, 4, gl.GL_FLOAT, gl.GL_FALSE, 0);
-    gl.glVertexArrayAttribBinding(vao, 7, 1);
-    gl.glEnableVertexArrayAttrib(vao, 8);
-    gl.glVertexArrayAttribFormat(vao, 8, 4, gl.GL_FLOAT, gl.GL_FALSE, 16);
-    gl.glVertexArrayAttribBinding(vao, 8, 1);
     gl.glEnableVertexArrayAttrib(vao, 9);
-    gl.glVertexArrayAttribFormat(vao, 9, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, 24);
+    gl.glVertexArrayAttribFormat(vao, 9, 4, gl.GL_FLOAT, gl.GL_FALSE, 0);
     gl.glVertexArrayAttribBinding(vao, 9, 1);
+    gl.glEnableVertexArrayAttrib(vao, 10);
+    gl.glVertexArrayAttribFormat(vao, 10, 4, gl.GL_FLOAT, gl.GL_FALSE, 16);
+    gl.glVertexArrayAttribBinding(vao, 10, 1);
+    gl.glEnableVertexArrayAttrib(vao, 11);
+    gl.glVertexArrayAttribFormat(vao, 11, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, 24);
+    gl.glVertexArrayAttribBinding(vao, 11, 1);
 }
 
 /// Classic (non-DSA) setup for the GL 3.3 replicated VAO. Both shape
@@ -857,10 +873,14 @@ fn setupReplicatedVertexAttribs33(shape_base: usize, override_base: usize) void 
     setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, shape_base + @offsetOf(vertex.Instance, "band"));
     setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, shape_base + @offsetOf(vertex.Instance, "color"));
     setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, shape_base + @offsetOf(vertex.Instance, "tint"));
+    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy")));
+    gl.glEnableVertexAttribArray(7);
+    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy") + 16));
+    gl.glEnableVertexAttribArray(8);
     const override_stride: gl.GLsizei = 32;
-    setupVertexAttrib(7, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 0);
-    setupVertexAttrib(8, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 16);
-    setupVertexAttrib(9, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, override_base + 24);
+    setupVertexAttrib(9, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 0);
+    setupVertexAttrib(10, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 16);
+    setupVertexAttrib(11, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, override_base + 24);
 }
 
 fn initEbo() void {
