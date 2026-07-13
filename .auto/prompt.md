@@ -34,3 +34,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 
 ## What's Been Tried
 - Baseline uses adjacent-pitch rounding with a post-translation that keeps repeated stems evenly spaced and right-bounded.
+- Discarded: lowered light y stem cutoff 1.6→1.4. All metrics were bit-identical, so current corpus y stems do not cross that threshold.
