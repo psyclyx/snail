@@ -41,7 +41,11 @@ const y_axis: snail.autohint.policy.YPolicy = .{
 pub const policies = [_]PolicyCase{
     .{ .name = "y", .policy = .{ .y = y_axis } },
     .{ .name = "x-natural", .policy = .{
-        .x = .{ .@"align" = .grid, .stem_width = .natural },
+        .x = .{
+            .@"align" = .grid,
+            .stem_width = .natural,
+            .registration = .left_round_outline,
+        },
         .y = y_axis,
     } },
     .{ .name = "x-full", .policy = .{

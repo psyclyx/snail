@@ -42,3 +42,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: disabled x standard-width matching (`std_snap_ratio=0`). Metrics were bit-identical; all affected stems quantize to the same pixel widths at 9–14 PPEM.
 - Discarded: removed round-left registration from xy-relative. DejaVu xy worsened 821,686→832,766; registration is a clear win, despite a 488-point Noto improvement.
 - Kept: round-left registration on x-full. DejaVu x-full improved 830,276→819,196 (total 3,598,384→3,587,304); Noto rose only 488. x-full temporarily duplicates xy-registered, so the next experiment must repurpose one diagnostic policy.
+- Kept: round-left registration on x-natural. DejaVu x-natural improved 899,313→888,233 (total 3,587,304→3,576,224); Noto rose 488. Registration is independently beneficial with natural and full widths.
