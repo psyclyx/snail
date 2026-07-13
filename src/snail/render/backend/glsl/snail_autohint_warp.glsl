@@ -231,7 +231,7 @@ bool snailFitAutohintAxis(
         ++knotCount;
     }
     if (axis == 0 && policy.xRegistration == 1 && knotCount > 0 && knotCount < SNAIL_AH_MAX_KNOTS &&
-        left < knotBase[0] - 0.5 * grid) {
+        left < knotBase[0] - 0.25 * grid) {
         for (int i = SNAIL_AH_MAX_KNOTS - 1; i > 0; --i) {
             if (i <= knotCount) { knotBase[i] = knotBase[i - 1]; knotTarget[i] = knotTarget[i - 1]; }
         }

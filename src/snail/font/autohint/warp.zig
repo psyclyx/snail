@@ -453,7 +453,7 @@ pub fn buildKnotsReg(
     // first knot) and knot-less glyphs are untouched. Prepend it, snapped like a
     // stem edge, so the bowl lands on the grid with the flats.
     if (!std.math.isNan(left_edge) and count > 0 and count < out.len and
-        left_edge < out[0].base - 0.5 * grid)
+        left_edge < out[0].base - 0.25 * grid)
     {
         var m = count;
         while (m > 0) : (m -= 1) out[m] = out[m - 1];
@@ -776,7 +776,7 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         count += 1;
     }
     if (axis == .x and policy.x_registration == 1 and count > 0 and count < max_knots and count < out.len and
-        left < out[0].base - 0.5 * grid)
+        left < out[0].base - 0.25 * grid)
     {
         var i = count;
         while (i > 0) : (i -= 1) out[i] = out[i - 1];

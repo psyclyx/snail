@@ -48,3 +48,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: suppress all overshoots with a 10px threshold. Metrics were bit-identical; DejaVu/Noto overshoots are already suppressed throughout 9–14 PPEM.
 - Kept: disabled y standard-width substitution while retaining full pixel fitting (`std_snap_ratio=0`). DejaVu total improved 3,576,224→3,573,547; y -484, x-natural -693, each registered full mode -750. Noto unchanged. Synced demo policies.
 - Discarded: translate round-left outline by first-stem fitted delta instead of independently snapping it. DejaVu worsened 3,573,547→3,606,787; direct bowl snapping is substantially more TT-like. Noto improved only 1,464.
+- Kept: broadened round-left registration eligibility from 0.5px to 0.25px. DejaVu total improved 3,573,547→3,572,829: each full registered mode -1,552, x-natural +2,386, y unchanged. Noto rose 7,488; accepted as a small target-aligned tradeoff.
