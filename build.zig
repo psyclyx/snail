@@ -299,6 +299,21 @@ fn addTestSteps(
     const run_autohint_compare_tests = b.addRunArtifact(autohint_compare_tests);
     test_step.dependOn(&run_autohint_compare_tests.step);
 
+    const character_diff_test_module = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_character_diff.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-helpers", .module = modules.snail_helpers },
+            .{ .name = "support", .module = createSupportModule(b, config.target, config.optimize) },
+        },
+    });
+    const character_diff_tests = b.addTest(.{ .root_module = character_diff_test_module });
+    test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
+
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
     const valgrind_test_module = createCoreTestModule(
         b,
@@ -380,6 +395,23 @@ fn addScreenshotSteps(
     const run_autohint_diff = b.addRunArtifact(autohint_diff_exe);
     const autohint_diff_step = b.step("run-autohint-diff", "Render the autohint xy policy vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
     autohint_diff_step.dependOn(&run_autohint_diff.step);
+
+    const character_diff_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_character_diff.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    const character_diff_exe = b.addExecutable(.{ .name = "snail-autohint-character-diff", .root_module = character_diff_mod });
+    const run_character_diff = b.addRunArtifact(character_diff_exe);
+    const character_diff_step = b.step("run-autohint-character-diff", "Write per-character TT/autohint contact sheets and metrics under zig-out/autohint-character-diff");
+    character_diff_step.dependOn(&run_character_diff.step);
 
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
