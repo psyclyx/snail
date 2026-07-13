@@ -52,3 +52,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: register every outline left of the first stem (0px threshold). DejaVu worsened 3,572,829→3,605,470 and Noto worsened 23,342; 0.25px correctly filters shallow/noisy gaps.
 - Discarded: 0.375px bowl threshold. It reverted DejaVu to 3,573,547 (718 worse than 0.25px), though Noto improved 8,049. Keep 0.25px.
 - Discarded: 0.125px bowl threshold. DejaVu worsened 6,984 and Noto worsened 23,342 versus 0.25px. The optimum among tested thresholds is sharply 0.25px.
+- Discarded: registered light x-width policy. A 1.6px cutoff was bit-identical to full fitting; 1.2px worsened the fourth DejaVu policy 816,894→836,947 while improving Noto 15,311. Full x fitting remains target-optimal.
