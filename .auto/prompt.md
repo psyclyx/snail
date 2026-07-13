@@ -51,3 +51,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Kept: broadened round-left registration eligibility from 0.5px to 0.25px. DejaVu total improved 3,573,547→3,572,829: each full registered mode -1,552, x-natural +2,386, y unchanged. Noto rose 7,488; accepted as a small target-aligned tradeoff.
 - Discarded: register every outline left of the first stem (0px threshold). DejaVu worsened 3,572,829→3,605,470 and Noto worsened 23,342; 0.25px correctly filters shallow/noisy gaps.
 - Discarded: 0.375px bowl threshold. It reverted DejaVu to 3,573,547 (718 worse than 0.25px), though Noto improved 8,049. Keep 0.25px.
+- Discarded: 0.125px bowl threshold. DejaVu worsened 6,984 and Noto worsened 23,342 versus 0.25px. The optimum among tested thresholds is sharply 0.25px.
