@@ -44,3 +44,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Kept: round-left registration on x-full. DejaVu x-full improved 830,276→819,196 (total 3,598,384→3,587,304); Noto rose only 488. x-full temporarily duplicates xy-registered, so the next experiment must repurpose one diagnostic policy.
 - Kept: round-left registration on x-natural. DejaVu x-natural improved 899,313→888,233 (total 3,587,304→3,576,224); Noto rose 488. Registration is independently beneficial with natural and full widths.
 - Discarded: natural-width relative x positioning with registration for the fourth policy. DejaVu policy worsened 819,196→889,710, though Noto improved strongly; relative positioning is not TT-like for this corpus.
+- Discarded: y grid alignment without blue zones (overshoot preserved for validity). DejaVu worsened 3,576,224→3,740,105 across all policies; font-global blues are essential. Noto again preferred less intervention.
