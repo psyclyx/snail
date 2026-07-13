@@ -54,16 +54,20 @@ void main() {
     int blueCount = 0;
     int featureXCount = 0;
     int featureYCount = 0;
+    float stdX = snailWarpF(0, 8);
+    float stdY = snailWarpF(0, 9);
     bool valid = snailDecodeAutohintPolicy(v_policy0, v_policy1, policy) &&
+        snailAhFinite(stdX) && stdX >= 0.0 &&
+        snailAhFinite(stdY) && stdY >= 0.0 &&
         snailAhCount(snailWarpF(0, 10), blueCount);
     int xRun = 12 + 2 * blueCount;
     valid = valid && snailAhCount(snailWarpF(xRun, 0), featureXCount);
     int yRun = xRun + 1 + 4 * featureXCount;
     valid = valid && snailAhCount(snailWarpF(yRun, 0), featureYCount);
     if (valid) {
-        bool xValid = snailFitAutohintAxis(0, xRun, blueCount, snailWarpF(0, 8), snailWarpF(0, 11),
+        bool xValid = snailFitAutohintAxis(0, xRun, blueCount, stdX, snailWarpF(0, 11),
             scale.x, policy, xCount, xBase, xTarget);
-        bool yValid = snailFitAutohintAxis(1, yRun, blueCount, snailWarpF(0, 9), 0.0,
+        bool yValid = snailFitAutohintAxis(1, yRun, blueCount, stdY, 0.0,
             scale.y, policy, yCount, yBase, yTarget);
         if (!xValid) xCount = 0;
         if (!yValid) yCount = 0;

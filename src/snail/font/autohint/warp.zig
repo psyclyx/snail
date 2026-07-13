@@ -584,6 +584,219 @@ fn featureStemPair(lower: *FeatureEdge, upper: *FeatureEdge, li: usize, ui: usiz
     upper.width = width;
 }
 
+// Host-side equivalent of snailDecodeAutohintPolicy +
+// snailFitAutohintAxis. It intentionally starts from the seven GPU words and
+// immutable feature tuples rather than calling fitAxis, so fixture comparisons
+// exercise shader policy decoding and feature-to-knot evaluation as a unit.
+fn glslHostFitAxis(
+    features: []const FeatureEdge,
+    font: TestFontFeatures,
+    comptime axis: analysis.Axis,
+    words: [7]u32,
+    scale: f32,
+    left: f32,
+    out: []Knot,
+) []Knot {
+    const policy = policy_mod.AutohintPolicy.unpack(words) catch return out[0..0];
+    if (!std.math.isFinite(font.std_x) or font.std_x < 0 or
+        !std.math.isFinite(font.std_y) or font.std_y < 0 or
+        !std.math.isFinite(scale) or scale <= 0 or features.len == 0 or
+        features.len > max_knots or features.len > out.len or font.blues.len > max_knots)
+    {
+        return out[0..0];
+    }
+    for (font.blues) |zone| {
+        if (!std.math.isFinite(zone.ref) or !std.math.isFinite(zone.shoot)) return out[0..0];
+    }
+    for (features, 0..) |feature, i| {
+        if (!std.math.isFinite(feature.pos) or !std.math.isFinite(feature.width) or feature.width < 0 or
+            feature.stem < -1 or feature.blue < -1 or
+            (feature.blue >= 0 and @as(usize, @intCast(feature.blue)) >= font.blues.len))
+        {
+            return out[0..0];
+        }
+        if (feature.stem >= 0) {
+            const partner_index: usize = @intCast(feature.stem);
+            if (partner_index >= features.len or partner_index == i) return out[0..0];
+            const partner = features[partner_index];
+            if (partner.stem != @as(i16, @intCast(i)) or !std.math.isFinite(partner.pos) or
+                partner.pos == feature.pos or !std.math.isFinite(partner.width) or partner.width != feature.width)
+            {
+                return out[0..0];
+            }
+        }
+    }
+
+    var params: Params = .{};
+    var use_blues = false;
+    var left_edge = std.math.nan(f32);
+    switch (axis) {
+        .x => {
+            if (policy.x.@"align" == .none and policy.x.stem_width == .natural and
+                policy.x.positioning == .independent and policy.x.registration == .none)
+            {
+                return out[0..0];
+            }
+            params.align_stem_positions = policy.x.@"align" == .grid;
+            params.anchor_stem_positions = policy.x.positioning == .relative;
+            if (policy.x.registration == .left_round_outline and !std.math.isFinite(left)) return out[0..0];
+            left_edge = if (policy.x.registration == .left_round_outline) left else std.math.nan(f32);
+            switch (policy.x.stem_width) {
+                .natural => params.natural_stem_width = true,
+                .light => |light| {
+                    params.std_snap_ratio = light.std_snap_ratio;
+                    params.stem_hint_max_px = light.max_px;
+                },
+                .full => |full| {
+                    params.std_snap_ratio = full.std_snap_ratio;
+                    params.full_stem_hint = true;
+                },
+            }
+        },
+        .y => {
+            if (policy.y.@"align" == .none and policy.y.stem_width == .natural and policy.y.overshoot == .preserve) {
+                return out[0..0];
+            }
+            params.align_stem_positions = policy.y.@"align" != .none;
+            use_blues = policy.y.@"align" == .blue_zones;
+            params.overshoot_min_px = switch (policy.y.overshoot) {
+                .preserve => 0,
+                .suppress_below_px => |threshold| threshold,
+            };
+            switch (policy.y.stem_width) {
+                .natural => params.natural_stem_width = true,
+                .light => |light| {
+                    params.std_snap_ratio = light.std_snap_ratio;
+                    params.stem_hint_max_px = light.max_px;
+                },
+                .full => |full| {
+                    params.std_snap_ratio = full.std_snap_ratio;
+                    params.full_stem_hint = true;
+                },
+            }
+        },
+    }
+
+    var edges: [max_knots]Edge = undefined;
+    var zones: [max_knots]BlueZone = undefined;
+    if (use_blues) {
+        for (font.blues, 0..) |zone, i| zones[i] = zone;
+    }
+    for (features, 0..) |feature, i| {
+        const partner_above = feature.stem >= 0 and features[@intCast(feature.stem)].pos > feature.pos;
+        const valid_blue = use_blues and feature.blue >= 0;
+        const bottom_blue = valid_blue and font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref;
+        var companion_dir: i8 = 1;
+        if (feature.stem < 0 and !valid_blue and use_blues) {
+            var nearest_gap = std.math.inf(f32);
+            for (features) |candidate| {
+                if (candidate.blue < 0) continue;
+                const gap = @abs(candidate.pos - feature.pos);
+                if (gap >= nearest_gap) continue;
+                nearest_gap = gap;
+                const zone = font.blues[@intCast(candidate.blue)];
+                companion_dir = if (zone.shoot < zone.ref) 1 else -1;
+            }
+        }
+        edges[i] = .{
+            .pos = feature.pos,
+            .min = 0,
+            .max = 0,
+            .dir = if (partner_above or bottom_blue) -1 else companion_dir,
+            .stem = feature.stem,
+            .width = feature.width,
+            .blue = if (use_blues) feature.blue else if (axis == .x and policy.x.@"align" != .none) feature.blue else -1,
+            .round = feature.flags.round,
+        };
+    }
+
+    const standard_width = if (axis == .x) font.std_x else font.std_y;
+    const count = buildKnotsReg(edges[0..features.len], if (use_blues) zones[0..font.blues.len] else &.{}, scale, standard_width, params, left_edge, out);
+    for (out[0..count]) |knot| {
+        if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
+    }
+    return out[0..count];
+}
+
+fn expectGlslFixtureAxis(expected: []const Knot, actual: []const Knot, probes: []const f32) !void {
+    try testing.expectEqual(expected.len, actual.len);
+    for (expected, actual) |cpu, gpu| {
+        try testing.expectApproxEqAbs(cpu.base, gpu.base, 1e-5);
+        try testing.expectApproxEqAbs(cpu.target, gpu.target, 1e-5);
+    }
+    var packed_data: [1 + 2 * max_knots]f32 = undefined;
+    const packed_len = packAxis(actual, &packed_data);
+    for (probes) |hinted| {
+        const cpu = inverseWarp(expected, hinted);
+        const gpu = inverseWarpPacked(packed_data[0..packed_len], hinted);
+        try testing.expectApproxEqAbs(cpu.base, gpu.base, 1e-5);
+        try testing.expectApproxEqAbs(cpu.inv_slope, gpu.inv_slope, 1e-5);
+    }
+}
+
+test "CPU-generated policy fixtures match host GLSL evaluator targets and inverse slopes" {
+    const probes = [_]f32{ -0.1, 0.0, 0.19, 0.25, 0.5, 0.8 };
+
+    // Identity x.
+    var identity_features = [_]FeatureEdge{ testFeature(0.3), testFeature(0.38) };
+    featureStemPair(&identity_features[0], &identity_features[1], 0, 1, 0.08);
+    const identity_policy: policy_mod.AutohintPolicy = .{};
+    var cpu_buf: [max_knots]Knot = undefined;
+    var glsl_buf: [max_knots]Knot = undefined;
+    const identity_cpu = fitAxis(&identity_features, TestFontFeatures{ .std_x = 0.08 }, .x, identity_policy.x, 13, 0, &cpu_buf);
+    const identity_glsl = glslHostFitAxis(&identity_features, TestFontFeatures{ .std_x = 0.08 }, .x, identity_policy.pack(), 13, 0, &glsl_buf);
+    try expectGlslFixtureAxis(identity_cpu, identity_glsl, &probes);
+
+    // Blue y, including preserved and suppressed round overshoot.
+    const zones = [_]BlueZone{.{ .ref = 0.5, .shoot = 0.52 }};
+    var blue_features = [_]FeatureEdge{testFeature(0.52)};
+    blue_features[0].blue = 0;
+    blue_features[0].flags.round = true;
+    const blue_font = TestFontFeatures{ .blues = &zones, .std_y = 0.08 };
+    const preserve_policy: policy_mod.AutohintPolicy = .{ .y = .{ .@"align" = .blue_zones } };
+    const suppress_policy: policy_mod.AutohintPolicy = .{ .y = .{
+        .@"align" = .blue_zones,
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    } };
+    inline for (.{ preserve_policy, suppress_policy }) |fixture_policy| {
+        const cpu = fitAxis(&blue_features, blue_font, .y, fixture_policy.y, 13, 0, &cpu_buf);
+        const gpu = glslHostFitAxis(&blue_features, blue_font, .y, fixture_policy.pack(), 13, 0, &glsl_buf);
+        try expectGlslFixtureAxis(cpu, gpu, &probes);
+    }
+
+    // Full-width relative x with multiple stems and left registration.
+    var full_features = [_]FeatureEdge{ testFeature(0.10), testFeature(0.18), testFeature(0.29), testFeature(0.37) };
+    featureStemPair(&full_features[0], &full_features[1], 0, 1, 0.08);
+    featureStemPair(&full_features[2], &full_features[3], 2, 3, 0.08);
+    const full_policy: policy_mod.AutohintPolicy = .{ .x = .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+        .positioning = .relative,
+        .registration = .left_round_outline,
+    } };
+    const full_font = TestFontFeatures{ .std_x = 0.08 };
+    const full_cpu = fitAxis(&full_features, full_font, .x, full_policy.x, 13, 0.01, &cpu_buf);
+    const full_glsl = glslHostFitAxis(&full_features, full_font, .x, full_policy.pack(), 13, 0.01, &glsl_buf);
+    try expectGlslFixtureAxis(full_cpu, full_glsl, &probes);
+
+    // Degenerate scale and malformed either-axis metrics select identity.
+    const malformed_fonts = [_]TestFontFeatures{
+        .{ .blues = &zones, .std_x = std.math.nan(f32), .std_y = 0.08 },
+        .{ .blues = &zones, .std_x = 0.08, .std_y = -0.1 },
+    };
+    for (malformed_fonts) |font| {
+        const cpu_x = fitAxis(&full_features, font, .x, full_policy.x, 13, 0.01, &cpu_buf);
+        const glsl_x = glslHostFitAxis(&full_features, font, .x, full_policy.pack(), 13, 0.01, &glsl_buf);
+        try expectGlslFixtureAxis(cpu_x, glsl_x, &probes);
+        const cpu_y = fitAxis(&blue_features, font, .y, preserve_policy.y, 13, 0, &cpu_buf);
+        const glsl_y = glslHostFitAxis(&blue_features, font, .y, preserve_policy.pack(), 13, 0, &glsl_buf);
+        try expectGlslFixtureAxis(cpu_y, glsl_y, &probes);
+    }
+    const scale_cpu = fitAxis(&full_features, full_font, .x, full_policy.x, 0, 0.01, &cpu_buf);
+    const scale_glsl = glslHostFitAxis(&full_features, full_font, .x, full_policy.pack(), 0, 0.01, &glsl_buf);
+    try expectGlslFixtureAxis(scale_cpu, scale_glsl, &probes);
+}
+
 test "identity x policy emits no knots" {
     var features = [_]FeatureEdge{ testFeature(0.3), testFeature(0.38) };
     featureStemPair(&features[0], &features[1], 0, 1, 0.08);
