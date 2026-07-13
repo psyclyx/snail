@@ -59,7 +59,7 @@ pub const xy_policy: snail.autohint.AutohintPolicy = .{
     .x = .{
         .@"align" = .grid,
         .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
-        .positioning = .relative,
+        .positioning = .independent,
         .registration = .left_round_outline,
     },
     .y = .{

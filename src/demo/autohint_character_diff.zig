@@ -48,11 +48,11 @@ pub const policies = [_]PolicyCase{
         .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } } },
         .y = y_axis,
     } },
-    .{ .name = "xy-relative", .policy = .{
+    .{ .name = "xy-registered", .policy = .{
         .x = .{
             .@"align" = .grid,
             .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
-            .positioning = .relative,
+            .positioning = .independent,
             .registration = .left_round_outline,
         },
         .y = y_axis,
@@ -319,7 +319,7 @@ test "character diff corpus and policy order are stable" {
     try std.testing.expectEqualStrings("y", policies[0].name);
     try std.testing.expectEqualStrings("x-natural", policies[1].name);
     try std.testing.expectEqualStrings("x-full", policies[2].name);
-    try std.testing.expectEqualStrings("xy-relative", policies[3].name);
+    try std.testing.expectEqualStrings("xy-registered", policies[3].name);
     try std.testing.expectEqualSlices(u32, &.{ 9, 10, 11, 12, 13, 14 }, &ppems);
 }
 

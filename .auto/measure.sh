@@ -12,6 +12,6 @@ END {
   printf "METRIC dejavu_y=%d\n", by_policy["y"]
   printf "METRIC dejavu_x_natural=%d\n", by_policy["x-natural"]
   printf "METRIC dejavu_x_full=%d\n", by_policy["x-full"]
-  printf "METRIC dejavu_xy_relative=%d\n", by_policy["xy-relative"]
+  printf "METRIC dejavu_xy_registered=%d\n", by_policy["xy-registered"]
   printf "METRIC noto_total=%d\n", noto
 }' "$TSV"

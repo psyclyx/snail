@@ -38,5 +38,6 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: raised overshoot suppression threshold 0.5→0.75px. Metrics were bit-identical; no corpus overshoot lies in that interval at 9–14 PPEM.
 - Discarded: natural y stem widths (blue positioning only). DejaVu worsened 3,601,838→3,747,906 across every policy, although Noto distortion improved; light y width fitting is valuable for TT agreement.
 - Kept: full y stem-width fitting instead of the 1.6px light cutoff. Deterministic DejaVu total improved 3,601,838→3,600,874 (241 per policy), Noto unchanged. Synced demo y/xy examples.
+- Kept: independent x-stem positioning with round-left registration. DejaVu strong policy improved 821,686→819,196 and Noto total improved 2,478,278→2,463,025. Renamed the diagnostic policy from `xy-relative` to `xy-registered` so its name remains truthful; this isolates registration beyond `x-full`.
 - Discarded: disabled x standard-width matching (`std_snap_ratio=0`). Metrics were bit-identical; all affected stems quantize to the same pixel widths at 9–14 PPEM.
 - Discarded: removed round-left registration from xy-relative. DejaVu xy worsened 821,686→832,766; registration is a clear win, despite a 488-point Noto improvement.
