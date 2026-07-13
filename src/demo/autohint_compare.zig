@@ -49,7 +49,7 @@ pub const y_policy: snail.autohint.AutohintPolicy = .{
     },
     .y = .{
         .@"align" = .blue_zones,
-        .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
         .overshoot = .{ .suppress_below_px = 0.5 },
     },
 };
@@ -64,7 +64,7 @@ pub const xy_policy: snail.autohint.AutohintPolicy = .{
     },
     .y = .{
         .@"align" = .blue_zones,
-        .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
         .overshoot = .{ .suppress_below_px = 0.5 },
     },
 };
