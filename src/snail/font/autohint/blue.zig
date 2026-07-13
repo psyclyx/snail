@@ -1,4 +1,4 @@
-//! Blue-zone derivation for `auto_light` hinting.
+//! Blue-zone derivation for composable autohinting.
 //!
 //! Blue zones are the handful of font-global reference heights — baseline,
 //! x-height, cap-height, ascender, descender — that make grid-fitting look

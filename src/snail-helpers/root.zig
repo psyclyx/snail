@@ -30,6 +30,8 @@ pub const placeRun = text_picture_mod.placeRun;
 pub const RunPlacement = text_picture_mod.RunPlacement;
 pub const HintMode = text_picture_mod.HintMode;
 pub const RunSnap = text_picture_mod.RunSnap;
+/// Draw-time fitting policy carried by `HintMode.autohint` and each Shape.
+pub const AutohintPolicy = snail.autohint.AutohintPolicy;
 
 const path_shape_mod = @import("path_shape.zig");
 pub const placeRect = path_shape_mod.placeRect;
@@ -45,6 +47,7 @@ test {
     _ = HintedGlyphCache;
     _ = ShapedRunCache;
     _ = GlyphAtlasCache;
+    _ = AutohintPolicy;
     _ = @import("picture.zig");
     _ = text_picture_mod;
     _ = path_shape_mod;

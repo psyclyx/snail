@@ -1,4 +1,4 @@
-//! The `auto_light` coordinate warp: turns ppem-independent edge analysis
+//! The autohint coordinate warp: turns ppem-independent edge analysis
 //! into a per-ppem, separable, monotone piecewise-linear map along the
 //! y-axis, and inverts it for shader-side sampling.
 //!

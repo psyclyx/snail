@@ -1,4 +1,4 @@
-//! Resolution-independent outline analysis for `auto_light` hinting.
+//! Resolution-independent outline analysis for composable autohinting.
 //!
 //! This is the ppem-INDEPENDENT half of autohinting: it looks at a glyph
 //! outline once (in font units) and finds the features a coordinate warp will

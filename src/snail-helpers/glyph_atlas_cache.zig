@@ -22,9 +22,9 @@
 //! bounds *resident* set size, not total glyphs seen. It lives in helpers,
 //! not core: core stays primitive-only (see the rewrite plan's cache policy).
 //!
-//! Scope: glyph-shaped records — curves plus an optional `auto_light` warp
-//! (with its shared base). Paint/gradient/image and multi-layer composite
-//! records are out of scope for this cache; build those into a separate,
+//! Scope: glyph-shaped records — curves plus an optional immutable autohint
+//! analysis (with its shared base). Paint/gradient/image and multi-layer
+//! composite records are out of scope for this cache; build those into a separate,
 //! long-lived atlas and `combine` at draw time.
 //!
 //! Not thread-safe; one per thread (like the other helper caches).
@@ -133,11 +133,11 @@ pub const GlyphAtlasCache = struct {
     /// Steady-state insert. Extends the live snapshot in place; NEVER rebuilds
     /// or evicts. Returns `error.OutOfLayers` when the pool is full so the
     /// caller decides when to reclaim. Cost is bounded and predictable: a HAMT
-    /// path-copy plus one curve/knot dup on a miss, or an LRU touch on a hit —
-    /// no O(resident) burst hides here. Touches the key.
+    /// path-copy plus one curve/analysis dup on a miss, or an LRU touch on a
+    /// hit — no O(resident) burst hides here. Touches the key.
     ///
     /// `entry.autohint_base`, when set, must already be resident (insert the
-    /// unhinted base before its per-ppem warps) — mirrors the atlas builder.
+    /// unhinted base before its immutable analysis) — mirrors the atlas builder.
     /// Paint/composite fields on `entry` are ignored (see the module scope).
     pub fn tryEnsure(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!void {
         if (self.stored.getPtr(entry.key)) |s| {
@@ -168,7 +168,7 @@ pub const GlyphAtlasCache = struct {
     /// — a latency-sensitive caller uses `tryEnsure` + an explicit `compact`
     /// instead so the O(resident) rebuild lands on a boundary it controls.
     pub fn ensure(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!void {
-        // Keep the pending warp's base warm so a compaction round won't drop it.
+        // Keep the pending analysis's base warm so compaction won't drop it.
         if (entry.autohint_base) |b| self.touch(b);
         while (true) {
             self.tryEnsure(entry) catch |err| switch (err) {
@@ -232,7 +232,7 @@ pub const GlyphAtlasCache = struct {
     }
 
     /// Drop roughly `fraction` of resident records, coldest first, protecting
-    /// any autohint base still referenced by a survivor.
+    /// any autohint base still referenced by a surviving analysis.
     fn evictColdest(self: *GlyphAtlasCache, fraction: f32) void {
         const n = self.stored.count();
         if (n == 0) return;
@@ -250,7 +250,7 @@ pub const GlyphAtlasCache = struct {
             }
         }.lt);
 
-        // Bases referenced by surviving autohint entries must not be evicted.
+        // Bases referenced by surviving autohint analyses must not be evicted.
         var want: u32 = @intFromFloat(@ceil(@as(f32, @floatFromInt(n)) * fraction));
         if (want == 0) want = 1;
 
@@ -258,14 +258,14 @@ pub const GlyphAtlasCache = struct {
         var i: usize = 0;
         while (i < list.items.len and removed < want) : (i += 1) {
             const key = list.items[i].key;
-            if (self.isReferencedBase(key)) continue; // keep bases of live warps
+            if (self.isReferencedBase(key)) continue; // keep bases of live analyses
             var s = self.stored.fetchRemove(key).?.value;
             s.deinit(self.allocator);
             removed += 1;
         }
     }
 
-    /// Is `key` the autohint base of some resident (non-evicted) warp record?
+    /// Is `key` the autohint base of a resident analysis record?
     fn isReferencedBase(self: *const GlyphAtlasCache, key: RecordKey) bool {
         var it = self.stored.iterator();
         while (it.next()) |kv| {
@@ -285,7 +285,7 @@ pub const GlyphAtlasCache = struct {
         var entries = std.ArrayList(snail.AtlasEntry).empty;
         defer entries.deinit(self.allocator);
 
-        // Non-autohint records first (autohint bases live here), then warps.
+        // Non-autohint records first (autohint bases), then analyses.
         var it = self.stored.iterator();
         while (it.next()) |kv| {
             if (!kv.value_ptr.isAutohint()) try entries.append(self.allocator, storedEntry(kv.key_ptr.*, kv.value_ptr.*));
@@ -462,6 +462,50 @@ test "GlyphAtlasCache keeps a hot glyph across many evictions" {
     try testing.expect(cache.lookupRecord(hot_key) != null);
 }
 
+test "GlyphAtlasCache reuses autohint analysis across sizes and policies" {
+    var font = try snail.Font.init(assets.dejavu_sans_mono);
+    const pool = try testPool(3);
+    defer pool.deinit();
+    var cache = GlyphAtlasCache.init(testing.allocator, pool);
+    defer cache.deinit();
+
+    const gid = try font.glyphIndex('a');
+    const base_key = recordKey.unhintedGlyph(0, gid);
+    const analysis_key = recordKey.autohintGlyph(0, gid);
+    var base = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer base.deinit();
+    try cache.ensure(.{ .key = base_key, .curves = base });
+
+    const x_features = [_]FeatureEdge{.{ .pos = 0.1, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
+    const analysis = snail.AutohintAnalysis{
+        .font = .{ .blues = &.{}, .std_x = 0.08, .std_y = 0.08 },
+        .glyph = .{ .x = &x_features, .y = &.{}, .left = 0 },
+    };
+    const policies = [_]snail.autohint.AutohintPolicy{
+        .{ .y = .{ .@"align" = .blue_zones } },
+        .{ .x = .{ .@"align" = .grid }, .y = .{ .@"align" = .blue_zones } },
+    };
+
+    try cache.ensure(.{
+        .key = analysis_key,
+        .curves = snail.GlyphCurves.empty(testing.allocator),
+        .autohint = analysis,
+        .autohint_base = base_key,
+    });
+    const count = cache.stats().resident;
+    for ([_]u32{ 9, 16, 28 }, 0..) |ppem, i| {
+        _ = ppem; // Size is supplied by the shape transform at draw time.
+        _ = policies[i % policies.len]; // Policy is supplied by Shape too.
+        try cache.ensure(.{
+            .key = analysis_key,
+            .curves = snail.GlyphCurves.empty(testing.allocator),
+            .autohint = analysis,
+            .autohint_base = base_key,
+        });
+        try testing.expectEqual(count, cache.stats().resident);
+    }
+}
+
 test "GlyphAtlasCache protects an autohint base from eviction" {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
     const pool = try testPool(3);
@@ -475,15 +519,14 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
     defer base.deinit();
     try cache.ensure(.{ .key = base_key, .curves = base });
 
-    // A run of per-ppem warps over the same base, interleaved with churn from
-    // other glyphs. The base must survive so each warp can alias it.
-    for ([_]u32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 }) |px| {
+    // One immutable analysis aliases the base while unrelated glyphs churn.
+    for ([_]u32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 }) |id| {
         const x_features = [_]FeatureEdge{.{ .pos = 0.1, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
         const y_features = [_]FeatureEdge{.{ .pos = 0.2, .width = 0.08, .stem = -1, .blue = -1, .flags = .{ .round = false } }};
-        const warp_key = recordKey.autohintGlyph(0, gid);
+        const analysis_key = recordKey.autohintGlyph(0, gid);
         cache.touch(base_key);
         try cache.ensure(.{
-            .key = warp_key,
+            .key = analysis_key,
             .curves = snail.GlyphCurves.empty(testing.allocator),
             .autohint = .{
                 .font = .{ .blues = &.{}, .std_x = 0.08, .std_y = 0.08 },
@@ -495,7 +538,7 @@ test "GlyphAtlasCache protects an autohint base from eviction" {
         const other = try font.glyphIndex('m');
         var oc = try font.extractCurves(testing.allocator, testing.allocator, other);
         defer oc.deinit();
-        _ = cache.ensure(.{ .key = recordKey.unhintedGlyph(1, @intCast(px)), .curves = oc }) catch {};
+        _ = cache.ensure(.{ .key = recordKey.unhintedGlyph(1, @intCast(id)), .curves = oc }) catch {};
     }
     try testing.expect(cache.contains(base_key));
 }

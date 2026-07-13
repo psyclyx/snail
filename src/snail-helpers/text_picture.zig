@@ -42,16 +42,16 @@ pub const ShapedRunError = error{
 pub const HintMode = union(enum) {
     /// ppem-independent base curves. Scale = em. Supports COLR fanout.
     unhinted,
-    /// auto_light resolution-independent warp: shared base curves + a per-ppem
-    /// knot record. Samples the em-space base, so scale = em.
-    auto_light: struct { ppem_26_6: u32 },
+    /// Immutable autohint analysis with draw-time fitting policy. Analysis
+    /// identity and scale are independent of policy and pixel size.
+    autohint: snail.autohint.AutohintPolicy,
     /// TrueType baked per-ppem curves in pixel space, so scale = em/ppem_px.
     truetype: struct { ppem_26_6: u32 },
 
     /// Local-transform uniform scale for this mode at `em`.
     pub fn scale(self: HintMode, em: f32) f32 {
         return switch (self) {
-            .unhinted, .auto_light => em,
+            .unhinted, .autohint => em,
             .truetype => |t| blk: {
                 const ppem_px = @as(f32, @floatFromInt(t.ppem_26_6)) / 64.0;
                 break :blk if (ppem_px > 0.0) em / ppem_px else em;
@@ -63,15 +63,17 @@ pub const HintMode = union(enum) {
     pub fn key(self: HintMode, font_id: u32, glyph_id: u16) snail.RecordKey {
         return switch (self) {
             .unhinted => snail.recordKey.unhintedGlyph(font_id, glyph_id),
-            .auto_light => snail.recordKey.autohintGlyph(font_id, glyph_id),
+            .autohint => snail.recordKey.autohintGlyph(font_id, glyph_id),
             .truetype => |m| snail.recordKey.hintedGlyph(font_id, glyph_id, m.ppem_26_6),
         };
     }
 };
 
-/// Per-glyph origin snapping. Grid-fit hinting (auto_light x-warp, TrueType)
-/// only pays off if each glyph origin lands on an integer DEVICE pixel; a
-/// fractional pen smears the stems for glyphs after the first.
+/// Per-glyph origin snapping. Grid-fit hinting (strong autohint x policies or
+/// TrueType) only pays off if each glyph origin lands on an integer DEVICE
+/// pixel; a fractional pen smears the stems for glyphs after the first.
+/// Strong x policies therefore normally pair with `.origins` or `.columns`;
+/// the policy and snapping choice remain explicit and independent.
 pub const RunSnap = enum {
     /// No snapping — the cacheable path for unhinted content placed at any
     /// sub-pixel position. `world_to_pixel` is not consulted.
@@ -189,12 +191,9 @@ pub fn placeRun(
     return Picture.from(allocator, shapes.items);
 }
 
-inline fn placedShape(origin: Vec2, scale: f32, key: snail.RecordKey, color: [4]f32, mode: anytype) Shape {
-    const policy: ?snail.autohint.policy.AutohintPolicy = switch (mode) {
-        .auto_light => .{
-            .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
-            .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
-        },
+inline fn placedShape(origin: Vec2, scale: f32, key: snail.RecordKey, color: [4]f32, mode: HintMode) Shape {
+    const policy: ?snail.autohint.AutohintPolicy = switch (mode) {
+        .autohint => |p| p,
         else => null,
     };
     return .{
@@ -245,6 +244,20 @@ test "placeRun rejects unknown face_index on COLR fanout" {
     }));
 }
 
+test "autohint mode key is independent of policy" {
+    const y_policy: snail.autohint.AutohintPolicy = .{
+        .y = .{ .@"align" = .blue_zones },
+    };
+    const xy_policy: snail.autohint.AutohintPolicy = .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones },
+    };
+    const a: HintMode = .{ .autohint = y_policy };
+    const b: HintMode = .{ .autohint = xy_policy };
+    try testing.expect(a.key(2, 44).eql(b.key(2, 44)));
+    try testing.expectEqual(@as(f32, 16), a.scale(16));
+}
+
 test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
     const allocator = testing.allocator;
     var font = try Font.init(@import("assets").dejavu_sans_mono);
@@ -284,16 +297,21 @@ test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
         try testing.expectApproxEqAbs(x1 - x0, x2 - x1, 1e-4); // uniform columns
     }
 
-    // auto_light: em scale, autohint namespace.
+    // autohint: em scale, policy-independent key, explicit draw-time policy.
+    const policy: snail.autohint.AutohintPolicy = .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones },
+    };
     {
         var pic = try placeRun(allocator, &shaped, null, .{
             .baseline = .{ .x = 5, .y = 30 },
             .em = 16,
-            .mode = .{ .auto_light = .{ .ppem_26_6 = 13 * 64 } },
+            .mode = .{ .autohint = policy },
         });
         defer pic.deinit();
         try testing.expect(pic.shapes[0].key.namespace == snail.ns.autohint_glyph);
         try testing.expectEqual(@as(f32, 16), pic.shapes[0].local_transform.xx);
+        try testing.expectEqualDeep(policy, pic.shapes[0].autohint_policy.?);
     }
 
     // origins: each pen lands on an integer device pixel.
@@ -301,7 +319,7 @@ test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
         var pic = try placeRun(allocator, &shaped, null, .{
             .baseline = .{ .x = 5.4, .y = 30.6 },
             .em = 16,
-            .mode = .{ .auto_light = .{ .ppem_26_6 = 13 * 64 } },
+            .mode = .{ .autohint = policy },
             .snap = .origins,
             .world_to_pixel = Transform2D{},
         });
