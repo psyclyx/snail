@@ -232,9 +232,103 @@ const cell_w = snail.snapLengthToStep(raw_cell.cell_width, step.x, .nearest, 1.0
 const line_h = snail.snapLengthToStep(raw_cell.line_height, step.y, .nearest, 1.0);
 ```
 
-Callers that want grid-fitted small text can opt into explicit TrueType
-hinting for a chosen ppem. Hinting is the one place snail deliberately
-gives up PPEM-independence: the atlas (`TextAtlas`) stays the same
+### Composable autohinting
+
+Autohinting is an explicit set of building blocks, not a named strength or a
+library preset. A caller supplies an `AutohintPolicy` for each draw. The atlas
+stores one immutable, em-normalized feature analysis per non-empty glyph and
+aliases the ordinary unhinted curves; the CPU and GPU derive fitted targets
+transiently from the current transform. Changing pixel size or policy therefore
+requires no atlas extension or resource upload.
+
+For example, an application can choose y-only blue-zone alignment while
+leaving horizontal proportions and placement natural:
+
+```zig
+const y_policy: snail.autohint.AutohintPolicy = .{
+    .x = .{},
+    .y = .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .light = .{
+            .std_snap_ratio = 0.4,
+            .max_px = 1.6,
+        } },
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    },
+};
+try y_policy.validate();
+
+// Analyze once while populating the atlas. `base_curves` is the same generic
+// unhinted glyph entry used by ordinary text.
+var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, font_data);
+defer analyzer.deinit();
+var x_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
+var y_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
+const features = try analyzer.analyzeGlyph(
+    scratch,
+    glyph_id,
+    &x_features,
+    &y_features,
+);
+const base_key = snail.recordKey.unhintedGlyph(font_id, glyph_id);
+const autohint_key = snail.recordKey.autohintGlyph(font_id, glyph_id);
+const grown = try atlas.extend(allocator, &.{
+    .{ .key = base_key, .curves = base_curves },
+    .{
+        .key = autohint_key,
+        .curves = snail.GlyphCurves.empty(scratch),
+        .autohint = .{
+            .font = analyzer.fontFeatures(),
+            .glyph = features,
+        },
+        .autohint_base = base_key,
+    },
+});
+atlas.deinit();
+atlas = grown;
+
+// The policy is draw state. No PPEM is part of the key or analysis record.
+var picture = try helpers.placeRun(allocator, shaped, null, .{
+    .baseline = baseline,
+    .em = em,
+    .mode = .{ .autohint = y_policy },
+    .snap = .none,
+});
+defer picture.deinit();
+```
+
+Applications that want hard x-grid fitting compose those operations explicitly
+and separately opt into device-pixel origin snapping:
+
+```zig
+const x_policy: snail.autohint.policy.XPolicy = .{
+    .@"align" = .grid,
+    .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+    .positioning = .relative,
+    .registration = .left_round_outline,
+};
+var policy = y_policy;
+policy.x = x_policy;
+
+const picture = try helpers.placeRun(allocator, shaped, null, .{
+    .baseline = baseline,
+    .em = em,
+    .mode = .{ .autohint = policy },
+    .snap = .origins,
+    .world_to_pixel = world_to_pixel,
+});
+```
+
+These values are examples, not recommendations. Detection thresholds and every
+fitting operation remain visible to the caller. `RunSnap` is independent of
+autohint policy: y-only fitting commonly uses `.none`, while strong x fitting
+usually uses `.origins` or `.columns`.
+
+### TrueType hinting
+
+Callers that want bytecode-hinted small text can opt into explicit TrueType
+hinting for a chosen ppem. TrueType hinting is the one path where snail
+deliberately gives up PPEM-independence: the atlas (`TextAtlas`) stays the same
 immutable, PPEM-independent value, but rendering also needs a
 **`GlyphHintSnapshot`** — an immutable, per-(atlas, hint-context, ppem)
 value carrying absolute hinted control points derived from that atlas at

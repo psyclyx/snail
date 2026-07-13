@@ -23,6 +23,7 @@ const math = @import("../math/vec.zig");
 const vertex = @import("../render/format/vertex.zig");
 const instance_emit = @import("../render/format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
+const autohint_policy = @import("../font/autohint/policy.zig");
 const draw_records = @import("draw_records.zig");
 const shape_mod = @import("shape.zig");
 
@@ -512,6 +513,17 @@ test "emit enforces autohint policy presence and placement" {
 
     try testing.expectError(error.MissingAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.autohintGlyph(0, 1) }}, .identity, .{ 1, 1, 1, 1 }));
     try testing.expectError(error.UnexpectedAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.unhintedGlyph(0, 1), .autohint_policy = .{} }}, .identity, .{ 1, 1, 1, 1 }));
+
+    const invalid: autohint_policy.AutohintPolicy = .{
+        .y = .{
+            .@"align" = .blue_zones,
+            .overshoot = .{ .suppress_below_px = std.math.nan(f32) },
+        },
+    };
+    try testing.expectError(error.InvalidAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{
+        .key = record_key_mod.autohintGlyph(0, 1),
+        .autohint_policy = invalid,
+    }}, .identity, .{ 1, 1, 1, 1 }));
 }
 
 test "emit writes one instance per shape" {
