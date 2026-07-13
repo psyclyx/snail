@@ -45,7 +45,11 @@ pub const policies = [_]PolicyCase{
         .y = y_axis,
     } },
     .{ .name = "x-full", .policy = .{
-        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } } },
+        .x = .{
+            .@"align" = .grid,
+            .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+            .registration = .left_round_outline,
+        },
         .y = y_axis,
     } },
     .{ .name = "xy-registered", .policy = .{
