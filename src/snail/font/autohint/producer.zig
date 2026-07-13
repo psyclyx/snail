@@ -142,7 +142,7 @@ fn convertEdges(edges: []const analysis.Edge, upm: f32, out: []FeatureEdge) []co
             .width = edge.width / upm,
             .stem = edge.stem,
             .blue = edge.blue,
-            .flags = .{ .round = edge.round },
+            .flags = .{ .round = edge.round, .synthetic_apex = edge.synthetic_apex },
         };
     }
     return out[0..edges.len];

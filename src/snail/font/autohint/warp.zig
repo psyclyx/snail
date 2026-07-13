@@ -235,6 +235,7 @@ pub fn fitAxis(
             .width = feature.width,
             .blue = if (use_blues) feature.blue else if (axis_policy.@"align" != .none) feature.blue else -1,
             .round = feature.flags.round,
+            .synthetic_apex = feature.flags.synthetic_apex,
         };
     }
 
@@ -408,10 +409,10 @@ pub fn buildKnotsReg(
     // The blue edge snaps to the reference, but its inner companion is a round
     // apex that `linkStems` doesn't pair, so without help it just interpolates
     // against the nearest stem knot below and the stroke COMPRESSES — the "top
-    // of a looks thinner than the bowl". Anchor the companion a whole pixel off
-    // the blue target so the whole stroke translates at full weight instead.
-    // Same small-size-only taper as stems: thin strokes get help, thick ones
-    // (already clean under AA) stay natural.
+    // of a looks thinner than the bowl". Anchor the companion off the blue
+    // target so the whole stroke translates at full weight instead. Measured
+    // apexes use a whole pixel; analytic zero-span endpoint candidates retain
+    // their natural width because they cannot justify width quantization.
     for (edges, 0..) |e, i| {
         if (e.blue < 0 or !e.round or hinted[i]) continue;
         const top = e.dir > 0;
@@ -428,7 +429,10 @@ pub fn buildKnotsReg(
         const j: usize = @intCast(best);
         if (hinted[j] or edges[j].blue >= 0) continue; // already an anchored knot
         if (best_gap * px_per_unit >= params.stem_hint_max_px) continue; // thick — leave natural
-        const width_units = @max(@round(best_gap * px_per_unit), 1.0) * grid;
+        const width_units = if (edges[j].synthetic_apex)
+            best_gap
+        else
+            @max(@round(best_gap * px_per_unit), 1.0) * grid;
         target[j] = if (top) target[i] - width_units else target[i] + width_units;
         hinted[j] = true;
     }
@@ -441,10 +445,14 @@ pub fn buildKnotsReg(
     // alignment at every size while stem-width crispness fades out as the
     // glyph grows and AA already renders stems cleanly.
     var count: usize = 0;
+    var blue_fixed = [_]bool{false} ** max_knots;
+    var natural_spacing = [_]bool{false} ** max_knots;
     for (edges, 0..) |e, i| {
         const keep = hinted[i] or e.blue >= 0;
         if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
+        blue_fixed[count] = e.blue >= 0;
+        natural_spacing[count] = e.synthetic_apex;
         count += 1;
     }
 
@@ -456,13 +464,34 @@ pub fn buildKnotsReg(
         left_edge < out[0].base - 0.25 * grid)
     {
         var m = count;
-        while (m > 0) : (m -= 1) out[m] = out[m - 1];
+        while (m > 0) : (m -= 1) {
+            out[m] = out[m - 1];
+            blue_fixed[m] = blue_fixed[m - 1];
+            natural_spacing[m] = natural_spacing[m - 1];
+        }
         out[0] = .{ .base = left_edge, .target = snap(left_edge, px_per_unit) };
+        blue_fixed[0] = false;
+        natural_spacing[0] = false;
         count += 1;
     }
 
-    // Pass 4 — strict monotonicity over the kept knots, so the map stays
-    // invertible when small-ppem snapping would otherwise cross them.
+    // Pass 4 — blue zones are shared font metrics, so preserve their fitted
+    // targets when a small PPEM leaves too little room for the interior knots.
+    // Resolve each blue-bounded collision inward first instead of allowing the
+    // generic forward repair below to push the blue edge a whole pixel out.
+    var b = count;
+    while (b > 1) {
+        b -= 1;
+        if (!blue_fixed[b]) continue;
+        var j = b;
+        while (j > 0 and !blue_fixed[j - 1]) : (j -= 1) {
+            const spacing = if (natural_spacing[j - 1]) 1e-6 else grid;
+            out[j - 1].target = @min(out[j - 1].target, out[j].target - spacing);
+        }
+    }
+
+    // Strict monotonicity over the kept knots keeps the map invertible. This
+    // remains the fallback for knots outside blue-bounded intervals.
     var i: usize = 1;
     while (i < count) : (i += 1) {
         if (out[i].target <= out[i - 1].target) {
@@ -763,25 +792,48 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         }
         const j = best orelse continue;
         if (hinted[j] or features[j].blue >= 0 or best_gap * scale >= companion_max) continue;
-        const width_units = @max(@round(best_gap * scale), 1.0) * grid;
+        const width_units = if (features[j].flags.synthetic_apex)
+            best_gap
+        else
+            @max(@round(best_gap * scale), 1.0) * grid;
         targets[j] = if (top) targets[i] - width_units else targets[i] + width_units;
         hinted[j] = true;
     }
 
     var count: usize = 0;
+    var blue_fixed = [_]bool{false} ** max_knots;
+    var natural_spacing = [_]bool{false} ** max_knots;
     for (features, 0..) |feature, i| {
         const axis_aligned = if (axis == .x) policy.x_align != 0 else policy.y_align != 0;
         if (!hinted[i] and !(axis_aligned and feature.blue >= 0)) continue;
         out[count] = .{ .base = feature.pos, .target = targets[i] };
+        blue_fixed[count] = axis_aligned and feature.blue >= 0;
+        natural_spacing[count] = feature.flags.synthetic_apex;
         count += 1;
     }
     if (axis == .x and policy.x_registration == 1 and count > 0 and count < max_knots and count < out.len and
         left < out[0].base - 0.25 * grid)
     {
         var i = count;
-        while (i > 0) : (i -= 1) out[i] = out[i - 1];
+        while (i > 0) : (i -= 1) {
+            out[i] = out[i - 1];
+            blue_fixed[i] = blue_fixed[i - 1];
+            natural_spacing[i] = natural_spacing[i - 1];
+        }
         out[0] = .{ .base = left, .target = glslHostSnap(left, scale) };
+        blue_fixed[0] = false;
+        natural_spacing[0] = false;
         count += 1;
+    }
+    var b = count;
+    while (b > 1) {
+        b -= 1;
+        if (!blue_fixed[b]) continue;
+        var j = b;
+        while (j > 0 and !blue_fixed[j - 1]) : (j -= 1) {
+            const spacing = if (natural_spacing[j - 1]) 1e-6 else grid;
+            out[j - 1].target = @min(out[j - 1].target, out[j].target - spacing);
+        }
     }
     var i: usize = 1;
     while (i < count) : (i += 1) {
@@ -838,6 +890,21 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
         const gpu = glslHostFitAxis(&blue_features, blue_font, .y, fixture_policy.pack(), 13, 0, &glsl_buf);
         try expectGlslFixtureAxis(cpu, gpu, &probes);
     }
+
+    // A recovered zero-span inner apex preserves its natural distance from a
+    // blue-linked outer apex in both CPU and shader-equivalent fitting.
+    var apex_features = [_]FeatureEdge{ testFeature(0.473), testFeature(0.546) };
+    apex_features[0].flags = .{ .round = true, .synthetic_apex = true };
+    apex_features[1].blue = 0;
+    apex_features[1].flags.round = true;
+    const apex_policy: policy_mod.AutohintPolicy = .{ .y = .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0 } },
+        .overshoot = .{ .suppress_below_px = 0.5 },
+    } };
+    const apex_cpu = fitAxis(&apex_features, blue_font, .y, apex_policy.y, 11, 0, &cpu_buf);
+    const apex_glsl = glslHostFitAxis(&apex_features, blue_font, .y, apex_policy.pack(), 11, 0, &glsl_buf);
+    try expectGlslFixtureAxis(apex_cpu, apex_glsl, &probes);
 
     // Y-grid retains blue indices for knot selection and stem anchoring even
     // though it does not use blue-zone reference targets.
@@ -1191,6 +1258,54 @@ test "round apex on a blue keeps its stroke weight instead of compressing" {
     // ... and the arch stroke lands on a whole pixel, not a compressed sliver.
     const stroke_px = (buf[3].target - buf[2].target) * px_per_unit;
     try testing.expectApproxEqAbs(@as(f32, 1.0), stroke_px, 1e-3);
+}
+
+test "synthetic apex companion preserves natural stroke width" {
+    const px_per_unit: f32 = 11.0;
+    var edges = [_]Edge{
+        edge(0.473, -1),
+        edge(0.546, 1),
+    };
+    edges[0].round = true;
+    edges[0].synthetic_apex = true;
+    edges[1].round = true;
+    edges[1].blue = 0;
+    const blues = [_]BlueZone{.{ .ref = 0.536, .shoot = 0.546 }};
+
+    var buf: [max_knots]Knot = undefined;
+    const n = buildKnots(&edges, &blues, px_per_unit, 0, .{ .full_stem_hint = true }, &buf);
+
+    try testing.expectEqual(@as(usize, 2), n);
+    try testing.expectApproxEqAbs(edges[1].pos - edges[0].pos, buf[1].target - buf[0].target, 1e-5);
+}
+
+test "blue target wins when interior knots collide at small ppem" {
+    const px_per_unit: f32 = 10.0;
+    var edges = [_]Edge{
+        edge(0.0, -1),
+        edge(0.274, -1),
+        edge(0.343, 1),
+        edge(0.483, -1),
+        edge(0.560, 1),
+    };
+    edges[0].blue = 0;
+    stemPair(&edges[1], &edges[2], 1, 2, 0.069);
+    edges[3].round = true;
+    edges[4].round = true;
+    edges[4].blue = 1;
+    const blues = [_]BlueZone{
+        .{ .ref = 0.0, .shoot = 0.0 },
+        .{ .ref = 0.548, .shoot = 0.560 },
+    };
+
+    var buf: [max_knots]Knot = undefined;
+    const n = buildKnots(&edges, &blues, px_per_unit, 0, .{ .full_stem_hint = true }, &buf);
+
+    try testing.expectEqual(@as(usize, 5), n);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), buf[4].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.4), buf[3].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.3), buf[2].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.2), buf[1].target, 1e-5);
 }
 
 test "inverse warp round-trips knot targets to their bases" {

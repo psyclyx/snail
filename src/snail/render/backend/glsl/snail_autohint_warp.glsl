@@ -82,9 +82,12 @@ bool snailFitAutohintAxis(
     int stem[SNAIL_AH_MAX_KNOTS];
     int blue[SNAIL_AH_MAX_KNOTS];
     bool rounded[SNAIL_AH_MAX_KNOTS];
+    bool syntheticApex[SNAIL_AH_MAX_KNOTS];
     int dir[SNAIL_AH_MAX_KNOTS];
     float targets[SNAIL_AH_MAX_KNOTS];
     bool hinted[SNAIL_AH_MAX_KNOTS];
+    bool knotBlueFixed[SNAIL_AH_MAX_KNOTS];
+    bool knotNaturalSpacing[SNAIL_AH_MAX_KNOTS];
 
     for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
         if (i >= n) break;
@@ -96,6 +99,7 @@ bool snailFitAutohintAxis(
         blue[i] = int(refs) >> 16;
         uint flags = floatBitsToUint(snailWarpF(f, 3));
         rounded[i] = (flags & 1u) != 0u;
+        syntheticApex[i] = (flags & 2u) != 0u;
         hinted[i] = false;
         if (!snailAhFinite(pos[i]) || !snailAhFinite(width[i]) || width[i] < 0.0 ||
             stem[i] < -1 || blue[i] < -1 || (blue[i] >= blueCount)) return false;
@@ -217,7 +221,7 @@ bool snailFitAutohintAxis(
             best = k;
         }
         if (best < 0 || hinted[best] || blue[best] >= 0 || bestGap * scale >= companionMax) continue;
-        float widthUnits = max(round(bestGap * scale), 1.0) * grid;
+        float widthUnits = syntheticApex[best] ? bestGap : max(round(bestGap * scale), 1.0) * grid;
         targets[best] = top ? targets[i] - widthUnits : targets[i] + widthUnits;
         hinted[best] = true;
     }
@@ -228,16 +232,37 @@ bool snailFitAutohintAxis(
         if (!hinted[i] && !(axisAligned && blue[i] >= 0)) continue;
         knotBase[knotCount] = pos[i];
         knotTarget[knotCount] = targets[i];
+        knotBlueFixed[knotCount] = axisAligned && blue[i] >= 0;
+        knotNaturalSpacing[knotCount] = syntheticApex[i];
         ++knotCount;
     }
     if (axis == 0 && policy.xRegistration == 1 && knotCount > 0 && knotCount < SNAIL_AH_MAX_KNOTS &&
         left < knotBase[0] - 0.25 * grid) {
         for (int i = SNAIL_AH_MAX_KNOTS - 1; i > 0; --i) {
-            if (i <= knotCount) { knotBase[i] = knotBase[i - 1]; knotTarget[i] = knotTarget[i - 1]; }
+            if (i <= knotCount) {
+                knotBase[i] = knotBase[i - 1];
+                knotTarget[i] = knotTarget[i - 1];
+                knotBlueFixed[i] = knotBlueFixed[i - 1];
+                knotNaturalSpacing[i] = knotNaturalSpacing[i - 1];
+            }
         }
         knotBase[0] = left;
         knotTarget[0] = snailAhSnap(left, scale);
+        knotBlueFixed[0] = false;
+        knotNaturalSpacing[0] = false;
         ++knotCount;
+    }
+    // Keep shared blue-zone targets fixed. If quantized interior features run
+    // out of room below one, resolve their collisions inward before the
+    // generic forward monotonicity repair can push the blue edge outward.
+    for (int b = SNAIL_AH_MAX_KNOTS - 1; b > 0; --b) {
+        if (b >= knotCount || !knotBlueFixed[b]) continue;
+        for (int j = SNAIL_AH_MAX_KNOTS - 1; j > 0; --j) {
+            if (j > b) continue;
+            if (knotBlueFixed[j - 1]) break;
+            float spacing = knotNaturalSpacing[j - 1] ? 1e-6 : grid;
+            knotTarget[j - 1] = min(knotTarget[j - 1], knotTarget[j] - spacing);
+        }
     }
     for (int i = 1; i < SNAIL_AH_MAX_KNOTS; ++i) {
         if (i >= knotCount) break;

@@ -75,7 +75,7 @@ pub const FeatureEdge = struct {
     width: f32,
     stem: i16,
     blue: i16,
-    flags: packed struct(u16) { round: bool, _reserved: u15 = 0 },
+    flags: packed struct(u16) { round: bool, synthetic_apex: bool = false, _reserved: u14 = 0 },
 };
 
 /// A near-axis-aligned run of the outline: a candidate contribution to an
@@ -96,6 +96,10 @@ pub const Segment = struct {
     /// top of o/e) rather than a straight edge. Round extremes overshoot
     /// their blue zone; flat ones sit on the reference.
     round: bool,
+    /// Analytic zero-span endpoint added only because sampled runs were too
+    /// short. It can preserve a blue-adjacent stroke but must keep its natural
+    /// width rather than masquerading as a full measured edge.
+    synthetic_apex: bool = false,
 
     fn len(self: Segment) f32 {
         return self.max - self.min;
@@ -120,6 +124,9 @@ pub const Edge = struct {
     /// True when the edge is a round apex (overshoots its blue zone) rather
     /// than a flat feature sitting on the reference line.
     round: bool = false,
+    /// Apex recovered from an analytic endpoint tangent rather than a sampled
+    /// run. Used only as a natural-width companion during fitting.
+    synthetic_apex: bool = false,
 
     pub fn isStem(self: Edge) bool {
         return self.stem >= 0;
@@ -181,7 +188,7 @@ pub fn analyzeGlyph(
     var segments: std.ArrayList(Segment) = .empty;
     for (contours) |c| {
         if (c.end <= c.start) continue;
-        try collectContourSegments(arena, points[c.start..c.end], params, units_per_em, min_len, axis, &segments);
+        try collectContourSegments(arena, points[c.start..c.end], params, units_per_em, min_len, merge_dist, axis, &segments);
     }
 
     const edges = try mergeSegments(allocator, arena, segments.items, merge_dist);
@@ -209,6 +216,7 @@ fn collectContourSegments(
     params: Params,
     em_units: u16,
     min_len: f32,
+    merge_dist: f32,
     axis: Axis,
     out: *std.ArrayList(Segment),
 ) !void {
@@ -234,6 +242,26 @@ fn collectContourSegments(
             }
         }
     }
+
+    if (axis == .y) {
+        // Add analytic endpoint tangents only where sampling found no nearby
+        // edge. A tight inner curve can turn exactly at an on-curve endpoint
+        // while both adjacent sampled runs remain shorter than `min_len`.
+        // Avoiding duplicates keeps ordinary sampled edge positions unchanged.
+        for (curves, 0..) |incoming, i| {
+            const outgoing = curves[(i + 1) % curves.len];
+            if (yEndpointExtremumSegment(incoming, outgoing, params.flat_ratio)) |seg| {
+                if (!hasNearbySegment(out.items, seg.pos, merge_dist)) try out.append(arena, seg);
+            }
+        }
+    }
+}
+
+fn hasNearbySegment(segments: []const Segment, pos: f32, tolerance: f32) bool {
+    for (segments) |segment| {
+        if (@abs(segment.pos - pos) <= tolerance) return true;
+    }
+    return false;
 }
 
 /// Classify a polyline edge as a near-axis-aligned segment, or null. For `.y`
@@ -267,6 +295,32 @@ fn evalQuad(q: QuadBezier, t: f32) Vec2 {
     };
 }
 
+fn yEndpointExtremumSegment(incoming: QuadBezier, outgoing: QuadBezier, flat_ratio: f32) ?Segment {
+    const point = incoming.p2;
+    if (Vec2.length(Vec2.sub(point, outgoing.p0)) > 1e-4) return null;
+
+    const in_tangent = Vec2.sub(point, incoming.p1);
+    const out_tangent = Vec2.sub(outgoing.p1, point);
+    if (@abs(in_tangent.x) <= 1e-6 or @abs(out_tangent.x) <= 1e-6 or
+        @abs(in_tangent.y) > flat_ratio * @abs(in_tangent.x) or
+        @abs(out_tangent.y) > flat_ratio * @abs(out_tangent.x)) return null;
+
+    const before = incoming.p0.y;
+    const after = outgoing.p2.y;
+    const is_max = point.y >= before and point.y >= after and (point.y > before or point.y > after);
+    const is_min = point.y <= before and point.y <= after and (point.y < before or point.y < after);
+    if (!is_max and !is_min) return null;
+
+    return .{
+        .pos = point.y,
+        .min = point.x,
+        .max = point.x,
+        .dir = if (in_tangent.x >= 0) 1 else -1,
+        .round = true,
+        .synthetic_apex = true,
+    };
+}
+
 const Cluster = struct {
     weighted_pos: f32 = 0,
     weight: f32 = 0,
@@ -274,6 +328,7 @@ const Cluster = struct {
     max: f32 = -std.math.inf(f32),
     dir_len: [2]f32 = .{ 0, 0 }, // signed direction vote by length: [-1, +1]
     round_len: f32 = 0, // length that came from curved (round) runs
+    synthetic_len: f32 = 0,
 
     fn add(self: *Cluster, s: Segment) void {
         const w = @max(s.len(), 1.0);
@@ -283,6 +338,7 @@ const Cluster = struct {
         self.max = @max(self.max, s.max);
         self.dir_len[if (s.dir >= 0) 1 else 0] += w;
         if (s.round) self.round_len += w;
+        if (s.synthetic_apex) self.synthetic_len += w;
     }
 
     fn finish(self: Cluster) Edge {
@@ -292,6 +348,7 @@ const Cluster = struct {
             .max = self.max,
             .dir = if (self.dir_len[1] >= self.dir_len[0]) 1 else -1,
             .round = self.round_len * 2.0 >= self.weight, // majority round
+            .synthetic_apex = self.synthetic_len * 2.0 >= self.weight,
         };
     }
 };
@@ -395,6 +452,23 @@ fn analyzeChar(allocator: Allocator, program: *const Program, font: *const Font,
         else => return error.NotSimpleGlyph,
     };
     return analyzeGlyphY(allocator, simple.points, simple.contours, font.units_per_em, .default);
+}
+
+test "analytic endpoint extremum recovers an undersampled inner apex" {
+    const incoming: QuadBezier = .{
+        .p0 = .{ .x = 0, .y = 0 },
+        .p1 = .{ .x = 1, .y = 1 },
+        .p2 = .{ .x = 2, .y = 1 },
+    };
+    const outgoing: QuadBezier = .{
+        .p0 = .{ .x = 2, .y = 1 },
+        .p1 = .{ .x = 3, .y = 1 },
+        .p2 = .{ .x = 4, .y = 0 },
+    };
+    const apex = yEndpointExtremumSegment(incoming, outgoing, 0.3).?;
+    try testing.expect(apex.round);
+    try testing.expect(apex.synthetic_apex);
+    try testing.expectApproxEqAbs(@as(f32, 1), apex.pos, 1e-6);
 }
 
 test "analyze detects baseline and cap edges of H" {

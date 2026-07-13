@@ -59,10 +59,14 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: 0.24px bowl threshold. Same DejaVu result as 0.225px (1,054 worse); the winning eligibility boundary activates at 0.25px.
 - Discarded: y standard-width ratio 0.2. Metrics were bit-identical to ratio 0; keep 0 as the simpler expression of no substitution.
 - Discarded: y standard-width ratio 0.3. Metrics remained bit-identical to ratio 0; substitution only changes behavior by 0.4, where it is slightly worse.
+- Kept: blue-zone targets now take priority during small-PPEM knot-collision repair. At 10 PPEM, `a` and `e` had interior one-pixel strokes collide below x-height; the old forward repair pushed the shared x-height from 5px to 6px. Resolving inward preserves the font-global blue target without glyph-specific logic. DejaVu improved 3,572,829→3,555,409, Noto improved 728, and no corpus character regressed.
+- Kept: recover true local extrema at curved on-curve endpoints when both sampled runs are too short to become edges. These zero-span analytic companions retain natural spacing during blue collision repair rather than being width-quantized. This restores Noto `a`'s faint top arch at 11 PPEM without a glyph/font/PPEM exception; DejaVu improved 3,555,409→3,546,754 and Noto improved 2,470,761→2,450,735.
+- Discarded: distortion-limited full x fitting. Limiting total width error improved Noto to 2,328,303 but regressed DejaVu to 3,669,176; limiting only standard-width substitution still lost overall (DejaVu 3,574,906, Noto 2,425,995). There is no dominant automatic switch between natural and full widths.
+- Kept as a diagnostic-only demo change: expose both `xn` (grid positions, natural widths) and `xf` (full pixel widths) rows instead of hiding this caller-policy trade-off behind a font/glyph heuristic.
 
 ## Final retained result
 - Baseline DejaVu total: 3,601,838.
-- Best DejaVu total: 3,572,829 (29,009 lower, 0.805% improvement).
-- Best policy totals: y 1,049,115; x-natural 889,926; x-full 816,894; xy-registered 816,894.
-- Noto fallback monitor: 2,471,489 (6,789 lower than baseline).
-- Retained changes: full y width fitting, no y standard-width substitution, independent registered x policies, registration on natural/full x modes, and 0.25px shallow-bowl eligibility.
+- Best DejaVu total: 3,546,754 (55,084 lower, 1.529% improvement).
+- Best policy totals: y 1,042,591; x-natural 883,553; x-full 810,305; xy-registered 810,305.
+- Noto fallback monitor: 2,450,735 (27,543 lower than baseline).
+- Retained changes: full y width fitting, no y standard-width substitution, independent registered x policies, registration on natural/full x modes, 0.25px shallow-bowl eligibility, blue-anchor-priority collision repair, and analytic endpoint-apex companions.

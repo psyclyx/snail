@@ -1,8 +1,8 @@
 //! All-in-one hinting validation overlay for the interactive demo.
 //!
-//! Renders the same sample string in four hinting modes — unhinted, explicit
-//! y-only and xy autohint policies, and the font's built-in TrueType hinting —
-//! stacked across a spread of ppems. Lets you compare both composable policies
+//! Renders the same sample string in five hinting modes — unhinted, explicit
+//! y-only, natural-width x/y, full-width x/y, and the font's built-in TrueType
+//! hinting — stacked across a spread of ppems. Lets you compare both composable policies
 //! against the TrueType reference and unhinted baseline in one glance. Toggle
 //! with V. Drawn as a
 //! projection-only pass so it stays put while the world pans/zooms.
@@ -21,8 +21,8 @@ const testing = std.testing;
 pub const sample_text = "Hamburg Λέξεις 0123";
 pub const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 /// Shared by the interactive V overlay and its headless screenshot. The grid
-/// ends at about 1044 logical pixels, so the default viewport leaves margin.
-pub const default_viewport_height: u32 = 1120;
+/// ends at about 1210 logical pixels, so the default viewport leaves margin.
+pub const default_viewport_height: u32 = 1280;
 
 const grid_top: f32 = 26;
 const row_leading: f32 = 1.32;
@@ -54,7 +54,19 @@ pub const y_policy: snail.autohint.AutohintPolicy = .{
     },
 };
 
-/// Strong demo policy: the same y fitting plus full relative x grid fitting.
+/// Cross-font/light x policy: align vertical stems but preserve their analyzed
+/// widths. This avoids forcing near-pixel strokes wider in fonts such as Noto.
+pub const x_natural_policy: snail.autohint.AutohintPolicy = .{
+    .x = .{
+        .@"align" = .grid,
+        .stem_width = .natural,
+        .positioning = .independent,
+        .registration = .left_round_outline,
+    },
+    .y = y_policy.y,
+};
+
+/// Strong/terminal policy: the same y fitting plus full x grid fitting.
 pub const xy_policy: snail.autohint.AutohintPolicy = .{
     .x = .{
         .@"align" = .grid,
@@ -78,7 +90,8 @@ const Row = struct {
 const rows = [_]Row{
     .{ .tag = "un", .mode = .unhinted, .snap = .none },
     .{ .tag = "y", .mode = .{ .autohint = y_policy }, .snap = .none },
-    .{ .tag = "xy", .mode = .{ .autohint = xy_policy }, .snap = .columns },
+    .{ .tag = "xn", .mode = .{ .autohint = x_natural_policy }, .snap = .columns },
+    .{ .tag = "xf", .mode = .{ .autohint = xy_policy }, .snap = .columns },
     .{ .tag = "tt", .mode = .{ .truetype = .{ .ppem_26_6 = 0 } }, .snap = .columns },
 };
 
@@ -175,7 +188,7 @@ pub const Compare = struct {
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
         // (ppem, row). Fold the font-label header's letters into the tag run
         // so ensureAll makes them resident too. Ensure everything in one pass.
-        const tags_str = try std.fmt.allocPrint(frame_alloc, "unyxytt{s}", .{self.label});
+        const tags_str = try std.fmt.allocPrint(frame_alloc, "unyxnxftt{s}", .{self.label});
         const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
@@ -358,11 +371,12 @@ fn hasKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
     return false;
 }
 
-test "comparison contains four policy rows and fits the default viewport" {
+test "comparison contains both x-width policies and fits the default viewport" {
     try testing.expectEqualStrings("un", rows[0].tag);
     try testing.expectEqualStrings("y", rows[1].tag);
-    try testing.expectEqualStrings("xy", rows[2].tag);
-    try testing.expectEqualStrings("tt", rows[3].tag);
+    try testing.expectEqualStrings("xn", rows[2].tag);
+    try testing.expectEqualStrings("xf", rows[3].tag);
+    try testing.expectEqualStrings("tt", rows[4].tag);
     try testing.expect(gridHeightPx(1.0) <= @as(f32, @floatFromInt(default_viewport_height)));
 }
 
