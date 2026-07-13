@@ -55,3 +55,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: registered light x-width policy. A 1.6px cutoff was bit-identical to full fitting; 1.2px worsened the fourth DejaVu policy 816,894→836,947 while improving Noto 15,311. Full x fitting remains target-optimal.
 - Discarded: preserve blue-zone overshoots. DejaVu worsened 3,572,829→3,714,845 across every policy; suppression is essential. Noto fallback distortion improved 73,690, reinforcing that Noto is only a secondary monitor.
 - Discarded: 0.20px bowl threshold. It hit the same worse DejaVu eligibility set as 0.125px (3,579,813). The useful discrete boundary lies between 0.20 and 0.25px.
+- Discarded: 0.225px bowl threshold. DejaVu 3,573,883 was 1,054 worse than 0.25px; keep 0.25.
