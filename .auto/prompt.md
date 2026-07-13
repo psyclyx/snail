@@ -50,3 +50,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: translate round-left outline by first-stem fitted delta instead of independently snapping it. DejaVu worsened 3,573,547→3,606,787; direct bowl snapping is substantially more TT-like. Noto improved only 1,464.
 - Kept: broadened round-left registration eligibility from 0.5px to 0.25px. DejaVu total improved 3,573,547→3,572,829: each full registered mode -1,552, x-natural +2,386, y unchanged. Noto rose 7,488; accepted as a small target-aligned tradeoff.
 - Discarded: register every outline left of the first stem (0px threshold). DejaVu worsened 3,572,829→3,605,470 and Noto worsened 23,342; 0.25px correctly filters shallow/noisy gaps.
+- Discarded: 0.375px bowl threshold. It reverted DejaVu to 3,573,547 (718 worse than 0.25px), though Noto improved 8,049. Keep 0.25px.
