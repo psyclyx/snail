@@ -36,3 +36,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Baseline uses adjacent-pitch rounding with a post-translation that keeps repeated stems evenly spaced and right-bounded.
 - Discarded: lowered light y stem cutoff 1.6→1.4. All metrics were bit-identical, so current corpus y stems do not cross that threshold.
 - Discarded: raised overshoot suppression threshold 0.5→0.75px. Metrics were bit-identical; no corpus overshoot lies in that interval at 9–14 PPEM.
+- Discarded: natural y stem widths (blue positioning only). DejaVu worsened 3,601,838→3,747,906 across every policy, although Noto distortion improved; light y width fitting is valuable for TT agreement.
