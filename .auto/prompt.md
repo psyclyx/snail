@@ -57,3 +57,4 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: 0.20px bowl threshold. It hit the same worse DejaVu eligibility set as 0.125px (3,579,813). The useful discrete boundary lies between 0.20 and 0.25px.
 - Discarded: 0.225px bowl threshold. DejaVu 3,573,883 was 1,054 worse than 0.25px; keep 0.25.
 - Discarded: 0.24px bowl threshold. Same DejaVu result as 0.225px (1,054 worse); the winning eligibility boundary activates at 0.25px.
+- Discarded: y standard-width ratio 0.2. Metrics were bit-identical to ratio 0; keep 0 as the simpler expression of no substitution.
