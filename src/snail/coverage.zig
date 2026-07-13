@@ -168,8 +168,8 @@ const TEXT_WORDS_PER_GLYPH_PRELUDE = std.fmt.comptimePrint(
 pub const Shader = struct {
     const GlShaderSources = struct {
         /// Paste into a vertex shader that wants the standard snail per-
-        /// instance attributes (the same 64-byte Instance the snail draw
-        /// path uses).
+        /// instance attributes (the same `vertex.Instance` layout the snail
+        /// draw path uses).
         pub const vertex_interface = gl_shaders.text_vertex_interface;
         /// Paste into a fragment shader that draws the prepared coverage
         /// geometry directly (per-fragment varyings from the vertex stage).
@@ -446,7 +446,7 @@ fn textureUnitEnum(unit: gl_GLint) gl_bindings.gl.GLenum {
 /// Prepared per-glyph coverage records for a caller-owned material shader.
 ///
 /// In the snail rewrite, the records are just the `u32` words `snail.emit.emit`
-/// produces (the same 64-byte-per-glyph format the snail GPU draw consumes).
+/// produces (the same `vertex.Instance` format the snail GPU draw consumes).
 /// This struct is a thin wrapper that owns / borrows the words slice and
 /// reports the implied glyph count for the caller's shader's
 /// `u_snail_text_glyph_count` uniform.

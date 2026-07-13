@@ -442,7 +442,7 @@ fn TextStateFor(comptime backend: Backend) type {
         /// each instance picks up a different override. To handle N>1
         /// shapes without OOB reads on the override stream (it has only
         /// M entries), the draw is issued once per shape with the shape
-        /// binding's buffer offset shifted by s × 64 bytes. The
+        /// binding's buffer offset shifted by s × `BYTES_PER_INSTANCE`. The
         /// replicated vertex shader composes shape × override
         /// per-instance and emits the final pixel.
         ///
@@ -489,7 +489,7 @@ fn TextStateFor(comptime backend: Backend) type {
             }
 
             const allow_subpixel = true;
-            const shape_words_view = seg_words[0..@as(usize, n) * vertex.WORDS_PER_INSTANCE];
+            const shape_words_view = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
 
             // Walk shape kind-runs. For each shape in a run, shift the
             // shape vertex binding to that shape's offset and issue an

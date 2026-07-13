@@ -7,7 +7,7 @@ const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
 const render_abi = @import("abi.zig");
 
-/// Per-instance data: 64 bytes = 16 u32 words per glyph.
+/// Per-instance data: 92 bytes = 23 u32 words per glyph.
 ///   rect:  4x f16 — bbox in em-space
 ///   xform: 4x f32 — linear part of 2D transform
 ///   org:   2x f32 — translation
@@ -15,6 +15,7 @@ const render_abi = @import("abi.zig");
 ///   bnd:   4x f32 — band transform
 ///   col:   4x u8 normalized sRGBA base color
 ///   tint:  4x u8 normalized sRGBA instance tint
+///   policy: 7x u32 packed draw-time autohint policy (zero for other kinds)
 pub const Instance = extern struct {
     rect: [4]u16,
     xform: [4]f32,
@@ -23,6 +24,7 @@ pub const Instance = extern struct {
     band: [4]f32,
     color: [4]u8,
     tint: [4]u8,
+    policy: [7]u32 = [_]u32{0} ** 7,
 };
 
 pub const BYTES_PER_INSTANCE: usize = @sizeOf(Instance);
@@ -41,8 +43,8 @@ pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
 pub const SpecialLayerKind = render_abi.SpecialLayerKind;
 
 comptime {
-    std.debug.assert(BYTES_PER_INSTANCE == 64);
-    std.debug.assert(WORDS_PER_INSTANCE == 16);
+    std.debug.assert(BYTES_PER_INSTANCE == 92);
+    std.debug.assert(WORDS_PER_INSTANCE == 23);
     std.debug.assert(@offsetOf(Instance, "rect") == 0);
     std.debug.assert(@offsetOf(Instance, "xform") == 8);
     std.debug.assert(@offsetOf(Instance, "origin") == 24);
@@ -50,6 +52,7 @@ comptime {
     std.debug.assert(@offsetOf(Instance, "band") == 40);
     std.debug.assert(@offsetOf(Instance, "color") == 56);
     std.debug.assert(@offsetOf(Instance, "tint") == 60);
+    std.debug.assert(@offsetOf(Instance, "policy") == 64);
 }
 
 pub const DecodedInstance = struct {
@@ -60,6 +63,7 @@ pub const DecodedInstance = struct {
     band: [4]f32,
     color: [4]f32,
     tint: [4]f32,
+    policy: [7]u32,
 };
 
 const identity_tint = [4]f32{ 1, 1, 1, 1 };
@@ -246,6 +250,7 @@ pub fn decodeInstance(words: []const u32) DecodedInstance {
         .band = instance.band,
         .color = decodeColor4(instance.color),
         .tint = decodeColor4(instance.tint),
+        .policy = instance.policy,
     };
 }
 
@@ -497,8 +502,11 @@ pub fn generateAutohintVerticesTransformedTinted(
     tint: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
+    policy: [7]u32,
 ) bool {
-    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .autohint);
+    if (!generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .autohint)) return false;
+    instancePtr(buf).policy = policy;
+    return true;
 }
 
 fn generateSpecialLayerVerticesTransformedTinted(
@@ -627,6 +635,29 @@ test "hinted text instance uses hinted special kind" {
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
     try std.testing.expectEqual(SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
+}
+
+test "autohint instance carries all seven policy words" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(1, 1) };
+    const words = [7]u32{ 1, 2, 3, 4, 5, 6, 7 };
+
+    try std.testing.expect(generateAutohintVerticesTransformedTinted(
+        &buf,
+        bbox,
+        12,
+        34,
+        1,
+        .{ 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1 },
+        7,
+        .identity,
+        words,
+    ));
+
+    const decoded = decodeInstance(&buf);
+    try std.testing.expectEqual(SpecialLayerKind.autohint, render_abi.specialGlyphWordKind(decoded.glyph[1]).?);
+    try std.testing.expectEqualSlices(u32, &words, &decoded.policy);
 }
 
 test "transformed glyph instance stores affine transform" {

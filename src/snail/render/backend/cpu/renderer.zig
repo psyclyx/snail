@@ -16,14 +16,13 @@ const render_abi = @import("../../format/abi.zig");
 const text_hint_format = @import("../../format/text_hint.zig");
 const autohint_record = @import("../../format/autohint_record.zig");
 const autohint_warp = @import("../../../font/autohint/warp.zig");
+const autohint_policy = @import("../../../font/autohint/policy.zig");
 const vertex = @import("../../format/vertex.zig");
 
-/// The two packed warp-knot runs (from an autohint slab record) that drive a
-/// resolution-independent glyph render: the sample coordinate is warped back
-/// into base-outline space before ordinary coverage runs.
+/// Caller-owned transient fitted knots for one glyph draw.
 pub const AutohintWarp = struct {
-    x_run: []const f32,
-    y_run: []const f32,
+    x: []const autohint_warp.Knot,
+    y: []const autohint_warp.Knot,
 };
 const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -78,6 +77,13 @@ const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
 const samplePathPaint = cpu_path_paint.samplePathPaint;
 const ScreenBounds = cpu_geometry.ScreenBounds;
 const srgbBytesToLinearColor = cpu_color.srgbBytesToLinearColor;
+
+fn expandDeviceBounds(bounds: *ScreenBounds, pixels: f32) void {
+    bounds.min.x -= pixels;
+    bounds.min.y -= pixels;
+    bounds.max.x += pixels;
+    bounds.max.y += pixels;
+}
 const srgbColorToLinear = cpu_color.srgbColorToLinear;
 const subpixelBlendCoverage = cpu_coverage.subpixelBlendCoverage;
 const transformedGlyphBounds = cpu_geometry.transformedGlyphBounds;
@@ -517,6 +523,7 @@ pub const CpuRenderer = struct {
             const decoded = decodeBatchInstance(vertices[i..][0..WORDS], scene_to_pixel);
             var bounds = cpu_geometry.transformedGlyphBounds(decoded.bbox, decoded.transform);
             cpu_geometry.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
+            if (decoded.isAutohint()) expandDeviceBounds(&bounds, 2.0);
             if (bounds.min.y < min_y) min_y = bounds.min.y;
             if (bounds.max.y > max_y) max_y = bounds.max.y;
         }
@@ -535,6 +542,7 @@ pub const CpuRenderer = struct {
         band: [4]f32,
         color: [4]f32,
         tint: [4]f32,
+        policy: [7]u32,
 
         fn atlasLayerByte(self: BatchInstance) u8 {
             return render_abi.glyphWordAtlasLayer(self.glyph[1]);
@@ -542,6 +550,10 @@ pub const CpuRenderer = struct {
 
         fn isSpecialLayer(self: BatchInstance) bool {
             return render_abi.glyphWordIsSpecial(self.glyph[1]);
+        }
+
+        fn isAutohint(self: BatchInstance) bool {
+            return self.isSpecialLayer() and render_abi.specialGlyphWordKind(self.glyph[1]) == .autohint;
         }
     };
 
@@ -567,6 +579,7 @@ pub const CpuRenderer = struct {
             .band = encoded.band,
             .color = srgbBytesToLinearColor(encoded.color),
             .tint = srgbBytesToLinearColor(encoded.tint),
+            .policy = encoded.policy,
         };
     }
 
@@ -695,16 +708,16 @@ pub const CpuRenderer = struct {
             .band_offset_x = rec.band_offset_x,
             .band_offset_y = rec.band_offset_y,
         };
+        const policy = autohint_policy.AutohintPolicy.unpack(decoded.policy) catch return;
         self.renderTransformedAutohintGlyph(
             page,
             decoded.bbox,
             be,
             decoded.transform,
             multiplyLinearColor(decoded.color, decoded.tint),
-            .{
-                .x_run = autohint_record.xRun(entry.data, off),
-                .y_run = autohint_record.yRun(entry.data, off),
-            },
+            entry.data,
+            off,
+            policy,
         );
     }
 
@@ -1488,7 +1501,6 @@ pub const CpuRenderer = struct {
         const band_max_v = layer.band_max_v;
         const paint_program = layer.paint;
 
-
         const axis_aligned = @abs(raster.sample_dx.y) < 1e-9;
         const subpixel_rgb = raster.use_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and raster.subpixel_plan.step.y == 0.0;
         // Subpixel path uses single-band evalGlyphCoverageSubpixel internally,
@@ -1684,9 +1696,8 @@ pub const CpuRenderer = struct {
         self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, record, null);
     }
 
-    /// Render the shared base glyph `be` with a resolution-independent warp:
-    /// the sample coordinate is mapped back into base-outline space per pixel
-    /// so no per-ppem curves are baked. Grayscale only for now.
+    /// Fit the immutable analysis once for this draw, then render the shared
+    /// base glyph through caller-owned transient knots. Grayscale only.
     fn renderTransformedAutohintGlyph(
         self: *CpuRenderer,
         page: anytype,
@@ -1694,9 +1705,22 @@ pub const CpuRenderer = struct {
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
-        warp: AutohintWarp,
+        record_data: []const f32,
+        record_off: usize,
+        policy: autohint_policy.AutohintPolicy,
     ) void {
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, null, warp);
+        const scale = Vec2.new(
+            @sqrt(transform.xx * transform.xx + transform.yx * transform.yx),
+            @sqrt(transform.xy * transform.xy + transform.yy * transform.yy),
+        );
+        var x_out: [autohint_warp.max_knots]autohint_warp.Knot = undefined;
+        var y_out: [autohint_warp.max_knots]autohint_warp.Knot = undefined;
+        const fitted = autohint_warp.fitGlyph(.{
+            .x = autohint_record.xFeatures(record_data, record_off),
+            .y = autohint_record.yFeatures(record_data, record_off),
+            .left = autohint_record.glyphLeft(record_data, record_off),
+        }, autohint_record.fontFeatures(record_data, record_off), policy, scale, &x_out, &y_out);
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, null, .{ .x = fitted.x, .y = fitted.y });
     }
 
     fn renderTransformedGlyphMaybeHinted(
@@ -1713,6 +1737,7 @@ pub const CpuRenderer = struct {
         const inverse = inverseTransform(transform) orelse return;
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
+        if (warp != null) expandDeviceBounds(&bounds, 2.0);
 
         const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
         const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
@@ -1853,8 +1878,8 @@ pub const CpuRenderer = struct {
                 var sample = display_local;
                 var sppe = ppe;
                 if (warp) |w| {
-                    const sx = autohint_warp.inverseWarpPacked(w.x_run, display_local.x);
-                    const sy = autohint_warp.inverseWarpPacked(w.y_run, display_local.y);
+                    const sx = autohint_warp.inverseWarp(w.x, display_local.x);
+                    const sy = autohint_warp.inverseWarp(w.y, display_local.y);
                     sample = .{ .x = sx.base, .y = sy.base };
                     sppe = .{ .x = ppe.x / sx.inv_slope, .y = ppe.y / sy.inv_slope };
                 }
@@ -2019,4 +2044,3 @@ pub const CpuRenderer = struct {
         }
     }
 };
-

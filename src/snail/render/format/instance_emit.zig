@@ -68,9 +68,10 @@ pub const Cursor = struct {
         tint: [4]f32,
         layer: u8,
         transform: Transform2D,
+        policy: [7]u32,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
-        if (!vertex.generateAutohintVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
+        if (!vertex.generateAutohintVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform, policy))
             return error.InvalidTransform;
         self.commit();
     }

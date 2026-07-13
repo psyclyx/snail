@@ -180,7 +180,7 @@ fn drawReplicated(
     vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, @ptrCast(&desc_set), 0, null);
 
     const allow_subpixel = true;
-    const shape_words_view = seg_words[0..@as(usize, n) * vertex.WORDS_PER_INSTANCE];
+    const shape_words_view = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
 
     var run_start: usize = 0;
     while (run_start < n) {
@@ -215,7 +215,7 @@ fn drawReplicated(
         self.pushTextConstants(cmd, draw_state, 0, run_mode);
 
         // One M-instance draw per shape in the run. Shape stream's
-        // offset shifts by 64 bytes per shape; override stream's
+        // offset shifts by `vertex.BYTES_PER_INSTANCE` per shape; override stream's
         // offset stays fixed.
         var s: usize = run_start;
         while (s < run_end_in_shapes) : (s += 1) {

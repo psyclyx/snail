@@ -4,9 +4,9 @@
 //!
 //! Two primitives:
 //!   - `emit` walks heterogeneous shape lists (one transform/color per shape).
-//!     Writes one 16-word `Instance` per shape.
+//!     Writes one 23-word `Instance` per shape.
 //!   - `emitInstanced` walks a shape list replicated under M overrides.
-//!     Writes N shape blocks (16 words each) + M override blocks
+//!     Writes N shape blocks (23 words each) + M override blocks
 //!     (8 words each); the backend materializes N*M instances at dispatch.
 //!
 //! Both primitives write into caller-provided buffers and return word/segment
@@ -44,6 +44,12 @@ pub const EmitError = error{
     MissingRecord,
     /// A shape's composed transform had near-zero determinant.
     InvalidTransform,
+    /// An autohint analysis shape omitted its draw-time fitting policy.
+    MissingAutohintPolicy,
+    /// A non-autohint shape supplied an autohint fitting policy.
+    UnexpectedAutohintPolicy,
+    /// The supplied autohint policy failed semantic validation.
+    InvalidAutohintPolicy,
     /// `words_buf` or `segs_buf` ran out of room.
     BufferTooSmall,
     /// A page index exceeded the vertex format's u8 `atlas_layer` slot.
@@ -94,6 +100,16 @@ pub fn emit(
             return error.MissingRecord;
         };
 
+        const ah_info_opt = atlas.lookupAutohintRecord(shape.key);
+        const packed_policy = if (ah_info_opt != null) blk: {
+            const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
+            policy.validate() catch return error.InvalidAutohintPolicy;
+            break :blk policy.pack();
+        } else blk: {
+            if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
+            break :blk [_]u32{0} ** 7;
+        };
+
         // An empty record (curve_count == 0) corresponds to a non-rendering
         // glyph (e.g. ASCII space). Skip emitting any instance for it.
         if (rec.curve_count == 0) continue;
@@ -104,7 +120,7 @@ pub fn emit(
 
         const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
 
-        if (atlas.lookupAutohintRecord(shape.key)) |ah_info| {
+        if (ah_info_opt) |ah_info| {
             // Warped instance over the shared base glyph.
             kind_mask |= draw_records.KIND_BIT_AUTOHINT;
             try cur.appendAutohintTransformedTinted(
@@ -116,6 +132,7 @@ pub fn emit(
                 world_tint,
                 atlas_layer,
                 final_transform,
+                packed_policy,
             );
         } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
             kind_mask |= draw_records.KIND_BIT_PATH;
@@ -187,7 +204,7 @@ pub fn emit(
 /// materializes N*M instances at dispatch by combining each shape with each
 /// override.
 ///
-/// Shape blocks use the same 16-word `Instance` format as heterogeneous
+/// Shape blocks use the same 23-word `Instance` format as heterogeneous
 /// emit, with `color = shape.local_color`, `tint = identity`, and the
 /// instance transform set to `shape.local_transform` (no world composition).
 /// Override blocks are 8 words each: 6 f32 transform fields then a packed
@@ -210,11 +227,20 @@ pub fn emitInstanced(
     var cursor: usize = word_len.*;
     const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var shape_emitted: u32 = 0;
+    var kind_mask: u8 = 0;
 
     for (shapes) |shape| {
-        const rec = atlas.lookupRecord(shape.key) orelse {
-            return error.MissingRecord;
+        const rec = atlas.lookupRecord(shape.key) orelse return error.MissingRecord;
+        const ah_info_opt = atlas.lookupAutohintRecord(shape.key);
+        const packed_policy = if (ah_info_opt != null) blk: {
+            const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
+            policy.validate() catch return error.InvalidAutohintPolicy;
+            break :blk policy.pack();
+        } else blk: {
+            if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
+            break :blk [_]u32{0} ** 7;
         };
+
         // Match the heterogeneous behavior: skip non-rendering records
         // entirely. This means the replicated shape count may differ
         // from picture.shapes.len.
@@ -223,23 +249,39 @@ pub fn emitInstanced(
         if (page.layer_index > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
         const atlas_layer: u8 = @intCast(page.layer_index);
 
-        try cur.appendGlyphTransformedTinted(
-            rec.bbox,
-            .{
-                .glyph_x = rec.bands.glyph_x,
-                .glyph_y = rec.bands.glyph_y,
-                .h_band_count = rec.bands.h_band_count,
-                .v_band_count = rec.bands.v_band_count,
-                .band_scale_x = rec.bands.band_scale_x,
-                .band_scale_y = rec.bands.band_scale_y,
-                .band_offset_x = rec.bands.band_offset_x,
-                .band_offset_y = rec.bands.band_offset_y,
-            },
-            shape.local_color,
-            .{ 1, 1, 1, 1 },
-            atlas_layer,
-            shape.local_transform,
-        );
+        if (ah_info_opt) |ah_info| {
+            kind_mask |= draw_records.KIND_BIT_AUTOHINT;
+            try cur.appendAutohintTransformedTinted(
+                rec.bbox,
+                ah_info.info_x,
+                try addRowBase(ah_info.info_y, binding.info_row_base),
+                ah_info.layer_count,
+                shape.local_color,
+                .{ 1, 1, 1, 1 },
+                atlas_layer,
+                shape.local_transform,
+                packed_policy,
+            );
+        } else {
+            kind_mask |= draw_records.KIND_BIT_REGULAR;
+            try cur.appendGlyphTransformedTinted(
+                rec.bbox,
+                .{
+                    .glyph_x = rec.bands.glyph_x,
+                    .glyph_y = rec.bands.glyph_y,
+                    .h_band_count = rec.bands.h_band_count,
+                    .v_band_count = rec.bands.v_band_count,
+                    .band_scale_x = rec.bands.band_scale_x,
+                    .band_scale_y = rec.bands.band_scale_y,
+                    .band_offset_x = rec.bands.band_offset_x,
+                    .band_offset_y = rec.bands.band_offset_y,
+                },
+                shape.local_color,
+                .{ 1, 1, 1, 1 },
+                atlas_layer,
+                shape.local_transform,
+            );
+        }
         shape_emitted += 1;
     }
 
@@ -262,7 +304,7 @@ pub fn emitInstanced(
         .words_len = wrote_words,
         .shape_count = shape_emitted,
         .override_count = @intCast(overrides.len),
-        .kind_mask = draw_records.KIND_BIT_REGULAR,
+        .kind_mask = kind_mask,
     };
     seg_len.* += 1;
 
@@ -359,6 +401,32 @@ fn makeTinyCurves(allocator: std.mem.Allocator) !GlyphCurves {
     };
 }
 
+fn buildAutohintTestAtlas(pool: *PagePool) !atlas_mod.Atlas {
+    const base_key = record_key_mod.unhintedGlyph(0, 1);
+    const key = record_key_mod.autohintGlyph(0, 1);
+    var curves = try makeTinyCurves(testing.allocator);
+    defer curves.deinit();
+    const x = [_]@import("../font/autohint/producer.zig").FeatureEdge{.{
+        .pos = 0.2,
+        .width = 0.1,
+        .stem = -1,
+        .blue = -1,
+        .flags = .{ .round = false },
+    }};
+    return atlas_mod.Atlas.from(testing.allocator, pool, &.{
+        .{ .key = base_key, .curves = curves },
+        .{
+            .key = key,
+            .curves = GlyphCurves.empty(testing.allocator),
+            .autohint = .{
+                .font = .{ .blues = &.{}, .std_x = 0.1, .std_y = 0 },
+                .glyph = .{ .x = &x, .y = &.{}, .left = 0 },
+            },
+            .autohint_base = base_key,
+        },
+    });
+}
+
 fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
     var owned: std.ArrayList(GlyphCurves) = .empty;
     defer {
@@ -377,6 +445,73 @@ fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
         });
     }
     return atlas_mod.Atlas.from(testing.allocator, pool, entries.items);
+}
+
+test "autohint shapes share lookup data and emit distinct seven-word policies" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+    var atlas = try buildAutohintTestAtlas(pool);
+    defer atlas.deinit();
+
+    const key = record_key_mod.autohintGlyph(0, 1);
+    const policy_a: shape_mod.AutohintPolicy = .{ .x = .{ .@"align" = .grid } };
+    const policy_b: shape_mod.AutohintPolicy = .{ .x = .{ .@"align" = .grid, .positioning = .relative } };
+    const shapes = [_]Shape{
+        .{ .key = key, .autohint_policy = policy_a },
+        .{ .key = key, .autohint_policy = policy_b },
+    };
+    try testing.expectEqual(shapes[0].key, shapes[1].key);
+    const lookup_before = atlas.lookupAutohintRecord(key).?;
+    const slab_ptr = atlas.layer_info_data.?.ptr;
+    const slab_len = atlas.layer_info_data.?.len;
+
+    var words: [2 * WORDS_PER_INSTANCE]u32 = undefined;
+    var segs: [1]DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    _ = try emit(&words, &segs, &wlen, &slen, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+
+    const decoded_a = vertex.decodeInstance(words[0..WORDS_PER_INSTANCE]);
+    const decoded_b = vertex.decodeInstance(words[WORDS_PER_INSTANCE..]);
+    const packed_a = policy_a.pack();
+    const packed_b = policy_b.pack();
+    try testing.expectEqualSlices(u32, &packed_a, &decoded_a.policy);
+    try testing.expectEqualSlices(u32, &packed_b, &decoded_b.policy);
+    try testing.expect(!std.mem.eql(u32, &decoded_a.policy, &decoded_b.policy));
+    try testing.expectEqualDeep(lookup_before, atlas.lookupAutohintRecord(key).?);
+    try testing.expectEqual(slab_ptr, atlas.layer_info_data.?.ptr);
+    try testing.expectEqual(slab_len, atlas.layer_info_data.?.len);
+
+    var replicated_words: [WORDS_PER_INSTANCE + WORDS_PER_OVERRIDE]u32 = undefined;
+    wlen = 0;
+    slen = 0;
+    _ = try emitInstanced(&replicated_words, &segs, &wlen, &slen, .{ .pool = pool }, &atlas, shapes[0..1], &.{.{}});
+    const replicated = vertex.decodeInstance(replicated_words[0..WORDS_PER_INSTANCE]);
+    try testing.expectEqualSlices(u32, &packed_a, &replicated.policy);
+    try testing.expectEqual(draw_records.KIND_BIT_AUTOHINT, segs[0].kind_mask);
+}
+
+test "emit enforces autohint policy presence and placement" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+    var atlas = try buildAutohintTestAtlas(pool);
+    defer atlas.deinit();
+    var words: [WORDS_PER_INSTANCE]u32 = undefined;
+    var segs: [1]DrawSegment = undefined;
+    var wlen: usize = 0;
+    var slen: usize = 0;
+    const binding = Binding{ .pool = pool };
+
+    try testing.expectError(error.MissingAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.autohintGlyph(0, 1) }}, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectError(error.UnexpectedAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.unhintedGlyph(0, 1), .autohint_policy = .{} }}, .identity, .{ 1, 1, 1, 1 }));
 }
 
 test "emit writes one instance per shape" {

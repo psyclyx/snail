@@ -341,6 +341,132 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     try testing.expectEqualSlices(u8, px_hetero, px_repl);
 }
 
+test "drawCpu autohint fits per size without mutating atlas resources" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const font_data = @import("assets").noto_sans_regular;
+    const atlas_mod = @import("../../../atlas.zig");
+    const record_key_mod = @import("../../../atlas/record_key.zig");
+    const shape_mod = @import("../../../picture/shape.zig");
+    const emit_mod = @import("../../../picture/emit.zig");
+
+    const W: u32 = 48;
+    const H: u32 = 40;
+    const STRIDE: u32 = W * 4;
+
+    var font = try snail.Font.init(font_data);
+    const gid = try font.glyphIndex('H');
+    var curves = try font.extractCurves(allocator, allocator, gid);
+    defer curves.deinit();
+
+    var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, font_data);
+    defer analyzer.deinit();
+    var x_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
+    var y_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
+    const glyph_features = try analyzer.analyzeGlyph(allocator, gid, &x_features, &y_features);
+    try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
+
+    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    const base_key = record_key_mod.unhintedGlyph(0, gid);
+    const key = record_key_mod.autohintGlyph(0, gid);
+    var atlas = try atlas_mod.Atlas.from(allocator, pool, &.{
+        .{ .key = base_key, .curves = curves },
+        .{
+            .key = key,
+            .curves = atlas_mod.GlyphCurves.empty(allocator),
+            .autohint = .{ .font = analyzer.fontFeatures(), .glyph = glyph_features },
+            .autohint_base = base_key,
+        },
+    });
+    defer atlas.deinit();
+
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+
+    const pages_ptr = atlas.pages.ptr;
+    const pages_len = atlas.pages.len;
+    const page = atlas.pages[0];
+    const curve_data = page.curve.data;
+    const band_data = page.band.data;
+    const layer_info = atlas.layer_info_data.?;
+    const layer_info_copy = try allocator.dupe(f32, layer_info);
+    defer allocator.free(layer_info_copy);
+    const curve_used = page.curve.usedWords();
+    const curve_uploaded = page.curve.uploadedWords();
+    const band_used = page.band.usedWords();
+    const band_uploaded = page.band.uploadedWords();
+    const curve_copy = try allocator.dupe(u16, page.curve.data[0..curve_used]);
+    defer allocator.free(curve_copy);
+    const band_copy = try allocator.dupe(u16, page.band.data[0..band_used]);
+    defer allocator.free(band_copy);
+
+    const Render = struct {
+        fn atSize(
+            pixels: []u8,
+            px_size: f32,
+            policy: shape_mod.AutohintPolicy,
+            shape_key: atlas_mod.RecordKey,
+            binding: Binding,
+            atlas_ptr: *const atlas_mod.Atlas,
+            cache_ptr: *const CpuBackendCache,
+        ) !void {
+            @memset(pixels, 0);
+            const shape = shape_mod.Shape{
+                .key = shape_key,
+                .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 10, .ty = 28 },
+                .autohint_policy = policy,
+            };
+            var words: [vertex.WORDS_PER_INSTANCE]u32 = undefined;
+            var segs: [1]draw_records.DrawSegment = undefined;
+            var wlen: usize = 0;
+            var slen: usize = 0;
+            _ = try emit_mod.emit(&words, &segs, &wlen, &slen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
+            var renderer = snail.CpuRenderer.init(pixels.ptr, W, H, STRIDE);
+            try drawCpu(&renderer, makeIdentityState(W, H), .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{cache_ptr}, null);
+        }
+    };
+
+    const pixels_12 = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(pixels_12);
+    const pixels_17 = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(pixels_17);
+    try Render.atSize(pixels_12, 12, .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones },
+    }, key, bindings[0], &atlas, &cache);
+    try Render.atSize(pixels_17, 17, .{
+        .x = .{ .@"align" = .grid, .positioning = .relative },
+        .y = .{ .@"align" = .blue_zones },
+    }, key, bindings[0], &atlas, &cache);
+
+    try testing.expect(!std.mem.allEqual(u8, pixels_12, 0));
+    try testing.expect(!std.mem.allEqual(u8, pixels_17, 0));
+    try testing.expect(!std.mem.eql(u8, pixels_12, pixels_17));
+    try testing.expectEqual(pages_ptr, atlas.pages.ptr);
+    try testing.expectEqual(pages_len, atlas.pages.len);
+    try testing.expectEqual(page, atlas.pages[0]);
+    try testing.expectEqual(curve_data.ptr, page.curve.data.ptr);
+    try testing.expectEqual(curve_data.len, page.curve.data.len);
+    try testing.expectEqual(band_data.ptr, page.band.data.ptr);
+    try testing.expectEqual(band_data.len, page.band.data.len);
+    try testing.expectEqual(layer_info.ptr, atlas.layer_info_data.?.ptr);
+    try testing.expectEqual(layer_info.len, atlas.layer_info_data.?.len);
+    try testing.expectEqual(curve_used, page.curve.usedWords());
+    try testing.expectEqual(curve_uploaded, page.curve.uploadedWords());
+    try testing.expectEqual(band_used, page.band.usedWords());
+    try testing.expectEqual(band_uploaded, page.band.uploadedWords());
+    try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(layer_info_copy), std.mem.sliceAsBytes(atlas.layer_info_data.?));
+    try testing.expectEqualSlices(u16, curve_copy, page.curve.data[0..curve_used]);
+    try testing.expectEqualSlices(u16, band_copy, page.band.data[0..band_used]);
+}
+
 test "drawCpu renders a small Picture into non-zero pixels" {
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;

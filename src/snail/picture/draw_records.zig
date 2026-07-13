@@ -2,8 +2,8 @@
 //!
 //! Two slices:
 //! - `words` is packed GPU vertex data. Heterogeneous segments lay
-//!   out one 16-word `Instance` per instance. Replicated segments
-//!   lay out N shape blocks (16 words each) followed by M override
+//!   out one 23-word `Instance` per instance. Replicated segments
+//!   lay out N shape blocks (23 words each) followed by M override
 //!   blocks (8 words each); the backend issues a single instanced
 //!   draw of `N*M` quads and the vertex shader composes
 //!   `override[gl_InstanceID % M]` onto `shape[gl_InstanceID / M]`.
