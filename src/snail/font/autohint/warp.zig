@@ -360,22 +360,20 @@ pub fn buildKnotsReg(
         else
             e.width; // thick — natural width, position only
         if (params.anchor_stem_positions) {
-            // Position each stem by rounding its PITCH — the inner-edge-to-
-            // inner-edge distance from the previous stem — exactly once, and
-            // accumulate. One round folds this stem's width and counter together
-            // (no double-rounding, so a 2-stem glyph like 'H' keeps its width),
-            // while accumulating rounded pitches keeps a 3-leg glyph like 'm'/'w'
-            // evenly spaced (round-from-the-first-stem would round 2·pitch and
-            // split it into a 1px + 2px counter).
+            // Position every stem relative to the first stem. Rounding each
+            // cumulative distance once preserves the glyph's overall designed
+            // width: independently accumulating rounded pitches can round two
+            // ~2.5px counters in the same direction and push the last leg of
+            // `m`/`w` outside its snapped cell.
             if (anchor_set) {
                 target[i] = anchor_target + @round((e.pos - anchor_base) * px_per_unit) * grid;
             } else {
                 target[i] = snap(e.pos, px_per_unit);
                 anchor_set = true;
+                anchor_base = e.pos;
+                anchor_target = target[i];
             }
             target[j] = target[i] + width_units;
-            anchor_base = e.pos; // this stem's INNER edge → base for the next pitch
-            anchor_target = target[i];
         } else {
             const lower_blue = edges[i].blue >= 0;
             const upper_blue = edges[j].blue >= 0;
@@ -703,10 +701,10 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
             if (anchor_set) targets[i] = anchor_target + @round((feature.pos - anchor_base) * scale) * grid else {
                 targets[i] = glslHostSnap(feature.pos, scale);
                 anchor_set = true;
+                anchor_base = feature.pos;
+                anchor_target = targets[i];
             }
             targets[j] = targets[i] + width_units;
-            anchor_base = feature.pos;
-            anchor_target = targets[i];
         } else {
             // Retain decoded blue indices for y-grid, exactly as the shader does.
             const lower_blue = feature.blue >= 0;

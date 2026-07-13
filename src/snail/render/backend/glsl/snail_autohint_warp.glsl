@@ -163,10 +163,13 @@ bool snailFitAutohintAxis(
             widthUnits = max(round(nominal * scale), 1.0) * grid;
         if (relative) {
             if (anchorSet) targets[i] = anchorTarget + round((pos[i] - anchorBase) * scale) * grid;
-            else { targets[i] = snailAhSnap(pos[i], scale); anchorSet = true; }
+            else {
+                targets[i] = snailAhSnap(pos[i], scale);
+                anchorSet = true;
+                anchorBase = pos[i];
+                anchorTarget = targets[i];
+            }
             targets[j] = targets[i] + widthUnits;
-            anchorBase = pos[i];
-            anchorTarget = targets[i];
         } else {
             bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
             bool lowerBlue = axisAligned && blue[i] >= 0;

@@ -338,6 +338,25 @@ test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
     }
 }
 
+test "relative x fitting keeps DejaVu m inside its 12 PPEM cell" {
+    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
+    defer analyzer.deinit();
+    const glyph_id = try analyzer.font.glyphIndex('m');
+    var feature_x: [warp.max_knots]FeatureEdge = undefined;
+    var feature_y: [warp.max_knots]FeatureEdge = undefined;
+    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_id, &feature_x, &feature_y);
+    const policy: @import("policy.zig").AutohintPolicy = .{
+        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
+        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
+    };
+    var x_out: [warp.max_knots]warp.Knot = undefined;
+    var y_out: [warp.max_knots]warp.Knot = undefined;
+    const fitted = warp.fitGlyph(glyph, analyzer.fontFeatures(), policy, .{ .x = 12, .y = 12 }, &x_out, &y_out);
+
+    try testing.expectEqual(@as(usize, 6), fitted.x.len);
+    try testing.expectApproxEqAbs(@as(f32, 7.0 / 12.0), fitted.x[5].target, 0.000001);
+}
+
 test "fitGlyph consumes normalized analysis without retaining targets" {
     var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
     defer analyzer.deinit();
