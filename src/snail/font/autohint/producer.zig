@@ -299,26 +299,25 @@ test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
     const snapshots = [_]Snapshot{
         .{ .ppem = 9, .y = &.{
             .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.06296369, .target = 0.11111111 },
             .{ .base = 0.48293912, .target = 0.44444448 },
             .{ .base = 0.55655926, .target = 0.5555556 },
-            .{ .base = 0, .target = 0.6666667 },
         } },
         .{ .ppem = 12, .y = &.{
             .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.06296369, .target = 0.083333336 },
             .{ .base = 0.48293912, .target = 0.49999997 },
             .{ .base = 0.55655926, .target = 0.5833333 },
-            .{ .base = 0, .target = 0.6666666 },
         } },
         .{ .ppem = 16, .y = &.{
             .{ .base = -0.010673185, .target = 0 },
+            .{ .base = 0.06296369, .target = 0.0625 },
             .{ .base = 0.48293912, .target = 0.5 },
             .{ .base = 0.55655926, .target = 0.5625 },
-            .{ .base = 0, .target = 0.625 },
         } },
         .{ .ppem = 28, .y = &.{
             .{ .base = -0.010673185, .target = 0 },
             .{ .base = 0.55655926, .target = 0.53571427 },
-            .{ .base = 0, .target = 0.57142854 },
         } },
     };
     const strong_policy: @import("policy.zig").AutohintPolicy = .{

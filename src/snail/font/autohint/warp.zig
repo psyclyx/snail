@@ -239,7 +239,7 @@ pub fn fitAxis(
     }
 
     const std_width = if (axis == .x) font.std_x else font.std_y;
-    const count = buildKnotsReg(&edges, if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
+    const count = buildKnotsReg(edges[0..features.len], if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
     for (out[0..count]) |knot| {
         if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
     }
@@ -624,6 +624,30 @@ test "strong x composition matches prior fitting" {
     for (expected, knots) |want, got| {
         try testing.expectApproxEqAbs(want.base, got.base, 1e-5);
         try testing.expectApproxEqAbs(want.target, got.target, 1e-5);
+    }
+}
+
+test "fitAxis short feature slices ignore poisoned reused output scratch" {
+    var features = [_]FeatureEdge{ testFeature(0.12), testFeature(0.20) };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.08);
+    const policy: policy_mod.XPolicy = .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } },
+    };
+
+    var first_out = [_]Knot{.{ .base = std.math.nan(f32), .target = std.math.inf(f32) }} ** max_knots;
+    const first = fitAxis(&features, TestFontFeatures{ .std_x = 0.08 }, .x, policy, 13, 0, &first_out);
+    var expected: [max_knots]Knot = undefined;
+    @memcpy(expected[0..first.len], first);
+    const expected_len = first.len;
+
+    @memset(&first_out, .{ .base = -1234, .target = 5678 });
+    const second = fitAxis(&features, TestFontFeatures{ .std_x = 0.08 }, .x, policy, 13, 0, &first_out);
+    try testing.expectEqual(expected_len, second.len);
+    try testing.expectEqual(@as(usize, 2), second.len);
+    for (expected[0..expected_len], second) |want, got| {
+        try testing.expectEqual(want.base, got.base);
+        try testing.expectEqual(want.target, got.target);
     }
 }
 
