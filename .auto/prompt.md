@@ -58,3 +58,11 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Discarded: 0.225px bowl threshold. DejaVu 3,573,883 was 1,054 worse than 0.25px; keep 0.25.
 - Discarded: 0.24px bowl threshold. Same DejaVu result as 0.225px (1,054 worse); the winning eligibility boundary activates at 0.25px.
 - Discarded: y standard-width ratio 0.2. Metrics were bit-identical to ratio 0; keep 0 as the simpler expression of no substitution.
+- Discarded: y standard-width ratio 0.3. Metrics remained bit-identical to ratio 0; substitution only changes behavior by 0.4, where it is slightly worse.
+
+## Final retained result
+- Baseline DejaVu total: 3,601,838.
+- Best DejaVu total: 3,572,829 (29,009 lower, 0.805% improvement).
+- Best policy totals: y 1,049,115; x-natural 889,926; x-full 816,894; xy-registered 816,894.
+- Noto fallback monitor: 2,471,489 (6,789 lower than baseline).
+- Retained changes: full y width fitting, no y standard-width substitution, independent registered x policies, registration on natural/full x modes, and 0.25px shallow-bowl eligibility.
