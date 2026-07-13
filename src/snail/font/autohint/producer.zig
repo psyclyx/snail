@@ -354,6 +354,9 @@ test "relative x fitting keeps DejaVu m inside its 12 PPEM cell" {
     const fitted = warp.fitGlyph(glyph, analyzer.fontFeatures(), policy, .{ .x = 12, .y = 12 }, &x_out, &y_out);
 
     try testing.expectEqual(@as(usize, 6), fitted.x.len);
+    const first_pitch = fitted.x[2].target - fitted.x[0].target;
+    const second_pitch = fitted.x[4].target - fitted.x[2].target;
+    try testing.expectApproxEqAbs(first_pitch, second_pitch, 0.000001);
     try testing.expectApproxEqAbs(@as(f32, 7.0 / 12.0), fitted.x[5].target, 0.000001);
 }
 

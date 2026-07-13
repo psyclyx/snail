@@ -153,6 +153,11 @@ bool snailFitAutohintAxis(
     bool anchorSet = false;
     float anchorBase = 0.0;
     float anchorTarget = 0.0;
+    float clusterBase = 0.0;
+    float clusterTarget = 0.0;
+    int clusterRight = 0;
+    float clusterDesiredRight = 0.0;
+    int clusterStems = 0;
     for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
         if (i >= n) break;
         int j = stem[i];
@@ -166,10 +171,15 @@ bool snailFitAutohintAxis(
             else {
                 targets[i] = snailAhSnap(pos[i], scale);
                 anchorSet = true;
-                anchorBase = pos[i];
-                anchorTarget = targets[i];
+                clusterBase = pos[i];
+                clusterTarget = targets[i];
             }
             targets[j] = targets[i] + widthUnits;
+            anchorBase = pos[i];
+            anchorTarget = targets[i];
+            clusterRight = j;
+            clusterDesiredRight = clusterTarget + round((pos[i] - clusterBase) * scale) * grid + widthUnits;
+            clusterStems += 1;
         } else {
             bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
             bool lowerBlue = axisAligned && blue[i] >= 0;
@@ -180,6 +190,13 @@ bool snailFitAutohintAxis(
         }
         hinted[i] = true;
         hinted[j] = true;
+    }
+    if (relative && clusterStems > 1) {
+        float shift = clusterDesiredRight - targets[clusterRight];
+        for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
+            if (i >= n) break;
+            if (hinted[i]) targets[i] += shift;
+        }
     }
 
     // Preserve the weight next to a round blue-zone apex.

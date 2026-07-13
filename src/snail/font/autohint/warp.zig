@@ -348,6 +348,11 @@ pub fn buildKnotsReg(
     var anchor_set = false;
     var anchor_base: f32 = 0;
     var anchor_target: f32 = 0;
+    var cluster_base: f32 = 0;
+    var cluster_target: f32 = 0;
+    var cluster_right: usize = 0;
+    var cluster_desired_right: f32 = 0;
+    var cluster_stems: usize = 0;
     for (edges, 0..) |e, i| {
         if (!e.isStem()) continue;
         const j: usize = @intCast(e.stem);
@@ -360,20 +365,24 @@ pub fn buildKnotsReg(
         else
             e.width; // thick — natural width, position only
         if (params.anchor_stem_positions) {
-            // Position every stem relative to the first stem. Rounding each
-            // cumulative distance once preserves the glyph's overall designed
-            // width: independently accumulating rounded pitches can round two
-            // ~2.5px counters in the same direction and push the last leg of
-            // `m`/`w` outside its snapped cell.
+            // Round each adjacent pitch once so repeated stems stay evenly
+            // spaced. If those rounds cumulatively widen the cluster, the
+            // post-pass below translates the whole cluster left so its fitted
+            // right edge stays where one cumulative round would put it.
             if (anchor_set) {
                 target[i] = anchor_target + @round((e.pos - anchor_base) * px_per_unit) * grid;
             } else {
                 target[i] = snap(e.pos, px_per_unit);
                 anchor_set = true;
-                anchor_base = e.pos;
-                anchor_target = target[i];
+                cluster_base = e.pos;
+                cluster_target = target[i];
             }
             target[j] = target[i] + width_units;
+            anchor_base = e.pos;
+            anchor_target = target[i];
+            cluster_right = j;
+            cluster_desired_right = cluster_target + @round((e.pos - cluster_base) * px_per_unit) * grid + width_units;
+            cluster_stems += 1;
         } else {
             const lower_blue = edges[i].blue >= 0;
             const upper_blue = edges[j].blue >= 0;
@@ -386,6 +395,12 @@ pub fn buildKnotsReg(
         }
         hinted[i] = true;
         hinted[j] = true;
+    }
+    if (params.anchor_stem_positions and cluster_stems > 1) {
+        const shift = cluster_desired_right - target[cluster_right];
+        for (target[0..n], hinted[0..n]) |*t, is_hinted| {
+            if (is_hinted) t.* += shift;
+        }
     }
 
     // Pass 2.5 — preserve the weight of a thin stroke that terminates on a
@@ -690,6 +705,11 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
     var anchor_set = false;
     var anchor_base: f32 = 0;
     var anchor_target: f32 = 0;
+    var cluster_base: f32 = 0;
+    var cluster_target: f32 = 0;
+    var cluster_right: usize = 0;
+    var cluster_desired_right: f32 = 0;
+    var cluster_stems: usize = 0;
     for (features, 0..) |feature, i| {
         if (feature.stem < 0) continue;
         const j: usize = @intCast(feature.stem);
@@ -701,10 +721,15 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
             if (anchor_set) targets[i] = anchor_target + @round((feature.pos - anchor_base) * scale) * grid else {
                 targets[i] = glslHostSnap(feature.pos, scale);
                 anchor_set = true;
-                anchor_base = feature.pos;
-                anchor_target = targets[i];
+                cluster_base = feature.pos;
+                cluster_target = targets[i];
             }
             targets[j] = targets[i] + width_units;
+            anchor_base = feature.pos;
+            anchor_target = targets[i];
+            cluster_right = j;
+            cluster_desired_right = cluster_target + @round((feature.pos - cluster_base) * scale) * grid + width_units;
+            cluster_stems += 1;
         } else {
             // Retain decoded blue indices for y-grid, exactly as the shader does.
             const lower_blue = feature.blue >= 0;
@@ -714,6 +739,12 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         }
         hinted[i] = true;
         hinted[j] = true;
+    }
+    if (relative and cluster_stems > 1) {
+        const shift = cluster_desired_right - targets[cluster_right];
+        for (targets[0..features.len], hinted[0..features.len]) |*t, is_hinted| {
+            if (is_hinted) t.* += shift;
+        }
     }
 
     const companion_max = if (stem_mode == 1) max_px else 1.6;
