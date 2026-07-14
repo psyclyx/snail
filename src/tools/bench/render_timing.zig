@@ -285,6 +285,7 @@ pub fn timeVulkanDraw(
 
     for (0..warmup_frames) |_| {
         const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreen());
+        caller.beginFrame(vulkan_platform.currentOffscreenFrameIndex());
         caller.render(cmd, desc_set, state, records.words, records.segments);
         vulkan_platform.endFrameOffscreen();
     }
@@ -293,6 +294,7 @@ pub fn timeVulkanDraw(
     const start = nowNs();
     for (0..frames) |_| {
         const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreen());
+        caller.beginFrame(vulkan_platform.currentOffscreenFrameIndex());
         caller.render(cmd, desc_set, state, records.words, records.segments);
         vulkan_platform.endFrameOffscreen();
     }

@@ -62,7 +62,7 @@ pub fn main() !void {
     try sa_cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &sa_bindings);
 
     const budget = snail.emit.wordBudget(content.paths_picture.shapes.len, 0) + snail.emit.wordBudget(content.text_picture.shapes.len, 0);
-    var caller = try embed_vulkan.Renderer.init(vk_ctx, sa_cache.descriptorSetLayout(), budget * @sizeOf(u32));
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, sa_cache.descriptorSetLayout(), budget * @sizeOf(u32), 1);
     defer caller.deinit();
 
     const clear = [4]f32{
@@ -144,6 +144,7 @@ fn renderAndDiff(
     {
         const platform_cmd = platform.beginFrameOffscreenWithClear(clear);
         const cmd: vk.VkCommandBuffer = @ptrCast(platform_cmd);
+        caller.beginFrame(0);
         caller.render(cmd, sa_cache.descriptorSet(), draw_state, call.words, call.segs);
         platform.endFrameOffscreen();
         platform.queueWaitIdle();

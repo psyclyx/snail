@@ -61,7 +61,7 @@ pub fn main() !void {
     defer allocator.free(segs);
     const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
 
-    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32));
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32), 1);
     defer caller.deinit();
 
     const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{
@@ -70,6 +70,7 @@ pub fn main() !void {
         harness.srgbToLinear(harness.bg_srgb_f32[2]),
         harness.bg_srgb_f32[3],
     }));
+    caller.beginFrame(0);
     caller.render(cmd, cache.descriptorSet(), harness.drawState(W, H), words[0..e.words_len], segs[0..e.segs_len]);
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();

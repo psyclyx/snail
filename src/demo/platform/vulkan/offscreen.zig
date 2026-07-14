@@ -22,7 +22,7 @@ var command_pool: vk.VkCommandPool = null;
 // Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
 
 const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_SRGB;
-const OFFSCREEN_FRAMES_IN_FLIGHT = 8;
+pub const OFFSCREEN_FRAMES_IN_FLIGHT = 8;
 
 var offscreen_image: vk.VkImage = null;
 var offscreen_memory: vk.VkDeviceMemory = null;

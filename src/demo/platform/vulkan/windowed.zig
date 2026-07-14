@@ -14,7 +14,7 @@ const c = @cImport({
 
 pub const vk = c;
 
-const MAX_FRAMES_IN_FLIGHT = 2;
+pub const MAX_FRAMES_IN_FLIGHT = 2;
 
 pub const KEY_ESCAPE = wayland.KEY_ESCAPE;
 pub const KEY_R = wayland.KEY_R;

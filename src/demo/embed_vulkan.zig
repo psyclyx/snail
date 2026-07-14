@@ -26,12 +26,23 @@ pub const Renderer = struct {
     pipelines: [std.enums.values(contract.Family).len]vk.VkPipeline = .{null} ** std.enums.values(contract.Family).len,
     supports_dual_src: bool,
     ibo: HostBuffer,
+    // Vertex upload ring: `num_slots` regions of `slot_bytes` each, so frames
+    // in flight don't overwrite vertices the GPU is still reading. The caller
+    // passes its frame slot to `render`.
     vbo: HostBuffer,
+    slot_bytes: usize,
+    num_slots: u32,
+    // Set by `beginFrame`; `render` appends within the current slot so multiple
+    // passes in one frame don't clobber each other's vertices.
+    cur_slot_base: usize = 0,
+    cursor: usize = 0,
 
     /// Build the pipelines (one per family, subpixel only if the device
     /// supports dual-source blend) against `ctx.render_pass`, plus a quad index
-    /// buffer and a vertex upload buffer of `max_vbo_bytes`.
-    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, max_vbo_bytes: usize) !Renderer {
+    /// buffer and a `slot_bytes`×`num_slots` vertex ring. Use `num_slots` = the
+    /// caller's frames-in-flight (1 if it waits idle each frame); `slot_bytes`
+    /// must fit the largest frame's `emit` words.
+    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, slot_bytes: usize, num_slots: u32) !Renderer {
         const device = ctx.device;
 
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
@@ -56,6 +67,8 @@ pub const Renderer = struct {
             .supports_dual_src = ctx.supports_dual_source_blend,
             .ibo = undefined,
             .vbo = undefined,
+            .slot_bytes = slot_bytes,
+            .num_slots = num_slots,
         };
         errdefer for (self.pipelines) |p| {
             if (p != null) vk.vkDestroyPipeline(device, p, null);
@@ -71,13 +84,20 @@ pub const Renderer = struct {
         errdefer self.ibo.deinit(device);
         @memcpy(self.ibo.bytes()[0..@sizeOf(@TypeOf(contract.QUAD_INDICES))], std.mem.sliceAsBytes(contract.QUAD_INDICES[0..]));
 
-        self.vbo = try HostBuffer.init(ctx, max_vbo_bytes, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+        self.vbo = try HostBuffer.init(ctx, slot_bytes * num_slots, vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
         return self;
     }
 
-    /// Record the draw for one segment stream into `cmd` (inside an active
-    /// render pass). `desc_set` is the cache's descriptor set; `words` +
-    /// `segments` come from `snail.emit`.
+    /// Start a frame: select the vertex-ring slot (pass the platform's frame
+    /// index) and reset the append cursor. Call once per frame before `render`.
+    pub fn beginFrame(self: *Renderer, frame_slot: u32) void {
+        self.cur_slot_base = @as(usize, frame_slot % self.num_slots) * self.slot_bytes;
+        self.cursor = 0;
+    }
+
+    /// Record one draw (one `emit` stream) into `cmd`, inside an active render
+    /// pass, appending its vertices after any earlier `render` calls this
+    /// frame. `desc_set` is the cache's descriptor set.
     pub fn render(
         self: *Renderer,
         cmd: vk.VkCommandBuffer,
@@ -86,8 +106,11 @@ pub const Renderer = struct {
         words: []const u32,
         segments: []const snail.DrawSegment,
     ) void {
-        std.debug.assert(words.len * @sizeOf(u32) <= self.vbo.size);
-        @memcpy(self.vbo.bytes()[0 .. words.len * @sizeOf(u32)], std.mem.sliceAsBytes(words));
+        const words_bytes = words.len * @sizeOf(u32);
+        std.debug.assert(self.cursor + words_bytes <= self.slot_bytes);
+        const base = self.cur_slot_base + self.cursor;
+        @memcpy(self.vbo.bytes()[base..][0..words_bytes], std.mem.sliceAsBytes(words));
+        defer self.cursor += words_bytes;
 
         vk.vkCmdBindIndexBuffer(cmd, self.ibo.buffer, 0, vk.VK_INDEX_TYPE_UINT32);
 
@@ -121,7 +144,7 @@ pub const Renderer = struct {
 
                 const abs_word = seg.words_offset + run.glyph_start * snail.WORDS_PER_INSTANCE;
                 var buf = self.vbo.buffer;
-                const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, abs_word) * @sizeOf(u32);
+                const offset: vk.VkDeviceSize = @intCast(base + abs_word * @sizeOf(u32));
                 vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
                 vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, @intCast(run.glyph_count), 0, 0, 0);
             }

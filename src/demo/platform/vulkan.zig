@@ -8,6 +8,7 @@ pub const deinitOffscreen = offscreen.deinitOffscreen;
 pub const beginFrameOffscreen = offscreen.beginFrameOffscreen;
 pub const beginFrameOffscreenWithClear = offscreen.beginFrameOffscreenWithClear;
 pub const currentOffscreenFrameIndex = offscreen.currentOffscreenFrameIndex;
+pub const OFFSCREEN_FRAMES_IN_FLIGHT = offscreen.OFFSCREEN_FRAMES_IN_FLIGHT;
 pub const endFrameOffscreen = offscreen.endFrameOffscreen;
 pub const captureOffscreenRgba8 = offscreen.captureOffscreenRgba8;
 pub const queueWaitIdle = offscreen.queueWaitIdle;

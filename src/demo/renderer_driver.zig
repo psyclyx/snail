@@ -20,6 +20,7 @@ const demo_banner = @import("banner.zig");
 
 const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
+const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan.zig") else struct {};
 const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
 const gl = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("support").gl else struct {};
 
@@ -233,7 +234,10 @@ pub const Driver = union(Kind) {
 
     pub fn backendName(self: *Driver) [:0]const u8 {
         return switch (self.*) {
-            .vulkan => |*d| if (comptime build_options.enable_vulkan) d.renderer_state.state.backendName() else unreachable,
+            .vulkan => |*d| if (comptime build_options.enable_vulkan) blk: {
+                _ = d;
+                break :blk "Vulkan";
+            } else unreachable,
             .gl44 => |*d| if (comptime build_options.enable_gl44) d.renderer_state.state.backendName() else unreachable,
             .gl33 => |*d| if (comptime build_options.enable_gl33) d.renderer_state.state.backendName() else unreachable,
             .gles30 => |*d| if (comptime build_options.enable_gles30) d.renderer_state.state.backendName() else unreachable,
@@ -520,8 +524,14 @@ const GlTimer = if (build_options.enable_gl33 or build_options.enable_gl44) stru
 // ── Vulkan ────────────────────────────────────────────────────────────────
 
 const VulkanDriver = if (build_options.enable_vulkan) struct {
+    // Generous vertex ring slot; the interactive scenes are well under this.
+    const SLOT_BYTES: usize = 8 * 1024 * 1024;
+
     allocator: std.mem.Allocator,
-    renderer_state: snail.VulkanRenderer,
+    ctx: snail.VulkanContext,
+    layout: snail.vulkan.VulkanResourceLayout,
+    transfer_pool: embed_vulkan.vk.VkCommandPool,
+    caller: embed_vulkan.Renderer,
     cache: ?snail.VulkanBackendCache = null,
     cache_pool: ?*const anyopaque = null, // PagePool pointer to detect content swap
     scratch: ScratchBuf,
@@ -531,19 +541,30 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window);
         errdefer vulkan_platform.deinit();
-        var renderer_state = try snail.VulkanRenderer.init(allocator, ctx);
-        errdefer renderer_state.deinit();
+        // Standalone embeddable setup — resource layout + transfer pool + the
+        // reference caller renderer. No all-in-one VulkanRenderer.
+        var layout: snail.vulkan.VulkanResourceLayout = undefined;
+        try layout.init(ctx);
+        errdefer layout.deinit();
+        const transfer_pool = try embed_vulkan.createTransferPool(ctx);
+        errdefer embed_vulkan.vk.vkDestroyCommandPool(ctx.device, transfer_pool, null);
+        const caller = try embed_vulkan.Renderer.init(ctx, layout.desc_set_layout, SLOT_BYTES, vulkan_platform.MAX_FRAMES_IN_FLIGHT);
         return .{
             .allocator = allocator,
-            .renderer_state = renderer_state,
+            .ctx = ctx,
+            .layout = layout,
+            .transfer_pool = transfer_pool,
+            .caller = caller,
             .scratch = ScratchBuf.init(allocator),
         };
     }
 
     fn deinit(self: *VulkanDriver) void {
         if (self.cache) |*c| c.deinit();
+        self.caller.deinit();
+        embed_vulkan.vk.vkDestroyCommandPool(self.ctx.device, self.transfer_pool, null);
+        self.layout.deinit();
         self.scratch.deinit();
-        self.renderer_state.deinit();
         vulkan_platform.deinit();
     }
 
@@ -559,7 +580,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try snail.VulkanBackendCache.init(self.allocator, pool, self.renderer_state.state.pipelineShape(), .{
+            self.cache = try snail.VulkanBackendCache.init(self.allocator, pool, snail.vulkan.embeddable.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -589,15 +610,15 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         // the dominant time on a vsync-bound frame), instead of pretending
         // there's no wait happening at all.
         const clear_t0 = wayland.getTime();
-        const cmd = vulkan_platform.beginFrame(clear) orelse {
+        const platform_cmd = vulkan_platform.beginFrame(clear) orelse {
             self.last_timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
             return false;
         };
         self.last_timings.clear_us = (wayland.getTime() - clear_t0) * 1_000_000.0;
 
-        self.renderer_state.state.setCommandBuffer(cmd);
-        defer self.renderer_state.state.clearCommandBuffer();
-        self.renderer_state.state.setFrameSlot(vulkan_platform.currentFrameIndex());
+        const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(platform_cmd);
+        self.caller.beginFrame(vulkan_platform.currentFrameIndex());
+        const desc_set = self.cache.?.descriptorSet();
 
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             // CPU-side draw command recording. Issue GPU timestamps
@@ -605,9 +626,9 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
             // attributed to `last_timings.pass_us` once the platform
             // reads the timestamp results (= MAX_FRAMES_IN_FLIGHT
             // frames later, when this slot is reused).
-            vulkan_platform.beginPassTimestamp(cmd, @intCast(i));
-            try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
-            vulkan_platform.endPassTimestamp(cmd, @intCast(i));
+            vulkan_platform.beginPassTimestamp(platform_cmd, @intCast(i));
+            self.caller.render(cmd, desc_set, pass.draw_state, rec.words, rec.segs);
+            vulkan_platform.endPassTimestamp(platform_cmd, @intCast(i));
         }
 
         const swap_t0 = wayland.getTime();
