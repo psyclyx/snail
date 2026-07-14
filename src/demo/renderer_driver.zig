@@ -529,10 +529,10 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 
     allocator: std.mem.Allocator,
     ctx: snail.VulkanContext,
-    layout: snail.vulkan.VulkanResourceLayout,
+    layout: embed_vulkan.VulkanResourceLayout,
     transfer_pool: embed_vulkan.vk.VkCommandPool,
     caller: embed_vulkan.Renderer,
-    cache: ?snail.VulkanBackendCache = null,
+    cache: ?embed_vulkan.VulkanBackendCache = null,
     cache_pool: ?*const anyopaque = null, // PagePool pointer to detect content swap
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -543,7 +543,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         errdefer vulkan_platform.deinit();
         // Standalone embeddable setup — resource layout + transfer pool + the
         // reference caller renderer. No all-in-one VulkanRenderer.
-        var layout: snail.vulkan.VulkanResourceLayout = undefined;
+        var layout: embed_vulkan.VulkanResourceLayout = undefined;
         try layout.init(ctx);
         errdefer layout.deinit();
         const transfer_pool = try embed_vulkan.createTransferPool(ctx);
@@ -580,7 +580,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try snail.VulkanBackendCache.init(self.allocator, pool, snail.vulkan.embeddable.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
+            self.cache = try embed_vulkan.VulkanBackendCache.init(self.allocator, pool, embed_vulkan.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -593,7 +593,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         }
 
         const sync_t0 = wayland.getTime();
-        try syncPassBindings(snail.VulkanBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        try syncPassBindings(embed_vulkan.VulkanBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
         self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;

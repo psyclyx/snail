@@ -1909,13 +1909,13 @@ fn benchVulkan(
 
     // Benchmark the embeddable path — a standalone cache + the reference caller
     // renderer — the same code integrators run.
-    var layout: snail.vulkan.VulkanResourceLayout = undefined;
+    var layout: embed_vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
     const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
     defer embed_vulkan.vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
 
-    var cache = try snail.VulkanBackendCache.init(allocator, pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
+    var cache = try embed_vulkan.VulkanBackendCache.init(allocator, pool, embed_vulkan.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,

@@ -17,6 +17,16 @@ const snail = @import("snail");
 const contract = snail.vulkan.contract;
 pub const vk = contract.vk;
 
+// The caller-side atlas cache + resource layout used to live in snail_vulkan;
+// they're generic GPU machinery, so they're demo (caller) code now. Re-export
+// them so consumers reach the whole embeddable surface via `embed_vulkan`.
+pub const VulkanBackendCache = @import("embed_vulkan_cache.zig").VulkanBackendCache;
+pub const CacheOptions = @import("embed_vulkan_cache.zig").CacheOptions;
+pub const VulkanResourceLayout = @import("embed_vulkan_layout.zig").VulkanResourceLayout;
+const embeddable = @import("embed_vulkan_embeddable.zig");
+pub const cachePipelineShape = embeddable.cachePipelineShape;
+pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
+
 const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
 
 pub const Renderer = struct {
@@ -171,11 +181,11 @@ pub fn cacheWithDecoupledUpload(
     allocator: std.mem.Allocator,
     ctx: snail.VulkanContext,
     page_pool: *snail.PagePool,
-    layout: *const snail.vulkan.VulkanResourceLayout,
+    layout: *const VulkanResourceLayout,
     atlases: []const *const snail.Atlas,
     bindings: []snail.Binding,
-    cache_opts: snail.vulkan.backend_cache.CacheOptions,
-) !snail.VulkanBackendCache {
+    cache_opts: CacheOptions,
+) !VulkanBackendCache {
     const pool = try createTransferPool(ctx);
     defer vk.vkDestroyCommandPool(ctx.device, pool, null);
 
@@ -193,7 +203,7 @@ pub fn cacheWithDecoupledUpload(
     });
     try check(vk.vkBeginCommandBuffer(upload_cmd, &bi));
 
-    var cache = try snail.VulkanBackendCache.init(allocator, page_pool, snail.vulkan.embeddable.cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
+    var cache = try VulkanBackendCache.init(allocator, page_pool, cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
     errdefer cache.deinit();
     try cache.upload(allocator, atlases, bindings); // records copies into upload_cmd — no submit
 

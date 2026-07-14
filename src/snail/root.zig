@@ -129,7 +129,6 @@ pub const Gl44BackendCache = gl.Gl44BackendCache;
 pub const Gles30BackendCache = gl.Gles30BackendCache;
 
 pub const VulkanContext = vulkan.VulkanContext;
-pub const VulkanBackendCache = vulkan.VulkanBackendCache;
 
 test {
     _ = core;

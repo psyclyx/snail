@@ -40,7 +40,7 @@ pub fn main() !void {
     // decoupled upload: the cache records its atlas upload into a caller-owned
     // command buffer that the caller submits + synchronizes (see
     // `cacheWithDecoupledUpload`); snail never touches the queue.
-    var layout: snail.vulkan.VulkanResourceLayout = undefined;
+    var layout: embed_vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
     var bindings: [2]snail.Binding = undefined;
