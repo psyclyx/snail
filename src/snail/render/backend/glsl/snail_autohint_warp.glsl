@@ -15,6 +15,9 @@ struct SnailAutohintPolicy {
     int yAlign;
     int yStem;
     int yOvershoot;
+    int fadeEnabled;
+    float fadeStart;
+    float fadeFull;
     float xRatio;
     float xMaxPx;
     float yRatio;
@@ -27,11 +30,15 @@ bool snailAhFinite(float v) { return !isnan(v) && !isinf(v); }
 bool snailDecodeAutohintPolicy(uvec4 p0, uvec3 p1, out SnailAutohintPolicy p) {
     uint x = p0.x;
     uint y = p0.y;
-    if ((x & ~0xffu) != 0u || (y & ~0x3fu) != 0u) return false;
+    // word0: x config bits 0-7, then the packed whole-glyph fade (bits 8-22).
+    if ((x & ~0x7fffffu) != 0u || (y & ~0x3fu) != 0u) return false;
     p.xAlign = int(x & 3u);
     p.xStem = int((x >> 2u) & 3u);
     p.xPositioning = int((x >> 4u) & 3u);
     p.xRegistration = int((x >> 6u) & 3u);
+    p.fadeEnabled = int((x >> 8u) & 1u);
+    p.fadeStart = float((x >> 9u) & 0x7fu);
+    p.fadeFull = float((x >> 16u) & 0x7fu);
     p.yAlign = int(y & 3u);
     p.yStem = int((y >> 2u) & 3u);
     p.yOvershoot = int((y >> 4u) & 3u);
@@ -276,11 +283,13 @@ bool snailFitAutohintAxis(
         if (knotTarget[i] <= knotTarget[i - 1]) knotTarget[i] = knotTarget[i - 1] + grid;
     }
     // Fade to identity at large ppem — autohinting is a small-size tool, so above
-    // ~16px blend each knot's target back toward its natural base, reaching no-warp
-    // by ~26px (mirror of warp.zig fadeToIdentity; blending toward the sorted base
-    // preserves monotonicity). `scale` is this axis's pixels-per-em.
-    if (scale > 16.0) {
-        float fadeW = (scale >= 26.0) ? 1.0 : (scale - 16.0) / (26.0 - 16.0);
+    // the policy's fade start blend each knot's target back toward its natural
+    // base, reaching no-warp by fadeFull (mirror of warp.zig fadeToIdentity;
+    // blending toward the sorted base preserves monotonicity). `scale` is this
+    // axis's pixels-per-em. The caller owns the range via AutohintPolicy.fade.
+    if (policy.fadeEnabled != 0 && scale > policy.fadeStart) {
+        float span = policy.fadeFull - policy.fadeStart;
+        float fadeW = (span <= 0.0 || scale >= policy.fadeFull) ? 1.0 : (scale - policy.fadeStart) / span;
         for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
             if (i >= knotCount) break;
             knotTarget[i] += (knotBase[i] - knotTarget[i]) * fadeW;

@@ -326,6 +326,8 @@ test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
     const strong_policy: @import("policy.zig").AutohintPolicy = .{
         .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
         .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
+        // Fades to identity by 26px, so the ppem-28 snapshot below is base==target.
+        .fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 26 } },
     };
     for (snapshots) |snapshot| {
         var x_out: [warp.max_knots]warp.Knot = undefined;

@@ -53,9 +53,21 @@ pub const YPolicy = struct {
     overshoot: Overshoot = .preserve,
 };
 
+/// How the whole-glyph warp backs off at large ppem. Autohinting is a
+/// small-size tool: above a size, analytic AA already renders stems and curves
+/// cleanly, and grid-fitting there only flattens round tops / blobs corners.
+pub const Fade = union(enum) {
+    /// Hint fully at every ppem (no large-size fallback).
+    none,
+    /// Blend the warp toward identity between `start_px` (full hinting) and
+    /// `full_px` (no warp) — whole ppem, 0..127, `start_px <= full_px`.
+    ppem_range: struct { start_px: f32, full_px: f32 },
+};
+
 pub const AutohintPolicy = struct {
     x: XPolicy = .{},
     y: YPolicy = .{},
+    fade: Fade = .none,
 
     pub fn validate(self: AutohintPolicy) PolicyError!void {
         return policyValidate(self);
@@ -115,6 +127,17 @@ fn policyValidate(policy: AutohintPolicy) PolicyError!void {
             if (policy.y.@"align" != .blue_zones) return error.OvershootRequiresBlueZones;
         },
     }
+
+    switch (policy.fade) {
+        .none => {},
+        .ppem_range => |r| {
+            if (!validThreshold(r.start_px) or !validThreshold(r.full_px) or
+                r.start_px > fade_max_px or r.full_px > fade_max_px or r.start_px > r.full_px)
+            {
+                return error.InvalidThreshold;
+            }
+        },
+    }
 }
 
 const x_align_shift = 0;
@@ -125,10 +148,23 @@ const y_align_shift = 0;
 const y_stem_shift = 2;
 const y_overshoot_shift = 4;
 const two_bit_mask: u32 = 0b11;
+// Whole-glyph fade bit-packs into word[0]'s spare bits (the x-config fields only
+// use bits 0-7) so the on-wire policy stays 7 words: enabled flag + two 7-bit
+// whole-ppem thresholds (0..127). Kept integer because a fade threshold never
+// needs sub-pixel precision.
+const fade_max_px: f32 = 127;
+const fade_enabled_shift: u5 = 8;
+const fade_start_shift: u5 = 9;
+const fade_full_shift: u5 = 16;
+const seven_bit_mask: u32 = 0x7F;
+const fade_mask: u32 = (@as(u32, 1) << fade_enabled_shift) |
+    (seven_bit_mask << fade_start_shift) |
+    (seven_bit_mask << fade_full_shift);
 const x_config_mask: u32 = (two_bit_mask << x_align_shift) |
     (two_bit_mask << x_stem_shift) |
     (two_bit_mask << x_positioning_shift) |
-    (two_bit_mask << x_registration_shift);
+    (two_bit_mask << x_registration_shift) |
+    fade_mask;
 const y_config_mask: u32 = (two_bit_mask << y_align_shift) |
     (two_bit_mask << y_stem_shift) |
     (two_bit_mask << y_overshoot_shift);
@@ -147,7 +183,8 @@ fn policyPack(policy: AutohintPolicy) [7]u32 {
     words[0] = (@as(u32, @intFromEnum(policy.x.@"align")) << x_align_shift) |
         (stemWidthTag(policy.x.stem_width) << x_stem_shift) |
         (@as(u32, @intFromEnum(policy.x.positioning)) << x_positioning_shift) |
-        (@as(u32, @intFromEnum(policy.x.registration)) << x_registration_shift);
+        (@as(u32, @intFromEnum(policy.x.registration)) << x_registration_shift) |
+        packFade(policy.fade);
     words[1] = (@as(u32, @intFromEnum(policy.y.@"align")) << y_align_shift) |
         (stemWidthTag(policy.y.stem_width) << y_stem_shift) |
         ((switch (policy.y.overshoot) {
@@ -181,6 +218,23 @@ fn policyPack(policy: AutohintPolicy) [7]u32 {
 
 fn field(word: u32, shift: u5) u32 {
     return (word >> shift) & two_bit_mask;
+}
+
+fn packFade(fade: Fade) u32 {
+    return switch (fade) {
+        .none => 0,
+        .ppem_range => |r| (@as(u32, 1) << fade_enabled_shift) |
+            ((@as(u32, @intFromFloat(@round(r.start_px))) & seven_bit_mask) << fade_start_shift) |
+            ((@as(u32, @intFromFloat(@round(r.full_px))) & seven_bit_mask) << fade_full_shift),
+    };
+}
+
+fn unpackFade(word: u32) Fade {
+    if ((word >> fade_enabled_shift) & 1 == 0) return .none;
+    return .{ .ppem_range = .{
+        .start_px = @floatFromInt((word >> fade_start_shift) & seven_bit_mask),
+        .full_px = @floatFromInt((word >> fade_full_shift) & seven_bit_mask),
+    } };
 }
 
 fn decodeStemWidth(tag: u32, ratio_word: u32, max_word: u32) PolicyError!StemWidth {
@@ -239,6 +293,7 @@ fn policyUnpack(words: [7]u32) PolicyError!AutohintPolicy {
             .stem_width = try decodeStemWidth(field(words[1], y_stem_shift), words[4], words[5]),
             .overshoot = overshoot,
         },
+        .fade = unpackFade(words[0]),
     };
     try policy.validate();
     return policy;
@@ -257,10 +312,25 @@ test "policy round-trips without named presets" {
             .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } },
             .overshoot = .{ .suppress_below_px = 0.5 },
         },
+        .fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 26 } },
     };
     try p.validate();
     try testing.expectEqual(@as(usize, 7), p.pack().len);
     try testing.expectEqualDeep(p, try AutohintPolicy.unpack(p.pack()));
+}
+
+test "fade bit-packs into word 0 and round-trips; default is none" {
+    // Whole-ppem thresholds survive the 7-bit fields; default policy has no fade.
+    const faded: AutohintPolicy = .{ .fade = .{ .ppem_range = .{ .start_px = 18, .full_px = 30 } } };
+    try faded.validate();
+    try testing.expectEqualDeep(faded, try AutohintPolicy.unpack(faded.pack()));
+    try testing.expectEqual(Fade.none, (AutohintPolicy{}).fade);
+    // Fade lives in word 0's spare bits, so the float payload words stay zero.
+    try testing.expectEqualSlices(u32, &.{ 0, 0, 0, 0, 0 }, faded.pack()[2..]);
+    // Reject an out-of-range or inverted range.
+    try testing.expectError(error.InvalidThreshold, (AutohintPolicy{
+        .fade = .{ .ppem_range = .{ .start_px = 30, .full_px = 18 } },
+    }).validate());
 }
 
 test "all five simultaneous float payloads round-trip exactly" {

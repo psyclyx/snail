@@ -243,38 +243,44 @@ pub fn fitAxis(
 
     const std_width = if (axis == .x) font.std_x else font.std_y;
     const count = buildKnotsReg(edges[0..features.len], if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
-    fadeToIdentity(out[0..count], pixels_per_em);
     for (out[0..count]) |knot| {
         if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
     }
     return out[0..count];
 }
 
-/// Autohinting is a small-size tool: below `fade_start_px` a grid-fit is a
+/// Autohinting is a small-size tool: below the fade's `start_px` a grid-fit is a
 /// legibility win, but above it analytic AA already renders stems and curves
 /// cleanly, and forcing round apexes / curve junctions onto the pixel grid there
 /// just flattens round tops and blobs serif corners. So blend each knot's target
 /// back toward its natural `base` as ppem grows, reaching identity (no warp) by
-/// `fade_full_px`. Large text then renders at its natural, un-hinted AA quality.
-const fade_start_px: f32 = 16.0;
-const fade_full_px: f32 = 26.0;
-
-fn fadeToIdentity(knots: []Knot, pixels_per_em: f32) void {
-    if (!std.math.isFinite(pixels_per_em) or pixels_per_em <= fade_start_px) return;
-    const w: f32 = if (pixels_per_em >= fade_full_px)
+/// `full_px`. `.none` disables it (full hinting at every size). The caller owns
+/// the range via `AutohintPolicy.fade` — no thresholds are baked in here.
+fn fadeToIdentity(knots: []Knot, pixels_per_em: f32, fade: policy_mod.Fade) void {
+    const range = switch (fade) {
+        .none => return,
+        .ppem_range => |r| r,
+    };
+    if (!std.math.isFinite(pixels_per_em) or pixels_per_em <= range.start_px) return;
+    const span = range.full_px - range.start_px;
+    const w: f32 = if (span <= 0 or pixels_per_em >= range.full_px)
         1.0
     else
-        (pixels_per_em - fade_start_px) / (fade_full_px - fade_start_px);
+        (pixels_per_em - range.start_px) / span;
     for (knots) |*k| k.target += (k.base - k.target) * w;
 }
 
 /// Fit both axes at draw time. The returned knot slices borrow caller-owned
 /// scratch buffers and must never be stored in an atlas record.
 pub fn fitGlyph(features: anytype, font: anytype, policy: policy_mod.AutohintPolicy, scale: Vec2, x_out: []Knot, y_out: []Knot) AxisKnots {
-    return .{
-        .x = fitAxis(features.x, font, .x, policy.x, scale.x, features.left, x_out),
-        .y = fitAxis(features.y, font, .y, policy.y, scale.y, 0, y_out),
-    };
+    const x = fitAxis(features.x, font, .x, policy.x, scale.x, features.left, x_out);
+    const y = fitAxis(features.y, font, .y, policy.y, scale.y, 0, y_out);
+    // Whole-glyph fade is applied here (post per-axis fit) rather than inside
+    // fitAxis, so the many direct fitAxis test call sites stay fade-free; the
+    // GLSL/host mirror fold it into their per-axis build (identical final knots).
+    fadeToIdentity(x, scale.x, policy.fade);
+    fadeToIdentity(y, scale.y, policy.fade);
+    return .{ .x = x, .y = y };
 }
 
 fn snap(v: f32, px_per_unit: f32) f32 {
@@ -664,6 +670,9 @@ const GlslHostPolicy = struct {
     y_align: u32,
     y_stem: u32,
     y_overshoot: u32,
+    fade_enabled: u32,
+    fade_start: f32,
+    fade_full: f32,
     x_ratio: f32,
     x_max_px: f32,
     y_ratio: f32,
@@ -672,12 +681,15 @@ const GlslHostPolicy = struct {
 };
 
 fn glslHostDecodePolicy(words: [7]u32) ?GlslHostPolicy {
-    if (words[0] & ~@as(u32, 0xff) != 0 or words[1] & ~@as(u32, 0x3f) != 0) return null;
+    if (words[0] & ~@as(u32, 0x7fffff) != 0 or words[1] & ~@as(u32, 0x3f) != 0) return null;
     const p: GlslHostPolicy = .{
         .x_align = words[0] & 3,
         .x_stem = (words[0] >> 2) & 3,
         .x_positioning = (words[0] >> 4) & 3,
         .x_registration = (words[0] >> 6) & 3,
+        .fade_enabled = (words[0] >> 8) & 1,
+        .fade_start = @floatFromInt((words[0] >> 9) & 0x7f),
+        .fade_full = @floatFromInt((words[0] >> 16) & 0x7f),
         .y_align = words[1] & 3,
         .y_stem = (words[1] >> 2) & 3,
         .y_overshoot = (words[1] >> 4) & 3,
@@ -871,6 +883,11 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
     var i: usize = 1;
     while (i < count) : (i += 1) {
         if (out[i].target <= out[i - 1].target) out[i].target = out[i - 1].target + grid;
+    }
+    if (policy.fade_enabled != 0 and scale > policy.fade_start) {
+        const span = policy.fade_full - policy.fade_start;
+        const w: f32 = if (span <= 0 or scale >= policy.fade_full) 1.0 else (scale - policy.fade_start) / span;
+        for (out[0..count]) |*k| k.target += (k.base - k.target) * w;
     }
     for (out[0..count]) |knot| {
         if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];

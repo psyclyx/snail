@@ -150,6 +150,7 @@ pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
 pub const autohint = struct {
     pub const policy = @import("font/autohint/policy.zig");
     pub const AutohintPolicy = policy.AutohintPolicy;
+    pub const Fade = policy.Fade;
     pub const analysis = @import("font/autohint/analysis.zig");
     pub const warp = @import("font/autohint/warp.zig");
     pub const blue = @import("font/autohint/blue.zig");

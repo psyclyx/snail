@@ -48,6 +48,13 @@ pub fn gridHeightPx(px_scale: f32) f32 {
 }
 
 /// Demo choices, deliberately not library presets.
+///
+/// All of them fade the warp to identity between 16 and 26 px — autohinting is a
+/// small-size tool, and above ~26px analytic AA already renders stems and curves
+/// cleanly (forcing the grid there flattens round tops and blobs serif corners).
+/// The fade is caller-owned policy now; the library bakes in no threshold.
+pub const demo_fade: snail.autohint.Fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 26 } };
+
 pub const y_policy: snail.autohint.AutohintPolicy = .{
     .x = .{
         .@"align" = .none,
@@ -60,6 +67,7 @@ pub const y_policy: snail.autohint.AutohintPolicy = .{
         .stem_width = .{ .full = .{ .std_snap_ratio = 0.0 } },
         .overshoot = .{ .suppress_below_px = 0.5 },
     },
+    .fade = demo_fade,
 };
 
 /// Cross-font/light x policy: align vertical stems but preserve their analyzed
@@ -72,6 +80,7 @@ pub const x_natural_policy: snail.autohint.AutohintPolicy = .{
         .registration = .left_round_outline,
     },
     .y = y_policy.y,
+    .fade = demo_fade,
 };
 
 /// Candidate universal default: crisp at small sizes, weight-preserving at large.
@@ -105,6 +114,7 @@ pub const default_policy: snail.autohint.AutohintPolicy = .{
         .stem_width = .{ .light = .{ .std_snap_ratio = 0.2, .max_px = 1.6 } },
         .overshoot = .preserve,
     },
+    .fade = demo_fade,
 };
 
 /// Strong/terminal policy: the same y fitting plus full x grid fitting.
@@ -120,6 +130,7 @@ pub const xy_policy: snail.autohint.AutohintPolicy = .{
         .stem_width = .{ .full = .{ .std_snap_ratio = 0.0 } },
         .overshoot = .{ .suppress_below_px = 0.5 },
     },
+    .fade = demo_fade,
 };
 
 const Row = struct {
