@@ -185,6 +185,11 @@ pub const files = struct {
     pub const format_autohint_record = @import("format/autohint_record.zig");
     pub const format_instance_emit = @import("format/instance_emit.zig");
     pub const format_texture_layers = @import("format/texture_layers.zig");
+
+    // Backend-agnostic render/cache support shared by every backend module.
+    pub const backend_cache_base = @import("render/backend/cache.zig");
+    pub const backend_range_allocator = @import("render/backend/range_allocator.zig");
+    pub const backend_subpixel_policy = @import("render/backend/subpixel_policy.zig");
 };
 
 test {
@@ -214,7 +219,6 @@ test {
     _ = shape_mod;
     _ = @import("picture/draw_records.zig");
     _ = @import("picture/emit.zig");
-    _ = @import("coverage.zig");
     _ = @import("snap.zig");
     _ = @import("util/hamt.zig");
     _ = files;

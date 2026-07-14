@@ -1,4 +1,4 @@
-const vertex = @import("../../../core.zig").files.format_vertex;
+const vertex = @import("snail_core").files.format_vertex;
 
 // Partition the persistently mapped upload buffer by frame slot so a frame can
 // suballocate monotonically without overwriting earlier draws before submit.

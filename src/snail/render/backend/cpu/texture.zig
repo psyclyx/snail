@@ -1,7 +1,7 @@
-const snail = @import("../../../core.zig");
+const snail = @import("snail_core");
 
-const bezier = @import("../../../core.zig").files.math_bezier;
-const curve_tex = @import("../../../core.zig").files.format_curve_texture;
+const bezier = @import("snail_core").files.math_bezier;
+const curve_tex = @import("snail_core").files.format_curve_texture;
 const CurveSegment = bezier.CurveSegment;
 const band_curve_loc_x_bits = 12;
 const band_curve_loc_x_mask: u32 = (1 << band_curve_loc_x_bits) - 1;

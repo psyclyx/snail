@@ -1,5 +1,5 @@
 const std = @import("std");
-const vertex = @import("../../../core.zig").files.format_vertex;
+const vertex = @import("snail_core").files.format_vertex;
 const vulkan_types = @import("types.zig");
 const device = @import("device.zig");
 const constants = @import("constants.zig");

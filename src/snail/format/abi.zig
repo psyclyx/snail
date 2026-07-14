@@ -115,7 +115,7 @@ pub fn paintRecordKindFromTag(tag: f32) ?PaintRecordKind {
 }
 
 test "GLSL render ABI constants match Zig constants" {
-    const glsl = @embedFile("../render/backend/glsl/snail_render_abi.glsl");
+    const glsl = @embedFile("../render/backend/gl/glsl/snail_render_abi.glsl");
     try expectGlslConst(glsl, "SNAIL_SPECIAL_LAYER_SENTINEL", special_layer_sentinel);
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
@@ -134,7 +134,7 @@ test "GLSL render ABI constants match Zig constants" {
 }
 
 test "autohint GLSL derives transient targets from immutable features" {
-    const glsl = @embedFile("../render/backend/glsl/snail_autohint_warp.glsl");
+    const glsl = @embedFile("../render/backend/gl/glsl/snail_autohint_warp.glsl");
     try std.testing.expect(std.mem.indexOf(u8, glsl, "snailDecodeAutohintPolicy") != null);
     try std.testing.expect(std.mem.indexOf(u8, glsl, "snailFitAutohintAxis") != null);
     try std.testing.expect(std.mem.indexOf(u8, glsl, "storedTarget") == null);

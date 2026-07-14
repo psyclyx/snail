@@ -26,12 +26,11 @@
 const std = @import("std");
 const build_options = @import("build_options");
 
-const backend_kind_mod = @import("backend_kind.zig");
-const target_mod = @import("target.zig");
-const vertex = @import("format/vertex.zig");
+const core = @import("snail_core");
+const gl_mod = @import("snail_gl");
 
 const gl_shaders = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("render/backend/gl/shaders.zig")
+    gl_mod.shaders
 else
     struct {
         pub const text_vertex_interface = "";
@@ -42,7 +41,7 @@ else
     };
 
 const gles30_shaders = if (build_options.enable_gles30)
-    @import("render/backend/gles30/shaders.zig")
+    gl_mod.gles30_shaders
 else
     struct {
         pub const text_vertex_interface = "";
@@ -53,7 +52,7 @@ else
     };
 
 const gl_backend_cache = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("render/backend/gl/backend_cache.zig")
+    gl_mod.backend_cache
 else
     struct {
         pub const Gl33BackendCache = void;
@@ -61,14 +60,14 @@ else
     };
 
 const gles30_backend_cache = if (build_options.enable_gles30)
-    @import("render/backend/gl/backend_cache.zig")
+    gl_mod.backend_cache
 else
     struct {
         pub const Gles30BackendCache = void;
     };
 
 const gl_state = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("render/backend/gl/state.zig")
+    gl_mod.state
 else
     struct {
         pub const Gl33Renderer = void;
@@ -76,14 +75,14 @@ else
     };
 
 const gles30_state = if (build_options.enable_gles30)
-    @import("render/backend/gles30/state.zig")
+    gl_mod.gles30_state
 else
     struct {
         pub const Gles30Renderer = void;
     };
 
 const gl_bindings = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("render/backend/gl/bindings.zig")
+    gl_mod.bindings
 else
     struct {
         pub const gl = struct {
@@ -93,7 +92,7 @@ else
     };
 
 const gles30_bindings = if (build_options.enable_gles30)
-    @import("render/backend/gles30/bindings.zig")
+    gl_mod.gles30_bindings
 else
     struct {
         pub const gl = struct {
@@ -102,12 +101,12 @@ else
         };
     };
 
-pub const BackendKind = backend_kind_mod.BackendKind;
-pub const SubpixelOrder = target_mod.SubpixelOrder;
-pub const CoverageTransfer = target_mod.CoverageTransfer;
-pub const FillRule = target_mod.FillRule;
+pub const BackendKind = core.BackendKind;
+pub const SubpixelOrder = core.SubpixelOrder;
+pub const CoverageTransfer = core.CoverageTransfer;
+pub const FillRule = core.FillRule;
 
-const WORDS_PER_INSTANCE: usize = vertex.WORDS_PER_INSTANCE;
+const WORDS_PER_INSTANCE: usize = core.WORDS_PER_INSTANCE;
 
 // ── DrawState ──
 
@@ -214,13 +213,13 @@ pub const Shader = struct {
         pub const vertex_shader = @embedFile("render/backend/vulkan_glsl/snail.vert");
         pub const text_fragment_shader = @embedFile("render/backend/vulkan_glsl/snail_text.frag");
         pub const coverage_functions =
-            @embedFile("render/backend/glsl/snail_render_abi.glsl") ++
+            @embedFile("render/backend/gl/glsl/snail_render_abi.glsl") ++
             "\n" ++
-            @embedFile("render/backend/glsl/snail_coverage_common.glsl") ++
+            @embedFile("render/backend/gl/glsl/snail_coverage_common.glsl") ++
             "\n" ++
-            @embedFile("render/backend/glsl/snail_color_common.glsl") ++
+            @embedFile("render/backend/gl/glsl/snail_color_common.glsl") ++
             "\n" ++
-            @embedFile("render/backend/glsl/snail_text_frag_body.glsl");
+            @embedFile("render/backend/gl/glsl/snail_text_frag_body.glsl");
         pub const descriptor_set_index: u32 = 0;
         pub const curve_texture_binding: u32 = 0;
         pub const band_texture_binding: u32 = 1;

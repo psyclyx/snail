@@ -122,6 +122,98 @@ fn createCoreTestModule(
     return mod;
 }
 
+/// Build the snail compiler-module graph and return the public `snail`
+/// facade. The graph is a DAG:
+///
+///   snail_core ── snail_cpu / snail_gl / snail_vulkan ── snail (facade)
+///
+/// `snail_core` is backend-independent (links only harfbuzz for shaping);
+/// each backend module links only its own system libs (GL / Vulkan); the
+/// facade re-exports everything. A dependent that only wants Vulkan pulls
+/// `snail_core` + `snail_vulkan` and links no GL. `public_name` addModule's
+/// the facade (for external dependents) vs. an internal createModule.
+const SnailGraph = struct {
+    core: *std.Build.Module,
+    cpu: *std.Build.Module,
+    gl: *std.Build.Module,
+    vulkan: *std.Build.Module,
+    facade: *std.Build.Module,
+};
+
+fn buildSnailGraphFull(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
+    options: ModuleOptions,
+    vk_shaders: *std.Build.Module,
+    public_name: ?[]const u8,
+    // When non-null, wired into every module and strip applied — for test
+    // artifacts, whose test blocks pull font assets and want strip control.
+    assets_mod: ?*std.Build.Module,
+    strip: ?bool,
+) SnailGraph {
+    const mk = struct {
+        fn m(bb: *std.Build, path: []const u8, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, s: ?bool, bo: *std.Build.Module, am: ?*std.Build.Module) *std.Build.Module {
+            const mod = bb.createModule(.{
+                .root_source_file = bb.path(path),
+                .target = t,
+                .optimize = o,
+                .link_libc = true,
+                .strip = s,
+            });
+            mod.addImport("build_options", bo);
+            if (am) |a| mod.addImport("assets", a);
+            return mod;
+        }
+    }.m;
+
+    const core = mk(b, "src/snail/core.zig", target, optimize, strip, build_options_mod, assets_mod);
+    if (options.enable_harfbuzz) core.linkSystemLibrary("harfbuzz", .{});
+
+    const cpu = mk(b, "src/snail/render/backend/cpu/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    cpu.addImport("snail_core", core);
+
+    const gl = mk(b, "src/snail/render/backend/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    gl.addImport("snail_core", core);
+    if (options.enable_gl33 or options.enable_gl44) gl.linkSystemLibrary("OpenGL", .{});
+    if (options.enable_gles30) gl.linkSystemLibrary("GLESv2", .{});
+
+    const vk = mk(b, "src/snail/render/backend/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    vk.addImport("snail_core", core);
+    vk.addImport("vulkan_shaders", vk_shaders);
+    if (options.enable_vulkan) vk.linkSystemLibrary("vulkan", .{});
+
+    const facade = if (public_name) |name| b.addModule(name, .{
+        .root_source_file = b.path("src/snail/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .strip = strip,
+    }) else mk(b, "src/snail/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    if (public_name != null) {
+        facade.addImport("build_options", build_options_mod);
+        if (assets_mod) |a| facade.addImport("assets", a);
+    }
+    facade.addImport("snail_core", core);
+    facade.addImport("snail_cpu", cpu);
+    facade.addImport("snail_gl", gl);
+    facade.addImport("snail_vulkan", vk);
+    return .{ .core = core, .cpu = cpu, .gl = gl, .vulkan = vk, .facade = facade };
+}
+
+fn buildSnailGraph(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
+    options: ModuleOptions,
+    vk_shaders: *std.Build.Module,
+    public_name: ?[]const u8,
+) *std.Build.Module {
+    return buildSnailGraphFull(b, target, optimize, build_options_mod, options, vk_shaders, public_name, null, null).facade;
+}
+
 fn createSnailModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -130,14 +222,7 @@ fn createSnailModule(
     options: ModuleOptions,
     vk_shaders: *std.Build.Module,
 ) *std.Build.Module {
-    const mod = b.createModule(.{
-        .root_source_file = b.path("src/snail/root.zig"),
-        .target = target,
-        .optimize = optimize,
-        .link_libc = true,
-    });
-    configureCoreModule(mod, build_options_mod, options, vk_shaders);
-    return mod;
+    return buildSnailGraph(b, target, optimize, build_options_mod, options, vk_shaders, null);
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
@@ -203,14 +288,7 @@ fn addSnailModule(
     options_mod: *std.Build.Module,
     vk_shaders_mod: *std.Build.Module,
 ) *std.Build.Module {
-    const snail_mod = b.addModule("snail", .{
-        .root_source_file = b.path("src/snail/root.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-    });
-    configureCoreModule(snail_mod, options_mod, config.core_options, vk_shaders_mod);
-    return snail_mod;
+    return buildSnailGraph(b, config.target, config.optimize, options_mod, config.core_options, vk_shaders_mod, "snail");
 }
 
 fn addSnailHelpersModule(
@@ -253,22 +331,13 @@ fn addTestSteps(
     config: BuildConfig,
     modules: ProjectModules,
 ) void {
-    const test_module = createCoreTestModule(
-        b,
-        b.path("src/snail/root.zig"),
-        config.target,
-        config.optimize,
-        modules.assets,
-        modules.options,
-        config.core_options,
-        modules.vk_shaders,
-        null,
-    );
-
-    const unit_tests = b.addTest(.{ .root_module = test_module });
-    const run_unit_tests = b.addRunArtifact(unit_tests);
     const test_step = b.step("test", "Run unit tests");
-    test_step.dependOn(&run_unit_tests.step);
+    // The snail library is a module graph (core + per-backend + facade);
+    // each module's tests run in their own artifact.
+    const test_graph = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, modules.vk_shaders, null, modules.assets, null);
+    inline for (.{ test_graph.core, test_graph.cpu, test_graph.gl, test_graph.vulkan, test_graph.facade }) |m| {
+        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
+    }
 
     const helpers_test_module = b.createModule(.{
         .root_source_file = b.path("src/snail-helpers/root.zig"),
@@ -315,21 +384,12 @@ fn addTestSteps(
     test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
-    const valgrind_test_module = createCoreTestModule(
-        b,
-        b.path("src/snail/root.zig"),
-        config.target,
-        config.optimize,
-        modules.assets,
-        modules.options,
-        config.core_options,
-        modules.vk_shaders,
-        true,
-    );
-    const valgrind_unit_tests = b.addTest(.{ .root_module = valgrind_test_module });
-    configureValgrindTest(valgrind_unit_tests);
-    const run_valgrind_unit_tests = b.addRunArtifact(valgrind_unit_tests);
-    test_valgrind_step.dependOn(&run_valgrind_unit_tests.step);
+    const vg = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, modules.vk_shaders, null, modules.assets, true);
+    inline for (.{ vg.core, vg.cpu, vg.gl, vg.vulkan, vg.facade }) |m| {
+        const vt = b.addTest(.{ .root_module = m });
+        configureValgrindTest(vt);
+        test_valgrind_step.dependOn(&b.addRunArtifact(vt).step);
+    }
 }
 
 fn addScreenshotSteps(

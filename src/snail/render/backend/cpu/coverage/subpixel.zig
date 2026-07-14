@@ -1,5 +1,5 @@
 const std = @import("std");
-const snail = @import("../../../../core.zig");
+const snail = @import("snail_core");
 const color = @import("../color.zig");
 
 const SubpixelOrder = snail.SubpixelOrder;

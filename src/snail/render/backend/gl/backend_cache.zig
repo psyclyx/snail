@@ -21,17 +21,17 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("../../../core.zig").files.atlas;
-const draw_records = @import("../../../core.zig").files.picture_draw_records;
-const page_pool_mod = @import("../../../core.zig").files.atlas_page_pool;
-const page_mod = @import("../../../core.zig").files.atlas_page;
-const curve_tex = @import("../../../core.zig").files.format_curve_texture;
-const band_tex = @import("../../../core.zig").files.format_band_texture;
-const paint_records = @import("../../../core.zig").files.atlas_paint_records;
-const upload_common = @import("../../../core.zig").files.format_upload_common;
-const image_mod = @import("../../../core.zig").files.image;
-const cache_base = @import("../cache.zig");
-const range_allocator = @import("../range_allocator.zig");
+const atlas_mod = @import("snail_core").files.atlas;
+const draw_records = @import("snail_core").files.picture_draw_records;
+const page_pool_mod = @import("snail_core").files.atlas_page_pool;
+const page_mod = @import("snail_core").files.atlas_page;
+const curve_tex = @import("snail_core").files.format_curve_texture;
+const band_tex = @import("snail_core").files.format_band_texture;
+const paint_records = @import("snail_core").files.atlas_paint_records;
+const upload_common = @import("snail_core").files.format_upload_common;
+const image_mod = @import("snail_core").files.image;
+const cache_base = @import("snail_core").files.backend_cache_base;
+const range_allocator = @import("snail_core").files.backend_range_allocator;
 
 const RangeAllocator = range_allocator.RangeAllocator;
 const Range = range_allocator.Range;
@@ -49,7 +49,7 @@ pub const Variant = enum {
 inline fn bindingsFor(comptime v: Variant) type {
     return switch (v) {
         .gl33, .gl44 => @import("bindings.zig"),
-        .gles30 => @import("../gles30/bindings.zig"),
+        .gles30 => @import("gles30/bindings.zig"),
     };
 }
 

@@ -1,5 +1,5 @@
 const std = @import("std");
-const snail = @import("../../../core.zig");
+const snail = @import("snail_core");
 
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;

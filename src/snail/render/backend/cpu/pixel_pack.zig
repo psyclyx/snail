@@ -7,7 +7,7 @@
 //! a branch-free sequence.
 
 const std = @import("std");
-const snail = @import("../../../core.zig");
+const snail = @import("snail_core");
 
 const PixelFormat = snail.PixelFormat;
 

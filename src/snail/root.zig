@@ -5,7 +5,7 @@
 //! custom-shader surface. Consumers `@import("snail")` and get the whole
 //! flat API; core stays a separate, backend-free module underneath.
 
-const core = @import("core.zig");
+const core = @import("snail_core");
 
 // ── Core surface (re-exported from snail_core) ──
 
@@ -104,23 +104,28 @@ pub const Path = core.Path;
 pub const snap = core.snap;
 pub const ThreadPool = core.ThreadPool;
 
-// ── Renderer backends ──
+// ── Renderer backends (each a separate compiler module) ──
 
-pub const CpuRenderer = @import("render/backend/cpu/renderer.zig").CpuRenderer;
-pub const InstanceProfileEntry = @import("render/backend/cpu/renderer.zig").InstanceProfileEntry;
-pub const InstanceProfileBuf = @import("render/backend/cpu/renderer.zig").InstanceProfileBuf;
-pub const Gl33Renderer = @import("render/backend/gl/state.zig").Gl33Renderer;
-pub const Gl44Renderer = @import("render/backend/gl/state.zig").Gl44Renderer;
-pub const Gles30Renderer = @import("render/backend/gles30/state.zig").Gles30Renderer;
-pub const VulkanRenderer = @import("render/backend/vulkan/pipeline.zig").VulkanRenderer;
-pub const VulkanContext = @import("render/backend/vulkan/types.zig").VulkanContext;
+const cpu = @import("snail_cpu");
+const gl = @import("snail_gl");
+const vulkan = @import("snail_vulkan");
 
-pub const CpuBackendCache = @import("render/backend/cpu/backend_cache.zig").CpuBackendCache;
-pub const drawCpu = @import("render/backend/cpu/draw.zig").drawCpu;
-pub const Gl33BackendCache = @import("render/backend/gl/backend_cache.zig").Gl33BackendCache;
-pub const Gl44BackendCache = @import("render/backend/gl/backend_cache.zig").Gl44BackendCache;
-pub const Gles30BackendCache = @import("render/backend/gl/backend_cache.zig").Gles30BackendCache;
-pub const VulkanBackendCache = @import("render/backend/vulkan/backend_cache.zig").VulkanBackendCache;
+pub const CpuRenderer = cpu.CpuRenderer;
+pub const InstanceProfileEntry = cpu.InstanceProfileEntry;
+pub const InstanceProfileBuf = cpu.InstanceProfileBuf;
+pub const CpuBackendCache = cpu.CpuBackendCache;
+pub const drawCpu = cpu.drawCpu;
+
+pub const Gl33Renderer = gl.Gl33Renderer;
+pub const Gl44Renderer = gl.Gl44Renderer;
+pub const Gles30Renderer = gl.Gles30Renderer;
+pub const Gl33BackendCache = gl.Gl33BackendCache;
+pub const Gl44BackendCache = gl.Gl44BackendCache;
+pub const Gles30BackendCache = gl.Gles30BackendCache;
+
+pub const VulkanRenderer = vulkan.VulkanRenderer;
+pub const VulkanContext = vulkan.VulkanContext;
+pub const VulkanBackendCache = vulkan.VulkanBackendCache;
 
 // ── Custom-shader integration facade ──
 
@@ -128,10 +133,8 @@ pub const coverage = @import("coverage.zig");
 
 test {
     _ = core;
-    _ = @import("render/backend/range_allocator.zig");
-    _ = @import("render/backend/cpu/backend_cache.zig");
-    _ = @import("render/backend/cpu/draw.zig");
-    _ = @import("render/backend/gl/backend_cache.zig");
-    _ = @import("render/backend/vulkan/backend_cache.zig");
+    _ = cpu;
+    _ = gl;
+    _ = vulkan;
     _ = coverage;
 }
