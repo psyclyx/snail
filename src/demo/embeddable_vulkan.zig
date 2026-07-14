@@ -1,6 +1,6 @@
 //! Vulkan embeddable-path byte-diff test.
 //!
-//! Drives the reusable reference caller renderer (`vulkan_caller.VulkanCaller`)
+//! Drives the reusable reference caller renderer (`embed_vulkan.Renderer`)
 //! and byte-diffs it against the all-in-one `VulkanRenderer` into the same
 //! offscreen target. The caller side is fully standalone — its own resource
 //! layout + transfer command pool + cache (via `embeddable.cachePipelineShape`)
@@ -14,10 +14,10 @@ const snail = @import("snail");
 const demo_content = @import("content.zig");
 const harness = @import("screenshot_harness.zig");
 const vulkan_demo_platform = @import("demo_platform_vulkan");
-const vulkan_caller = @import("vulkan_caller.zig");
+const embed_vulkan = @import("embed_vulkan");
 const platform = vulkan_demo_platform.offscreen;
 
-const vk = vulkan_caller.vk;
+const vk = embed_vulkan.vk;
 
 const W: u32 = 400;
 const H: u32 = 240;
@@ -54,7 +54,7 @@ pub fn main() !void {
     var layout: snail.vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
-    const transfer_pool = try vulkan_caller.createTransferPool(vk_ctx);
+    const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
     defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
     var sa_cache = try snail.VulkanBackendCache.init(allocator, content.pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), cache_opts);
     defer sa_cache.deinit();
@@ -62,7 +62,7 @@ pub fn main() !void {
     try sa_cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &sa_bindings);
 
     const budget = snail.emit.wordBudget(content.paths_picture.shapes.len, 0) + snail.emit.wordBudget(content.text_picture.shapes.len, 0);
-    var caller = try vulkan_caller.VulkanCaller.init(vk_ctx, sa_cache.descriptorSetLayout(), budget * @sizeOf(u32));
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, sa_cache.descriptorSetLayout(), budget * @sizeOf(u32));
     defer caller.deinit();
 
     const clear = [4]f32{
@@ -117,7 +117,7 @@ fn renderAndDiff(
     allocator: std.mem.Allocator,
     vk_renderer: *snail.VulkanRenderer,
     ref_cache: *snail.VulkanBackendCache,
-    caller: *vulkan_caller.VulkanCaller,
+    caller: *embed_vulkan.Renderer,
     sa_cache: *snail.VulkanBackendCache,
     clear: [4]f32,
     draw_state: snail.DrawState,

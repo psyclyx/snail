@@ -5,11 +5,11 @@ const std = @import("std");
 const snail = @import("snail");
 const demo_banner = @import("banner.zig");
 const harness = @import("screenshot_harness.zig");
-const vulkan_caller = @import("vulkan_caller.zig");
+const embed_vulkan = @import("embed_vulkan");
 const vulkan_demo_platform = @import("demo_platform_vulkan");
 const vulkan_platform = vulkan_demo_platform.offscreen;
 
-const vk = vulkan_caller.vk;
+const vk = embed_vulkan.vk;
 
 const W: u32 = 1280;
 const H: u32 = 720;
@@ -60,7 +60,7 @@ pub fn main() !void {
     var layout: snail.vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
-    const transfer_pool = try vulkan_caller.createTransferPool(vk_ctx);
+    const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
     defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
 
     var cache = try snail.VulkanBackendCache.init(allocator, scene.pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
@@ -80,7 +80,7 @@ pub fn main() !void {
     defer allocator.free(segs);
     const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
 
-    var caller = try vulkan_caller.VulkanCaller.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32));
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32));
     defer caller.deinit();
 
     const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{

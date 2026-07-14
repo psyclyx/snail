@@ -86,6 +86,26 @@ fn createDemoVulkanPlatformModule(
     return mod;
 }
 
+/// The reusable reference caller renderer for the Vulkan embeddable path
+/// (`src/demo/embed_vulkan.zig`). Bound to a specific `snail` module so its vk
+/// types match the consumer's; created per consumer group (demo tools, bench).
+fn createEmbedVulkanModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/demo/embed_vulkan.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "snail", .module = snail_mod },
+        },
+    });
+}
+
 fn createSupportModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -400,6 +420,7 @@ fn addScreenshotSteps(
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
+    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
@@ -575,6 +596,7 @@ fn addScreenshotSteps(
                 .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
+                .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
         const banner_screenshot_vk_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-vulkan", .root_module = banner_screenshot_vk_mod });
@@ -675,6 +697,7 @@ fn addScreenshotSteps(
                 .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
+                .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
         const screenshot_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-vulkan", .root_module = screenshot_vulkan_mod });
@@ -695,6 +718,7 @@ fn addScreenshotSteps(
                 .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
+                .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
         const embeddable_vulkan_exe = b.addExecutable(.{ .name = "snail-embeddable-vulkan", .root_module = embeddable_vulkan_mod });
@@ -848,6 +872,8 @@ fn addBenchStep(
     if (config.core_options.enable_vulkan) {
         const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
         bench_imports.append(b.allocator, .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod }) catch @panic("OOM");
+        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod);
+        bench_imports.append(b.allocator, .{ .name = "embed_vulkan", .module = embed_vulkan_mod }) catch @panic("OOM");
     }
 
     const bench_mod = b.createModule(.{

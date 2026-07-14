@@ -19,7 +19,7 @@ pub const vk = contract.vk;
 
 const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
 
-pub const VulkanCaller = struct {
+pub const Renderer = struct {
     device: vk.VkDevice,
     pipeline_layout: vk.VkPipelineLayout,
     // Indexed by @intFromEnum(contract.Family).
@@ -31,7 +31,7 @@ pub const VulkanCaller = struct {
     /// Build the pipelines (one per family, subpixel only if the device
     /// supports dual-source blend) against `ctx.render_pass`, plus a quad index
     /// buffer and a vertex upload buffer of `max_vbo_bytes`.
-    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, max_vbo_bytes: usize) !VulkanCaller {
+    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, max_vbo_bytes: usize) !Renderer {
         const device = ctx.device;
 
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
@@ -50,7 +50,7 @@ pub const VulkanCaller = struct {
         try check(vk.vkCreatePipelineLayout(device, &pl_info, null, &pipeline_layout));
         errdefer vk.vkDestroyPipelineLayout(device, pipeline_layout, null);
 
-        var self = VulkanCaller{
+        var self = Renderer{
             .device = device,
             .pipeline_layout = pipeline_layout,
             .supports_dual_src = ctx.supports_dual_source_blend,
@@ -79,7 +79,7 @@ pub const VulkanCaller = struct {
     /// render pass). `desc_set` is the cache's descriptor set; `words` +
     /// `segments` come from `snail.emit`.
     pub fn render(
-        self: *VulkanCaller,
+        self: *Renderer,
         cmd: vk.VkCommandBuffer,
         desc_set: vk.VkDescriptorSet,
         draw_state: snail.DrawState,
@@ -128,7 +128,7 @@ pub const VulkanCaller = struct {
         }
     }
 
-    pub fn deinit(self: *VulkanCaller) void {
+    pub fn deinit(self: *Renderer) void {
         self.vbo.deinit(self.device);
         self.ibo.deinit(self.device);
         for (self.pipelines) |p| {

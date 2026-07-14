@@ -10,6 +10,7 @@ const build_options = @import("build_options");
 const snail = @import("snail");
 const gl = @import("support").gl;
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
+const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
 
 const GL_SRGB8_ALPHA8: gl.GLint = 0x8C43;
 
@@ -270,34 +271,29 @@ pub fn timeGles30Draw(
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }
 
+/// Times the embeddable caller path (`embed_vulkan.Renderer`) — the same code
+/// integrators use — not the all-in-one renderer.
 pub fn timeVulkanDraw(
-    allocator: std.mem.Allocator,
-    vk_renderer: *snail.VulkanRenderer,
+    caller: *embed_vulkan.Renderer,
+    desc_set: embed_vulkan.vk.VkDescriptorSet,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.VulkanBackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
     if (comptime !build_options.enable_vulkan) unreachable;
 
     for (0..warmup_frames) |_| {
-        const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.state.setCommandBuffer(cmd);
-        vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
-        try vk_renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
-        vk_renderer.state.clearCommandBuffer();
+        const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreen());
+        caller.render(cmd, desc_set, state, records.words, records.segments);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();
 
     const start = nowNs();
     for (0..frames) |_| {
-        const cmd = vulkan_platform.beginFrameOffscreen();
-        vk_renderer.state.setCommandBuffer(cmd);
-        vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
-        try vk_renderer.state.draw(allocator, state, .{ .words = records.words, .segments = records.segments }, caches);
-        vk_renderer.state.clearCommandBuffer();
+        const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreen());
+        caller.render(cmd, desc_set, state, records.words, records.segments);
         vulkan_platform.endFrameOffscreen();
     }
     vulkan_platform.queueWaitIdle();

@@ -14,6 +14,7 @@ const snail = @import("snail");
 const snail_helpers = @import("snail-helpers");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
+const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
 const freetype = @import("bench/freetype.zig");
 const render_timing = @import("bench/render_timing.zig");
 const report = @import("bench/report.zig");
@@ -1905,10 +1906,16 @@ fn benchVulkan(
 
     const vk_ctx = try vulkan_platform.initOffscreen(WIDTH, HEIGHT);
     defer vulkan_platform.deinitOffscreen();
-    var renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
-    defer renderer.deinit();
 
-    var cache = try snail.VulkanBackendCache.init(allocator, pool, renderer.state.pipelineShape(), .{
+    // Benchmark the embeddable path — a standalone cache + the reference caller
+    // renderer — the same code integrators run.
+    var layout: snail.vulkan.VulkanResourceLayout = undefined;
+    try layout.init(vk_ctx);
+    defer layout.deinit();
+    const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
+    defer embed_vulkan.vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
+
+    var cache = try snail.VulkanBackendCache.init(allocator, pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -1923,7 +1930,12 @@ fn benchVulkan(
         try cache.upload(allocator, atlas_ptrs[0..bundle_count], bindings[0..bundle_count]);
     }
 
-    const backend_name = renderer.state.backendName();
+    var max_words: usize = 0;
+    for (bundles[0..bundle_count]) |*b| max_words = @max(max_words, snail.emit.wordBudget(b.picture.shapes.len, 0));
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), max_words * @sizeOf(u32));
+    defer caller.deinit();
+
+    const backend_name = "Vulkan";
     const supports_lcd = vk_ctx.supports_dual_source_blend;
 
     const prepared_state = drawState(WIDTH, HEIGHT, .none);
@@ -1934,7 +1946,7 @@ fn benchVulkan(
             .words = records_emitted.words[0..records_emitted.word_len],
             .segments = records_emitted.segments[0..records_emitted.segment_len],
         };
-        const us = try render_timing.timeVulkanDraw(allocator, &renderer, prepared_state, records, &.{&cache}, GPU_WARMUP, GPU_FRAMES);
+        const us = try render_timing.timeVulkanDraw(&caller, cache.descriptorSet(), prepared_state, records, GPU_WARMUP, GPU_FRAMES);
         try render_rows.append(allocator, .{
             .backend = backend_name,
             .scene = kind,
@@ -1959,7 +1971,7 @@ fn benchVulkan(
             };
             const state = drawState(WIDTH, HEIGHT, mode.aa);
             const record_us = (try timeRecordEmit(allocator, bindings[idx], &bundles[idx].atlas, &bundles[idx].picture)).us;
-            const draw_us = try render_timing.timeVulkanDraw(allocator, &renderer, state, records, &.{&cache}, GPU_WARMUP, GPU_FRAMES);
+            const draw_us = try render_timing.timeVulkanDraw(&caller, cache.descriptorSet(), state, records, GPU_WARMUP, GPU_FRAMES);
             try mode_rows.append(allocator, .{
                 .backend = backend_name,
                 .scene = scene_kind,
