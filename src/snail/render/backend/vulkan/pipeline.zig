@@ -219,17 +219,8 @@ pub const VulkanPipeline = struct {
     }
 
     pub fn pushTextConstants(self: *VulkanPipeline, cmd: vk.VkCommandBuffer, state: DrawState, local_layer_base: u32, render_mode: subpixel_policy.TextRenderMode) void {
-        const pc = PushConstants{
-            .mvp = state.mvp.data,
-            .viewport = .{ state.surface.pixel_width, state.surface.pixel_height },
-            .subpixel_order = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else state.raster.subpixel_order),
-            .output_srgb = if (state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
-            .layer_base = @intCast(local_layer_base),
-            .coverage_exponent = state.raster.coverage_transfer.shaderExponent(),
-            .dither_scale = state.surface.format.ditherAmplitude(),
-            .mask_output = if (state.surface.format.hasColor()) 0 else 1,
-        };
-        vk.vkCmdPushConstants(cmd, self.pipeline_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(PushConstants), &pc);
+        const pc = contract.textPushConstants(state, local_layer_base, render_mode == .grayscale);
+        vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
     }
 
     pub fn beginDraw(self: *VulkanPipeline) void {

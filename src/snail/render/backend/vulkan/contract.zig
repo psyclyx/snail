@@ -22,6 +22,7 @@
 //!      buffer + a 6-index `QUAD_INDICES` index buffer, and issues
 //!      `vkCmdDrawIndexed(INDICES_PER_GLYPH, glyph_count, ...)`.
 
+const core = @import("snail_core");
 const vertex = @import("snail_core").files.format_vertex;
 const vulkan_types = @import("types.zig");
 const vk_shaders = @import("vulkan_shaders");
@@ -53,6 +54,23 @@ pub const PUSH_CONSTANT_SIZE: u32 = @sizeOf(PushConstants);
 /// Shader stages that read the push constants.
 pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
     vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT;
+
+/// Build the per-draw push constants for the text-coverage recipe from a
+/// `DrawState`. This is the single source of truth the all-in-one renderer and
+/// an embeddable caller both use, so their pushed constants are identical.
+/// `grayscale` selects the non-subpixel path (the text-coverage recipe today).
+pub fn textPushConstants(draw_state: core.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
+    return .{
+        .mvp = draw_state.mvp.data,
+        .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+        .subpixel_order = @intFromEnum(if (grayscale) core.SubpixelOrder.none else draw_state.raster.subpixel_order),
+        .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
+        .layer_base = @intCast(local_layer_base),
+        .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
+        .dither_scale = draw_state.surface.format.ditherAmplitude(),
+        .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+    };
+}
 
 // ── Descriptor binding order ──
 
