@@ -5,8 +5,11 @@ const std = @import("std");
 const snail = @import("snail");
 const demo_banner = @import("banner.zig");
 const harness = @import("screenshot_harness.zig");
+const vulkan_caller = @import("vulkan_caller.zig");
 const vulkan_demo_platform = @import("demo_platform_vulkan");
 const vulkan_platform = vulkan_demo_platform.offscreen;
+
+const vk = vulkan_caller.vk;
 
 const W: u32 = 1280;
 const H: u32 = 720;
@@ -52,10 +55,15 @@ pub fn main() !void {
         .text_picture = &text_picture,
     };
 
-    var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
-    defer vk_renderer.deinit();
+    // Embeddable path: standalone resource layout + transfer pool + cache +
+    // caller renderer (no all-in-one VulkanRenderer).
+    var layout: snail.vulkan.VulkanResourceLayout = undefined;
+    try layout.init(vk_ctx);
+    defer layout.deinit();
+    const transfer_pool = try vulkan_caller.createTransferPool(vk_ctx);
+    defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
 
-    var cache = try snail.VulkanBackendCache.init(allocator, scene.pool, vk_renderer.state.pipelineShape(), .{
+    var cache = try snail.VulkanBackendCache.init(allocator, scene.pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
         .max_bindings = 4,
         .layer_info_height = 256,
         .max_images = 8,
@@ -72,22 +80,16 @@ pub fn main() !void {
     defer allocator.free(segs);
     const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
 
-    const cmd = vulkan_platform.beginFrameOffscreenWithClear(.{
+    var caller = try vulkan_caller.VulkanCaller.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32));
+    defer caller.deinit();
+
+    const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{
         harness.srgbToLinear(harness.bg_srgb_f32[0]),
         harness.srgbToLinear(harness.bg_srgb_f32[1]),
         harness.srgbToLinear(harness.bg_srgb_f32[2]),
         harness.bg_srgb_f32[3],
-    });
-    vk_renderer.state.setCommandBuffer(cmd);
-    defer vk_renderer.state.clearCommandBuffer();
-    vk_renderer.state.setFrameSlot(vulkan_platform.currentOffscreenFrameIndex());
-
-    try vk_renderer.state.draw(
-        allocator,
-        harness.drawState(W, H),
-        .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
-        &.{&cache},
-    );
+    }));
+    caller.render(cmd, cache.descriptorSet(), harness.drawState(W, H), words[0..e.words_len], segs[0..e.segs_len]);
 
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();
