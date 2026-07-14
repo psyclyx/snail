@@ -1,11 +1,14 @@
 //! snail public API.
 //!
-//! Facade over the `snail_core` module (backend-independent primitives,
-//! see `core.zig`) plus the concrete renderer backends and the `coverage`
-//! custom-shader surface. Consumers `@import("snail")` and get the whole
-//! flat API; core stays a separate, backend-free module underneath.
+//! Thin packaging shell over the compiler-module graph: it re-exports the
+//! backend-free `snail_core` API flat (Fonts/shaping/emit/…) and exposes each
+//! backend as a namespace (`snail.core`, `snail.gl`, `snail.vulkan`,
+//! `snail.cpu`). It holds no backend-specific code and no cross-backend
+//! aggregation — an app picks the backend namespace(s) it needs (a
+//! multi-backend app dispatches at its own level). The per-backend embeddable
+//! coverage surface lives under `snail.gl.embeddable` / `snail.vulkan`.
 
-const core = @import("snail_core");
+pub const core = @import("snail_core");
 
 // ── Core surface (re-exported from snail_core) ──
 
@@ -104,11 +107,13 @@ pub const Path = core.Path;
 pub const snap = core.snap;
 pub const ThreadPool = core.ThreadPool;
 
-// ── Renderer backends (each a separate compiler module) ──
+// ── Renderer backends (each a separate compiler module, exposed as a
+//    namespace; the per-backend embeddable coverage surface lives under
+//    `gl.embeddable` / `vulkan.embeddable` + `vulkan.contract`) ──
 
-const cpu = @import("snail_cpu");
-const gl = @import("snail_gl");
-const vulkan = @import("snail_vulkan");
+pub const cpu = @import("snail_cpu");
+pub const gl = @import("snail_gl");
+pub const vulkan = @import("snail_vulkan");
 
 pub const CpuRenderer = cpu.CpuRenderer;
 pub const InstanceProfileEntry = cpu.InstanceProfileEntry;
@@ -127,14 +132,9 @@ pub const VulkanRenderer = vulkan.VulkanRenderer;
 pub const VulkanContext = vulkan.VulkanContext;
 pub const VulkanBackendCache = vulkan.VulkanBackendCache;
 
-// ── Custom-shader integration facade ──
-
-pub const coverage = @import("coverage.zig");
-
 test {
     _ = core;
     _ = cpu;
     _ = gl;
     _ = vulkan;
-    _ = coverage;
 }

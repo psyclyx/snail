@@ -274,6 +274,13 @@ pub const VulkanBackendCache = struct {
         return self.desc_set;
     }
 
+    /// The descriptor-set layout `descriptorSet()` was allocated against. An
+    /// embeddable caller builds their `VkPipelineLayout` from this so their
+    /// pipeline is compatible with the set snail binds.
+    pub fn descriptorSetLayout(self: *const Self) vk.VkDescriptorSetLayout {
+        return self.pipeline.desc_set_layout;
+    }
+
     pub fn upload(
         self: *Self,
         scratch: std.mem.Allocator,

@@ -3,6 +3,7 @@ const vertex = @import("snail_core").files.format_vertex;
 const vulkan_types = @import("types.zig");
 const device = @import("device.zig");
 const constants = @import("constants.zig");
+const contract = @import("contract.zig");
 
 pub const vk = vulkan_types.vk;
 const vk_shaders = @import("vulkan_shaders");
@@ -41,27 +42,10 @@ fn pipelineShaderStages(vert_module: vk.VkShaderModule, frag_module: vk.VkShader
     };
 }
 
-fn vertexInputBinding() vk.VkVertexInputBindingDescription {
-    return .{
-        .binding = 0,
-        .stride = vertex.BYTES_PER_INSTANCE,
-        .inputRate = vk.VK_VERTEX_INPUT_RATE_INSTANCE,
-    };
-}
-
-fn vertexInputAttributes() [9]vk.VkVertexInputAttributeDescription {
-    return .{
-        .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
-        .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
-        .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
-        .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32_UINT, .offset = @offsetOf(vertex.Instance, "glyph") },
-        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
-        .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
-        .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
-        .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(vertex.Instance, "policy") },
-        .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R32G32B32_UINT, .offset = @offsetOf(vertex.Instance, "policy") + 16 },
-    };
-}
+// Single-binding text vertex input lives in the embeddable `contract.zig` so
+// the caller and this all-in-one path share one definition.
+const vertexInputBinding = contract.vertexInputBinding;
+const vertexInputAttributes = contract.vertexInputAttributes;
 
 fn vertexInputState(
     binding: *const vk.VkVertexInputBindingDescription,

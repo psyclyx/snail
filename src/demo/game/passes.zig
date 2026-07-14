@@ -10,7 +10,7 @@
 //! space surface passes (rough wall, center panel) additionally take the
 //! text picture and emit its raw 64-byte-per-glyph words into a GL texture
 //! buffer so the material fragment shader can sample coverage at arbitrary
-//! UVs via `snail.coverage.Shader.gl33.sample_functions`.
+//! UVs via `snail.gl.embeddable.GlShaderSources.sample_functions`.
 
 const std = @import("std");
 const snail = @import("snail");

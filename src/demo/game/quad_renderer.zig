@@ -1,6 +1,6 @@
 //! Quad renderer for the game demo: a tessellated-grid material program that
 //! samples a normal map, optionally samples snail text coverage in-place via
-//! `snail.coverage.Shader.gl33.sample_functions`, plus a premultiplied-tex
+//! `snail.gl.embeddable.GlShaderSources.sample_functions`, plus a premultiplied-tex
 //! program for billboard / overlay-style draws.
 //!
 //! Surface text coverage is produced by `SurfaceTextDraw`: it emits one
@@ -379,7 +379,7 @@ pub const QuadRenderer = struct {
             gl.glUniform2f(self.material.text_scene_size_loc, input.scene_size[0], input.scene_size[1]);
             gl.glUniform1f(self.material.text_relief_strength_loc, input.relief_strength);
 
-            const gl_program = snail.coverage.GlProgram{
+            const gl_program = snail.gl.embeddable.GlProgram{
                 .curve_tex_loc = self.material.text_curve_tex_loc,
                 .band_tex_loc = self.material.text_band_tex_loc,
                 .fill_rule_loc = self.material.text_fill_rule_loc,
@@ -388,12 +388,11 @@ pub const QuadRenderer = struct {
                 .curve_tex_unit = TEXT_CURVE_TEXTURE_UNIT,
                 .band_tex_unit = TEXT_BAND_TEXTURE_UNIT,
             };
-            const backend = snail.coverage.Backend{ .gl33 = snail.coverage.Gl33Backend.from(input.text.gl_renderer, input.text.cache) };
-            const coverage_program = snail.coverage.Program{ .gl33 = gl_program };
-            try backend.bindProgram(coverage_program);
+            const backend = snail.gl.embeddable.Gl33Backend.from(input.text.gl_renderer, input.text.cache);
+            try backend.bindProgram(gl_program);
             // The snail emit path encodes the absolute atlas layer into each
             // per-instance glyph word, so `layer_base` is always 0.
-            try backend.bindDrawState(coverage_program, .{
+            try backend.bindDrawState(gl_program, .{
                 .subpixel_order = .none,
                 .coverage_transfer = .identity,
                 .layer_base = 0,
@@ -477,13 +476,13 @@ const material_vertex_shader: [:0]const u8 =
 
 const material_fragment_shader: [:0]const u8 =
     "#version 330 core\n\n" ++
-    snail.coverage.Shader.gl33.resource_interface ++
+    snail.gl.embeddable.GlShaderSources.resource_interface ++
     "\n" ++
-    snail.coverage.Shader.gl33.coverage_functions ++
+    snail.gl.embeddable.GlShaderSources.coverage_functions ++
     "\n" ++
-    snail.coverage.Shader.gl33.sample_interface ++
+    snail.gl.embeddable.GlShaderSources.sample_interface ++
     "\n" ++
-    snail.coverage.Shader.gl33.sample_functions ++
+    snail.gl.embeddable.GlShaderSources.sample_functions ++
     "\n" ++
     \\in vec2 v_uv;
     \\in vec3 v_world_pos;
@@ -689,7 +688,7 @@ pub const SurfaceTextDraw = struct {
     gl_renderer: *snail.Gl33Renderer,
     cache: *const snail.Gl33BackendCache,
     coverage_words: []u32 = &.{},
-    coverage: snail.coverage.TextCoverageRecords,
+    coverage: snail.gl.embeddable.TextCoverageRecords,
     record_buffer: gl.GLuint = 0,
     record_texture: gl.GLuint = 0,
 
@@ -708,7 +707,7 @@ pub const SurfaceTextDraw = struct {
             try allocator.alloc(u32, word_budget);
         errdefer if (word_budget != 0) allocator.free(coverage_words);
 
-        var coverage = snail.coverage.TextCoverageRecords.init(coverage_words);
+        var coverage = snail.gl.embeddable.TextCoverageRecords.init(coverage_words);
 
         if (word_budget != 0) {
             var segs: [1]snail.DrawSegment = undefined;

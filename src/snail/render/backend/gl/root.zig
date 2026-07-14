@@ -14,6 +14,11 @@ pub const gles30_shaders = @import("gles30/shaders.zig");
 pub const bindings = @import("bindings.zig");
 pub const gles30_bindings = @import("gles30/bindings.zig");
 
+// The GL embeddable coverage surface (gl-typed programs + backends + GLSL
+// source fragments). The facade `coverage.zig` aggregates this with the other
+// backends into the cross-backend unions.
+pub const embeddable = @import("embeddable.zig");
+
 pub const Gl33Renderer = state.Gl33Renderer;
 pub const Gl44Renderer = state.Gl44Renderer;
 pub const Gles30Renderer = gles30_state.Gles30Renderer;
@@ -25,4 +30,5 @@ test {
     _ = state;
     _ = gles30_state;
     _ = backend_cache;
+    _ = embeddable;
 }

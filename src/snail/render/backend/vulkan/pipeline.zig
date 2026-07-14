@@ -12,23 +12,14 @@ pub const vk = vulkan_types.vk;
 const pipeline_constants = @import("constants.zig");
 const vulkan_device = @import("device.zig");
 const vulkan_graphics = @import("graphics_pipeline.zig");
+const contract = @import("contract.zig");
+const resource_layout = @import("resource_layout.zig");
 const check = vulkan_device.check;
-// ── Push constants layout (matches GLSL) ──
 
-const PushConstants = extern struct {
-    mvp: [16]f32, // mat4, column-major
-    viewport: [2]f32,
-    subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
-    layer_base: i32 = 0,
-    coverage_exponent: f32 = 1.0,
-    dither_scale: f32 = 1.0 / 255.0, // gradient dither amplitude; 0 for float targets
-    mask_output: i32 = 0, // 1 = single-channel mask target: emit painted alpha
-};
-
-comptime {
-    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
-}
+// Push-constant layout + descriptor/vertex contract now live in `contract.zig`
+// so the embeddable caller and this all-in-one renderer share one definition.
+const PushConstants = contract.PushConstants;
+const VulkanResourceLayout = resource_layout.VulkanResourceLayout;
 
 pub const VulkanContext = vulkan_types.VulkanContext;
 
@@ -70,7 +61,10 @@ pub const VulkanPipeline = struct {
     pipeline_text_subpixel_dual: vk.VkPipeline = null,
     pipeline_cache: vk.VkPipelineCache = null,
     pipeline_layout: vk.VkPipelineLayout = null,
-    desc_set_layout: vk.VkDescriptorSetLayout = null,
+
+    /// Samplers + descriptor-set layout, owned standalone so the embeddable
+    /// caller consumes the same layout (see `resource_layout.zig`).
+    layout: VulkanResourceLayout = .{},
 
     /// Replicated draw-path pipeline cache. Each entry pairs a (kind, M)
     /// with a fully built `VkPipeline` that has shape stream binding 0
@@ -89,9 +83,6 @@ pub const VulkanPipeline = struct {
     index_buffer: vk.VkBuffer = null,
     index_memory: vk.VkDeviceMemory = null,
 
-    sampler_nearest: vk.VkSampler = null,
-    sampler_linear: vk.VkSampler = null,
-
     // Transfer command pool (one-shot uploads)
     transfer_cmd_pool: vk.VkCommandPool = null,
     scheduled_resource_upload_cmd: vk.VkCommandBuffer = null,
@@ -105,8 +96,7 @@ pub const VulkanPipeline = struct {
         self.ctx = vk_ctx;
         errdefer self.deinitResources();
 
-        try self.initSamplers();
-        try self.initDescriptorSetLayout();
+        try self.layout.init(vk_ctx);
         try self.initPipelineLayout();
         try self.createPipelineCache();
 
@@ -120,80 +110,17 @@ pub const VulkanPipeline = struct {
         self.initialized = true;
     }
 
-    fn initSamplers(self: *VulkanPipeline) !void {
-        const sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .magFilter = vk.VK_FILTER_NEAREST,
-            .minFilter = vk.VK_FILTER_NEAREST,
-            .addressModeU = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeV = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeW = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_NEAREST,
-        });
-        try check(vk.vkCreateSampler(self.ctx.device, &sampler_info, null, &self.sampler_nearest));
-
-        const linear_sampler_info = std.mem.zeroInit(vk.VkSamplerCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_SAMPLER_CREATE_INFO,
-            .magFilter = vk.VK_FILTER_LINEAR,
-            .minFilter = vk.VK_FILTER_LINEAR,
-            .addressModeU = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeV = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .addressModeW = vk.VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE,
-            .mipmapMode = vk.VK_SAMPLER_MIPMAP_MODE_LINEAR,
-        });
-        try check(vk.vkCreateSampler(self.ctx.device, &linear_sampler_info, null, &self.sampler_linear));
-    }
-
-    fn initDescriptorSetLayout(self: *VulkanPipeline) !void {
-        var bindings: [4]vk.VkDescriptorSetLayoutBinding = undefined;
-        bindings[0] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
-            .binding = 0,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-        });
-        bindings[0].pImmutableSamplers = &self.sampler_nearest;
-        bindings[1] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
-            .binding = 1,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-        });
-        bindings[1].pImmutableSamplers = &self.sampler_nearest;
-        bindings[2] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
-            .binding = 2,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-        });
-        bindings[2].pImmutableSamplers = &self.sampler_nearest;
-        bindings[3] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
-            .binding = 3,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-            .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-        });
-        bindings[3].pImmutableSamplers = &self.sampler_linear;
-
-        const dsl_info = std.mem.zeroInit(vk.VkDescriptorSetLayoutCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
-            .bindingCount = 4,
-            .pBindings = &bindings,
-        });
-        try check(vk.vkCreateDescriptorSetLayout(self.ctx.device, &dsl_info, null, &self.desc_set_layout));
-    }
-
     fn initPipelineLayout(self: *VulkanPipeline) !void {
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
-            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .stageFlags = contract.PUSH_CONSTANT_STAGE_FLAGS,
             .offset = 0,
-            .size = @sizeOf(PushConstants),
+            .size = contract.PUSH_CONSTANT_SIZE,
         });
 
         var pl_info: vk.VkPipelineLayoutCreateInfo = std.mem.zeroes(vk.VkPipelineLayoutCreateInfo);
         pl_info.sType = vk.VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO;
         pl_info.setLayoutCount = 1;
-        pl_info.pSetLayouts = @ptrCast(&self.desc_set_layout);
+        pl_info.pSetLayouts = @ptrCast(&self.layout.desc_set_layout);
         pl_info.pushConstantRangeCount = 1;
         pl_info.pPushConstantRanges = &push_range;
         try check(vk.vkCreatePipelineLayout(self.ctx.device, &pl_info, null, &self.pipeline_layout));
@@ -257,9 +184,7 @@ pub const VulkanPipeline = struct {
         self.replicated_pipeline_count = 0;
         if (self.pipeline_cache != null) vk.vkDestroyPipelineCache(self.ctx.device, self.pipeline_cache, null);
         if (self.pipeline_layout != null) vk.vkDestroyPipelineLayout(self.ctx.device, self.pipeline_layout, null);
-        if (self.desc_set_layout != null) vk.vkDestroyDescriptorSetLayout(self.ctx.device, self.desc_set_layout, null);
-        if (self.sampler_linear != null) vk.vkDestroySampler(self.ctx.device, self.sampler_linear, null);
-        if (self.sampler_nearest != null) vk.vkDestroySampler(self.ctx.device, self.sampler_nearest, null);
+        self.layout.deinit();
 
         self.pipeline_text_subpixel_dual = null;
         self.pipeline_hinted_text = null;
@@ -269,9 +194,6 @@ pub const VulkanPipeline = struct {
         self.pipeline_text = null;
         self.pipeline_cache = null;
         self.pipeline_layout = null;
-        self.desc_set_layout = null;
-        self.sampler_linear = null;
-        self.sampler_nearest = null;
         self.initialized = false;
     }
 
@@ -349,9 +271,9 @@ pub const VulkanPipeline = struct {
             .ctx = self.ctx,
             .transfer_cmd_pool = self.transfer_cmd_pool,
             .scheduled_resource_upload_cmd = self.scheduled_resource_upload_cmd,
-            .sampler_nearest = self.sampler_nearest,
-            .sampler_linear = self.sampler_linear,
-            .desc_set_layout = self.desc_set_layout,
+            .sampler_nearest = self.layout.sampler_nearest,
+            .sampler_linear = self.layout.sampler_linear,
+            .desc_set_layout = self.layout.desc_set_layout,
         };
     }
 
