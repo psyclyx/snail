@@ -43,6 +43,26 @@ pub fn cachePipelineShape(
     };
 }
 
+/// Queue-decoupled variant (§6): the cache RECORDS its atlas-upload copies into
+/// `upload_cmd` (a command buffer the caller has already begun) and does NOT
+/// submit or wait on any queue. The caller ends, submits, and synchronizes
+/// `upload_cmd` on its own (transfer) queue, then calls `cache.releaseUploads()`
+/// to free the staging buffers. For hosts that can't cede their queue to snail.
+pub fn cachePipelineShapeCallerUpload(
+    ctx: VulkanContext,
+    layout: *const VulkanResourceLayout,
+    upload_cmd: vk.VkCommandBuffer,
+) PipelineShape {
+    return .{
+        .ctx = ctx,
+        .transfer_cmd_pool = null,
+        .scheduled_resource_upload_cmd = upload_cmd,
+        .sampler_nearest = layout.sampler_nearest,
+        .sampler_linear = layout.sampler_linear,
+        .desc_set_layout = layout.desc_set_layout,
+    };
+}
+
 pub const Backend = struct {
     const Self = @This();
 

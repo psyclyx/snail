@@ -131,6 +131,16 @@ pub const VulkanBackendCache = struct {
 
     upload_generation: u32 = 0,
 
+    // Staging buffers whose copies were recorded into a caller-provided upload
+    // command buffer (queue-decoupled path) and therefore must outlive the
+    // caller's submit. Freed by `releaseUploads`.
+    pending_staging: std.ArrayListUnmanaged(StagingBuffer) = .empty,
+
+    const StagingBuffer = struct {
+        buffer: vk.VkBuffer,
+        memory: vk.VkDeviceMemory,
+    };
+
     pub const BindingSlot = struct {
         active: bool = false,
         generation: u32 = 0,
@@ -184,7 +194,17 @@ pub const VulkanBackendCache = struct {
         };
     }
 
+    /// Free staging buffers retained from queue-decoupled uploads. The caller
+    /// invokes this after the command buffer it provided (via
+    /// `embeddable.cachePipelineShapeCallerUpload`) has finished executing.
+    pub fn releaseUploads(self: *Self) void {
+        for (self.pending_staging.items) |s| vk_device.destroyStagingBuffer(&self.pipeline, s.buffer, s.memory);
+        self.pending_staging.clearRetainingCapacity();
+    }
+
     pub fn deinit(self: *Self) void {
+        self.releaseUploads();
+        self.pending_staging.deinit(self.allocator);
         self.destroyGpuResources();
         self.allocator.free(self.prepared_generation);
         self.allocator.free(self.prepared_curve_words);
@@ -730,7 +750,15 @@ pub const VulkanBackendCache = struct {
         }
 
         try vk_device.finishTransferCommand(&self.pipeline, transfer);
-        vk_device.destroyStagingBuffer(&self.pipeline, staging_buf, staging_mem);
+        if (transfer.owned) {
+            // Owned one-shot: finishTransferCommand already submitted + waited,
+            // so the copy is done and the staging buffer is safe to free.
+            vk_device.destroyStagingBuffer(&self.pipeline, staging_buf, staging_mem);
+        } else {
+            // Caller-provided command buffer: the copy hasn't executed yet.
+            // Retain the staging buffer until the caller calls releaseUploads.
+            try self.pending_staging.append(self.allocator, .{ .buffer = staging_buf, .memory = staging_mem });
+        }
     }
 
     // ── Slot allocator ──

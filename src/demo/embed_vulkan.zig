@@ -161,6 +161,61 @@ pub const Renderer = struct {
     }
 };
 
+/// Create a `VulkanBackendCache` and upload `atlases` via a caller-owned
+/// command buffer submitted on the caller's queue — the §6 queue-decoupled
+/// path. snail only RECORDS the copies (`cachePipelineShapeCallerUpload`); this
+/// helper (the caller) allocates a transient command buffer, ends + submits it
+/// with its own fence, waits, then releases the staging buffers. The worked
+/// example for hosts that can't cede their queue to snail.
+pub fn cacheWithDecoupledUpload(
+    allocator: std.mem.Allocator,
+    ctx: snail.VulkanContext,
+    page_pool: *snail.PagePool,
+    layout: *const snail.vulkan.VulkanResourceLayout,
+    atlases: []const *const snail.Atlas,
+    bindings: []snail.Binding,
+    cache_opts: snail.vulkan.backend_cache.CacheOptions,
+) !snail.VulkanBackendCache {
+    const pool = try createTransferPool(ctx);
+    defer vk.vkDestroyCommandPool(ctx.device, pool, null);
+
+    var upload_cmd: vk.VkCommandBuffer = null;
+    const ai = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try check(vk.vkAllocateCommandBuffers(ctx.device, &ai, &upload_cmd));
+    const bi = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    try check(vk.vkBeginCommandBuffer(upload_cmd, &bi));
+
+    var cache = try snail.VulkanBackendCache.init(allocator, page_pool, snail.vulkan.embeddable.cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
+    errdefer cache.deinit();
+    try cache.upload(allocator, atlases, bindings); // records copies into upload_cmd — no submit
+
+    try check(vk.vkEndCommandBuffer(upload_cmd));
+
+    // The caller owns submission + synchronization. (A real host might use a
+    // dedicated transfer queue; the offscreen platform exposes only the one.)
+    var fence: vk.VkFence = null;
+    const fi = std.mem.zeroInit(vk.VkFenceCreateInfo, .{ .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO });
+    try check(vk.vkCreateFence(ctx.device, &fi, null, &fence));
+    defer vk.vkDestroyFence(ctx.device, fence, null);
+    const si = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &upload_cmd,
+    });
+    try check(vk.vkQueueSubmit(ctx.graphics_queue, 1, &si, fence));
+    try check(vk.vkWaitForFences(ctx.device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64)));
+    cache.releaseUploads();
+    return cache;
+}
+
 /// Build a transfer command pool on the graphics queue family — what a
 /// standalone `VulkanBackendCache` needs (see `embeddable.cachePipelineShape`).
 pub fn createTransferPool(ctx: snail.VulkanContext) !vk.VkCommandPool {

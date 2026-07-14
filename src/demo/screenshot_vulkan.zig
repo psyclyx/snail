@@ -36,15 +36,15 @@ pub fn main() !void {
         .text_picture = &content.text_picture,
     };
 
-    // Standalone embeddable setup: resource layout + transfer pool + cache +
-    // caller renderer, all from the public contract.
+    // Standalone embeddable setup. This tool demonstrates the §6 queue-
+    // decoupled upload: the cache records its atlas upload into a caller-owned
+    // command buffer that the caller submits + synchronizes (see
+    // `cacheWithDecoupledUpload`); snail never touches the queue.
     var layout: snail.vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
-    const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
-    defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
-
-    var cache = try snail.VulkanBackendCache.init(allocator, scene.pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
+    var bindings: [2]snail.Binding = undefined;
+    var cache = try embed_vulkan.cacheWithDecoupledUpload(allocator, vk_ctx, scene.pool, &layout, &.{ scene.paths_atlas, scene.text_atlas }, &bindings, .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,
@@ -52,8 +52,6 @@ pub fn main() !void {
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
-    try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, harness.wordBudget(scene));
     defer allocator.free(words);
