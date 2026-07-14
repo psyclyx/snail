@@ -1,9 +1,8 @@
 const snail = @import("../../../root.zig");
 
 const bezier = @import("../../../math/bezier.zig");
-const curve_tex = @import("../../format/curve_texture.zig");
+const curve_tex = @import("../../../format/curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
-const Vec2 = snail.Vec2;
 const band_curve_loc_x_bits = 12;
 const band_curve_loc_x_mask: u32 = (1 << band_curve_loc_x_bits) - 1;
 // ref.y bits 0..13 are curve_loc_y; bits 14..15 are the curve kind (see

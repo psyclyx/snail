@@ -26,13 +26,17 @@ const atlas_mod = @import("../../../atlas.zig");
 const draw_records = @import("../../../picture/draw_records.zig");
 const page_mod = @import("../../../atlas/page.zig");
 const page_pool_mod = @import("../../../atlas/page_pool.zig");
-const curve_tex = @import("../../format/curve_texture.zig");
-const band_tex = @import("../../format/band_texture.zig");
+const curve_tex = @import("../../../format/curve_texture.zig");
+const band_tex = @import("../../../format/band_texture.zig");
 const paint_records = @import("../../../atlas/paint_records.zig");
 const cpu_resources = @import("resources.zig");
 const cpu_path_paint = @import("path_paint.zig");
 const image_mod = @import("../../../image.zig");
 const cache_base = @import("../cache.zig");
+const range_allocator = @import("../range_allocator.zig");
+
+const RangeAllocator = range_allocator.RangeAllocator;
+const Range = range_allocator.Range;
 
 pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
@@ -63,25 +67,22 @@ pub const CpuBackendCache = struct {
     prepared_band_words: []u32,
 
     // Persistent layer-info buffer. Fixed-size at init. Slot ranges
-    // come and go via free_layer_info_ranges.
+    // come and go via layer_info_ranges.
     layer_info_buf: []f32,
     layer_info_width: u32,
     layer_info_capacity_rows: u32,
-    free_layer_info_ranges: std.ArrayList(LayerInfoRange),
+    layer_info_ranges: RangeAllocator,
 
     // Persistent image storage (image pointers; caller owns lifetimes).
     image_storage: []?*const Image,
     image_capacity: u32,
-    free_image_ranges: std.ArrayList(ImageRange),
+    image_ranges: RangeAllocator,
 
     // Per-binding slots.
     bindings: []BindingSlot,
     active_bindings: u32 = 0,
 
     upload_generation: u32 = 0,
-
-    pub const LayerInfoRange = struct { row_base: u32, height: u32 };
-    pub const ImageRange = struct { layer_base: u32, count: u32 };
 
     pub const BindingSlot = struct {
         active: bool = false,
@@ -127,15 +128,11 @@ pub const CpuBackendCache = struct {
         errdefer allocator.free(bindings);
         for (bindings) |*b| b.* = .{};
 
-        var free_layer_info_ranges: std.ArrayList(LayerInfoRange) = .empty;
-        try free_layer_info_ranges.append(allocator, .{ .row_base = 0, .height = options.layer_info_height });
-        errdefer free_layer_info_ranges.deinit(allocator);
+        var layer_info_ranges = try RangeAllocator.init(allocator, options.layer_info_height);
+        errdefer layer_info_ranges.deinit(allocator);
 
-        var free_image_ranges: std.ArrayList(ImageRange) = .empty;
-        if (options.max_images > 0) {
-            try free_image_ranges.append(allocator, .{ .layer_base = 0, .count = options.max_images });
-        }
-        errdefer free_image_ranges.deinit(allocator);
+        var image_ranges = try RangeAllocator.init(allocator, options.max_images);
+        errdefer image_ranges.deinit(allocator);
 
         return .{
             .allocator = allocator,
@@ -148,10 +145,10 @@ pub const CpuBackendCache = struct {
             .layer_info_buf = layer_info_buf,
             .layer_info_width = INFO_WIDTH,
             .layer_info_capacity_rows = options.layer_info_height,
-            .free_layer_info_ranges = free_layer_info_ranges,
+            .layer_info_ranges = layer_info_ranges,
             .image_storage = image_storage,
             .image_capacity = options.max_images,
-            .free_image_ranges = free_image_ranges,
+            .image_ranges = image_ranges,
             .bindings = bindings,
         };
     }
@@ -168,8 +165,8 @@ pub const CpuBackendCache = struct {
         self.allocator.free(self.image_storage);
         for (self.bindings) |*slot| self.freeBindingState(slot);
         self.allocator.free(self.bindings);
-        self.free_layer_info_ranges.deinit(self.allocator);
-        self.free_image_ranges.deinit(self.allocator);
+        self.layer_info_ranges.deinit(self.allocator);
+        self.image_ranges.deinit(self.allocator);
         self.* = undefined;
     }
 
@@ -207,10 +204,8 @@ pub const CpuBackendCache = struct {
         self.bindings = new_bindings;
 
         // Reset free lists.
-        self.free_layer_info_ranges.clearRetainingCapacity();
-        if (options.layer_info_height > 0) try self.free_layer_info_ranges.append(self.allocator, .{ .row_base = 0, .height = options.layer_info_height });
-        self.free_image_ranges.clearRetainingCapacity();
-        if (options.max_images > 0) try self.free_image_ranges.append(self.allocator, .{ .layer_base = 0, .count = options.max_images });
+        try self.layer_info_ranges.reset(self.allocator, options.layer_info_height);
+        try self.image_ranges.reset(self.allocator, options.max_images);
     }
 
     /// Upload one or more atlases into the cache and return one
@@ -230,9 +225,9 @@ pub const CpuBackendCache = struct {
             }
         }
 
-        var allocated_layer_ranges = std.ArrayList(LayerInfoRange).empty;
+        var allocated_layer_ranges = std.ArrayList(Range).empty;
         defer allocated_layer_ranges.deinit(scratch);
-        var allocated_image_ranges = std.ArrayList(ImageRange).empty;
+        var allocated_image_ranges = std.ArrayList(Range).empty;
         defer allocated_image_ranges.deinit(scratch);
         var allocated_slot_indices = std.ArrayList(u32).empty;
         defer allocated_slot_indices.deinit(scratch);
@@ -240,8 +235,8 @@ pub const CpuBackendCache = struct {
         var success = false;
         defer if (!success) {
             // Roll back any allocations we made before the failure.
-            for (allocated_layer_ranges.items) |r| self.releaseLayerInfoRange(r) catch {};
-            for (allocated_image_ranges.items) |r| self.releaseImageRange(r) catch {};
+            for (allocated_layer_ranges.items) |r| self.layer_info_ranges.release(self.allocator, r) catch {};
+            for (allocated_image_ranges.items) |r| self.image_ranges.release(self.allocator, r) catch {};
             for (allocated_slot_indices.items) |i| self.bindings[i] = .{};
         };
 
@@ -254,17 +249,17 @@ pub const CpuBackendCache = struct {
             try allocated_slot_indices.append(scratch, slot_index);
 
             // Reserve layer-info rows.
-            const info_range: LayerInfoRange = if (info_height == 0)
-                .{ .row_base = 0, .height = 0 }
+            const info_range: Range = if (info_height == 0)
+                .{ .base = 0, .size = 0 }
             else
-                (try self.takeLayerInfoRows(info_height)) orelse return error.NoFreeLayerInfoRows;
+                self.layer_info_ranges.take(info_height) orelse return error.NoFreeLayerInfoRows;
             try allocated_layer_ranges.append(scratch, info_range);
 
             // Reserve image layers.
-            const image_range: ImageRange = if (image_count == 0)
-                .{ .layer_base = 0, .count = 0 }
+            const image_range: Range = if (image_count == 0)
+                .{ .base = 0, .size = 0 }
             else
-                (try self.takeImageLayers(image_count)) orelse return error.NoFreeImageLayers;
+                self.image_ranges.take(image_count) orelse return error.NoFreeImageLayers;
             try allocated_image_ranges.append(scratch, image_range);
 
             // Mark slot active (rolled back on failure).
@@ -273,10 +268,10 @@ pub const CpuBackendCache = struct {
             slot.* = .{
                 .active = true,
                 .generation = self.upload_generation,
-                .info_row_base = info_range.row_base,
-                .info_height = info_range.height,
-                .image_layer_base = image_range.layer_base,
-                .image_count = image_range.count,
+                .info_row_base = info_range.base,
+                .info_height = info_range.size,
+                .image_layer_base = image_range.base,
+                .image_count = image_range.size,
             };
 
             try self.writeBindingData(atlas, slot);
@@ -335,13 +330,13 @@ pub const CpuBackendCache = struct {
         if (!slot.active) return;
 
         if (slot.info_height > 0) {
-            self.releaseLayerInfoRange(.{ .row_base = slot.info_row_base, .height = slot.info_height }) catch {};
+            self.layer_info_ranges.release(self.allocator, .{ .base = slot.info_row_base, .size = slot.info_height }) catch {};
         }
         if (slot.image_count > 0) {
             for (slot.image_layer_base..slot.image_layer_base + slot.image_count) |layer| {
                 self.image_storage[layer] = null;
             }
-            self.releaseImageRange(.{ .layer_base = slot.image_layer_base, .count = slot.image_count }) catch {};
+            self.image_ranges.release(self.allocator, .{ .base = slot.image_layer_base, .size = slot.image_count }) catch {};
         }
         self.freeBindingState(slot);
         slot.* = .{};
@@ -403,92 +398,6 @@ pub const CpuBackendCache = struct {
         return null;
     }
 
-    fn takeLayerInfoRows(self: *CpuBackendCache, height: u32) UploadError!?LayerInfoRange {
-        // First-fit search through the free list.
-        var i: usize = 0;
-        while (i < self.free_layer_info_ranges.items.len) : (i += 1) {
-            const r = self.free_layer_info_ranges.items[i];
-            if (r.height >= height) {
-                if (r.height == height) {
-                    _ = self.free_layer_info_ranges.orderedRemove(i);
-                } else {
-                    self.free_layer_info_ranges.items[i] = .{ .row_base = r.row_base + height, .height = r.height - height };
-                }
-                return LayerInfoRange{ .row_base = r.row_base, .height = height };
-            }
-        }
-        return null;
-    }
-
-    fn releaseLayerInfoRange(self: *CpuBackendCache, range: LayerInfoRange) !void {
-        if (range.height == 0) return;
-        // Coalesce with adjacent ranges to keep fragmentation in check.
-        try self.free_layer_info_ranges.append(self.allocator, range);
-        std.mem.sort(LayerInfoRange, self.free_layer_info_ranges.items, {}, struct {
-            fn lessThan(_: void, a: LayerInfoRange, b: LayerInfoRange) bool {
-                return a.row_base < b.row_base;
-            }
-        }.lessThan);
-        var write: usize = 0;
-        var read: usize = 0;
-        while (read < self.free_layer_info_ranges.items.len) {
-            var cur = self.free_layer_info_ranges.items[read];
-            read += 1;
-            while (read < self.free_layer_info_ranges.items.len) {
-                const nxt = self.free_layer_info_ranges.items[read];
-                if (cur.row_base + cur.height == nxt.row_base) {
-                    cur.height += nxt.height;
-                    read += 1;
-                } else break;
-            }
-            self.free_layer_info_ranges.items[write] = cur;
-            write += 1;
-        }
-        self.free_layer_info_ranges.shrinkRetainingCapacity(write);
-    }
-
-    fn takeImageLayers(self: *CpuBackendCache, count: u32) UploadError!?ImageRange {
-        var i: usize = 0;
-        while (i < self.free_image_ranges.items.len) : (i += 1) {
-            const r = self.free_image_ranges.items[i];
-            if (r.count >= count) {
-                if (r.count == count) {
-                    _ = self.free_image_ranges.orderedRemove(i);
-                } else {
-                    self.free_image_ranges.items[i] = .{ .layer_base = r.layer_base + count, .count = r.count - count };
-                }
-                return ImageRange{ .layer_base = r.layer_base, .count = count };
-            }
-        }
-        return null;
-    }
-
-    fn releaseImageRange(self: *CpuBackendCache, range: ImageRange) !void {
-        if (range.count == 0) return;
-        try self.free_image_ranges.append(self.allocator, range);
-        std.mem.sort(ImageRange, self.free_image_ranges.items, {}, struct {
-            fn lessThan(_: void, a: ImageRange, b: ImageRange) bool {
-                return a.layer_base < b.layer_base;
-            }
-        }.lessThan);
-        var write: usize = 0;
-        var read: usize = 0;
-        while (read < self.free_image_ranges.items.len) {
-            var cur = self.free_image_ranges.items[read];
-            read += 1;
-            while (read < self.free_image_ranges.items.len) {
-                const nxt = self.free_image_ranges.items[read];
-                if (cur.layer_base + cur.count == nxt.layer_base) {
-                    cur.count += nxt.count;
-                    read += 1;
-                } else break;
-            }
-            self.free_image_ranges.items[write] = cur;
-            write += 1;
-        }
-        self.free_image_ranges.shrinkRetainingCapacity(write);
-    }
-
     fn writeBindingData(self: *CpuBackendCache, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
         // Push each page in the atlas into its layer (rebuild if stale).
         for (atlas.pages) |p| {
@@ -540,7 +449,7 @@ pub const CpuBackendCache = struct {
                     const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
                     const uv_scale_x: f32 = 1.0;
                     const uv_scale_y: f32 = 1.0;
-                    @import("../../format/upload_common.zig").patchImagePaintRecord(
+                    @import("../../../format/upload_common.zig").patchImagePaintRecord(
                         self.layer_info_buf,
                         INFO_WIDTH,
                         INFO_WIDTH,

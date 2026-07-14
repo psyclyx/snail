@@ -4,15 +4,14 @@ const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const cubic = @import("coverage/cubic_solver.zig");
 const texture = @import("texture.zig");
-const band_tex = @import("../../format/band_texture.zig");
-const render_abi = @import("../../format/abi.zig");
+const band_tex = @import("../../../format/band_texture.zig");
+const render_abi = @import("../../../format/abi.zig");
 
 const bezier = @import("../../../math/bezier.zig");
-const curve_tex = @import("../../format/curve_texture.zig");
+const curve_tex = @import("../../../format/curve_texture.zig");
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
-const SubpixelOrder = snail.SubpixelOrder;
 const Vec2 = snail.Vec2;
 const clamp01 = color_mod.clamp01;
 const decodeCurveSegment = texture.decodeCurveSegment;
@@ -203,15 +202,6 @@ pub fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillR
     return clamp01(cov);
 }
 
-fn blendSubpixelSample(cw_s: CoveragePair, cw_o: CoveragePair, fill_rule: FillRule) f32 {
-    const wsum = cw_s.wgt + cw_o.wgt;
-    const blended = cw_s.cov * cw_s.wgt + cw_o.cov * cw_o.wgt;
-    return clamp01(@max(
-        applyFillRule(fill_rule, blended / @max(wsum, 1.0 / 65536.0)),
-        @min(applyFillRule(fill_rule, cw_s.cov), applyFillRule(fill_rule, cw_o.cov)),
-    ));
-}
-
 pub fn premultiplyCoverage(color: [4]f32, cov: f32) [4]f32 {
     const alpha = color[3] * cov;
     return .{
@@ -252,7 +242,6 @@ fn initGlyphBandState(
     };
 }
 
-const appendCurveRoot = cubic.appendCurveRoot;
 const solveQuadraticRoots = cubic.solveQuadraticRoots;
 const solveCubicRoots = cubic.solveCubicRoots;
 const solveSegmentHorizontalRoots = cubic.solveSegmentHorizontalRoots;
@@ -268,7 +257,6 @@ pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f3
 }
 
 const root_code_eps = cubic.root_code_eps;
-const rootCodeCoord = cubic.rootCodeCoord;
 const snapNearTangentSqrt = cubic.snapNearTangentSqrt;
 const calcRootCode = cubic.calcRootCode;
 const solveHorizPoly = cubic.solveHorizPoly;

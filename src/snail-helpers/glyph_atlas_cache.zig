@@ -302,7 +302,7 @@ pub const GlyphAtlasCache = struct {
     }
 
     fn cloneEntry(self: *GlyphAtlasCache, entry: snail.AtlasEntry) InsertError!Stored {
-        var curves = try cloneCurves(self.allocator, entry.curves);
+        var curves = try entry.curves.clone(self.allocator);
         errdefer curves.deinit();
         var x_features: ?[]FeatureEdge = null;
         var y_features: ?[]FeatureEdge = null;
@@ -352,26 +352,6 @@ fn storedEntry(key: RecordKey, s: Stored) snail.AtlasEntry {
         .fill_rule = s.fill_rule,
         .autohint = autohint,
         .autohint_base = s.autohint_base,
-    };
-}
-
-fn cloneCurves(allocator: Allocator, src: GlyphCurves) Allocator.Error!GlyphCurves {
-    const cb = try allocator.dupe(u16, src.curve_bytes);
-    errdefer allocator.free(cb);
-    const bb = try allocator.dupe(u16, src.band_bytes);
-    return .{
-        .allocator = allocator,
-        .curve_bytes = cb,
-        .band_bytes = bb,
-        .backing = null,
-        .curve_count = src.curve_count,
-        .h_band_count = src.h_band_count,
-        .v_band_count = src.v_band_count,
-        .band_scale_x = src.band_scale_x,
-        .band_scale_y = src.band_scale_y,
-        .band_offset_x = src.band_offset_x,
-        .band_offset_y = src.band_offset_y,
-        .bbox = src.bbox,
     };
 }
 

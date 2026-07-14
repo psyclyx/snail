@@ -20,7 +20,7 @@ pub const BBox = bezier.BBox;
 pub const GlyphCurves = struct {
     allocator: std.mem.Allocator,
     /// Packed curve texture bytes (u16 half-floats, four texels per segment).
-    /// Laid out exactly as the existing `render/format/curve_texture.zig`
+    /// Laid out exactly as the existing `format/curve_texture.zig`
     /// format expects, with the glyph's first segment at byte 0.
     curve_bytes: []const u16,
     /// Packed band texture bytes (u16 indices). Curve refs are encoded
@@ -61,6 +61,22 @@ pub const GlyphCurves = struct {
         self.* = undefined;
     }
 
+    /// Deep-copy into a fresh allocation owned by `allocator`. The copy
+    /// coalesces `curve_bytes` and `band_bytes` into a single `backing`
+    /// buffer, so `deinit` frees exactly once. Scalar metadata is copied
+    /// wholesale, so the invariant can't drift as fields are added.
+    pub fn clone(self: *const GlyphCurves, allocator: std.mem.Allocator) std.mem.Allocator.Error!GlyphCurves {
+        const backing = try allocator.alloc(u16, self.curve_bytes.len + self.band_bytes.len);
+        @memcpy(backing[0..self.curve_bytes.len], self.curve_bytes);
+        @memcpy(backing[self.curve_bytes.len..], self.band_bytes);
+        var copy = self.*;
+        copy.allocator = allocator;
+        copy.curve_bytes = backing[0..self.curve_bytes.len];
+        copy.band_bytes = backing[self.curve_bytes.len..];
+        copy.backing = backing;
+        return copy;
+    }
+
     /// Byte size of the curve texture footprint (curves only, not bands).
     pub fn curveBytes(self: *const GlyphCurves) usize {
         return self.curve_bytes.len * @sizeOf(u16);
@@ -99,4 +115,27 @@ test "empty curves round-trip" {
     defer c.deinit();
     try std.testing.expect(c.isEmpty());
     try std.testing.expectEqual(@as(usize, 0), c.curveBytes());
+}
+
+test "clone deep-copies bytes and metadata into one backing" {
+    const allocator = std.testing.allocator;
+    var src = GlyphCurves.empty(allocator);
+    src.curve_bytes = try allocator.dupe(u16, &[_]u16{ 1, 2, 3 });
+    src.band_bytes = try allocator.dupe(u16, &[_]u16{ 4, 5 });
+    src.curve_count = 1;
+    src.h_band_count = 2;
+    src.bbox = .{ .min = .{ .x = -1, .y = -2 }, .max = .{ .x = 3, .y = 4 } };
+    defer src.deinit();
+
+    var dst = try src.clone(allocator);
+    defer dst.deinit();
+
+    try std.testing.expectEqualSlices(u16, src.curve_bytes, dst.curve_bytes);
+    try std.testing.expectEqualSlices(u16, src.band_bytes, dst.band_bytes);
+    try std.testing.expectEqual(src.curve_count, dst.curve_count);
+    try std.testing.expectEqual(src.h_band_count, dst.h_band_count);
+    try std.testing.expectEqual(src.bbox.min.x, dst.bbox.min.x);
+    // Copy owns a single coalesced allocation, independent of the source.
+    try std.testing.expect(dst.backing != null);
+    try std.testing.expect(dst.curve_bytes.ptr != src.curve_bytes.ptr);
 }

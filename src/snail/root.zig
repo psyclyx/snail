@@ -66,13 +66,11 @@ pub const TargetEncoding = target.TargetEncoding;
 pub const PixelFormat = target.PixelFormat;
 pub const PixelRect = target.PixelRect;
 pub const LinearResolve = target.LinearResolve;
-pub const DrawResolve = target.DrawResolve;
 pub const CoverageTransfer = target.CoverageTransfer;
 pub const mvpToScenePixel = target.mvpToScenePixel;
 pub const TargetSurface = target.TargetSurface;
 pub const RasterOptions = target.RasterOptions;
 pub const DrawState = target.DrawState;
-pub const DrawPass = target.DrawPass;
 pub const resolveRect = target.resolveRect;
 
 pub const BackendKind = backend_kind.BackendKind;
@@ -91,7 +89,6 @@ pub const VulkanContext = @import("render/backend/vulkan/types.zig").VulkanConte
 
 // ── Core new-API surface ──
 
-pub const Range = @import("range.zig").Range;
 pub const recordKey = record_key_mod;
 pub const RecordKey = record_key_mod.RecordKey;
 pub const ns = record_key_mod.ns;
@@ -138,7 +135,7 @@ pub const emit = @import("picture/emit.zig");
 // snail's shader chunks. They're stable, but most consumers should
 // reach for `snail.coverage` first.
 
-const vertex_mod = @import("render/format/vertex.zig");
+const vertex_mod = @import("format/vertex.zig");
 pub const Instance = vertex_mod.Instance;
 pub const DecodedInstance = vertex_mod.DecodedInstance;
 pub const decodeInstance = vertex_mod.decodeInstance;
@@ -177,13 +174,6 @@ pub const Path = @import("path.zig").Path;
 pub const coverage = @import("coverage.zig");
 pub const snap = @import("snap.zig");
 
-/// Default ASCII printable character set (space through tilde).
-pub const ASCII_PRINTABLE = blk: {
-    var chars: [95]u8 = undefined;
-    for (0..95) |i| chars[i] = @intCast(32 + i);
-    break :blk chars;
-};
-
 test {
     _ = math;
     _ = font;
@@ -205,12 +195,13 @@ test {
     _ = @import("font/autohint/warp.zig");
     _ = @import("font/autohint/blue.zig");
     _ = @import("font/autohint/producer.zig");
-    _ = @import("render/format/autohint_record.zig");
-    _ = @import("render/format/abi.zig");
+    _ = @import("format/autohint_record.zig");
+    _ = @import("format/abi.zig");
     _ = @import("text/faces.zig");
     _ = shape_mod;
     _ = @import("picture/draw_records.zig");
     _ = @import("picture/emit.zig");
+    _ = @import("render/backend/range_allocator.zig");
     _ = @import("render/backend/cpu/backend_cache.zig");
     _ = @import("render/backend/cpu/draw.zig");
     _ = @import("render/backend/gl/backend_cache.zig");

@@ -17,9 +17,9 @@
 const std = @import("std");
 
 const render_abi = @import("abi.zig");
-const autohint = @import("../../font/autohint/producer.zig");
-const blue = @import("../../font/autohint/blue.zig");
-const warp = @import("../../font/autohint/warp.zig");
+const autohint = @import("../font/autohint/producer.zig");
+const blue = @import("../font/autohint/blue.zig");
+const warp = @import("../font/autohint/warp.zig");
 
 pub const FeatureEdge = autohint.FeatureEdge;
 pub const header_floats: usize = 8;

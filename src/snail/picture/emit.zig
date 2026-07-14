@@ -20,8 +20,8 @@
 
 const std = @import("std");
 const math = @import("../math/vec.zig");
-const vertex = @import("../render/format/vertex.zig");
-const instance_emit = @import("../render/format/instance_emit.zig");
+const vertex = @import("../format/vertex.zig");
+const instance_emit = @import("../format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
 const autohint_policy = @import("../font/autohint/policy.zig");
 const draw_records = @import("draw_records.zig");
@@ -366,7 +366,7 @@ const testing = std.testing;
 const record_key_mod = @import("../atlas/record_key.zig");
 const curves_mod = @import("../atlas/curves.zig");
 const page_pool_mod = @import("../atlas/page_pool.zig");
-const curve_tex_format = @import("../render/format/curve_texture.zig");
+const curve_tex_format = @import("../format/curve_texture.zig");
 
 const PagePool = page_pool_mod.PagePool;
 const GlyphCurves = curves_mod.GlyphCurves;

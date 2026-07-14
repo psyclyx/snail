@@ -210,8 +210,6 @@ inline fn placedShape(origin: Vec2, scale: f32, key: snail.RecordKey, color: [4]
 
 const testing = std.testing;
 const Font = snail.Font;
-const HintVm = snail.HintVm;
-const HintPpem = snail.HintPpem;
 
 test "placeRun rejects unknown face_index on COLR fanout" {
     const allocator = testing.allocator;

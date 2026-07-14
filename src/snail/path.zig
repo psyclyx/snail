@@ -8,12 +8,8 @@ const vec = @import("math/vec.zig");
 
 const BBox = bezier.BBox;
 const CurveSegment = bezier.CurveSegment;
-const FillStyle = paint_mod.FillStyle;
-const Paint = paint_mod.Paint;
 const Rect = target_mod.Rect;
-const StrokeJoin = paint_mod.StrokeJoin;
 const StrokeStyle = paint_mod.StrokeStyle;
-const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
 
 // Recursion-depth caps for path subdivision. These are quality / cost
@@ -23,14 +19,6 @@ const Vec2 = vec.Vec2;
 pub const kPathArcSplitMaxDepth: u8 = 8;
 const kPathStrokeOffsetTolerance: f32 = 0.005;
 pub const kPathStrokeOffsetMaxDepth: u8 = 10;
-
-fn makePathLineCurve(p0: Vec2, p1: Vec2) bezier.QuadBezier {
-    return .{
-        .p0 = p0,
-        .p1 = Vec2.lerp(p0, p1, 0.5),
-        .p2 = p1,
-    };
-}
 
 fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
     return CurveSegment.fromLine(p0, p1);
@@ -242,13 +230,6 @@ fn fitOffsetQuadFromPoints(p0: Vec2, pm: Vec2, p2: Vec2) CurveSegment {
         pm.y * 2.0 - (p0.y + p2.y) * 0.5,
     );
     return CurveSegment.fromQuad(.{ .p0 = p0, .p1 = control, .p2 = p2 });
-}
-
-fn fitOffsetCurveQuad(curve: CurveSegment, offset: f32) CurveSegment {
-    const p0 = offsetCurvePoint(curve, 0.0, offset);
-    const pm = offsetCurvePoint(curve, 0.5, offset);
-    const p2 = offsetCurvePoint(curve, 1.0, offset);
-    return fitOffsetQuadFromPoints(p0, pm, p2);
 }
 
 /// Recursive offset-quad approximation, specialised on the curve kind
@@ -569,12 +550,6 @@ pub const Path = struct {
             };
         } else {
             self.bbox = .{ .min = point, .max = point };
-        }
-    }
-
-    fn expandCurveBBox(self: *Path, curve: CurveSegment) void {
-        switch (curve.kind) {
-            inline else => |k| self.expandCurveBBoxKind(k, curve),
         }
     }
 

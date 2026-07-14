@@ -1,7 +1,7 @@
 const std = @import("std");
 
 const bezier = @import("../../math/bezier.zig");
-const curve_tex = @import("../../render/format/curve_texture.zig");
+const curve_tex = @import("../../format/curve_texture.zig");
 const tt_exec = @import("exec.zig");
 const tt_graphics = @import("graphics.zig");
 const tt_outline = @import("outline.zig");
@@ -522,10 +522,6 @@ pub const HintMachine = struct {
 
     fn ppemScaleX(self: *const HintMachine) f32 {
         return 1.0 / @as(f32, @floatFromInt(self.prepared.size.request.ppem_x_26_6));
-    }
-
-    fn ppemScaleY(self: *const HintMachine) f32 {
-        return 1.0 / @as(f32, @floatFromInt(self.prepared.size.request.ppem_y_26_6));
     }
 
     fn toEmX(self: *const HintMachine, value_26_6: i32) f32 {

@@ -1,6 +1,6 @@
 const std = @import("std");
-const band_tex = @import("../render/format/band_texture.zig");
-const render_abi = @import("../render/format/abi.zig");
+const band_tex = @import("../format/band_texture.zig");
+const render_abi = @import("../format/abi.zig");
 
 pub const PaintRecordKind = render_abi.PaintRecordKind;
 

@@ -2,7 +2,6 @@ const std = @import("std");
 const vec = @import("math/vec.zig");
 
 const Mat4 = vec.Mat4;
-const Vec2 = vec.Vec2;
 const Transform2D = vec.Transform2D;
 
 pub const FillRule = enum(c_int) {
@@ -10,7 +9,7 @@ pub const FillRule = enum(c_int) {
     even_odd = 1,
 };
 
-pub const SubpixelOrder = @import("render/format/subpixel_order.zig").SubpixelOrder;
+pub const SubpixelOrder = @import("format/subpixel_order.zig").SubpixelOrder;
 
 pub const ColorEncoding = enum(c_int) {
     linear = 0,
@@ -78,11 +77,6 @@ pub const LinearResolve = struct {
     };
 };
 
-pub const DrawResolve = union(enum) {
-    direct,
-    linear: LinearResolve,
-};
-
 pub const TargetSurface = struct {
     pixel_width: f32,
     pixel_height: f32,
@@ -124,19 +118,6 @@ pub const DrawState = struct {
     /// caller's draw order (and therefore z-order) is preserved across
     /// the split.
     scissor_rect: ?PixelRect = null,
-};
-
-pub const DrawPass = struct {
-    state: DrawState,
-    resolve: DrawResolve = .direct,
-
-    pub fn direct(state: DrawState) DrawPass {
-        return .{ .state = state };
-    }
-
-    pub fn linear(state: DrawState, resolve: LinearResolve) DrawPass {
-        return .{ .state = state, .resolve = .{ .linear = resolve } };
-    }
 };
 
 pub const TargetEncoding = struct {

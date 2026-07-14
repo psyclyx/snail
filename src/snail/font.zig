@@ -2,8 +2,8 @@ const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const ttf = @import("font/ttf.zig");
 const curves_mod = @import("atlas/curves.zig");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
+const curve_tex = @import("format/curve_texture.zig");
+const band_tex = @import("format/band_texture.zig");
 
 pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const LineMetrics = ttf.LineMetrics;

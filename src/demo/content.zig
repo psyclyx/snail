@@ -288,11 +288,17 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const ppem_26_6: u32 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0));
         const hint_ppem = snail.HintPpem.uniform(ppem_26_6);
         const hint_fid: u32 = hint_opts.hint_face_index;
+        // Run fpgm/prep once for this ppem, then hint each glyph off it.
+        var prepared = hinter_ptr.prepare(hint_ppem) catch |err| switch (err) {
+            error.NoHinting => break :blk false,
+            else => return err,
+        };
+        defer prepared.deinit();
         for (shaped_tagline.glyphs) |g| {
             if (g.face_index != hint_fid) continue;
             const key = snail.recordKey.hintedGlyph(hint_fid, g.glyph_id, ppem_26_6);
             if (containsKey(text_entries.items, key)) continue;
-            const curves = hinter_ptr.hintGlyph(allocator, allocator, g.glyph_id, hint_ppem) catch |err| switch (err) {
+            const curves = hinter_ptr.hintGlyph(allocator, allocator, &prepared, g.glyph_id) catch |err| switch (err) {
                 error.NoHinting, error.GlyphTopologyChanged => continue,
                 else => return err,
             };

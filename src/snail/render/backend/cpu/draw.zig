@@ -18,7 +18,7 @@ const math = @import("../../../math/vec.zig");
 const draw_records = @import("../../../picture/draw_records.zig");
 const cpu_upload_mod = @import("backend_cache.zig");
 const cpu_resources = @import("resources.zig");
-const vertex = @import("../../format/vertex.zig");
+const vertex = @import("../../../format/vertex.zig");
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -60,7 +60,9 @@ pub fn drawCpu(
     records: DrawRecords,
     caches: []const *const CpuBackendCache,
     thread_pool: ?*snail.ThreadPool,
-) (DrawError || anyerror)!void {
+    // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
+    // backends) can't handle a perspective MVP.
+) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
     if (!build_options.enable_cpu) return error.MalformedSegment;
     for (records.segments) |seg| {
         const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;

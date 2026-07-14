@@ -1,12 +1,12 @@
 const std = @import("std");
-const band_tex = @import("../format/band_texture.zig");
+const band_tex = @import("../../format/band_texture.zig");
 const BBox = @import("../../math/bezier.zig").BBox;
 const Vec2 = @import("../../math/vec.zig").Vec2;
-const render_abi = @import("../format/abi.zig");
-const vertex = @import("../format/vertex.zig");
+const render_abi = @import("../../format/abi.zig");
+const vertex = @import("../../format/vertex.zig");
 const Mat4 = @import("../../math/vec.zig").Mat4;
 const Transform2D = @import("../../math/vec.zig").Transform2D;
-const SubpixelOrder = @import("../format/subpixel_order.zig").SubpixelOrder;
+const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
 
 pub const TextRenderMode = enum {
     grayscale,

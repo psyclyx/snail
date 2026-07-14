@@ -2,8 +2,8 @@ const std = @import("std");
 const snail = @import("../../../root.zig");
 const color = @import("color.zig");
 const atlas_mod = @import("../../../atlas.zig");
-const band_tex = @import("../../format/band_texture.zig");
-const render_abi = @import("../../format/abi.zig");
+const band_tex = @import("../../../format/band_texture.zig");
+const render_abi = @import("../../../format/abi.zig");
 
 const PaintImageRecord = atlas_mod.PaintImageRecord;
 const GlyphBandEntry = band_tex.GlyphBandEntry;

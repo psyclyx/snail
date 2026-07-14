@@ -1,8 +1,7 @@
 const std = @import("std");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const vertex = @import("../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
-const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
+const SubpixelOrder = @import("../../../format/subpixel_order.zig").SubpixelOrder;
 const DrawState = snail_mod.DrawState;
 const vulkan_types = @import("types.zig");
 const vulkan_upload_new = @import("backend_cache.zig");
@@ -323,7 +322,15 @@ pub const VulkanPipeline = struct {
         StaleBinding,
         MalformedSegment,
         MissingCommandBuffer,
-    } || std.mem.Allocator.Error || anyerror;
+        VulkanUploadSlotExhausted,
+        ReplicatedPipelineCacheFull,
+        PipelineUnavailable,
+        // Lazy pipeline / staging-buffer creation on the draw path bubbles up
+        // the Vulkan device-error family.
+        VulkanError,
+        NoSuitableMemory,
+        VulkanMapMemoryReturnedNull,
+    } || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments` and dispatch via the draw
     /// module. The implementation lives in `draw.zig`.

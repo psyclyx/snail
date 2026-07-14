@@ -11,7 +11,7 @@ const std = @import("std");
 
 const vulkan_types = @import("types.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const vertex = @import("../../format/vertex.zig");
+const vertex = @import("../../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
 const vulkan_upload_new = @import("backend_cache.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");

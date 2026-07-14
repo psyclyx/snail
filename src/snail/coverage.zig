@@ -28,7 +28,7 @@ const build_options = @import("build_options");
 
 const backend_kind_mod = @import("backend_kind.zig");
 const target_mod = @import("target.zig");
-const vertex = @import("render/format/vertex.zig");
+const vertex = @import("format/vertex.zig");
 
 const gl_shaders = if (build_options.enable_gl33 or build_options.enable_gl44)
     @import("render/backend/gl/shaders.zig")
@@ -229,7 +229,6 @@ pub const Shader = struct {
 
 // ── Program descriptors ──
 
-const gl_GLuint = gl_bindings.gl.GLuint;
 const gl_GLint = gl_bindings.gl.GLint;
 
 /// Snail-side uniform locations + texture units inside the caller's GL
@@ -252,7 +251,6 @@ pub const GlProgram = struct {
     image_tex_unit: gl_GLint = 3,
 };
 
-const gles30_GLuint = gles30_bindings.gl.GLuint;
 const gles30_GLint = gles30_bindings.gl.GLint;
 
 pub const Gles30Program = struct {

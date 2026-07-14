@@ -7,8 +7,8 @@
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const curves_mod = @import("atlas/curves.zig");
-const curve_tex = @import("render/format/curve_texture.zig");
-const band_tex = @import("render/format/band_texture.zig");
+const curve_tex = @import("format/curve_texture.zig");
+const band_tex = @import("format/band_texture.zig");
 const path_mod = @import("path.zig");
 const paint = @import("paint.zig");
 
@@ -145,8 +145,6 @@ fn mergeBBoxes(base: BBox, bboxes: []const BBox) BBox {
 }
 
 const testing = std.testing;
-const Vec2 = @import("math/vec.zig").Vec2;
-const Rect = @import("target.zig").Rect;
 
 test "pathToCurves packs a rectangle fill" {
     var path = Path.init(testing.allocator);

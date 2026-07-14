@@ -29,8 +29,8 @@ const tt_tables = @import("truetype/tables.zig");
 const tt_points = @import("truetype/points.zig");
 const curves_mod = @import("../atlas/curves.zig");
 const font_mod = @import("../font.zig");
-const curve_tex = @import("../render/format/curve_texture.zig");
-const band_tex = @import("../render/format/band_texture.zig");
+const curve_tex = @import("../format/curve_texture.zig");
+const band_tex = @import("../format/band_texture.zig");
 
 pub const Font = font_mod.Font;
 pub const HintPpem = struct {

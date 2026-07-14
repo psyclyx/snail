@@ -17,7 +17,6 @@ const std = @import("std");
 
 const analysis = @import("analysis.zig");
 const warp = @import("warp.zig");
-const outline = @import("../truetype/outline.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
 

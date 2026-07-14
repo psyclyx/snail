@@ -1,6 +1,6 @@
 const band_tex = @import("band_texture.zig");
-const bezier = @import("../../math/bezier.zig");
-const vec = @import("../../math/vec.zig");
+const bezier = @import("../math/bezier.zig");
+const vec = @import("../math/vec.zig");
 const vertex = @import("vertex.zig");
 
 const BBox = bezier.BBox;

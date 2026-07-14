@@ -60,14 +60,6 @@ const shared_autohint_fragment_body =
     @embedFile("../glsl/snail_autohint_warp.glsl") ++
     "\n" ++
     @embedFile("../glsl/snail_autohint_main.glsl");
-const shared_text_subpixel_body =
-    shared_render_abi ++
-    "\n" ++
-    shared_coverage_common ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    @embedFile("../glsl/snail_text_subpixel_body.glsl");
 const shared_text_sample_body = @embedFile("../glsl/snail_text_sample_body.glsl");
 
 pub const text_vertex_interface = gles30_vert_interface;

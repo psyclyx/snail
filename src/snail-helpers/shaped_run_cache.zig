@@ -36,8 +36,6 @@ const snail = @import("snail");
 
 const Allocator = std.mem.Allocator;
 const Faces = snail.Faces;
-const FontStyle = snail.FontStyle;
-const HintPpem = snail.HintPpem;
 const ShapeOptions = snail.ShapeOptions;
 const ShapedText = snail.ShapedText;
 

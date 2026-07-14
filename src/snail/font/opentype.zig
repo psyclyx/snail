@@ -14,11 +14,6 @@ fn readI16(data: []const u8, offset: usize) !i16 {
     return std.mem.readInt(i16, data[offset..][0..2], .big);
 }
 
-fn readU32(data: []const u8, offset: usize) !u32 {
-    if (offset + 4 > data.len) return error.UnexpectedEof;
-    return std.mem.readInt(u32, data[offset..][0..4], .big);
-}
-
 // ── Coverage ──
 
 /// Returns the coverage index for a glyph, or null if not covered.

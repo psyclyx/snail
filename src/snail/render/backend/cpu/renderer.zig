@@ -10,21 +10,19 @@
 const std = @import("std");
 const snail = @import("../../../root.zig");
 const bezier = @import("../../../math/bezier.zig");
-const curve_tex = @import("../../format/curve_texture.zig");
-const band_tex = @import("../../format/band_texture.zig");
-const render_abi = @import("../../format/abi.zig");
-const text_hint_format = @import("../../format/text_hint.zig");
-const autohint_record = @import("../../format/autohint_record.zig");
+const band_tex = @import("../../../format/band_texture.zig");
+const render_abi = @import("../../../format/abi.zig");
+const text_hint_format = @import("../../../format/text_hint.zig");
+const autohint_record = @import("../../../format/autohint_record.zig");
 const autohint_warp = @import("../../../font/autohint/warp.zig");
 const autohint_policy = @import("../../../font/autohint/policy.zig");
-const vertex = @import("../../format/vertex.zig");
+const vertex = @import("../../../format/vertex.zig");
 
 /// Caller-owned transient fitted knots for one glyph draw.
 pub const AutohintWarp = struct {
     x: []const autohint_warp.Knot,
     y: []const autohint_warp.Knot,
 };
-const CurveSegment = bezier.CurveSegment;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
@@ -43,7 +41,6 @@ const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;
 const HintedTextRecord = cpu_coverage.HintedTextRecord;
 const addColors = cpu_path_paint.addColors;
 const advanceLocalPixel = cpu_geometry.advanceLocalPixel;
-const clamp01 = cpu_color.clamp01;
 const compositeOver = cpu_path_paint.compositeOver;
 const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
 const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
@@ -65,7 +62,6 @@ const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
 const glyphEdgePixelsPerPixel = cpu_geometry.glyphEdgePixelsPerPixel;
 const inverseTransform = cpu_geometry.inverseTransform;
 const LayerInfoEntry = cpu_path_paint.LayerInfoEntry;
-const linearToSrgbByte = cpu_color.linearToSrgbByte;
 const max3 = cpu_color.max3;
 const multiplyLinearColor = cpu_color.multiplyLinearColor;
 const premultiplyCoverage = cpu_coverage.premultiplyCoverage;
@@ -74,7 +70,6 @@ const PreparedPathPaint = cpu_path_paint.PreparedPathPaint;
 const PreparedPathLayer = cpu_path_paint.PreparedPathLayer;
 const PreparedPathRecord = cpu_path_paint.PreparedPathRecord;
 const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
-const samplePathPaint = cpu_path_paint.samplePathPaint;
 const ScreenBounds = cpu_geometry.ScreenBounds;
 const srgbBytesToLinearColor = cpu_color.srgbBytesToLinearColor;
 
@@ -292,35 +287,11 @@ pub const CpuRenderer = struct {
         };
     }
 
-    fn setSubpixel(self: *CpuRenderer, enabled: bool) void {
-        self.subpixel_order = if (enabled) .rgb else .none;
-    }
-
     fn clear(self: *CpuRenderer, r: u8, g: u8, b: u8, a: u8) void {
         for (0..self.height) |row| {
             const row_start = row * self.stride;
             for (0..self.width) |col| {
                 const off = row_start + col * 4;
-                self.pixels[off + 0] = r;
-                self.pixels[off + 1] = g;
-                self.pixels[off + 2] = b;
-                self.pixels[off + 3] = a;
-            }
-        }
-    }
-
-    fn fillRect(self: *CpuRenderer, x: i32, y: i32, w: u32, h: u32, r: u8, g: u8, b: u8, a: u8) void {
-        const x0 = @max(x, 0);
-        const y0 = @max(y, 0);
-        const x1: i32 = @min(x + @as(i32, @intCast(w)), @as(i32, @intCast(self.width)));
-        const y1: i32 = @min(y + @as(i32, @intCast(h)), @as(i32, @intCast(self.height)));
-        if (x0 >= x1 or y0 >= y1) return;
-
-        var row: u32 = @intCast(y0);
-        while (row < @as(u32, @intCast(y1))) : (row += 1) {
-            var col: u32 = @intCast(x0);
-            while (col < @as(u32, @intCast(x1))) : (col += 1) {
-                const off = row * self.stride + col * 4;
                 self.pixels[off + 0] = r;
                 self.pixels[off + 1] = g;
                 self.pixels[off + 2] = b;

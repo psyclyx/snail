@@ -25,12 +25,16 @@ const atlas_mod = @import("../../../atlas.zig");
 const draw_records = @import("../../../picture/draw_records.zig");
 const page_pool_mod = @import("../../../atlas/page_pool.zig");
 const page_mod = @import("../../../atlas/page.zig");
-const curve_tex = @import("../../format/curve_texture.zig");
-const band_tex = @import("../../format/band_texture.zig");
+const curve_tex = @import("../../../format/curve_texture.zig");
+const band_tex = @import("../../../format/band_texture.zig");
 const paint_records = @import("../../../atlas/paint_records.zig");
-const upload_common = @import("../../format/upload_common.zig");
+const upload_common = @import("../../../format/upload_common.zig");
 const image_mod = @import("../../../image.zig");
 const cache_base = @import("../cache.zig");
+const range_allocator = @import("../range_allocator.zig");
+
+const RangeAllocator = range_allocator.RangeAllocator;
+const Range = range_allocator.Range;
 
 pub const Variant = enum {
     gl33,
@@ -85,11 +89,11 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
         // Persistent layer-info texture (RGBA32F INFO_WIDTH × layer_info_height).
         layer_info_tex: gl.GLuint = 0,
-        free_layer_info_ranges: std.ArrayList(LayerInfoRange) = .empty,
+        layer_info_ranges: RangeAllocator = .{},
 
         // Persistent image array (TEXTURE_2D_ARRAY of sRGBA8).
         image_array_tex: gl.GLuint = 0,
-        free_image_ranges: std.ArrayList(ImageRange) = .empty,
+        image_ranges: RangeAllocator = .{},
         // Slot-level image identity, for dedup within an upload.
         image_storage: []?*const Image = &.{},
 
@@ -103,9 +107,6 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         prepared_band_words: []u32,
 
         upload_generation: u32 = 0,
-
-        pub const LayerInfoRange = struct { row_base: u32, height: u32 };
-        pub const ImageRange = struct { layer_base: u32, count: u32 };
 
         pub const BindingSlot = struct {
             active: bool = false,
@@ -140,17 +141,11 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             errdefer if (options.max_images > 0) allocator.free(image_storage);
             if (options.max_images > 0) @memset(image_storage, null);
 
-            var free_layer_info_ranges: std.ArrayList(LayerInfoRange) = .empty;
-            errdefer free_layer_info_ranges.deinit(allocator);
-            if (options.layer_info_height > 0) {
-                try free_layer_info_ranges.append(allocator, .{ .row_base = 0, .height = options.layer_info_height });
-            }
+            var layer_info_ranges = try RangeAllocator.init(allocator, options.layer_info_height);
+            errdefer layer_info_ranges.deinit(allocator);
 
-            var free_image_ranges: std.ArrayList(ImageRange) = .empty;
-            errdefer free_image_ranges.deinit(allocator);
-            if (options.max_images > 0) {
-                try free_image_ranges.append(allocator, .{ .layer_base = 0, .count = options.max_images });
-            }
+            var image_ranges = try RangeAllocator.init(allocator, options.max_images);
+            errdefer image_ranges.deinit(allocator);
 
             return .{
                 .allocator = allocator,
@@ -161,8 +156,8 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 .prepared_band_words = band_words,
                 .bindings = bindings,
                 .image_storage = image_storage,
-                .free_layer_info_ranges = free_layer_info_ranges,
-                .free_image_ranges = free_image_ranges,
+                .layer_info_ranges = layer_info_ranges,
+                .image_ranges = image_ranges,
             };
         }
 
@@ -173,8 +168,8 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.allocator.free(self.prepared_band_words);
             self.allocator.free(self.bindings);
             if (self.options.max_images > 0) self.allocator.free(self.image_storage);
-            self.free_layer_info_ranges.deinit(self.allocator);
-            self.free_image_ranges.deinit(self.allocator);
+            self.layer_info_ranges.deinit(self.allocator);
+            self.image_ranges.deinit(self.allocator);
             self.* = undefined;
         }
 
@@ -230,14 +225,8 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 &.{};
             if (options.max_images > 0) @memset(self.image_storage, null);
 
-            self.free_layer_info_ranges.clearRetainingCapacity();
-            if (options.layer_info_height > 0) {
-                try self.free_layer_info_ranges.append(self.allocator, .{ .row_base = 0, .height = options.layer_info_height });
-            }
-            self.free_image_ranges.clearRetainingCapacity();
-            if (options.max_images > 0) {
-                try self.free_image_ranges.append(self.allocator, .{ .layer_base = 0, .count = options.max_images });
-            }
+            try self.layer_info_ranges.reset(self.allocator, options.layer_info_height);
+            try self.image_ranges.reset(self.allocator, options.max_images);
         }
 
         /// Upload one or more atlases into the cache, allocating a slot
@@ -262,17 +251,17 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.ensureLayerInfoTexture();
             try self.ensureImageArrayTexture(atlases);
 
-            var allocated_layer_ranges: std.ArrayList(LayerInfoRange) = .empty;
+            var allocated_layer_ranges: std.ArrayList(Range) = .empty;
             defer allocated_layer_ranges.deinit(scratch);
-            var allocated_image_ranges: std.ArrayList(ImageRange) = .empty;
+            var allocated_image_ranges: std.ArrayList(Range) = .empty;
             defer allocated_image_ranges.deinit(scratch);
             var allocated_slot_indices: std.ArrayList(u32) = .empty;
             defer allocated_slot_indices.deinit(scratch);
 
             var success = false;
             defer if (!success) {
-                for (allocated_layer_ranges.items) |r| self.releaseLayerInfoRange(r) catch {};
-                for (allocated_image_ranges.items) |r| self.releaseImageRange(r) catch {};
+                for (allocated_layer_ranges.items) |r| self.layer_info_ranges.release(self.allocator, r) catch {};
+                for (allocated_image_ranges.items) |r| self.image_ranges.release(self.allocator, r) catch {};
                 for (allocated_slot_indices.items) |i| self.bindings[i] = .{};
             };
 
@@ -283,16 +272,16 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 const slot_index = self.findFreeBinding() orelse return error.NoFreeBinding;
                 try allocated_slot_indices.append(scratch, slot_index);
 
-                const info_range: LayerInfoRange = if (info_height == 0)
-                    .{ .row_base = 0, .height = 0 }
+                const info_range: Range = if (info_height == 0)
+                    .{ .base = 0, .size = 0 }
                 else
-                    (try self.takeLayerInfoRows(info_height)) orelse return error.NoFreeLayerInfoRows;
+                    self.layer_info_ranges.take(info_height) orelse return error.NoFreeLayerInfoRows;
                 try allocated_layer_ranges.append(scratch, info_range);
 
-                const image_range: ImageRange = if (image_count == 0)
-                    .{ .layer_base = 0, .count = 0 }
+                const image_range: Range = if (image_count == 0)
+                    .{ .base = 0, .size = 0 }
                 else
-                    (try self.takeImageLayers(image_count)) orelse return error.NoFreeImageLayers;
+                    self.image_ranges.take(image_count) orelse return error.NoFreeImageLayers;
                 try allocated_image_ranges.append(scratch, image_range);
 
                 self.upload_generation += 1;
@@ -300,10 +289,10 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 slot.* = .{
                     .active = true,
                     .generation = self.upload_generation,
-                    .info_row_base = info_range.row_base,
-                    .info_height = info_range.height,
-                    .image_layer_base = image_range.layer_base,
-                    .image_count = image_range.count,
+                    .info_row_base = info_range.base,
+                    .info_height = info_range.size,
+                    .image_layer_base = image_range.base,
+                    .image_count = image_range.size,
                 };
 
                 try self.writeBindingData(scratch, atlas, slot);
@@ -396,13 +385,13 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             if (!slot.active) return;
 
             if (slot.info_height > 0) {
-                self.releaseLayerInfoRange(.{ .row_base = slot.info_row_base, .height = slot.info_height }) catch {};
+                self.layer_info_ranges.release(self.allocator, .{ .base = slot.info_row_base, .size = slot.info_height }) catch {};
             }
             if (slot.image_count > 0) {
                 for (slot.image_layer_base..slot.image_layer_base + slot.image_count) |layer| {
                     self.image_storage[layer] = null;
                 }
-                self.releaseImageRange(.{ .layer_base = slot.image_layer_base, .count = slot.image_count }) catch {};
+                self.image_ranges.release(self.allocator, .{ .base = slot.image_layer_base, .size = slot.image_count }) catch {};
             }
             slot.* = .{};
             self.active_bindings -= 1;
@@ -607,90 +596,6 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             return null;
         }
 
-        fn takeLayerInfoRows(self: *Self, height: u32) UploadError!?LayerInfoRange {
-            var i: usize = 0;
-            while (i < self.free_layer_info_ranges.items.len) : (i += 1) {
-                const r = self.free_layer_info_ranges.items[i];
-                if (r.height >= height) {
-                    if (r.height == height) {
-                        _ = self.free_layer_info_ranges.orderedRemove(i);
-                    } else {
-                        self.free_layer_info_ranges.items[i] = .{ .row_base = r.row_base + height, .height = r.height - height };
-                    }
-                    return LayerInfoRange{ .row_base = r.row_base, .height = height };
-                }
-            }
-            return null;
-        }
-
-        fn releaseLayerInfoRange(self: *Self, range: LayerInfoRange) !void {
-            if (range.height == 0) return;
-            try self.free_layer_info_ranges.append(self.allocator, range);
-            std.mem.sort(LayerInfoRange, self.free_layer_info_ranges.items, {}, struct {
-                fn lessThan(_: void, a: LayerInfoRange, b: LayerInfoRange) bool {
-                    return a.row_base < b.row_base;
-                }
-            }.lessThan);
-            var write: usize = 0;
-            var read: usize = 0;
-            while (read < self.free_layer_info_ranges.items.len) {
-                var cur = self.free_layer_info_ranges.items[read];
-                read += 1;
-                while (read < self.free_layer_info_ranges.items.len) {
-                    const nxt = self.free_layer_info_ranges.items[read];
-                    if (cur.row_base + cur.height == nxt.row_base) {
-                        cur.height += nxt.height;
-                        read += 1;
-                    } else break;
-                }
-                self.free_layer_info_ranges.items[write] = cur;
-                write += 1;
-            }
-            self.free_layer_info_ranges.shrinkRetainingCapacity(write);
-        }
-
-        fn takeImageLayers(self: *Self, count: u32) UploadError!?ImageRange {
-            var i: usize = 0;
-            while (i < self.free_image_ranges.items.len) : (i += 1) {
-                const r = self.free_image_ranges.items[i];
-                if (r.count >= count) {
-                    if (r.count == count) {
-                        _ = self.free_image_ranges.orderedRemove(i);
-                    } else {
-                        self.free_image_ranges.items[i] = .{ .layer_base = r.layer_base + count, .count = r.count - count };
-                    }
-                    return ImageRange{ .layer_base = r.layer_base, .count = count };
-                }
-            }
-            return null;
-        }
-
-        fn releaseImageRange(self: *Self, range: ImageRange) !void {
-            if (range.count == 0) return;
-            try self.free_image_ranges.append(self.allocator, range);
-            std.mem.sort(ImageRange, self.free_image_ranges.items, {}, struct {
-                fn lessThan(_: void, a: ImageRange, b: ImageRange) bool {
-                    return a.layer_base < b.layer_base;
-                }
-            }.lessThan);
-            var write: usize = 0;
-            var read: usize = 0;
-            while (read < self.free_image_ranges.items.len) {
-                var cur = self.free_image_ranges.items[read];
-                read += 1;
-                while (read < self.free_image_ranges.items.len) {
-                    const nxt = self.free_image_ranges.items[read];
-                    if (cur.layer_base + cur.count == nxt.layer_base) {
-                        cur.count += nxt.count;
-                        read += 1;
-                    } else break;
-                }
-                self.free_image_ranges.items[write] = cur;
-                write += 1;
-            }
-            self.free_image_ranges.shrinkRetainingCapacity(write);
-        }
-
         // ── GL helpers ──
 
         const FilterKind = enum { nearest, linear };
@@ -759,10 +664,10 @@ test "GlBackendCache init allocates fixed-capacity slots" {
 
     try testing.expectEqual(@as(usize, 3), cache.bindings.len);
     try testing.expectEqual(@as(usize, 2), cache.image_storage.len);
-    try testing.expectEqual(@as(usize, 1), cache.free_layer_info_ranges.items.len);
-    try testing.expectEqual(@as(u32, 8), cache.free_layer_info_ranges.items[0].height);
-    try testing.expectEqual(@as(usize, 1), cache.free_image_ranges.items.len);
-    try testing.expectEqual(@as(u32, 2), cache.free_image_ranges.items[0].count);
+    try testing.expectEqual(@as(usize, 1), cache.layer_info_ranges.free.items.len);
+    try testing.expectEqual(@as(u32, 8), cache.layer_info_ranges.free.items[0].size);
+    try testing.expectEqual(@as(usize, 1), cache.image_ranges.free.items.len);
+    try testing.expectEqual(@as(u32, 2), cache.image_ranges.free.items[0].size);
 }
 
 test "GlBackendCache release returns slot ranges to free list" {
@@ -783,12 +688,12 @@ test "GlBackendCache release returns slot ranges to free list" {
     // Forge a slot rather than calling upload (which would touch GL).
     cache.bindings[0] = .{ .active = true, .generation = 1, .info_row_base = 0, .info_height = 2 };
     cache.active_bindings = 1;
-    _ = try cache.takeLayerInfoRows(2);
+    _ = cache.layer_info_ranges.take(2);
 
     cache.release(.{ .pool = pool, .generation = 1 });
     try testing.expectEqual(@as(u32, 0), cache.active_bindings);
-    try testing.expectEqual(@as(usize, 1), cache.free_layer_info_ranges.items.len);
-    try testing.expectEqual(@as(u32, 4), cache.free_layer_info_ranges.items[0].height);
+    try testing.expectEqual(@as(usize, 1), cache.layer_info_ranges.free.items.len);
+    try testing.expectEqual(@as(u32, 4), cache.layer_info_ranges.free.items[0].size);
 }
 
 comptime {

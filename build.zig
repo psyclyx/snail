@@ -482,6 +482,25 @@ fn addScreenshotSteps(
     const banner_screenshot_gl_step = b.step("run-banner-screenshot-gl", "Render the full banner scene through GL and write zig-out/banner-screenshot-gl.tga");
     banner_screenshot_gl_step.dependOn(&run_banner_screenshot_gl.step);
 
+    // Banner screenshot — GLES 3.0 offscreen.
+    const banner_screenshot_gles30_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/banner_screenshot_gles30.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders);
+    const banner_screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gles30", .root_module = banner_screenshot_gles30_mod });
+    const run_banner_screenshot_gles30 = b.addRunArtifact(banner_screenshot_gles30_exe);
+    const banner_screenshot_gles30_step = b.step("run-banner-screenshot-gles30", "Render the full banner scene through GLES 3.0 and write zig-out/banner-screenshot-gles30.tga");
+    banner_screenshot_gles30_step.dependOn(&run_banner_screenshot_gles30.step);
+
     // Banner screenshot — Vulkan offscreen.
     if (config.core_options.enable_vulkan) {
         const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);

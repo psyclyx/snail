@@ -1,8 +1,8 @@
 const std = @import("std");
-const bezier_mod = @import("../../math/bezier.zig");
+const bezier_mod = @import("../math/bezier.zig");
 const CurveSegment = bezier_mod.CurveSegment;
 const BBox = bezier_mod.BBox;
-const Vec2 = @import("../../math/vec.zig").Vec2;
+const Vec2 = @import("../math/vec.zig").Vec2;
 
 pub const TEX_WIDTH: u32 = 4096;
 pub const SEGMENT_TEXELS: u32 = 4;

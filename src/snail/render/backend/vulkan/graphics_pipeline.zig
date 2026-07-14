@@ -1,5 +1,5 @@
 const std = @import("std");
-const vertex = @import("../../format/vertex.zig");
+const vertex = @import("../../../format/vertex.zig");
 const vulkan_types = @import("types.zig");
 const device = @import("device.zig");
 const constants = @import("constants.zig");

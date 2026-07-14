@@ -10,11 +10,10 @@ const linear_resolve = @import("../linear_resolve.zig");
 const draw_records_mod = @import("../../../picture/draw_records.zig");
 const shaders = @import("shaders.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const vertex = @import("../../format/vertex.zig");
+const vertex = @import("../../../format/vertex.zig");
 const snail_mod = @import("../../../root.zig");
-const SubpixelOrder = @import("../../format/subpixel_order.zig").SubpixelOrder;
+const SubpixelOrder = @import("../../../format/subpixel_order.zig").SubpixelOrder;
 const LinearResolve = snail_mod.LinearResolve;
-const IntermediateFormat = LinearResolve.Format;
 const DrawState = snail_mod.DrawState;
 const TargetSurface = snail_mod.TargetSurface;
 
