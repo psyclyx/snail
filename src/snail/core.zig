@@ -96,6 +96,7 @@ pub const AtlasPage = @import("atlas/page.zig").AtlasPage;
 
 const atlas_mod = @import("atlas.zig");
 pub const Atlas = atlas_mod.Atlas;
+pub const AtlasUploadPlanner = @import("atlas/upload_plan.zig").Planner;
 pub const AtlasEntry = atlas_mod.Entry;
 pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
@@ -164,6 +165,7 @@ pub const files = struct {
     pub const atlas_page_pool = @import("atlas/page_pool.zig");
     pub const atlas_record_key = @import("atlas/record_key.zig");
     pub const atlas_paint_records = @import("atlas/paint_records.zig");
+    pub const atlas_upload_plan = @import("atlas/upload_plan.zig");
     pub const atlas_curves = @import("atlas/curves.zig");
     pub const picture_shape = @import("picture/shape.zig");
     pub const picture_emit = @import("picture/emit.zig");
@@ -204,6 +206,7 @@ test {
     _ = @import("atlas/record.zig");
     _ = @import("atlas/page.zig");
     _ = @import("atlas/page_pool.zig");
+    _ = @import("atlas/upload_plan.zig");
     _ = atlas_mod;
     _ = @import("path.zig");
     _ = @import("paths.zig");
