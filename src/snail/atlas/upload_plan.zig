@@ -17,6 +17,7 @@ const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
 const draw_records = @import("../picture/draw_records.zig");
 const paint_records = @import("paint_records.zig");
+const upload_common = @import("../format/upload_common.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
@@ -46,6 +47,8 @@ pub const Options = struct {
     max_bindings: u32,
     layer_info_height: u32,
     max_images: u32,
+    max_image_width: u32,
+    max_image_height: u32,
     curve_height: u32,
     band_height: u32,
 };
@@ -71,6 +74,10 @@ pub const Sizes = struct {
     image_free: usize,
     /// A safe upper bound on regions produced by one `plan`/`planDelta`.
     regions: usize,
+    /// f32 scratch a caller must provide per `plan`/`planDelta` call for the
+    /// patched layer_info copy (image paints resolve their array-layer + uv into
+    /// it). One atlas' worth; provide a distinct slice per in-flight atlas.
+    layer_info_scratch: usize,
 };
 
 pub fn sizes(opts: Options) Sizes {
@@ -83,10 +90,13 @@ pub fn sizes(opts: Options) Sizes {
         .info_free = opts.max_bindings + 1,
         .image_free = opts.max_bindings + 1,
         .regions = @as(usize, opts.max_layers) * 2 + 1 + opts.max_images,
+        .layer_info_scratch = @as(usize, INFO_WIDTH) * opts.layer_info_height,
     };
 }
 
-const Range = struct { base: u32, size: u32 };
+/// Free-list element; exposed so a caller can allocate the `info_free` /
+/// `image_free` backing (sized via `sizes`).
+pub const Range = struct { base: u32, size: u32 };
 
 /// Fixed-capacity first-fit free-list over caller-provided backing — the
 /// allocator-free twin of `render/backend/range_allocator.zig` (identical
@@ -151,7 +161,9 @@ const FreeList = struct {
     }
 };
 
-const Slot = struct {
+/// Per-binding slot; exposed so a caller can allocate the `bindings` backing
+/// (sized via `sizes`). Fields are managed by `Planner`.
+pub const Slot = struct {
     active: bool = false,
     generation: u32 = 0,
     info_row_base: u32 = 0,
@@ -202,7 +214,7 @@ pub const Planner = struct {
     /// Plan the upload for a fresh binding of `atlas` in `pool`. Fills
     /// `out_regions` (up to `sizes().regions`), sets `out_len`, and returns the
     /// `Binding` for `emit`.
-    pub fn plan(self: *Planner, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize) Error!Binding {
+    pub fn plan(self: *Planner, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
         if (atlas.pool) |p| {
             if (p != pool) return error.UnknownPool;
         }
@@ -227,13 +239,13 @@ pub const Planner = struct {
         };
 
         out_len.* = 0;
-        try self.queue(atlas, slot, out_regions, out_len);
+        try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
         return .{ .pool = pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
     }
 
     /// Plan an incremental re-upload of `atlas` into the slot `prev_binding`
     /// already owns (only changed curve/band/layer-info/image regions).
-    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize) Error!Binding {
+    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
         if (atlas.pool) |p| {
             if (p != pool) return error.UnknownPool;
         }
@@ -242,20 +254,23 @@ pub const Planner = struct {
         if (!slot.active) return error.UnknownBinding;
 
         out_len.* = 0;
-        try self.queue(atlas, slot, out_regions, out_len);
+        try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
         return .{ .pool = pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
     }
 
-    pub fn release(self: *Planner, binding: Binding) void {
-        const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
+    /// Free the binding's slot + ranges. Returns whether a live slot was freed
+    /// (false if the binding was unknown/already released).
+    pub fn release(self: *Planner, binding: Binding) bool {
+        const slot_index = self.findSlotByGeneration(binding.generation) orelse return false;
         const slot = &self.bindings[slot_index];
-        if (!slot.active) return;
+        if (!slot.active) return false;
         if (slot.info_height > 0) self.info_free.release(.{ .base = slot.info_row_base, .size = slot.info_height }) catch {};
         if (slot.image_count > 0) self.image_free.release(.{ .base = slot.image_layer_base, .size = slot.image_count }) catch {};
         slot.* = .{};
+        return true;
     }
 
-    fn queue(self: *Planner, atlas: *const Atlas, slot: *Slot, out: []Region, out_len: *usize) Error!void {
+    fn queue(self: *Planner, atlas: *const Atlas, slot: *Slot, out: []Region, out_len: *usize, layer_info_scratch: []f32) Error!void {
         for (atlas.pages) |p| {
             const layer: u32 = p.layer_index;
             if (layer >= self.opts.max_layers) return error.PageNotInPool;
@@ -276,31 +291,36 @@ pub const Planner = struct {
             self.prepared_band_words[layer] = cur_band;
         }
 
-        if (atlas.layer_info_data) |info| {
-            std.debug.assert(atlas.layer_info_width == INFO_WIDTH);
-            const info_bytes = info.len * @sizeOf(f32);
-            try emitRegion(out, out_len, .{ .target = .layer_info, .row_base = slot.info_row_base, .src = @as([*]const u8, @ptrCast(info.ptr))[0..info_bytes], .width = INFO_WIDTH, .height = atlas.layer_info_height });
+        // layer_info + image paints. Image paint records reference an image
+        // whose array-layer + uv-scale are only known here (the caller's
+        // texture packing); patch them into a private copy of the slab so the
+        // shared atlas data is untouched.
+        const info = atlas.layer_info_data orelse return;
+        std.debug.assert(atlas.layer_info_width == INFO_WIDTH);
+        const info_dst = layer_info_scratch[0..info.len];
+        @memcpy(info_dst, info);
+
+        if (atlas.paint_image_records) |records| {
+            for (records, 0..) |maybe_rec, i| {
+                const rec = maybe_rec orelse continue;
+                const abs_layer = slot.image_layer_base + imageLayer(records, rec.image);
+                // Emit the image upload once, at its first occurrence.
+                if (firstOccurrence(records, i)) {
+                    const img_bytes = @as(usize, rec.image.width) * @as(usize, rec.image.height) * 4;
+                    try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = rec.image.pixels[0..img_bytes], .width = rec.image.width, .height = rec.image.height });
+                }
+                const uv_x: f32 = @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(self.opts.max_image_width));
+                const uv_y: f32 = @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(self.opts.max_image_height));
+                upload_common.patchImagePaintRecord(info_dst, INFO_WIDTH, INFO_WIDTH, 0, rec.texel_offset, .{
+                    .layer = abs_layer,
+                    .uv_scale = .{ .x = uv_x, .y = uv_y },
+                });
+            }
         }
 
-        const records = atlas.paint_image_records orelse return;
-        for (records, 0..) |maybe_rec, i| {
-            const rec = maybe_rec orelse continue;
-            // First-seen dedup by image identity (O(n²), no allocation).
-            var local_layer: u32 = 0;
-            var first = true;
-            var j: usize = 0;
-            while (j < i) : (j += 1) {
-                const prev = records[j] orelse continue;
-                if (prev.image == rec.image) {
-                    first = false;
-                    break;
-                }
-                local_layer += 1;
-            }
-            if (!first) continue;
-            const abs_layer = slot.image_layer_base + local_layer;
-            const img_bytes = @as(usize, rec.image.width) * @as(usize, rec.image.height) * 4;
-            try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = rec.image.pixels[0..img_bytes], .width = rec.image.width, .height = rec.image.height });
+        if (atlas.layer_info_height > 0) {
+            const info_bytes = info_dst.len * @sizeOf(f32);
+            try emitRegion(out, out_len, .{ .target = .layer_info, .row_base = slot.info_row_base, .src = @as([*]const u8, @ptrCast(info_dst.ptr))[0..info_bytes], .width = INFO_WIDTH, .height = atlas.layer_info_height });
         }
     }
 
@@ -323,6 +343,30 @@ fn emitRegion(out: []Region, out_len: *usize, r: Region) Error!void {
     if (out_len.* >= out.len) return error.RegionBufferFull;
     out[out_len.*] = r;
     out_len.* += 1;
+}
+
+fn firstOccurrence(records: anytype, i: usize) bool {
+    const img = records[i].?.image;
+    var j: usize = 0;
+    while (j < i) : (j += 1) {
+        const prev = records[j] orelse continue;
+        if (prev.image == img) return false;
+    }
+    return true;
+}
+
+/// The array-layer assigned to `image` = its index among the distinct images in
+/// first-seen order (matches the removed cache's hashmap ordering).
+fn imageLayer(records: anytype, image: anytype) u32 {
+    var layer: u32 = 0;
+    var idx: usize = 0;
+    while (idx < records.len) : (idx += 1) {
+        const r = records[idx] orelse continue;
+        if (!firstOccurrence(records, idx)) continue;
+        if (r.image == image) return layer;
+        layer += 1;
+    }
+    return layer;
 }
 
 fn countUniqueImages(atlas: *const Atlas) u32 {
