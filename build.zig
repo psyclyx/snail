@@ -413,6 +413,38 @@ fn addScreenshotSteps(
     const character_diff_step = b.step("run-autohint-character-diff", "Write per-character TT/autohint contact sheets and metrics under zig-out/autohint-character-diff");
     character_diff_step.dependOn(&run_character_diff.step);
 
+    // Proportional-face spot check — CPU backend.
+    const prop_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/autohint_proportional.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-helpers", .module = release_helpers_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    const prop_exe = b.addExecutable(.{ .name = "snail-autohint-prop", .root_module = prop_mod });
+    const prop_step = b.step("run-autohint-prop", "Render the autohint policies on a proportional TT-hinted face → zig-out/autohint-prop.tga");
+    prop_step.dependOn(&b.addRunArtifact(prop_exe).step);
+
+    // RESEARCH PROBE: TT bytecode ppem-independence analysis (internal types).
+    const tt_probe_mod = b.createModule(.{
+        .root_source_file = b.path("src/snail/tt_ppem_probe.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+        },
+    });
+    const tt_probe_exe = b.addExecutable(.{ .name = "snail-tt-probe", .root_module = tt_probe_mod });
+    const run_tt_probe = b.addRunArtifact(tt_probe_exe);
+    const tt_probe_step = b.step("run-tt-probe", "Probe whether TrueType hinting output is a ppem-independent per-glyph function");
+    tt_probe_step.dependOn(&run_tt_probe.step);
+
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/banner_screenshot.zig"),

@@ -633,7 +633,9 @@ pub fn main() !void {
 }
 
 fn mainLoop(allocator: std.mem.Allocator) !void {
-    const window = try wayland.Window.init(1280, autohint_compare.default_viewport_height, "snail");
+    // Width fits the autohint-validation overlay's four grid columns
+    // (4 × gridWidthPx = 1792) with margin; the banner content scales to fit.
+    const window = try wayland.Window.init(1808, autohint_compare.default_viewport_height, "snail");
     defer window.deinit();
 
     var active = try renderer_driver.Driver.init(allocator, window, renderer_driver.defaultKind());
@@ -658,14 +660,20 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     var hud_scratch = std.heap.ArenaAllocator.init(allocator);
     defer hud_scratch.deinit();
 
-    // Autohint comparison overlay (V toggles; G / F change ppem). Two fonts
-    // side by side: DejaVu (TT-hinted) and Noto Sans Mono (unhinted VF), so the
-    // y/xy rows can be checked against a real hinting reference AND against
-    // a font that has none.
+    // Autohint comparison overlay (V toggles; G / F change ppem). Four fonts
+    // side by side: DejaVu Sans Mono (TT-hinted) and Noto Sans Mono (unhinted VF)
+    // — both monospace — plus Noto Sans Regular (proportional sans, TT-hinted)
+    // and DejaVu Serif (proportional serif, TT-hinted), so the policies can be
+    // checked against a real hinting reference, against a font with none, and on
+    // variable-advance sans AND serif faces.
     var compare = try autohint_compare.Compare.init(allocator, content_cache.pool);
     defer compare.deinit();
     var compare_noto = try autohint_compare.Compare.initFont(allocator, content_cache.pool, assets_data.noto_sans_mono, "Noto");
     defer compare_noto.deinit();
+    var compare_prop = try autohint_compare.Compare.initFontMode(allocator, content_cache.pool, assets_data.noto_sans_regular, "NotoProp", true);
+    defer compare_prop.deinit();
+    var compare_serif = try autohint_compare.Compare.initFontMode(allocator, content_cache.pool, assets_data.dejavu_serif, "Serif", true);
+    defer compare_serif.deinit();
     var compare_arena = std.heap.ArenaAllocator.init(allocator);
     defer compare_arena.deinit();
     var compare_scratch = std.heap.ArenaAllocator.init(allocator);
@@ -880,7 +888,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (window.isKeyPressed(KEY_V)) {
             compare_on = !compare_on;
-            std.debug.print("\nautohint-validation={s} (rows per size: un=unhinted, y=y-only policy, xy=xy policy, tt=truetype)\n", .{if (compare_on) "on" else "off"});
+            std.debug.print("\nautohint-validation={s} (each section labeled with its ppem; rows: un=unhinted, y=y-only, xn=x-natural-width, xf=x-full-width, df=tuned default, tt=truetype)\n", .{if (compare_on) "on" else "off"});
         }
         if (window.isKeyPressed(KEY_T)) {
             timing_enabled = !timing_enabled;
@@ -1081,25 +1089,40 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         _ = compare_scratch.reset(.retain_capacity);
         const compare_before = compare.atlas.recordCount();
         const compare_noto_before = compare_noto.atlas.recordCount();
+        const compare_prop_before = compare_prop.atlas.recordCount();
+        const compare_serif_before = compare_serif.atlas.recordCount();
+        const grid_w = autohint_compare.Compare.gridWidthPx(compare_px_scale);
         var compare_picture = if (compare_on)
             try compare.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, 0)
         else
             try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture.deinit();
         var compare_picture_noto = if (compare_on)
-            try compare_noto.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, autohint_compare.Compare.gridWidthPx(compare_px_scale))
+            try compare_noto.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w)
         else
             try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture_noto.deinit();
+        var compare_picture_prop = if (compare_on)
+            try compare_prop.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w * 2)
+        else
+            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+        defer compare_picture_prop.deinit();
+        var compare_picture_serif = if (compare_on)
+            try compare_serif.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w * 3)
+        else
+            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+        defer compare_picture_serif.deinit();
         const compare_dirty = compare.atlas.recordCount() != compare_before or
-            compare_noto.atlas.recordCount() != compare_noto_before;
+            compare_noto.atlas.recordCount() != compare_noto_before or
+            compare_prop.atlas.recordCount() != compare_prop_before or
+            compare_serif.atlas.recordCount() != compare_serif_before;
 
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
         const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &frame_text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
         const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
-        const compare_atlases = [_]*const snail.Atlas{ &compare.atlas, &compare_noto.atlas };
-        const compare_pictures = [_]*const snail_helpers.Picture{ &compare_picture, &compare_picture_noto };
+        const compare_atlases = [_]*const snail.Atlas{ &compare.atlas, &compare_noto.atlas, &compare_prop.atlas, &compare_serif.atlas };
+        const compare_pictures = [_]*const snail_helpers.Picture{ &compare_picture, &compare_picture_noto, &compare_picture_prop, &compare_picture_serif };
 
         var passes_buf: [3]renderer_driver.Pass = undefined;
         var pass_count: usize = 0;

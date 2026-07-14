@@ -181,7 +181,9 @@ pub fn fitAxis(
             params.align_stem_positions = axis_policy.@"align" != .none;
             use_blues = axis_policy.@"align" == .blue_zones;
             params.overshoot_min_px = switch (axis_policy.overshoot) {
-                .preserve => 0,
+                // Sentinel: keep round apexes at their natural position (round
+                // top) rather than snapping them onto the blue row (flat top).
+                .preserve => -1,
                 .suppress_below_px => |threshold| threshold: {
                     if (!std.math.isFinite(threshold) or threshold < 0) return out[0..0];
                     break :threshold threshold;
@@ -241,10 +243,29 @@ pub fn fitAxis(
 
     const std_width = if (axis == .x) font.std_x else font.std_y;
     const count = buildKnotsReg(edges[0..features.len], if (use_blues) zones[0..font.blues.len] else &.{}, pixels_per_em, std_width, params, left_edge, out);
+    fadeToIdentity(out[0..count], pixels_per_em);
     for (out[0..count]) |knot| {
         if (!std.math.isFinite(knot.base) or !std.math.isFinite(knot.target)) return out[0..0];
     }
     return out[0..count];
+}
+
+/// Autohinting is a small-size tool: below `fade_start_px` a grid-fit is a
+/// legibility win, but above it analytic AA already renders stems and curves
+/// cleanly, and forcing round apexes / curve junctions onto the pixel grid there
+/// just flattens round tops and blobs serif corners. So blend each knot's target
+/// back toward its natural `base` as ppem grows, reaching identity (no warp) by
+/// `fade_full_px`. Large text then renders at its natural, un-hinted AA quality.
+const fade_start_px: f32 = 16.0;
+const fade_full_px: f32 = 26.0;
+
+fn fadeToIdentity(knots: []Knot, pixels_per_em: f32) void {
+    if (!std.math.isFinite(pixels_per_em) or pixels_per_em <= fade_start_px) return;
+    const w: f32 = if (pixels_per_em >= fade_full_px)
+        1.0
+    else
+        (pixels_per_em - fade_start_px) / (fade_full_px - fade_start_px);
+    for (knots) |*k| k.target += (k.base - k.target) * w;
 }
 
 /// Fit both axes at draw time. The returned knot slices borrow caller-owned
@@ -274,8 +295,15 @@ fn blueTarget(e: Edge, blues: []const BlueZone, px_per_unit: f32, overshoot_min_
     const b = blues[@intCast(e.blue)];
     const ref_fit = snap(b.ref, px_per_unit);
     const overshoot = b.shoot - b.ref; // signed FUnits (tops +, bottoms -)
-    if (e.round and @abs(overshoot * px_per_unit) >= overshoot_min_px) {
-        return ref_fit + overshoot;
+    if (e.round) {
+        // Preserve (min_px < 0): keep the apex natural. A round apex is nearly
+        // flat at its peak, so pinning it to the snapped blue row crushes the
+        // top ~1px flat; left natural, the curve AA's into a round top like the
+        // unhinted/TrueType render (flat edges still snap for crisp alignment).
+        if (overshoot_min_px < 0) return e.pos;
+        // Suppress: snap to the blue row, keeping overshoot only once it's worth
+        // at least `overshoot_min_px` (a crisper, flatter look at small ppem).
+        if (@abs(overshoot * px_per_unit) >= overshoot_min_px) return ref_fit + overshoot;
     }
     return ref_fit;
 }
@@ -719,8 +747,13 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         dirs[i] = if (partner_above or bottom_blue) -1 else companion_dir;
         if (valid_blue) {
             const zone = font.blues[@intCast(feature.blue)];
-            targets[i] = glslHostSnap(zone.ref, scale);
-            if (feature.flags.round and @abs((zone.shoot - zone.ref) * scale) >= overshoot_limit) targets[i] += zone.shoot - zone.ref;
+            // Preserve (y_overshoot == 0): round apex stays natural (round top).
+            if (feature.flags.round and axis == .y and policy.y_overshoot == 0) {
+                targets[i] = feature.pos;
+            } else {
+                targets[i] = glslHostSnap(zone.ref, scale);
+                if (feature.flags.round and @abs((zone.shoot - zone.ref) * scale) >= overshoot_limit) targets[i] += zone.shoot - zone.ref;
+            }
         } else targets[i] = glslHostSnap(feature.pos, scale);
     }
 
@@ -1124,7 +1157,9 @@ test "blue-zone overshoot can be preserved or suppressed" {
         .@"align" = .blue_zones,
         .overshoot = .{ .suppress_below_px = 0.5 },
     }, 13, 0, &suppress_out);
-    try testing.expectApproxEqAbs(@as(f32, 7.0 / 13.0 + 0.02), preserved[0].target, 1e-5);
+    // Preserve keeps the round apex at its natural position (a round top that
+    // AA's, not a flat one crushed onto the snapped blue row); suppress snaps it.
+    try testing.expectApproxEqAbs(@as(f32, 0.52), preserved[0].target, 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 7.0 / 13.0), suppressed[0].target, 1e-5);
 }
 

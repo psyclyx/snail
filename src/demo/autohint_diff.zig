@@ -1,4 +1,4 @@
-//! Objective strong xy autohint-policy-vs-TrueType agreement metric for the hinting work.
+//! Objective autohint default-policy-vs-TrueType agreement metric for the hinting work.
 //!
 //! For every ppem in the demo grid, this renders the sample string TWICE
 //! through the CPU backend at the same baseline/origin — once with the
@@ -60,13 +60,14 @@ fn renderMode(
     x_off: f32,
     y_off: f32,
     mode: @FieldType(helpers.RunPlacement, "mode"),
+    snap: helpers.RunSnap,
 ) ![]u8 {
     var pic = try helpers.placeRun(frame, shaped, null, .{
         .baseline = .{ .x = left + x_off, .y = baseline + y_off },
         .em = em,
         .color = ink_color,
         .mode = mode,
-        .snap = .columns,
+        .snap = snap,
     });
     // Empty outlines intentionally have no autohint record; preserve their
     // no-op shape on the resident unhinted key, as the comparison grid does.
@@ -107,12 +108,14 @@ pub fn main() !void {
     });
     defer pool.deinit();
 
-    const fonts = [_]struct { bytes: []const u8, label: []const u8, slug: []const u8 }{
+    const fonts = [_]struct { bytes: []const u8, label: []const u8, slug: []const u8, prop: bool = false }{
         .{ .bytes = assets.dejavu_sans_mono, .label = "DejaVu Sans Mono (TT-hinted)", .slug = "dejavu" },
         .{ .bytes = assets.noto_sans_mono, .label = "Noto Sans Mono (unhinted VF)", .slug = "noto" },
+        .{ .bytes = assets.noto_sans_regular, .label = "Noto Sans (proportional TT-hinted)", .slug = "notoprop", .prop = true },
+        .{ .bytes = assets.dejavu_serif, .label = "DejaVu Serif (proportional TT-hinted)", .slug = "dejavuserif", .prop = true },
     };
     for (fonts) |f| {
-        var compare = try compare_mod.Compare.initFont(allocator, pool, f.bytes, f.label);
+        var compare = try compare_mod.Compare.initFontMode(allocator, pool, f.bytes, f.label, f.prop);
         defer compare.deinit();
         std.debug.print("\n######## {s} ########\n", .{f.label});
         try runFont(allocator, pool, &compare, f.slug);
@@ -124,6 +127,9 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     defer scratch.deinit();
     var frame = std.heap.ArenaAllocator.init(allocator);
     defer frame.deinit();
+
+    // Monospace snaps uniform columns; a proportional face snaps per-glyph origins.
+    const snap: helpers.RunSnap = if (compare.proportional) .origins else .columns;
 
     // Populate the atlas with every unhinted base, autohint analysis and TT-baked
     // glyph the grid references, at all grid ppems.
@@ -157,7 +163,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     @memset(comp_tt, 255);
     @memset(composite, 255);
 
-    std.debug.print("autohint xy policy vs TrueType disagreement (lower = closer)\n", .{});
+    std.debug.print("autohint default policy vs TrueType disagreement (lower = closer)\n", .{});
     std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx,dy residual  (rigid shift that best aligns xy->tt; 0,0 => not a registration offset)\n", .{});
 
     var grand: u64 = 0;
@@ -166,11 +172,11 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
         const em = compare_mod.Compare.devEm(ppem, 1.0);
         const ppem_26_6: u32 = @intFromFloat(em * 64.0);
 
-        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } });
+        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } }, snap);
         defer allocator.free(tt);
         extractInk(tt, tt_ink);
 
-        const xy = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .autohint = compare_mod.xy_policy });
+        const xy = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .autohint = compare_mod.default_policy }, snap);
         defer allocator.free(xy);
         extractInk(xy, xy_ink);
 
@@ -196,7 +202,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
             var ox: f32 = -1.5;
             while (ox <= 1.5 + 1e-3) : (ox += 0.25) {
                 if (@abs(ox) < 1e-3 and @abs(oy) < 1e-3) continue;
-                const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, ox, oy, .{ .autohint = compare_mod.xy_policy });
+                const shifted = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, ox, oy, .{ .autohint = compare_mod.default_policy }, snap);
                 defer allocator.free(shifted);
                 extractInk(shifted, xy_ink);
                 var res: u64 = 0;

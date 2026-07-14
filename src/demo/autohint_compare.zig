@@ -18,21 +18,29 @@ const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
 const testing = std.testing;
 
-pub const sample_text = "Hamburg Λέξεις 0123";
+// Chosen for hinting coverage: `Hamburg` (classic type tester — even `m` legs,
+// `b`/`g` ascender/descender, arches), `wove` (round bowls `o`/`e` for
+// blue-zone/overshoot + diagonals `w`/`v` that must NOT be x-stem-hinted),
+// `Λόγος` (real Greek word "logos" — diagonal `Λ`, round `ο`, descender `γ`,
+// final sigma `ς`), and digits. Sized to fit the (widened) grid cell.
+pub const sample_text = "Hamburg wove Λόγος 0123";
 pub const grid_ppems = [_]f32{ 9, 10, 11, 12, 13, 14, 16, 18, 22, 28 };
 /// Shared by the interactive V overlay and its headless screenshot. The grid
 /// ends at about 1210 logical pixels, so the default viewport leaves margin.
-pub const default_viewport_height: u32 = 1280;
+pub const default_viewport_height: u32 = 1700;
 
 const grid_top: f32 = 26;
 const row_leading: f32 = 1.32;
 const row_gap: f32 = 3;
 const ppem_gap: f32 = 9;
+/// Height of the per-section "<n>px" size header above each ppem block.
+const section_head: f32 = 15;
 
 pub fn gridHeightPx(px_scale: f32) f32 {
     var y = grid_top * px_scale;
     for (grid_ppems) |ppem| {
         const em = Compare.devEm(ppem, px_scale);
+        y += section_head * px_scale;
         y += rows.len * (em * row_leading + row_gap * px_scale);
         y += ppem_gap * px_scale;
     }
@@ -66,6 +74,39 @@ pub const x_natural_policy: snail.autohint.AutohintPolicy = .{
     .y = y_policy.y,
 };
 
+/// Candidate universal default: crisp at small sizes, weight-preserving at large.
+/// Both axes use the LIGHT taper — a stem's edges register to the grid (crisp) at
+/// every size, but its WIDTH is only quantized to a whole pixel while thin
+/// (< max_px ≈ 1.6px, i.e. small ppem); above that it keeps its natural width.
+/// This is what makes it degrade gracefully on faces the sans-tuned analyzer
+/// wasn't built for: at large ppem a `full` width-snap over-bolds serif stems and
+/// flattens their stroke contrast (rough), while the taper lets AA carry them at
+/// natural weight. A low std-snap (0.2, vs xf's 0.4) avoids bolding light fonts
+/// (Noto) to the shared std width; round-left registration keeps bowls in-column.
+/// Positioning is INDEPENDENT: `relative` anchors the whole stem cluster and, at
+/// the demo's non-integer render scale, lands the leftmost stem off the pixel grid
+/// (the 'm' left leg renders as a thin straddled sliver); independent snaps each
+/// stem edge to its own grid line — crisper here and closer to TrueType.
+/// Overshoot is PRESERVED, not suppressed: a round apex (o/e/c/ς top, bowl bottom)
+/// whose overshoot is suppressed snaps exactly onto the x-height/baseline pixel
+/// row, and because that arc is nearly flat it fills the row uniformly → a visibly
+/// flat-topped 'o'. Keeping the (sub-pixel) overshoot lifts the apex off the row so
+/// it AA's into a curve like TrueType; at small ppem the overshoot is a fraction of
+/// a pixel and doesn't blur the line.
+pub const default_policy: snail.autohint.AutohintPolicy = .{
+    .x = .{
+        .@"align" = .grid,
+        .stem_width = .{ .light = .{ .std_snap_ratio = 0.2, .max_px = 1.6 } },
+        .positioning = .independent,
+        .registration = .left_round_outline,
+    },
+    .y = .{
+        .@"align" = .blue_zones,
+        .stem_width = .{ .light = .{ .std_snap_ratio = 0.2, .max_px = 1.6 } },
+        .overshoot = .preserve,
+    },
+};
+
 /// Strong/terminal policy: the same y fitting plus full x grid fitting.
 pub const xy_policy: snail.autohint.AutohintPolicy = .{
     .x = .{
@@ -92,6 +133,7 @@ const rows = [_]Row{
     .{ .tag = "y", .mode = .{ .autohint = y_policy }, .snap = .none },
     .{ .tag = "xn", .mode = .{ .autohint = x_natural_policy }, .snap = .columns },
     .{ .tag = "xf", .mode = .{ .autohint = xy_policy }, .snap = .columns },
+    .{ .tag = "df", .mode = .{ .autohint = default_policy }, .snap = .columns },
     .{ .tag = "tt", .mode = .{ .truetype = .{ .ppem_26_6 = 0 } }, .snap = .columns },
 };
 
@@ -107,6 +149,10 @@ pub const Compare = struct {
     tt: ?snail.HintVm,
     /// Short display name for the font (e.g. "DejaVu", "Noto").
     label: []const u8,
+    /// Proportional (non-monospace) face: the hinted rows snap per-glyph
+    /// ORIGINS (round each glyph's cumulative kerned position) instead of
+    /// forcing one uniform integer column advance, which only fits monospace.
+    proportional: bool = false,
 
     shape_cache: ShapedRunCache,
     glyph_cache: UnhintedGlyphCache,
@@ -117,6 +163,10 @@ pub const Compare = struct {
     }
 
     pub fn initFont(allocator: Allocator, pool: *snail.PagePool, font_bytes: []const u8, label: []const u8) !Compare {
+        return initFontMode(allocator, pool, font_bytes, label, false);
+    }
+
+    pub fn initFontMode(allocator: Allocator, pool: *snail.PagePool, font_bytes: []const u8, label: []const u8, proportional: bool) !Compare {
         const font = try allocator.create(snail.Font);
         errdefer allocator.destroy(font);
         font.* = try snail.Font.init(font_bytes);
@@ -137,6 +187,7 @@ pub const Compare = struct {
             .auto = auto,
             .tt = tt,
             .label = label,
+            .proportional = proportional,
             .shape_cache = ShapedRunCache.init(allocator),
             .glyph_cache = UnhintedGlyphCache.init(allocator, font),
             .atlas = snail.Atlas.empty(allocator),
@@ -179,7 +230,9 @@ pub const Compare = struct {
     /// side. `column_width_px` (design units) is the horizontal span one grid
     /// occupies — pass 0 for a single grid.
     pub fn gridWidthPx(px_scale: f32) f32 {
-        return 400 * px_scale;
+        // Wide enough for the sample at the largest ppem (~52px tag column +
+        // the full string). Three columns fit the demo's widened window.
+        return 448 * px_scale;
     }
 
     pub fn buildGridAt(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32, x0: f32) !helpers.Picture {
@@ -188,7 +241,7 @@ pub const Compare = struct {
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
         // (ppem, row). Fold the font-label header's letters into the tag run
         // so ensureAll makes them resident too. Ensure everything in one pass.
-        const tags_str = try std.fmt.allocPrint(frame_alloc, "unyxnxftt{s}", .{self.label});
+        const tags_str = try std.fmt.allocPrint(frame_alloc, "unyxnxfdftt0123456789px{s}", .{self.label});
         const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
@@ -211,6 +264,19 @@ pub const Compare = struct {
         for (grid_ppems) |ppem| {
             const em: f32 = devEm(ppem, px_scale);
             const ppem_26_6: u32 = @intFromFloat(em * 64.0);
+
+            // Section header: the ppem size this block is rendered at.
+            const size_str = try std.fmt.allocPrint(frame_alloc, "{d}px", .{@as(u32, @intFromFloat(ppem))});
+            const size_shaped = try self.shape_cache.shape(&self.faces, size_str, .{});
+            const size_lbl = try frame_alloc.create(helpers.Picture);
+            size_lbl.* = try helpers.placeRun(frame_alloc, size_shaped, &self.faces, .{
+                .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
+                .em = tag_em,
+                .color = tag_color,
+            });
+            try refs.append(frame_alloc, size_lbl);
+            y += section_head * px_scale;
+
             for (rows) |row_desc| {
                 const baseline = @round(y) + em;
                 // Row tag (fixed-size, unhinted).
@@ -250,12 +316,18 @@ pub const Compare = struct {
             .truetype => .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
             else => row_desc.mode,
         };
+        // Column snapping is a monospace convenience; a proportional face must
+        // round each glyph's own origin instead of forcing a uniform advance.
+        const snap: helpers.RunSnap = if (self.proportional and row_desc.snap == .columns)
+            .origins
+        else
+            row_desc.snap;
         const picture = try helpers.placeRun(frame_alloc, shaped, null, .{
             .baseline = .{ .x = left, .y = baseline },
             .em = em,
             .color = text_color,
             .mode = mode,
-            .snap = row_desc.snap,
+            .snap = snap,
         });
         // An empty outline has no bands to back an autohint record. Keep its
         // no-op shape on the shared unhinted key so emit-time lookup succeeds
@@ -376,7 +448,8 @@ test "comparison contains both x-width policies and fits the default viewport" {
     try testing.expectEqualStrings("y", rows[1].tag);
     try testing.expectEqualStrings("xn", rows[2].tag);
     try testing.expectEqualStrings("xf", rows[3].tag);
-    try testing.expectEqualStrings("tt", rows[4].tag);
+    try testing.expectEqualStrings("df", rows[4].tag);
+    try testing.expectEqualStrings("tt", rows[5].tag);
     try testing.expect(gridHeightPx(1.0) <= @as(f32, @floatFromInt(default_viewport_height)));
 }
 

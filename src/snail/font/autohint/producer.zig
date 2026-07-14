@@ -315,9 +315,12 @@ test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
             .{ .base = 0.48293912, .target = 0.5 },
             .{ .base = 0.55655926, .target = 0.5625 },
         } },
+        // At 28px (>= fade_full_px) the warp fades to identity — autohinting is a
+        // small-size tool, and AA renders large round glyphs cleanly on its own,
+        // so every knot's target equals its base (no displacement).
         .{ .ppem = 28, .y = &.{
-            .{ .base = -0.010673185, .target = 0 },
-            .{ .base = 0.55655926, .target = 0.53571427 },
+            .{ .base = -0.010673185, .target = -0.010673185 },
+            .{ .base = 0.55655926, .target = 0.55655926 },
         } },
     };
     const strong_policy: @import("policy.zig").AutohintPolicy = .{

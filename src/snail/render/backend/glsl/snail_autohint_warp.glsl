@@ -141,8 +141,15 @@ bool snailFitAutohintAxis(
         if (validBlue) {
             float ref = snailWarpF(12, 2 * blue[i]);
             float shoot = snailWarpF(12, 2 * blue[i] + 1);
-            targets[i] = snailAhSnap(ref, scale);
-            if (rounded[i] && abs((shoot - ref) * scale) >= overshootLimit) targets[i] += shoot - ref;
+            // Preserve (y overshoot policy == 0): keep a round apex at its natural
+            // position so the curve AA's into a round top instead of crushing flat
+            // onto the snapped blue row. Suppress snaps it (crisper, flat).
+            if (rounded[i] && axis == 1 && policy.yOvershoot == 0) {
+                targets[i] = pos[i];
+            } else {
+                targets[i] = snailAhSnap(ref, scale);
+                if (rounded[i] && abs((shoot - ref) * scale) >= overshootLimit) targets[i] += shoot - ref;
+            }
         } else {
             targets[i] = snailAhSnap(pos[i], scale);
         }
@@ -267,6 +274,17 @@ bool snailFitAutohintAxis(
     for (int i = 1; i < SNAIL_AH_MAX_KNOTS; ++i) {
         if (i >= knotCount) break;
         if (knotTarget[i] <= knotTarget[i - 1]) knotTarget[i] = knotTarget[i - 1] + grid;
+    }
+    // Fade to identity at large ppem — autohinting is a small-size tool, so above
+    // ~16px blend each knot's target back toward its natural base, reaching no-warp
+    // by ~26px (mirror of warp.zig fadeToIdentity; blending toward the sorted base
+    // preserves monotonicity). `scale` is this axis's pixels-per-em.
+    if (scale > 16.0) {
+        float fadeW = (scale >= 26.0) ? 1.0 : (scale - 16.0) / (26.0 - 16.0);
+        for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
+            if (i >= knotCount) break;
+            knotTarget[i] += (knotBase[i] - knotTarget[i]) * fadeW;
+        }
     }
     for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
         if (i >= knotCount) break;

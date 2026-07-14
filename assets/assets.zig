@@ -1,5 +1,6 @@
 pub const noto_sans_regular = @embedFile("NotoSans-Regular.ttf");
 pub const dejavu_sans_mono = @embedFile("DejaVuSansMono.ttf");
+pub const dejavu_serif = @embedFile("DejaVuSerif.ttf");
 pub const noto_sans_mono = @embedFile("NotoSansMono.ttf");
 pub const noto_sans_bold = @embedFile("NotoSans-Bold.ttf");
 pub const noto_sans_arabic = @embedFile("NotoSansArabic-Regular.ttf");
