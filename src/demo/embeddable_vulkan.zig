@@ -41,24 +41,35 @@ pub fn main() !void {
     var content = try demo_content.build(allocator, W, H);
     defer content.deinit();
 
-    var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
-    defer vk_renderer.deinit();
-
-    var cache = try snail.VulkanBackendCache.init(allocator, content.pool, vk_renderer.state.pipelineShape(), .{
+    const cache_opts: snail.vulkan.backend_cache.CacheOptions = .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,
         .max_image_width = 256,
         .max_image_height = 256,
-    });
-    defer cache.deinit();
+    };
 
-    // Snail owns the resources: upload both atlases once; the reference and the
-    // caller pipelines both sample the resulting descriptor set.
-    var bindings: [2]snail.Binding = undefined;
-    try cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &bindings);
+    // ── Reference path: the all-in-one renderer + its own cache ──
+    var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
+    defer vk_renderer.deinit();
+    var ref_cache = try snail.VulkanBackendCache.init(allocator, content.pool, vk_renderer.state.pipelineShape(), cache_opts);
+    defer ref_cache.deinit();
+    var ref_bindings: [2]snail.Binding = undefined;
+    try ref_cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &ref_bindings);
 
-    var caller = try CallerPipelines.init(vk_ctx, cache.descriptorSetLayout());
+    // ── Standalone embeddable path: our OWN resource layout + transfer command
+    //    pool + cache, built via the public contract — no VulkanRenderer. ──
+    var layout: snail.vulkan.VulkanResourceLayout = undefined;
+    try layout.init(vk_ctx);
+    defer layout.deinit();
+    const transfer_pool = try createTransferPool(vk_ctx);
+    defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
+    var sa_cache = try snail.VulkanBackendCache.init(allocator, content.pool, snail.vulkan.embeddable.cachePipelineShape(vk_ctx, &layout, transfer_pool), cache_opts);
+    defer sa_cache.deinit();
+    var sa_bindings: [2]snail.Binding = undefined;
+    try sa_cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &sa_bindings);
+
+    var caller = try CallerPipelines.init(vk_ctx, sa_cache.descriptorSetLayout());
     defer caller.deinit(vk_ctx.device);
 
     // One quad index buffer, shared across all draws.
@@ -84,60 +95,33 @@ pub fn main() !void {
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
 
-    // Shared emit buffers, sized for the whole scene.
+    // Two emit buffer sets: the reference emits against its cache's bindings,
+    // the caller against the standalone cache's — each self-consistent.
     const budget = snail.emit.wordBudget(content.paths_picture.shapes.len, 0) + snail.emit.wordBudget(content.text_picture.shapes.len, 0);
-    const words = try allocator.alloc(u32, budget);
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 16);
-    defer allocator.free(segs);
+    var buf = try EmitBuffers.init(allocator, budget);
+    defer buf.deinit(allocator);
 
     var worst: u32 = 0;
-    const run = struct {
-        fn diffOne(
-            a: std.mem.Allocator,
-            r: *snail.VulkanRenderer,
-            ca: *snail.VulkanBackendCache,
-            cp: *CallerPipelines,
-            ib: vk.VkBuffer,
-            ctx: snail.VulkanContext,
-            cl: [4]f32,
-            ds: snail.DrawState,
-            w: []const u32,
-            s: []const snail.DrawSegment,
-            l: []const u8,
-            worst_p: *u32,
-        ) !void {
-            const d = try renderAndDiff(a, r, ca, cp, ib, ctx, cl, ds, w, s, l);
-            worst_p.* = @max(worst_p.*, d.max);
-        }
-    }.diffOne;
 
     // Paths only (single path segment).
     {
-        var wl: usize = 0;
-        var sl: usize = 0;
-        _ = try snail.emit.emit(words, segs, &wl, &sl, bindings[0], &content.paths_atlas, content.paths_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..wl], segs[0..sl], "paths        ", &worst);
+        const r = try buf.emitPicture(.ref, ref_bindings[0], &content.paths_atlas, content.paths_picture.shapes);
+        const c = try buf.emitPicture(.caller, sa_bindings[0], &content.paths_atlas, content.paths_picture.shapes);
+        const d = try renderAndDiff(allocator, &vk_renderer, &ref_cache, &caller, &sa_cache, ibo.buffer, vk_ctx, clear, gray_ds, r, c, "paths        ");
+        worst = @max(worst, d.max);
     }
-    // Text only — grayscale and subpixel share one emit.
+    // Text only — grayscale and subpixel reuse one emit per side.
     {
-        var wl: usize = 0;
-        var sl: usize = 0;
-        _ = try snail.emit.emit(words, segs, &wl, &sl, bindings[1], &content.text_atlas, content.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..wl], segs[0..sl], "text gray    ", &worst);
-        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, sub_ds, words[0..wl], segs[0..sl], "text subpixel", &worst);
+        const r = try buf.emitPicture(.ref, ref_bindings[1], &content.text_atlas, content.text_picture.shapes);
+        const c = try buf.emitPicture(.caller, sa_bindings[1], &content.text_atlas, content.text_picture.shapes);
+        worst = @max(worst, (try renderAndDiff(allocator, &vk_renderer, &ref_cache, &caller, &sa_cache, ibo.buffer, vk_ctx, clear, gray_ds, r, c, "text gray    ")).max);
+        worst = @max(worst, (try renderAndDiff(allocator, &vk_renderer, &ref_cache, &caller, &sa_cache, ibo.buffer, vk_ctx, clear, sub_ds, r, c, "text subpixel")).max);
     }
     // Full scene: paths + text in one frame (two segments, run-dispatched).
     {
-        const scene = harness.Scene{
-            .pool = content.pool,
-            .paths_atlas = &content.paths_atlas,
-            .text_atlas = &content.text_atlas,
-            .paths_picture = &content.paths_picture,
-            .text_picture = &content.text_picture,
-        };
-        const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
-        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..e.words_len], segs[0..e.segs_len], "full scene   ", &worst);
+        const r = try buf.emitScene(.ref, &content, ref_bindings);
+        const c = try buf.emitScene(.caller, &content, sa_bindings);
+        worst = @max(worst, (try renderAndDiff(allocator, &vk_renderer, &ref_cache, &caller, &sa_cache, ibo.buffer, vk_ctx, clear, gray_ds, r, c, "full scene   ")).max);
     }
 
     if (worst <= 1) {
@@ -151,39 +135,40 @@ pub fn main() !void {
 fn renderAndDiff(
     allocator: std.mem.Allocator,
     vk_renderer: *snail.VulkanRenderer,
-    cache: *snail.VulkanBackendCache,
+    ref_cache: *snail.VulkanBackendCache,
     caller: *CallerPipelines,
+    sa_cache: *snail.VulkanBackendCache,
     ibo: vk.VkBuffer,
     vk_ctx: snail.VulkanContext,
     clear: [4]f32,
     draw_state: snail.DrawState,
-    words: []const u32,
-    segments: []const snail.DrawSegment,
+    ref: Emitted,
+    call: Emitted,
     label: []const u8,
 ) !Diff {
-    const glyph_count: u32 = @intCast(words.len / snail.WORDS_PER_INSTANCE);
+    const glyph_count: u32 = @intCast(ref.words.len / snail.WORDS_PER_INSTANCE);
 
-    // Reference: the all-in-one VulkanRenderer (picks pipelines by run kind).
+    // Reference: the all-in-one VulkanRenderer + its cache.
     {
         const cmd = platform.beginFrameOffscreenWithClear(clear);
         vk_renderer.state.setCommandBuffer(cmd);
         defer vk_renderer.state.clearCommandBuffer();
         vk_renderer.state.setFrameSlot(platform.currentOffscreenFrameIndex());
-        try vk_renderer.state.draw(allocator, draw_state, .{ .words = words, .segments = segments }, &.{cache});
+        try vk_renderer.state.draw(allocator, draw_state, .{ .words = ref.words, .segments = ref.segs }, &.{ref_cache});
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
     const pixels_ref = try platform.captureOffscreenRgba8(allocator);
     defer allocator.free(pixels_ref);
 
-    // Caller: our own pipelines, run-dispatched over every segment.
-    var vbo = try HostBuffer.init(vk_ctx, words.len * @sizeOf(u32), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    // Caller: standalone cache + our own pipelines, run-dispatched per segment.
+    var vbo = try HostBuffer.init(vk_ctx, call.words.len * @sizeOf(u32), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     defer vbo.deinit(vk_ctx.device);
-    @memcpy(vbo.bytes()[0 .. words.len * @sizeOf(u32)], std.mem.sliceAsBytes(words));
+    @memcpy(vbo.bytes()[0 .. call.words.len * @sizeOf(u32)], std.mem.sliceAsBytes(call.words));
     {
         const platform_cmd = platform.beginFrameOffscreenWithClear(clear);
         const cmd: vk.VkCommandBuffer = @ptrCast(platform_cmd);
-        caller.record(cmd, cache.descriptorSet(), vbo.buffer, ibo, draw_state, words, segments);
+        caller.record(cmd, sa_cache.descriptorSet(), vbo.buffer, ibo, draw_state, call.words, call.segs);
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
@@ -193,6 +178,74 @@ fn renderAndDiff(
     const d = diff(pixels_ref, pixels_emb);
     std.debug.print("embeddable-vulkan [{s}]: {d} glyphs, max delta={d}, mean={d:.4}\n", .{ label, glyph_count, d.max, d.mean });
     return d;
+}
+
+const Emitted = struct { words: []const u32, segs: []const snail.DrawSegment };
+
+const Side = enum { ref, caller };
+
+// Two emit buffer sets — the reference emits against its cache's bindings, the
+// caller against the standalone cache's.
+const EmitBuffers = struct {
+    ref_words: []u32,
+    ref_segs: []snail.DrawSegment,
+    ca_words: []u32,
+    ca_segs: []snail.DrawSegment,
+
+    fn init(a: std.mem.Allocator, budget: usize) !EmitBuffers {
+        return .{
+            .ref_words = try a.alloc(u32, budget),
+            .ref_segs = try a.alloc(snail.DrawSegment, 16),
+            .ca_words = try a.alloc(u32, budget),
+            .ca_segs = try a.alloc(snail.DrawSegment, 16),
+        };
+    }
+
+    fn deinit(self: *EmitBuffers, a: std.mem.Allocator) void {
+        a.free(self.ref_words);
+        a.free(self.ref_segs);
+        a.free(self.ca_words);
+        a.free(self.ca_segs);
+    }
+
+    fn pick(self: *EmitBuffers, side: Side) struct { w: []u32, s: []snail.DrawSegment } {
+        return switch (side) {
+            .ref => .{ .w = self.ref_words, .s = self.ref_segs },
+            .caller => .{ .w = self.ca_words, .s = self.ca_segs },
+        };
+    }
+
+    fn emitPicture(self: *EmitBuffers, side: Side, binding: snail.Binding, atlas: *const snail.Atlas, shapes: anytype) !Emitted {
+        const b = self.pick(side);
+        var wl: usize = 0;
+        var sl: usize = 0;
+        _ = try snail.emit.emit(b.w, b.s, &wl, &sl, binding, atlas, shapes, .identity, .{ 1, 1, 1, 1 });
+        return .{ .words = b.w[0..wl], .segs = b.s[0..sl] };
+    }
+
+    fn emitScene(self: *EmitBuffers, side: Side, content: anytype, bindings: [2]snail.Binding) !Emitted {
+        const b = self.pick(side);
+        const scene = harness.Scene{
+            .pool = content.pool,
+            .paths_atlas = &content.paths_atlas,
+            .text_atlas = &content.text_atlas,
+            .paths_picture = &content.paths_picture,
+            .text_picture = &content.text_picture,
+        };
+        const e = try harness.emitScene(b.w, b.s, scene, bindings[0], bindings[1]);
+        return .{ .words = b.w[0..e.words_len], .segs = b.s[0..e.segs_len] };
+    }
+};
+
+fn createTransferPool(ctx: snail.VulkanContext) !vk.VkCommandPool {
+    const ci = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
+        .flags = vk.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
+        .queueFamilyIndex = ctx.queue_family_index,
+    });
+    var pool: vk.VkCommandPool = null;
+    try check(vk.vkCreateCommandPool(ctx.device, &ci, null, &pool));
+    return pool;
 }
 
 // ── Caller-owned pipelines (one per premultiplied family) ──

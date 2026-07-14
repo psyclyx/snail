@@ -10,9 +10,38 @@
 //! stays in the backend that owns it; the facade only re-exports this.
 
 const backend_cache = @import("backend_cache.zig");
+const resource_layout = @import("resource_layout.zig");
 
 pub const vk = backend_cache.vk;
 pub const VulkanBackendCache = backend_cache.VulkanBackendCache;
+pub const VulkanContext = backend_cache.VulkanContext;
+pub const PipelineShape = backend_cache.PipelineShape;
+pub const VulkanResourceLayout = resource_layout.VulkanResourceLayout;
+
+/// Build the cache's `PipelineShape` from a standalone `VulkanResourceLayout`
+/// plus a caller-owned transfer command pool — no all-in-one `VulkanRenderer`
+/// needed. This is how an embeddable consumer constructs a
+/// `VulkanBackendCache`: create a resource layout, a transfer command pool on
+/// the graphics queue family, then `VulkanBackendCache.init(alloc, pool,
+/// cachePipelineShape(ctx, &layout, transfer_pool), opts)`.
+///
+/// `scheduled_resource_upload_cmd` is left null, so uploads allocate a one-shot
+/// command buffer from `transfer_cmd_pool` and submit+wait on the context's
+/// graphics queue (see §6 queue decoupling for a future caller-driven variant).
+pub fn cachePipelineShape(
+    ctx: VulkanContext,
+    layout: *const VulkanResourceLayout,
+    transfer_cmd_pool: vk.VkCommandPool,
+) PipelineShape {
+    return .{
+        .ctx = ctx,
+        .transfer_cmd_pool = transfer_cmd_pool,
+        .scheduled_resource_upload_cmd = null,
+        .sampler_nearest = layout.sampler_nearest,
+        .sampler_linear = layout.sampler_linear,
+        .desc_set_layout = layout.desc_set_layout,
+    };
+}
 
 pub const Backend = struct {
     const Self = @This();
