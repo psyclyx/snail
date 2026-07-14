@@ -84,22 +84,60 @@ pub fn main() !void {
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
 
-    const passes = [_]struct {
-        label: []const u8,
-        atlas: *const snail.Atlas,
-        picture: *const @TypeOf(content.paths_picture),
-        binding: snail.Binding,
-        ds: snail.DrawState,
-    }{
-        .{ .label = "paths        ", .atlas = &content.paths_atlas, .picture = &content.paths_picture, .binding = bindings[0], .ds = gray_ds },
-        .{ .label = "text gray    ", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1], .ds = gray_ds },
-        .{ .label = "text subpixel", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1], .ds = sub_ds },
-    };
+    // Shared emit buffers, sized for the whole scene.
+    const budget = snail.emit.wordBudget(content.paths_picture.shapes.len, 0) + snail.emit.wordBudget(content.text_picture.shapes.len, 0);
+    const words = try allocator.alloc(u32, budget);
+    defer allocator.free(words);
+    const segs = try allocator.alloc(snail.DrawSegment, 16);
+    defer allocator.free(segs);
 
     var worst: u32 = 0;
-    for (passes) |p| {
-        const d = try renderAndDiff(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, p.ds, p.atlas, p.picture, p.binding, p.label);
-        worst = @max(worst, d.max);
+    const run = struct {
+        fn diffOne(
+            a: std.mem.Allocator,
+            r: *snail.VulkanRenderer,
+            ca: *snail.VulkanBackendCache,
+            cp: *CallerPipelines,
+            ib: vk.VkBuffer,
+            ctx: snail.VulkanContext,
+            cl: [4]f32,
+            ds: snail.DrawState,
+            w: []const u32,
+            s: []const snail.DrawSegment,
+            l: []const u8,
+            worst_p: *u32,
+        ) !void {
+            const d = try renderAndDiff(a, r, ca, cp, ib, ctx, cl, ds, w, s, l);
+            worst_p.* = @max(worst_p.*, d.max);
+        }
+    }.diffOne;
+
+    // Paths only (single path segment).
+    {
+        var wl: usize = 0;
+        var sl: usize = 0;
+        _ = try snail.emit.emit(words, segs, &wl, &sl, bindings[0], &content.paths_atlas, content.paths_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..wl], segs[0..sl], "paths        ", &worst);
+    }
+    // Text only — grayscale and subpixel share one emit.
+    {
+        var wl: usize = 0;
+        var sl: usize = 0;
+        _ = try snail.emit.emit(words, segs, &wl, &sl, bindings[1], &content.text_atlas, content.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..wl], segs[0..sl], "text gray    ", &worst);
+        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, sub_ds, words[0..wl], segs[0..sl], "text subpixel", &worst);
+    }
+    // Full scene: paths + text in one frame (two segments, run-dispatched).
+    {
+        const scene = harness.Scene{
+            .pool = content.pool,
+            .paths_atlas = &content.paths_atlas,
+            .text_atlas = &content.text_atlas,
+            .paths_picture = &content.paths_picture,
+            .text_picture = &content.text_picture,
+        };
+        const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
+        try run(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, gray_ds, words[0..e.words_len], segs[0..e.segs_len], "full scene   ", &worst);
     }
 
     if (worst <= 1) {
@@ -119,19 +157,11 @@ fn renderAndDiff(
     vk_ctx: snail.VulkanContext,
     clear: [4]f32,
     draw_state: snail.DrawState,
-    atlas: *const snail.Atlas,
-    picture: anytype,
-    binding: snail.Binding,
+    words: []const u32,
+    segments: []const snail.DrawSegment,
     label: []const u8,
 ) !Diff {
-    const words = try allocator.alloc(u32, snail.emit.wordBudget(picture.shapes.len, 0));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 8);
-    defer allocator.free(segs);
-    var words_len: usize = 0;
-    var segs_len: usize = 0;
-    _ = try snail.emit.emit(words, segs, &words_len, &segs_len, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
-    const glyph_count: u32 = @intCast(words_len / snail.WORDS_PER_INSTANCE);
+    const glyph_count: u32 = @intCast(words.len / snail.WORDS_PER_INSTANCE);
 
     // Reference: the all-in-one VulkanRenderer (picks pipelines by run kind).
     {
@@ -139,21 +169,21 @@ fn renderAndDiff(
         vk_renderer.state.setCommandBuffer(cmd);
         defer vk_renderer.state.clearCommandBuffer();
         vk_renderer.state.setFrameSlot(platform.currentOffscreenFrameIndex());
-        try vk_renderer.state.draw(allocator, draw_state, .{ .words = words[0..words_len], .segments = segs[0..segs_len] }, &.{cache});
+        try vk_renderer.state.draw(allocator, draw_state, .{ .words = words, .segments = segments }, &.{cache});
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
     const pixels_ref = try platform.captureOffscreenRgba8(allocator);
     defer allocator.free(pixels_ref);
 
-    // Caller: our own pipelines, run-dispatched.
-    var vbo = try HostBuffer.init(vk_ctx, words_len * @sizeOf(u32), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
+    // Caller: our own pipelines, run-dispatched over every segment.
+    var vbo = try HostBuffer.init(vk_ctx, words.len * @sizeOf(u32), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     defer vbo.deinit(vk_ctx.device);
-    @memcpy(vbo.bytes()[0 .. words_len * @sizeOf(u32)], std.mem.sliceAsBytes(words[0..words_len]));
+    @memcpy(vbo.bytes()[0 .. words.len * @sizeOf(u32)], std.mem.sliceAsBytes(words));
     {
         const platform_cmd = platform.beginFrameOffscreenWithClear(clear);
         const cmd: vk.VkCommandBuffer = @ptrCast(platform_cmd);
-        caller.record(cmd, cache.descriptorSet(), vbo.buffer, ibo, draw_state, words[0..words_len]);
+        caller.record(cmd, cache.descriptorSet(), vbo.buffer, ibo, draw_state, words, segments);
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
@@ -217,6 +247,7 @@ const CallerPipelines = struct {
         ibo: vk.VkBuffer,
         draw_state: snail.DrawState,
         words: []const u32,
+        segments: []const snail.DrawSegment,
     ) void {
         vk.vkCmdBindIndexBuffer(cmd, ibo, 0, vk.VK_INDEX_TYPE_UINT32);
 
@@ -229,25 +260,29 @@ const CallerPipelines = struct {
         var set = desc_set;
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &set, 0, null);
 
-        const stride: vk.VkDeviceSize = contract.vertexInputBinding().stride;
-        var runs = contract.glyphRuns(words);
-        while (runs.next()) |run| {
-            // Regular runs pick grayscale vs subpixel per the shared policy;
-            // every other kind is grayscale.
-            const mode: contract.TextRenderMode = if (run.kind == .regular)
-                contract.textRenderMode(words, run.glyph_start, run.glyph_count, draw_state, self.supports_dual_src)
-            else
-                .grayscale;
-            const family = contract.familyForRun(run.kind, mode);
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
+        for (segments) |seg| {
+            const seg_words = words[seg.words_offset..][0 .. seg.words_len];
+            var runs = contract.glyphRuns(seg_words);
+            while (runs.next()) |run| {
+                // Regular runs pick grayscale vs subpixel per the shared policy;
+                // every other kind is grayscale.
+                const mode: contract.TextRenderMode = if (run.kind == .regular)
+                    contract.textRenderMode(seg_words, run.glyph_start, run.glyph_count, draw_state, self.supports_dual_src)
+                else
+                    .grayscale;
+                const family = contract.familyForRun(run.kind, mode);
+                vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
 
-            var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
-            vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
+                var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
+                vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
-            var buf = vbo;
-            const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, run.glyph_start) * stride;
-            vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
-            vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, @intCast(run.glyph_count), 0, 0, 0);
+                // Absolute word index of this run in the full vertex buffer.
+                const abs_word = seg.words_offset + run.glyph_start * snail.WORDS_PER_INSTANCE;
+                var buf = vbo;
+                const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, abs_word) * @sizeOf(u32);
+                vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
+                vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, @intCast(run.glyph_count), 0, 0, 0);
+            }
         }
     }
 
