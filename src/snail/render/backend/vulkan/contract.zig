@@ -220,8 +220,44 @@ pub fn glyphRuns(words: []const u32) GlyphRunIterator {
 /// (non-subpixel) configuration. Regular text maps to `.text`; opt into
 /// `.subpixel` separately when the device supports dual-source blend.
 pub fn familyForRunKind(kind: GlyphRunKind) Family {
+    return familyForRun(kind, .grayscale);
+}
+
+/// The subpixel decision for regular text: `grayscale` uses the `.text`
+/// pipeline, `subpixel_dual_source` uses `.subpixel` (dual-source blend).
+pub const TextRenderMode = subpixel_policy.TextRenderMode;
+
+/// Choose the render mode for a regular-text run, matching the all-in-one
+/// renderer. Returns `.grayscale` unless subpixel is requested (`draw_state`'s
+/// subpixel order), the run is axis-aligned enough, and `supports_dual_src` is
+/// true. The caller passes the result to `familyForRun` and to
+/// `textPushConstants`'s `grayscale` flag (`mode == .grayscale`).
+pub fn textRenderMode(
+    words: []const u32,
+    glyph_start: usize,
+    glyph_count: usize,
+    draw_state: core.DrawState,
+    supports_dual_src: bool,
+) TextRenderMode {
+    return subpixel_policy.chooseTextRenderModeRange(
+        words,
+        glyph_start,
+        glyph_count,
+        draw_state.mvp,
+        true, // allow_subpixel
+        draw_state.raster.subpixel_order,
+        supports_dual_src,
+    );
+}
+
+/// The family whose pipeline draws a run. Non-regular kinds map 1:1; regular
+/// text picks `.text` or `.subpixel` from `regular_mode` (see `textRenderMode`).
+pub fn familyForRun(kind: GlyphRunKind, regular_mode: TextRenderMode) Family {
     return switch (kind) {
-        .regular => .text,
+        .regular => switch (regular_mode) {
+            .grayscale => .text,
+            .subpixel_dual_source => .subpixel,
+        },
         .colr => .colr,
         .path => .path,
         .hinted_text => .hinted_text,

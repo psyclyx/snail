@@ -66,27 +66,39 @@ pub fn main() !void {
     defer ibo.deinit(vk_ctx.device);
     @memcpy(ibo.bytes()[0..@sizeOf(@TypeOf(contract.QUAD_INDICES))], std.mem.sliceAsBytes(contract.QUAD_INDICES[0..]));
 
-    const draw_state = harness.drawState(W, H);
     const clear = [4]f32{
         harness.srgbToLinear(harness.bg_srgb_f32[0]),
         harness.srgbToLinear(harness.bg_srgb_f32[1]),
         harness.srgbToLinear(harness.bg_srgb_f32[2]),
         harness.bg_srgb_f32[3],
     };
+    const wf: f32 = @floatFromInt(W);
+    const hf: f32 = @floatFromInt(H);
+    const gray_ds = harness.drawState(W, H);
+    // Subpixel (LCD) draw state: regular runs take the dual-source pipeline
+    // when the device supports it (else the all-in-one and caller both fall
+    // back to grayscale, and the diff still holds).
+    const sub_ds = snail.DrawState{
+        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .raster = .{ .subpixel_order = .rgb, .coverage_transfer = .{ .exponent = 1.0 } },
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+    };
 
-    const pictures = [_]struct {
+    const passes = [_]struct {
         label: []const u8,
         atlas: *const snail.Atlas,
         picture: *const @TypeOf(content.paths_picture),
         binding: snail.Binding,
+        ds: snail.DrawState,
     }{
-        .{ .label = "paths", .atlas = &content.paths_atlas, .picture = &content.paths_picture, .binding = bindings[0] },
-        .{ .label = "text ", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1] },
+        .{ .label = "paths        ", .atlas = &content.paths_atlas, .picture = &content.paths_picture, .binding = bindings[0], .ds = gray_ds },
+        .{ .label = "text gray    ", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1], .ds = gray_ds },
+        .{ .label = "text subpixel", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1], .ds = sub_ds },
     };
 
     var worst: u32 = 0;
-    for (pictures) |p| {
-        const d = try renderAndDiff(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, draw_state, p.atlas, p.picture, p.binding, p.label);
+    for (passes) |p| {
+        const d = try renderAndDiff(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, p.ds, p.atlas, p.picture, p.binding, p.label);
         worst = @max(worst, d.max);
     }
 
@@ -155,13 +167,15 @@ fn renderAndDiff(
 
 // ── Caller-owned pipelines (one per premultiplied family) ──
 
-const FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
+// The premultiplied families are always built; subpixel is built only when the
+// device supports dual-source blend.
+const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
 
 const CallerPipelines = struct {
     pipeline_layout: vk.VkPipelineLayout,
-    // Indexed by @intFromEnum(contract.Family); `.subpixel` is left null (this
-    // grayscale vehicle doesn't exercise dual-source).
+    // Indexed by @intFromEnum(contract.Family).
     pipelines: [std.enums.values(contract.Family).len]vk.VkPipeline = .{null} ** std.enums.values(contract.Family).len,
+    supports_dual_src: bool,
 
     fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout) !CallerPipelines {
         const device = ctx.device;
@@ -182,12 +196,15 @@ const CallerPipelines = struct {
         try check(vk.vkCreatePipelineLayout(device, &pl_info, null, &pipeline_layout));
         errdefer vk.vkDestroyPipelineLayout(device, pipeline_layout, null);
 
-        var self = CallerPipelines{ .pipeline_layout = pipeline_layout };
+        var self = CallerPipelines{ .pipeline_layout = pipeline_layout, .supports_dual_src = ctx.supports_dual_source_blend };
         errdefer for (self.pipelines) |p| {
             if (p != null) vk.vkDestroyPipeline(device, p, null);
         };
-        for (FAMILIES) |family| {
+        for (PREMUL_FAMILIES) |family| {
             self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family));
+        }
+        if (self.supports_dual_src) {
+            self.pipelines[@intFromEnum(contract.Family.subpixel)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(.subpixel));
         }
         return self;
     }
@@ -212,15 +229,20 @@ const CallerPipelines = struct {
         var set = desc_set;
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &set, 0, null);
 
-        var pc = contract.textPushConstants(draw_state, 0, true);
-        vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
-
         const stride: vk.VkDeviceSize = contract.vertexInputBinding().stride;
         var runs = contract.glyphRuns(words);
         while (runs.next()) |run| {
-            const family = contract.familyForRunKind(run.kind);
-            const pipeline = self.pipelines[@intFromEnum(family)];
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+            // Regular runs pick grayscale vs subpixel per the shared policy;
+            // every other kind is grayscale.
+            const mode: contract.TextRenderMode = if (run.kind == .regular)
+                contract.textRenderMode(words, run.glyph_start, run.glyph_count, draw_state, self.supports_dual_src)
+            else
+                .grayscale;
+            const family = contract.familyForRun(run.kind, mode);
+            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
+
+            var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
+            vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
             var buf = vbo;
             const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, run.glyph_start) * stride;
