@@ -20,10 +20,7 @@ const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 const UPLOAD_SLOT_BYTES = constants.UPLOAD_SLOT_BYTES;
 const BYTES_PER_GLYPH = constants.BYTES_PER_GLYPH;
 
-pub const BlendMode = enum {
-    premultiplied,
-    dual_source,
-};
+pub const BlendMode = contract.Blend;
 
 fn pipelineShaderStages(vert_module: vk.VkShaderModule, frag_module: vk.VkShaderModule) [2]vk.VkPipelineShaderStageCreateInfo {
     return .{
@@ -108,20 +105,7 @@ fn multisampleState() vk.VkPipelineMultisampleStateCreateInfo {
 }
 
 fn colorBlendAttachment(blend_mode: BlendMode) vk.VkPipelineColorBlendAttachmentState {
-    // Shader outputs are premultiplied by coverage, so src factor stays ONE.
-    return std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
-        .blendEnable = @as(vk.VkBool32, 1),
-        .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
-        .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(switch (blend_mode) {
-            .premultiplied => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
-            .dual_source => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
-        })),
-        .colorBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
-        .srcAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
-        .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
-        .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
-        .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
-    });
+    return contract.blendAttachment(blend_mode);
 }
 
 fn colorBlendState(attachment: *const vk.VkPipelineColorBlendAttachmentState) vk.VkPipelineColorBlendStateCreateInfo {

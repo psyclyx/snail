@@ -22,8 +22,10 @@
 //!      buffer + a 6-index `QUAD_INDICES` index buffer, and issues
 //!      `vkCmdDrawIndexed(INDICES_PER_GLYPH, glyph_count, ...)`.
 
+const std = @import("std");
 const core = @import("snail_core");
 const vertex = @import("snail_core").files.format_vertex;
+const subpixel_policy = @import("snail_core").files.backend_subpixel_policy;
 const vulkan_types = @import("types.zig");
 const vk_shaders = @import("vulkan_shaders");
 
@@ -119,7 +121,110 @@ pub const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 
 // ── Shader modules ──
 
-/// Compiled SPIR-V for the text-coverage recipe. Callers hand these to
-/// `vkCreateShaderModule`.
+/// Compiled SPIR-V. All shape families share `vert_spv` and the single-binding
+/// vertex input above; they differ only in fragment shader (and subpixel also
+/// in blend). Callers hand these to `vkCreateShaderModule`.
 pub const vert_spv = vk_shaders.vert_spv;
 pub const frag_text_spv = vk_shaders.frag_text_spv;
+pub const frag_hinted_text_spv = vk_shaders.frag_hinted_text_spv;
+pub const frag_autohint_spv = vk_shaders.frag_autohint_spv;
+pub const frag_colr_spv = vk_shaders.frag_colr_spv;
+pub const frag_path_spv = vk_shaders.frag_path_spv;
+pub const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
+
+// ── Blend ──
+
+/// Per-family blend. Every family blends premultiplied-over except subpixel,
+/// which needs dual-source (and the `dualSrcBlend` device feature).
+pub const Blend = enum { premultiplied, dual_source };
+
+/// The color-blend attachment state for a family's blend. Single source of
+/// truth shared with the all-in-one renderer so caller pipelines match exactly.
+pub fn blendAttachment(mode: Blend) vk.VkPipelineColorBlendAttachmentState {
+    // Shader outputs are premultiplied by coverage, so src factor stays ONE.
+    return std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
+        .blendEnable = @as(vk.VkBool32, 1),
+        .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
+        .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(switch (mode) {
+            .premultiplied => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
+            .dual_source => vk.VK_BLEND_FACTOR_ONE_MINUS_SRC1_COLOR,
+        })),
+        .colorBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
+        .srcAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
+        .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
+        .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
+        .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
+    });
+}
+
+// ── Pipeline recipes ──
+
+/// A shape family the caller builds one pipeline for. `subpixel` is the LCD
+/// variant of regular text; the rest map 1:1 to `GlyphRunKind`.
+pub const Family = enum { text, colr, path, hinted_text, autohint, subpixel };
+
+/// The frag module + blend the caller's pipeline for `family` must use. Vertex
+/// input, descriptor-set layout and push constants are the same for all.
+pub const PipelineRecipe = struct {
+    frag_spv: []align(4) const u8,
+    blend: Blend,
+    /// Subpixel needs the `dualSrcBlend` device feature; gate on it and fall
+    /// back to `.text` (grayscale) when unavailable.
+    requires_dual_src_blend: bool = false,
+};
+
+pub fn recipe(family: Family) PipelineRecipe {
+    return switch (family) {
+        .text => .{ .frag_spv = frag_text_spv, .blend = .premultiplied },
+        .colr => .{ .frag_spv = frag_colr_spv, .blend = .premultiplied },
+        .path => .{ .frag_spv = frag_path_spv, .blend = .premultiplied },
+        .hinted_text => .{ .frag_spv = frag_hinted_text_spv, .blend = .premultiplied },
+        .autohint => .{ .frag_spv = frag_autohint_spv, .blend = .premultiplied },
+        .subpixel => .{ .frag_spv = frag_text_subpixel_dual_spv, .blend = .dual_source, .requires_dual_src_blend = true },
+    };
+}
+
+// ── Glyph-run dispatch ──
+
+/// The `emit` byte stream is a sequence of runs, each a maximal span of glyphs
+/// of one kind. A caller walks the runs and binds the matching family pipeline
+/// per run — exactly what the all-in-one renderer does internally.
+pub const GlyphRunKind = subpixel_policy.GlyphRunKind;
+
+pub const GlyphRun = struct {
+    kind: GlyphRunKind,
+    glyph_start: usize,
+    glyph_count: usize,
+};
+
+pub const GlyphRunIterator = struct {
+    words: []const u32,
+    total_glyphs: usize,
+    pos: usize = 0,
+
+    pub fn next(self: *GlyphRunIterator) ?GlyphRun {
+        if (self.pos >= self.total_glyphs) return null;
+        const kind = subpixel_policy.glyphRunKind(self.words, self.pos);
+        const end = subpixel_policy.glyphRunEnd(self.words, self.pos, kind);
+        defer self.pos = end;
+        return .{ .kind = kind, .glyph_start = self.pos, .glyph_count = end - self.pos };
+    }
+};
+
+/// Iterate the glyph runs in a segment's `emit` words.
+pub fn glyphRuns(words: []const u32) GlyphRunIterator {
+    return .{ .words = words, .total_glyphs = words.len / vertex.WORDS_PER_INSTANCE };
+}
+
+/// The family whose pipeline draws a run of `kind` in the grayscale
+/// (non-subpixel) configuration. Regular text maps to `.text`; opt into
+/// `.subpixel` separately when the device supports dual-source blend.
+pub fn familyForRunKind(kind: GlyphRunKind) Family {
+    return switch (kind) {
+        .regular => .text,
+        .colr => .colr,
+        .path => .path,
+        .hinted_text => .hinted_text,
+        .autohint => .autohint,
+    };
+}

@@ -1,17 +1,21 @@
 //! Vulkan embeddable-path test vehicle.
 //!
-//! Proves the Stage-B embeddable contract end-to-end: a *caller-owned* Vulkan
-//! graphics pipeline, built only from the public surface snail exposes
-//! (`snail.vulkan.contract` shaders + vertex input + push constants, and the
-//! cache's descriptor set / layout), renders text and is byte-diffed against
-//! the all-in-one `VulkanRenderer` reference into the same offscreen target.
+//! Proves the embeddable contract end-to-end: a *caller-owned* set of Vulkan
+//! pipelines, built only from the public surface snail exposes
+//! (`snail.vulkan.contract` — SPIR-V per family + vertex input + blend + push
+//! constants + the glyph-run iterator, and the cache's descriptor set/layout),
+//! renders a scene and is byte-diffed against the all-in-one `VulkanRenderer`
+//! reference into the same offscreen target.
 //!
-//! This mirrors the GL game/`quad_renderer` role for Vulkan and doubles as the
-//! worked example integrators copy: snail owns the font data (atlas, cache,
-//! descriptor set, emit words); the caller owns the pipeline and the draw.
+//! The caller builds one pipeline per shape family and, per emit segment, walks
+//! the glyph runs (`contract.glyphRuns`) binding the family pipeline each run
+//! needs — exactly what the all-in-one does internally. This exercises the
+//! premultiplied family set (text + colr + path + hinted + autohint) across
+//! both the text and path pictures.
 //!
-//! Prints `PASS` when the caller pipeline matches the reference within the GPU
-//! ±1-LSB AA tolerance, `FAIL` (and exits non-zero) otherwise.
+//! snail owns the font data (atlas, cache, descriptor set, emit words); the
+//! caller owns the pipelines and the draw. Prints `PASS` when every picture
+//! matches within the GPU ±1-LSB AA tolerance, `FAIL` (exit non-zero) otherwise.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -20,16 +24,11 @@ const harness = @import("screenshot_harness.zig");
 const vulkan_demo_platform = @import("demo_platform_vulkan");
 const platform = vulkan_demo_platform.offscreen;
 
-// All Vulkan objects here use snail's `vk` cImport so cache/contract/context
-// handles line up without reinterpretation. Only the platform's command-buffer
-// handle (a separate cImport of the same header) is @ptrCast at the boundary.
 const contract = snail.vulkan.contract;
 const vk = contract.vk;
 
 const W: u32 = 400;
 const H: u32 = 240;
-const OUT_REF = "zig-out/embeddable-vulkan-reference.tga";
-const OUT_EMB = "zig-out/embeddable-vulkan-caller.tga";
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -42,9 +41,6 @@ pub fn main() !void {
     var content = try demo_content.build(allocator, W, H);
     defer content.deinit();
 
-    // Snail owns the resources: the all-in-one renderer supplies the resource
-    // layout + transfer machinery its cache needs; we upload the text atlas
-    // once and both the reference and the caller pipeline sample it.
     var vk_renderer = try snail.VulkanRenderer.init(allocator, vk_ctx);
     defer vk_renderer.deinit();
 
@@ -57,20 +53,18 @@ pub fn main() !void {
     });
     defer cache.deinit();
 
-    var bindings: [1]snail.Binding = undefined;
-    try cache.upload(allocator, &.{&content.text_atlas}, &bindings);
+    // Snail owns the resources: upload both atlases once; the reference and the
+    // caller pipelines both sample the resulting descriptor set.
+    var bindings: [2]snail.Binding = undefined;
+    try cache.upload(allocator, &.{ &content.paths_atlas, &content.text_atlas }, &bindings);
 
-    // Text-only emit: the words are both the reference draw stream and the
-    // caller's per-instance vertex buffer.
-    const words = try allocator.alloc(u32, snail.emit.wordBudget(content.text_picture.shapes.len, 0));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
-    defer allocator.free(segs);
-    var words_len: usize = 0;
-    var segs_len: usize = 0;
-    _ = try snail.emit.emit(words, segs, &words_len, &segs_len, bindings[0], &content.text_atlas, content.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-    const glyph_count: u32 = @intCast(words_len / snail.WORDS_PER_INSTANCE);
-    if (glyph_count == 0) return error.NoGlyphs;
+    var caller = try CallerPipelines.init(vk_ctx, cache.descriptorSetLayout());
+    defer caller.deinit(vk_ctx.device);
+
+    // One quad index buffer, shared across all draws.
+    var ibo = try HostBuffer.init(vk_ctx, @sizeOf(@TypeOf(contract.QUAD_INDICES)), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
+    defer ibo.deinit(vk_ctx.device);
+    @memcpy(ibo.bytes()[0..@sizeOf(@TypeOf(contract.QUAD_INDICES))], std.mem.sliceAsBytes(contract.QUAD_INDICES[0..]));
 
     const draw_state = harness.drawState(W, H);
     const clear = [4]f32{
@@ -80,73 +74,98 @@ pub fn main() !void {
         harness.bg_srgb_f32[3],
     };
 
-    // ── Reference: the all-in-one VulkanRenderer ──
+    const pictures = [_]struct {
+        label: []const u8,
+        atlas: *const snail.Atlas,
+        picture: *const @TypeOf(content.paths_picture),
+        binding: snail.Binding,
+    }{
+        .{ .label = "paths", .atlas = &content.paths_atlas, .picture = &content.paths_picture, .binding = bindings[0] },
+        .{ .label = "text ", .atlas = &content.text_atlas, .picture = &content.text_picture, .binding = bindings[1] },
+    };
+
+    var worst: u32 = 0;
+    for (pictures) |p| {
+        const d = try renderAndDiff(allocator, &vk_renderer, &cache, &caller, ibo.buffer, vk_ctx, clear, draw_state, p.atlas, p.picture, p.binding, p.label);
+        worst = @max(worst, d.max);
+    }
+
+    if (worst <= 1) {
+        std.debug.print("PASS: caller pipelines match the all-in-one within ±1 LSB\n", .{});
+    } else {
+        std.debug.print("FAIL: caller pipelines diverge from the all-in-one (max delta {d})\n", .{worst});
+        return error.EmbeddableMismatch;
+    }
+}
+
+fn renderAndDiff(
+    allocator: std.mem.Allocator,
+    vk_renderer: *snail.VulkanRenderer,
+    cache: *snail.VulkanBackendCache,
+    caller: *CallerPipelines,
+    ibo: vk.VkBuffer,
+    vk_ctx: snail.VulkanContext,
+    clear: [4]f32,
+    draw_state: snail.DrawState,
+    atlas: *const snail.Atlas,
+    picture: anytype,
+    binding: snail.Binding,
+    label: []const u8,
+) !Diff {
+    const words = try allocator.alloc(u32, snail.emit.wordBudget(picture.shapes.len, 0));
+    defer allocator.free(words);
+    const segs = try allocator.alloc(snail.DrawSegment, 8);
+    defer allocator.free(segs);
+    var words_len: usize = 0;
+    var segs_len: usize = 0;
+    _ = try snail.emit.emit(words, segs, &words_len, &segs_len, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
+    const glyph_count: u32 = @intCast(words_len / snail.WORDS_PER_INSTANCE);
+
+    // Reference: the all-in-one VulkanRenderer (picks pipelines by run kind).
     {
         const cmd = platform.beginFrameOffscreenWithClear(clear);
         vk_renderer.state.setCommandBuffer(cmd);
         defer vk_renderer.state.clearCommandBuffer();
         vk_renderer.state.setFrameSlot(platform.currentOffscreenFrameIndex());
-        try vk_renderer.state.draw(
-            allocator,
-            draw_state,
-            .{ .words = words[0..words_len], .segments = segs[0..segs_len] },
-            &.{&cache},
-        );
+        try vk_renderer.state.draw(allocator, draw_state, .{ .words = words[0..words_len], .segments = segs[0..segs_len] }, &.{cache});
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
     const pixels_ref = try platform.captureOffscreenRgba8(allocator);
     defer allocator.free(pixels_ref);
 
-    // ── Caller-owned pipeline, built from the public contract ──
-    var caller = try CallerPipeline.init(vk_ctx, cache.descriptorSetLayout());
-    defer caller.deinit(vk_ctx.device);
-
+    // Caller: our own pipelines, run-dispatched.
     var vbo = try HostBuffer.init(vk_ctx, words_len * @sizeOf(u32), vk.VK_BUFFER_USAGE_VERTEX_BUFFER_BIT);
     defer vbo.deinit(vk_ctx.device);
     @memcpy(vbo.bytes()[0 .. words_len * @sizeOf(u32)], std.mem.sliceAsBytes(words[0..words_len]));
-
-    var ibo = try HostBuffer.init(vk_ctx, @sizeOf(@TypeOf(contract.QUAD_INDICES)), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
-    defer ibo.deinit(vk_ctx.device);
-    @memcpy(ibo.bytes()[0..@sizeOf(@TypeOf(contract.QUAD_INDICES))], std.mem.sliceAsBytes(contract.QUAD_INDICES[0..]));
-
     {
         const platform_cmd = platform.beginFrameOffscreenWithClear(clear);
         const cmd: vk.VkCommandBuffer = @ptrCast(platform_cmd);
-        caller.record(cmd, cache.descriptorSet(), vbo.buffer, ibo.buffer, draw_state, glyph_count);
+        caller.record(cmd, cache.descriptorSet(), vbo.buffer, ibo, draw_state, words[0..words_len]);
         platform.endFrameOffscreen();
         platform.queueWaitIdle();
     }
     const pixels_emb = try platform.captureOffscreenRgba8(allocator);
     defer allocator.free(pixels_emb);
 
-    // ── Diff ──
-    try harness.writeOutput(OUT_REF, pixels_ref, W, H);
-    try harness.writeOutput(OUT_EMB, pixels_emb, W, H);
     const d = diff(pixels_ref, pixels_emb);
-    std.debug.print(
-        "embeddable-vulkan: {d} glyphs, max channel delta={d}, mean={d:.4}\n",
-        .{ glyph_count, d.max, d.mean },
-    );
-    if (d.max <= 1) {
-        std.debug.print("PASS: caller pipeline matches the all-in-one within ±1 LSB\n", .{});
-    } else {
-        std.debug.print("FAIL: caller pipeline diverges from the all-in-one (see {s} vs {s})\n", .{ OUT_REF, OUT_EMB });
-        return error.EmbeddableMismatch;
-    }
+    std.debug.print("embeddable-vulkan [{s}]: {d} glyphs, max delta={d}, mean={d:.4}\n", .{ label, glyph_count, d.max, d.mean });
+    return d;
 }
 
-// ── Caller-owned pipeline ──
+// ── Caller-owned pipelines (one per premultiplied family) ──
 
-const CallerPipeline = struct {
+const FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
+
+const CallerPipelines = struct {
     pipeline_layout: vk.VkPipelineLayout,
-    pipeline: vk.VkPipeline,
+    // Indexed by @intFromEnum(contract.Family); `.subpixel` is left null (this
+    // grayscale vehicle doesn't exercise dual-source).
+    pipelines: [std.enums.values(contract.Family).len]vk.VkPipeline = .{null} ** std.enums.values(contract.Family).len,
 
-    fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout) !CallerPipeline {
+    fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout) !CallerPipelines {
         const device = ctx.device;
 
-        // Pipeline layout: snail's descriptor-set layout + the contract's
-        // push-constant range.
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
             .stageFlags = contract.PUSH_CONSTANT_STAGE_FLAGS,
             .offset = 0,
@@ -163,113 +182,24 @@ const CallerPipeline = struct {
         try check(vk.vkCreatePipelineLayout(device, &pl_info, null, &pipeline_layout));
         errdefer vk.vkDestroyPipelineLayout(device, pipeline_layout, null);
 
-        const vert_module = try shaderModule(device, contract.vert_spv);
-        defer vk.vkDestroyShaderModule(device, vert_module, null);
-        const frag_module = try shaderModule(device, contract.frag_text_spv);
-        defer vk.vkDestroyShaderModule(device, frag_module, null);
-
-        const stages = [2]vk.VkPipelineShaderStageCreateInfo{
-            std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
-                .module = vert_module,
-                .pName = "main",
-            }),
-            std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
-                .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
-                .module = frag_module,
-                .pName = "main",
-            }),
+        var self = CallerPipelines{ .pipeline_layout = pipeline_layout };
+        errdefer for (self.pipelines) |p| {
+            if (p != null) vk.vkDestroyPipeline(device, p, null);
         };
-
-        // Vertex input straight from the contract.
-        const vi_binding = contract.vertexInputBinding();
-        const vi_attrs = contract.vertexInputAttributes();
-        const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
-            .vertexBindingDescriptionCount = 1,
-            .pVertexBindingDescriptions = &vi_binding,
-            .vertexAttributeDescriptionCount = @as(u32, vi_attrs.len),
-            .pVertexAttributeDescriptions = &vi_attrs,
-        });
-
-        const ia_info = std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
-            .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
-        });
-        const vp_info = std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
-            .viewportCount = 1,
-            .scissorCount = 1,
-        });
-        const rast_info = std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
-            .polygonMode = vk.VK_POLYGON_MODE_FILL,
-            .cullMode = vk.VK_CULL_MODE_NONE,
-            .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
-            .lineWidth = 1.0,
-        });
-        const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
-            .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
-        });
-        // Premultiplied-over (the text-coverage recipe's blend).
-        const blend_attach = std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
-            .blendEnable = @as(vk.VkBool32, 1),
-            .srcColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
-            .dstColorBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
-            .colorBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
-            .srcAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE)),
-            .dstAlphaBlendFactor = @as(vk.VkBlendFactor, @intCast(vk.VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA)),
-            .alphaBlendOp = @as(vk.VkBlendOp, @intCast(vk.VK_BLEND_OP_ADD)),
-            .colorWriteMask = @as(vk.VkColorComponentFlags, @intCast(vk.VK_COLOR_COMPONENT_R_BIT | vk.VK_COLOR_COMPONENT_G_BIT | vk.VK_COLOR_COMPONENT_B_BIT | vk.VK_COLOR_COMPONENT_A_BIT)),
-        });
-        const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
-            .attachmentCount = 1,
-            .pAttachments = &blend_attach,
-        });
-        const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
-        });
-        const dyn_states = [2]vk.VkDynamicState{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
-        const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
-            .dynamicStateCount = dyn_states.len,
-            .pDynamicStates = &dyn_states,
-        });
-
-        const ci = std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
-            .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
-            .stageCount = @as(u32, stages.len),
-            .pStages = &stages,
-            .pVertexInputState = &vi_info,
-            .pInputAssemblyState = &ia_info,
-            .pViewportState = &vp_info,
-            .pRasterizationState = &rast_info,
-            .pMultisampleState = &ms_info,
-            .pDepthStencilState = &ds_info,
-            .pColorBlendState = &blend_info,
-            .pDynamicState = &dyn_info,
-            .layout = pipeline_layout,
-            .renderPass = ctx.render_pass,
-            .subpass = 0,
-        });
-        var pipeline: vk.VkPipeline = null;
-        try check(vk.vkCreateGraphicsPipelines(device, null, 1, &ci, null, &pipeline));
-
-        return .{ .pipeline_layout = pipeline_layout, .pipeline = pipeline };
+        for (FAMILIES) |family| {
+            self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family));
+        }
+        return self;
     }
 
     fn record(
-        self: *CallerPipeline,
+        self: *CallerPipelines,
         cmd: vk.VkCommandBuffer,
         desc_set: vk.VkDescriptorSet,
         vbo: vk.VkBuffer,
         ibo: vk.VkBuffer,
         draw_state: snail.DrawState,
-        glyph_count: u32,
+        words: []const u32,
     ) void {
         vk.vkCmdBindIndexBuffer(cmd, ibo, 0, vk.VK_INDEX_TYPE_UINT32);
 
@@ -281,22 +211,119 @@ const CallerPipeline = struct {
 
         var set = desc_set;
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &set, 0, null);
-        vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline);
 
         var pc = contract.textPushConstants(draw_state, 0, true);
         vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
-        var buf = vbo;
-        const offset: vk.VkDeviceSize = 0;
-        vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
-        vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, glyph_count, 0, 0, 0);
+        const stride: vk.VkDeviceSize = contract.vertexInputBinding().stride;
+        var runs = contract.glyphRuns(words);
+        while (runs.next()) |run| {
+            const family = contract.familyForRunKind(run.kind);
+            const pipeline = self.pipelines[@intFromEnum(family)];
+            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
+
+            var buf = vbo;
+            const offset: vk.VkDeviceSize = @as(vk.VkDeviceSize, run.glyph_start) * stride;
+            vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
+            vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, @intCast(run.glyph_count), 0, 0, 0);
+        }
     }
 
-    fn deinit(self: *CallerPipeline, device: vk.VkDevice) void {
-        vk.vkDestroyPipeline(device, self.pipeline, null);
+    fn deinit(self: *CallerPipelines, device: vk.VkDevice) void {
+        for (self.pipelines) |p| {
+            if (p != null) vk.vkDestroyPipeline(device, p, null);
+        }
         vk.vkDestroyPipelineLayout(device, self.pipeline_layout, null);
     }
 };
+
+fn buildPipeline(ctx: snail.VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe) !vk.VkPipeline {
+    const device = ctx.device;
+    const vert_module = try shaderModule(device, contract.vert_spv);
+    defer vk.vkDestroyShaderModule(device, vert_module, null);
+    const frag_module = try shaderModule(device, r.frag_spv);
+    defer vk.vkDestroyShaderModule(device, frag_module, null);
+
+    const stages = [2]vk.VkPipelineShaderStageCreateInfo{
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_VERTEX_BIT,
+            .module = vert_module,
+            .pName = "main",
+        }),
+        std.mem.zeroInit(vk.VkPipelineShaderStageCreateInfo, .{
+            .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
+            .stage = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .module = frag_module,
+            .pName = "main",
+        }),
+    };
+
+    const vi_binding = contract.vertexInputBinding();
+    const vi_attrs = contract.vertexInputAttributes();
+    const vi_info = std.mem.zeroInit(vk.VkPipelineVertexInputStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
+        .vertexBindingDescriptionCount = 1,
+        .pVertexBindingDescriptions = &vi_binding,
+        .vertexAttributeDescriptionCount = @as(u32, vi_attrs.len),
+        .pVertexAttributeDescriptions = &vi_attrs,
+    });
+    const ia_info = std.mem.zeroInit(vk.VkPipelineInputAssemblyStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_INPUT_ASSEMBLY_STATE_CREATE_INFO,
+        .topology = vk.VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST,
+    });
+    const vp_info = std.mem.zeroInit(vk.VkPipelineViewportStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_VIEWPORT_STATE_CREATE_INFO,
+        .viewportCount = 1,
+        .scissorCount = 1,
+    });
+    const rast_info = std.mem.zeroInit(vk.VkPipelineRasterizationStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_RASTERIZATION_STATE_CREATE_INFO,
+        .polygonMode = vk.VK_POLYGON_MODE_FILL,
+        .cullMode = vk.VK_CULL_MODE_NONE,
+        .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        .lineWidth = 1.0,
+    });
+    const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_MULTISAMPLE_STATE_CREATE_INFO,
+        .rasterizationSamples = vk.VK_SAMPLE_COUNT_1_BIT,
+    });
+    const blend_attach = contract.blendAttachment(r.blend);
+    const blend_info = std.mem.zeroInit(vk.VkPipelineColorBlendStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
+        .attachmentCount = 1,
+        .pAttachments = &blend_attach,
+    });
+    const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+    });
+    const dyn_states = [2]vk.VkDynamicState{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
+    const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DYNAMIC_STATE_CREATE_INFO,
+        .dynamicStateCount = dyn_states.len,
+        .pDynamicStates = &dyn_states,
+    });
+
+    const ci = std.mem.zeroInit(vk.VkGraphicsPipelineCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
+        .stageCount = @as(u32, stages.len),
+        .pStages = &stages,
+        .pVertexInputState = &vi_info,
+        .pInputAssemblyState = &ia_info,
+        .pViewportState = &vp_info,
+        .pRasterizationState = &rast_info,
+        .pMultisampleState = &ms_info,
+        .pDepthStencilState = &ds_info,
+        .pColorBlendState = &blend_info,
+        .pDynamicState = &dyn_info,
+        .layout = layout,
+        .renderPass = ctx.render_pass,
+        .subpass = 0,
+    });
+    var pipeline: vk.VkPipeline = null;
+    try check(vk.vkCreateGraphicsPipelines(device, null, 1, &ci, null, &pipeline));
+    return pipeline;
+}
 
 fn shaderModule(device: vk.VkDevice, spv: []align(4) const u8) !vk.VkShaderModule {
     const ci = std.mem.zeroInit(vk.VkShaderModuleCreateInfo, .{
