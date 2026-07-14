@@ -704,27 +704,6 @@ fn addScreenshotSteps(
         const run_screenshot_vulkan = b.addRunArtifact(screenshot_vulkan_exe);
         const screenshot_vulkan_step = b.step("run-screenshot-vulkan", "Render the demo through the Vulkan backend and write zig-out/demo-screenshot-vulkan.tga");
         screenshot_vulkan_step.dependOn(&run_screenshot_vulkan.step);
-
-        // Vulkan embeddable-path test vehicle: a caller-owned pipeline built
-        // from the public contract, byte-diffed against the all-in-one.
-        const embeddable_vulkan_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/embeddable_vulkan.zig"),
-            .target = config.target,
-            .optimize = .ReleaseFast,
-            .link_libc = true,
-            .imports = &.{
-                .{ .name = "assets", .module = modules.assets },
-                .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
-                .{ .name = "support", .module = release_support_mod },
-                .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
-                .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
-            },
-        });
-        const embeddable_vulkan_exe = b.addExecutable(.{ .name = "snail-embeddable-vulkan", .root_module = embeddable_vulkan_mod });
-        const run_embeddable_vulkan = b.addRunArtifact(embeddable_vulkan_exe);
-        const embeddable_vulkan_step = b.step("run-embeddable-vulkan", "Render text through a caller-owned Vulkan pipeline (embeddable contract) and byte-diff vs the all-in-one");
-        embeddable_vulkan_step.dependOn(&run_embeddable_vulkan.step);
     }
 }
 

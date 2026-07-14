@@ -128,7 +128,6 @@ pub const Gl33BackendCache = gl.Gl33BackendCache;
 pub const Gl44BackendCache = gl.Gl44BackendCache;
 pub const Gles30BackendCache = gl.Gles30BackendCache;
 
-pub const VulkanRenderer = vulkan.VulkanRenderer;
 pub const VulkanContext = vulkan.VulkanContext;
 pub const VulkanBackendCache = vulkan.VulkanBackendCache;
 

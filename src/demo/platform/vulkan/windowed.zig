@@ -202,7 +202,6 @@ fn initForCurrentWindow() !snail.VulkanContext {
         .graphics_queue = @ptrCast(graphics_queue),
         .queue_family_index = queue_family_index,
         .render_pass = @ptrCast(render_pass),
-        .color_format = @intCast(swapchain_format),
         .supports_dual_source_blend = supports_dual_source_blend,
     };
 }

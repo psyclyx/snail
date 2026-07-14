@@ -51,7 +51,6 @@ pub fn initOffscreen(width: u32, height: u32) !snail.VulkanContext {
         .graphics_queue = @ptrCast(graphics_queue),
         .queue_family_index = queue_family_index,
         .render_pass = @ptrCast(offscreen_render_pass),
-        .color_format = @intCast(OFFSCREEN_FORMAT),
         .supports_dual_source_blend = supports_dual_source_blend,
     };
 }
