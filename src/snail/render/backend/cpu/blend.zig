@@ -1,5 +1,5 @@
 const std = @import("std");
-const snail = @import("../../../root.zig");
+const snail = @import("../../../core.zig");
 const cpu_color = @import("color.zig");
 const cpu_coverage = @import("coverage.zig");
 

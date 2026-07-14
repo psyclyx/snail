@@ -1,9 +1,9 @@
 const std = @import("std");
-const snail = @import("../../../root.zig");
+const snail = @import("../../../core.zig");
 const color = @import("color.zig");
-const atlas_mod = @import("../../../atlas.zig");
-const band_tex = @import("../../../format/band_texture.zig");
-const render_abi = @import("../../../format/abi.zig");
+const atlas_mod = @import("../../../core.zig").files.atlas;
+const band_tex = @import("../../../core.zig").files.format_band_texture;
+const render_abi = @import("../../../core.zig").files.format_abi;
 
 const PaintImageRecord = atlas_mod.PaintImageRecord;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -546,7 +546,7 @@ test "conic gradient sweeps angle to t" {
 }
 
 test "paint record round-trips: Paint → encode → decode → sample" {
-    const paint_records = @import("../../../atlas/paint_records.zig");
+    const paint_records = @import("../../../core.zig").files.atlas_paint_records;
     const be = band_tex.GlyphBandEntry{
         .glyph_x = 0,
         .glyph_y = 0,

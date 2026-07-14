@@ -8,15 +8,15 @@
 //! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
-const snail = @import("../../../root.zig");
-const bezier = @import("../../../math/bezier.zig");
-const band_tex = @import("../../../format/band_texture.zig");
-const render_abi = @import("../../../format/abi.zig");
-const text_hint_format = @import("../../../format/text_hint.zig");
-const autohint_record = @import("../../../format/autohint_record.zig");
-const autohint_warp = @import("../../../font/autohint/warp.zig");
-const autohint_policy = @import("../../../font/autohint/policy.zig");
-const vertex = @import("../../../format/vertex.zig");
+const snail = @import("../../../core.zig");
+const bezier = @import("../../../core.zig").files.math_bezier;
+const band_tex = @import("../../../core.zig").files.format_band_texture;
+const render_abi = @import("../../../core.zig").files.format_abi;
+const text_hint_format = @import("../../../core.zig").files.format_text_hint;
+const autohint_record = @import("../../../core.zig").files.format_autohint_record;
+const autohint_warp = @import("../../../core.zig").files.font_autohint_warp;
+const autohint_policy = @import("../../../core.zig").files.font_autohint_policy;
+const vertex = @import("../../../core.zig").files.format_vertex;
 
 /// Caller-owned transient fitted knots for one glyph draw.
 pub const AutohintWarp = struct {

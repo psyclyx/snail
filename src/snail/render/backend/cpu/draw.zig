@@ -13,12 +13,12 @@
 const std = @import("std");
 
 const build_options = @import("build_options");
-const snail = @import("../../../root.zig");
-const math = @import("../../../math/vec.zig");
-const draw_records = @import("../../../picture/draw_records.zig");
+const snail = @import("../../../core.zig");
+const math = @import("../../../core.zig").files.math_vec;
+const draw_records = @import("../../../core.zig").files.picture_draw_records;
 const cpu_upload_mod = @import("backend_cache.zig");
 const cpu_resources = @import("resources.zig");
-const vertex = @import("../../../format/vertex.zig");
+const vertex = @import("../../../core.zig").files.format_vertex;
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -217,13 +217,13 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    var pool_a = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool_a = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });
     defer pool_a.deinit();
-    var pool_b = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool_b = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
@@ -234,7 +234,7 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
-    var renderer = snail.CpuRenderer.init(&pixels, 16, 16, 16 * 4);
+    var renderer = @import("renderer.zig").CpuRenderer.init(&pixels, 16, 16, 16 * 4);
     const state = makeIdentityState(16, 16);
 
     const segments = [_]draw_records.DrawSegment{.{
@@ -270,14 +270,14 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    const key = @import("../../../core.zig").files.atlas_record_key.unhintedGlyph(0, gid);
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
     var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -287,13 +287,13 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     const binding = bindings[0];
 
     const px_size: f32 = 16.0;
-    const base_shape = @import("../../../picture/shape.zig").Shape{
+    const base_shape = @import("../../../core.zig").files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 16, .ty = 48 },
         .local_color = .{ 1, 1, 1, 1 },
     };
 
-    const overrides = [_]@import("../../../picture/shape.zig").Override{
+    const overrides = [_]@import("../../../core.zig").files.picture_shape.Override{
         .{ .transform = .identity, .tint = .{ 1, 1, 1, 1 } },
         .{ .transform = Transform2D.translate(20, 0), .tint = .{ 1, 1, 1, 1 } },
         .{ .transform = Transform2D.translate(40, 0), .tint = .{ 1, 1, 1, 1 } },
@@ -302,7 +302,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
     // Heterogeneous: emit the shape three times, one for each override
     // transform composed into the shape's local_transform.
     {
-        var shapes = std.ArrayList(@import("../../../picture/shape.zig").Shape).empty;
+        var shapes = std.ArrayList(@import("../../../core.zig").files.picture_shape.Shape).empty;
         defer shapes.deinit(allocator);
         for (overrides) |ov| {
             var s = base_shape;
@@ -310,7 +310,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
             try shapes.append(allocator, s);
         }
 
-        const emit_mod = @import("../../../picture/emit.zig");
+        const emit_mod = @import("../../../core.zig").files.picture_emit;
         const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len, 0));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
@@ -318,16 +318,16 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
         var slen: usize = 0;
         _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, shapes.items, .identity, .{ 1, 1, 1, 1 });
 
-        var renderer = snail.CpuRenderer.init(px_hetero.ptr, W, H, STRIDE);
+        var renderer = @import("renderer.zig").CpuRenderer.init(px_hetero.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
         try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
     }
 
     // Replicated: one base shape, three overrides via emitInstanced.
     {
-        const shapes = [_]@import("../../../picture/shape.zig").Shape{base_shape};
+        const shapes = [_]@import("../../../core.zig").files.picture_shape.Shape{base_shape};
 
-        const emit_mod = @import("../../../picture/emit.zig");
+        const emit_mod = @import("../../../core.zig").files.picture_emit;
         const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, overrides.len));
         defer allocator.free(words);
         var segs: [4]draw_records.DrawSegment = undefined;
@@ -335,7 +335,7 @@ test "drawCpu replicated produces same pixels as equivalent heterogeneous emit" 
         var slen: usize = 0;
         _ = try emit_mod.emitInstanced(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, &overrides);
 
-        var renderer = snail.CpuRenderer.init(px_repl.ptr, W, H, STRIDE);
+        var renderer = @import("renderer.zig").CpuRenderer.init(px_repl.ptr, W, H, STRIDE);
         const state = makeIdentityState(W, H);
         try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
     }
@@ -347,10 +347,10 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
     if (!build_options.enable_cpu) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
-    const atlas_mod = @import("../../../atlas.zig");
-    const record_key_mod = @import("../../../atlas/record_key.zig");
-    const shape_mod = @import("../../../picture/shape.zig");
-    const emit_mod = @import("../../../picture/emit.zig");
+    const atlas_mod = @import("../../../core.zig").files.atlas;
+    const record_key_mod = @import("../../../core.zig").files.atlas_record_key;
+    const shape_mod = @import("../../../core.zig").files.picture_shape;
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
 
     const W: u32 = 48;
     const H: u32 = 40;
@@ -368,7 +368,7 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
     const glyph_features = try analyzer.analyzeGlyph(allocator, gid, &x_features, &y_features);
     try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -430,7 +430,7 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
             var wlen: usize = 0;
             var slen: usize = 0;
             _ = try emit_mod.emit(&words, &segs, &wlen, &slen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
-            var renderer = snail.CpuRenderer.init(pixels.ptr, W, H, STRIDE);
+            var renderer = @import("renderer.zig").CpuRenderer.init(pixels.ptr, W, H, STRIDE);
             try drawCpu(&renderer, makeIdentityState(W, H), .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{cache_ptr}, null);
         }
     };
@@ -485,17 +485,17 @@ test "drawCpu renders a small Picture into non-zero pixels" {
 
     const gid = try font.glyphIndex('A');
     const curves_a = try font.extractCurves(allocator, allocator, gid);
-    var owned: [1]@import("../../../atlas/curves.zig").GlyphCurves = .{curves_a};
+    var owned: [1]@import("../../../core.zig").files.atlas_curves.GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
+    const key = @import("../../../core.zig").files.atlas_record_key.unhintedGlyph(0, gid);
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
     var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -508,7 +508,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     // shape's scale is just the requested px size.
     const px_size: f32 = 24.0;
     const scale: f32 = px_size;
-    const shape = @import("../../../picture/shape.zig").Shape{
+    const shape = @import("../../../core.zig").files.picture_shape.Shape{
         .key = key,
         .local_transform = .{
             .xx = scale,
@@ -520,9 +520,9 @@ test "drawCpu renders a small Picture into non-zero pixels" {
         },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
+    const shapes = [_]@import("../../../core.zig").files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("../../../picture/emit.zig");
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
     const word_need = emit_mod.wordBudget(shapes.len, 0);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
@@ -531,7 +531,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
     const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
     try drawCpu(&renderer, state, records, &.{&cache}, null);
@@ -563,13 +563,13 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
+    const key = @import("../../../core.zig").files.atlas_record_key.unhintedGlyph(0, gid);
 
     // Linear gradient running across the glyph's local-em width.
     const gradient = snail.LinearGradient{
@@ -578,7 +578,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
         .start_color = .{ 1, 0, 0, 1 },
         .end_color = .{ 0, 0, 1, 1 },
     };
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .linear_gradient = gradient },
@@ -594,14 +594,14 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 32.0;
-    const shape = @import("../../../picture/shape.zig").Shape{
+    const shape = @import("../../../core.zig").files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
+    const shapes = [_]@import("../../../core.zig").files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("../../../picture/emit.zig");
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -609,7 +609,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
     try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
@@ -657,7 +657,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
     defer image.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -666,17 +666,17 @@ test "drawCpu renders image-painted shape through special-layer path" {
 
     // Square-ish path covering [0..1, 0..1] in local coords; the local
     // shape transform scales to pixel size.
-    var path = @import("../../../path.zig").Path.init(allocator);
+    var path = @import("../../../core.zig").files.path.Path.init(allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
     var path_curves = try path.toCurves(allocator, allocator);
     defer path_curves.deinit();
 
-    const key = @import("../../../atlas/record_key.zig").RecordKey{
-        .namespace = @import("../../../atlas/record_key.zig").ns.path_fill,
+    const key = @import("../../../core.zig").files.atlas_record_key.RecordKey{
+        .namespace = @import("../../../core.zig").files.atlas_record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = path_curves,
         .paint = .{ .image = .{
@@ -697,14 +697,14 @@ test "drawCpu renders image-painted shape through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 20.0;
-    const shape = @import("../../../picture/shape.zig").Shape{
+    const shape = @import("../../../core.zig").files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
+    const shapes = [_]@import("../../../core.zig").files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("../../../picture/emit.zig");
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -712,7 +712,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = snail.CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
     try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
@@ -747,30 +747,30 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     var font = try snail.Font.init(font_data);
 
     const glyphs = "Hello, world!";
-    const Owned = @import("../../../atlas/curves.zig").GlyphCurves;
+    const Owned = @import("../../../core.zig").files.atlas_curves.GlyphCurves;
     var owned: std.ArrayList(Owned) = .empty;
     defer {
         for (owned.items) |*c| c.deinit();
         owned.deinit(allocator);
     }
-    var entries: std.ArrayList(@import("../../../atlas.zig").Entry) = .empty;
+    var entries: std.ArrayList(@import("../../../core.zig").files.atlas.Entry) = .empty;
     defer entries.deinit(allocator);
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
 
-    var shapes: std.ArrayList(@import("../../../picture/shape.zig").Shape) = .empty;
+    var shapes: std.ArrayList(@import("../../../core.zig").files.picture_shape.Shape) = .empty;
     defer shapes.deinit(allocator);
 
     const px_size: f32 = 18.0;
     var pen_x: f32 = 4;
     for (glyphs) |c| {
         const gid = try font.glyphIndex(c);
-        const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
+        const key = @import("../../../core.zig").files.atlas_record_key.unhintedGlyph(0, gid);
         if (!containsEntryKey(entries.items, key)) {
             const curves = try font.extractCurves(allocator, allocator, gid);
             try owned.append(allocator, curves);
@@ -784,14 +784,14 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
         pen_x += px_size * 0.55;
     }
 
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, entries.items);
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, entries.items);
     defer atlas.deinit();
     var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
-    const emit_mod = @import("../../../picture/emit.zig");
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -804,7 +804,7 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     const px_serial = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_serial);
     @memset(px_serial, 0);
-    var renderer_serial = snail.CpuRenderer.init(px_serial.ptr, W, H, STRIDE);
+    var renderer_serial = @import("renderer.zig").CpuRenderer.init(px_serial.ptr, W, H, STRIDE);
     try drawCpu(&renderer_serial, state, records, &.{&cache}, null);
 
     const px_threaded = try allocator.alloc(u8, H * STRIDE);
@@ -815,13 +815,13 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     try thread_pool.init(allocator, .{ .threads = 3 });
     defer thread_pool.deinit();
 
-    var renderer_threaded = snail.CpuRenderer.init(px_threaded.ptr, W, H, STRIDE);
+    var renderer_threaded = @import("renderer.zig").CpuRenderer.init(px_threaded.ptr, W, H, STRIDE);
     try drawCpu(&renderer_threaded, state, records, &.{&cache}, &thread_pool);
 
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("../../../atlas.zig").Entry, key: @import("../../../atlas/record_key.zig").RecordKey) bool {
+fn containsEntryKey(entries: []const @import("../../../core.zig").files.atlas.Entry, key: @import("../../../core.zig").files.atlas_record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -840,7 +840,7 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     const geometry = @import("geometry.zig");
     const Vec2 = math.Vec2;
 
-    var path = @import("../../../path.zig").Path.init(allocator);
+    var path = @import("../../../core.zig").files.path.Path.init(allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0.5, .y = 0 });
     try path.cubicTo(.{ .x = 0.95, .y = 0.2 }, .{ .x = 0.95, .y = 0.8 }, .{ .x = 0.5, .y = 1 });
@@ -849,17 +849,17 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     var curves = try path.toCurves(allocator, allocator);
     defer curves.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../atlas/record_key.zig").RecordKey{
-        .namespace = @import("../../../atlas/record_key.zig").ns.path_fill,
+    const key = @import("../../../core.zig").files.atlas_record_key.RecordKey{
+        .namespace = @import("../../../core.zig").files.atlas_record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
@@ -933,14 +933,14 @@ test "drawCpu scissor_rect clips writes to the rect" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("../../../atlas/page_pool.zig").PagePool.init(allocator, .{
+    var pool = try @import("../../../core.zig").files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("../../../atlas/record_key.zig").unhintedGlyph(0, gid);
-    var atlas = try @import("../../../atlas.zig").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    const key = @import("../../../core.zig").files.atlas_record_key.unhintedGlyph(0, gid);
+    var atlas = try @import("../../../core.zig").files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
     var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -949,14 +949,14 @@ test "drawCpu scissor_rect clips writes to the rect" {
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
     const px_size: f32 = 36.0;
-    const shape = @import("../../../picture/shape.zig").Shape{
+    const shape = @import("../../../core.zig").files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 8, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("../../../picture/shape.zig").Shape{shape};
+    const shapes = [_]@import("../../../core.zig").files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("../../../picture/emit.zig");
+    const emit_mod = @import("../../../core.zig").files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len, 0));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -970,7 +970,7 @@ test "drawCpu scissor_rect clips writes to the rect" {
     const px_full = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_full);
     @memset(px_full, 0);
-    var ren_full = snail.CpuRenderer.init(px_full.ptr, W, H, STRIDE);
+    var ren_full = @import("renderer.zig").CpuRenderer.init(px_full.ptr, W, H, STRIDE);
     const state_full = makeIdentityState(W, H);
     try drawCpu(&ren_full, state_full, records, &.{&cache}, null);
 
@@ -980,7 +980,7 @@ test "drawCpu scissor_rect clips writes to the rect" {
     const px_clip = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_clip);
     @memset(px_clip, 0);
-    var ren_clip = snail.CpuRenderer.init(px_clip.ptr, W, H, STRIDE);
+    var ren_clip = @import("renderer.zig").CpuRenderer.init(px_clip.ptr, W, H, STRIDE);
     var state_clip = makeIdentityState(W, H);
     state_clip.scissor_rect = .{ .x = 24, .y = 0, .w = 24, .h = H };
     try drawCpu(&ren_clip, state_clip, records, &.{&cache}, null);

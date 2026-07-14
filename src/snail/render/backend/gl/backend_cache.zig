@@ -21,15 +21,15 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("../../../atlas.zig");
-const draw_records = @import("../../../picture/draw_records.zig");
-const page_pool_mod = @import("../../../atlas/page_pool.zig");
-const page_mod = @import("../../../atlas/page.zig");
-const curve_tex = @import("../../../format/curve_texture.zig");
-const band_tex = @import("../../../format/band_texture.zig");
-const paint_records = @import("../../../atlas/paint_records.zig");
-const upload_common = @import("../../../format/upload_common.zig");
-const image_mod = @import("../../../image.zig");
+const atlas_mod = @import("../../../core.zig").files.atlas;
+const draw_records = @import("../../../core.zig").files.picture_draw_records;
+const page_pool_mod = @import("../../../core.zig").files.atlas_page_pool;
+const page_mod = @import("../../../core.zig").files.atlas_page;
+const curve_tex = @import("../../../core.zig").files.format_curve_texture;
+const band_tex = @import("../../../core.zig").files.format_band_texture;
+const paint_records = @import("../../../core.zig").files.atlas_paint_records;
+const upload_common = @import("../../../core.zig").files.format_upload_common;
+const image_mod = @import("../../../core.zig").files.image;
 const cache_base = @import("../cache.zig");
 const range_allocator = @import("../range_allocator.zig");
 

@@ -11,10 +11,10 @@ const std = @import("std");
 
 const vulkan_types = @import("types.zig");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const vertex = @import("../../../format/vertex.zig");
-const snail_mod = @import("../../../root.zig");
+const vertex = @import("../../../core.zig").files.format_vertex;
+const snail_mod = @import("../../../core.zig");
 const vulkan_upload_new = @import("backend_cache.zig");
-const draw_records_mod = @import("../../../picture/draw_records.zig");
+const draw_records_mod = @import("../../../core.zig").files.picture_draw_records;
 const pipeline_constants = @import("constants.zig");
 const vulkan_graphics = @import("graphics_pipeline.zig");
 const pipeline_mod = @import("pipeline.zig");

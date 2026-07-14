@@ -1,11 +1,11 @@
 const std = @import("std");
 const subpixel_policy = @import("../subpixel_policy.zig");
-const snail_mod = @import("../../../root.zig");
-const SubpixelOrder = @import("../../../format/subpixel_order.zig").SubpixelOrder;
+const snail_mod = @import("../../../core.zig");
+const SubpixelOrder = @import("../../../core.zig").files.format_subpixel_order.SubpixelOrder;
 const DrawState = snail_mod.DrawState;
 const vulkan_types = @import("types.zig");
 const vulkan_upload_new = @import("backend_cache.zig");
-const draw_records_mod = @import("../../../picture/draw_records.zig");
+const draw_records_mod = @import("../../../core.zig").files.picture_draw_records;
 
 pub const vk = vulkan_types.vk;
 
