@@ -19,7 +19,7 @@ pub const Context = struct {
         try self.initDisplay(api);
         errdefer self.deinit();
 
-        try egl_common.chooseConfig(egl, self.display, egl.EGL_PBUFFER_BIT, api, &self.config);
+        try egl_common.chooseConfig(egl, self.display, egl.EGL_PBUFFER_BIT, api, 0, &self.config);
         self.surface = createPbufferSurface(self.display, self.config, width, height) orelse return error.EglSurfaceCreateFailed;
         self.context = try egl_common.createOpenGlContext(egl, api, self.display, self.config);
         if (egl.eglMakeCurrent(self.display, self.surface, self.surface, self.context) == egl.EGL_FALSE) {

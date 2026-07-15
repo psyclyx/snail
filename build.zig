@@ -652,6 +652,28 @@ fn addScreenshotSteps(
     const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
     screenshot_gl_step.dependOn(&run_screenshot_gl.step);
 
+    // Offscreen (no-window) game-scene screenshot per GL backend — the game's
+    // headless verification harness. Writes zig-out/game-<backend>.tga.
+    if (config.core_options.enable_gl33 or config.core_options.enable_gl44 or config.core_options.enable_gles30) {
+        const game_shot_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/game_screenshot.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
+                .{ .name = "support", .module = release_support_mod },
+            },
+        });
+        configureEglOffscreenModule(game_shot_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+        const game_shot_exe = b.addExecutable(.{ .name = "snail-game-screenshot", .root_module = game_shot_mod });
+        const run_game_shot = b.addRunArtifact(game_shot_exe);
+        const game_shot_step = b.step("run-game-screenshot", "Render the game scene offscreen per GL backend → zig-out/game-<backend>.tga");
+        game_shot_step.dependOn(&run_game_shot.step);
+    }
+
     // CPU-vs-GL pixel parity gate over the shared content scene.
     const backend_compare_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/backend_compare.zig"),
@@ -789,11 +811,11 @@ fn addGameDemoStep(
     config: BuildConfig,
     modules: ProjectModules,
 ) void {
-    // The game demo is GL 3.3 only: a 3D room with HUD + world-space text
-    // sampled through `snail.coverage.Shader.gl33.sample_functions`. It does
-    // not exercise Vulkan / GLES30 / CPU backends, but it does need the
-    // Wayland-EGL platform layer and the xdg-shell C protocol.
-    if (!config.core_options.enable_gl33) return;
+    // The game demo cycles the GL family (gl33/gl44/gles30) at runtime — a 3D
+    // scene whose custom material shader samples snail glyph coverage. Needs the
+    // Wayland-EGL platform layer + the xdg-shell C protocol. (Vulkan lands in a
+    // later stage.)
+    if (!(config.core_options.enable_gl33 or config.core_options.enable_gl44 or config.core_options.enable_gles30)) return;
 
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
     const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail);
@@ -817,14 +839,15 @@ fn addGameDemoStep(
     game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/presentation-time-client-protocol.c") });
     game_mod.linkSystemLibrary("EGL", .{});
     game_mod.linkSystemLibrary("wayland-egl", .{});
-    game_mod.linkSystemLibrary("OpenGL", .{});
+    if (config.core_options.enable_gl33 or config.core_options.enable_gl44) game_mod.linkSystemLibrary("OpenGL", .{});
+    if (config.core_options.enable_gles30) game_mod.linkSystemLibrary("GLESv2", .{});
     if (config.core_options.enable_harfbuzz) game_mod.linkSystemLibrary("harfbuzz", .{});
 
     const game_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_mod });
     b.installArtifact(game_exe);
     const run_game = b.addRunArtifact(game_exe);
     if (b.args) |args| run_game.addArgs(args);
-    const run_step = b.step("run-game", "Run the interactive Wayland 3D game demo (GL 3.3)");
+    const run_step = b.step("run-game", "Run the interactive Wayland 3D game demo (GL family)");
     run_step.dependOn(&run_game.step);
 }
 
