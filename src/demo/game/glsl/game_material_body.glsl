@@ -39,13 +39,17 @@ float snailGameHeight(vec2 q) {
 /// `roughness` surface bump strength
 /// returns premultiplied-linear-ish opaque surface color.
 vec3 snailGameMaterial(vec2 uv, vec2 scene_pos, vec2 texel, vec3 light_dir, vec4 base, float relief, float roughness) {
-    // Text coverage at the fragment + two neighbors (relief gradient).
-    float c  = snail_text_sample_premul_linear(scene_pos).a;
-    float cx = snail_text_sample_premul_linear(scene_pos + vec2(texel.x, 0.0)).a;
-    float cy = snail_text_sample_premul_linear(scene_pos + vec2(0.0, texel.y)).a;
+    // Coverage as a height field. A *centered* difference over a wide `texel`
+    // gives each stroke visible sloped sides (a single forward diff over 1px is
+    // an invisibly thin rim) — the raking light then reveals the strokes as
+    // relief, so they read as carved into the surface rather than painted flat.
+    float c   = snail_text_sample_premul_linear(scene_pos).a;
+    float cxp = snail_text_sample_premul_linear(scene_pos + vec2(texel.x, 0.0)).a;
+    float cxn = snail_text_sample_premul_linear(scene_pos - vec2(texel.x, 0.0)).a;
+    float cyp = snail_text_sample_premul_linear(scene_pos + vec2(0.0, texel.y)).a;
+    float cyn = snail_text_sample_premul_linear(scene_pos - vec2(0.0, texel.y)).a;
 
-    // Procedural rough-surface normal from the height-field gradient. A low base
-    // frequency + fractal octaves gives a stone-like surface rather than static.
+    // Procedural rough-surface height gradient: fractal octaves for a stone feel.
     vec2 q = uv * 13.0;
     float e = 0.6;
     float h0 = snailGameHeight(q);
@@ -53,23 +57,24 @@ vec3 snailGameMaterial(vec2 uv, vec2 scene_pos, vec2 texel, vec3 light_dir, vec4
     float hy = snailGameHeight(q + vec2(0.0, e));
     vec2 rough_grad = vec2(hx - h0, hy - h0) * roughness;
 
-    // Text relief: glyphs stand proud of the surface — tilt the normal at the
-    // coverage edges so the light rakes across the lettering.
-    vec2 relief_grad = vec2(cx - c, cy - c) * relief;
+    // Text emboss: the strokes stand proud; their sloped sides tilt the normal.
+    vec2 relief_grad = vec2(cxp - cxn, cyp - cyn) * (0.5 * relief);
 
     vec3 n = normalize(vec3(-(rough_grad + relief_grad), 1.0));
     vec3 L = normalize(light_dir);
     float diff = max(dot(n, L), 0.0);
     vec3 view = vec3(0.0, 0.0, 1.0);
     vec3 half_v = normalize(L + view);
-    float spec = pow(max(dot(n, half_v), 0.0), 26.0);
+    float spec = pow(max(dot(n, half_v), 0.0), 32.0);
 
-    // Baked occlusion in the surface crevices; the base surface is lit + speckled.
-    float ao = 0.8 + 0.2 * h0;
-    vec3 surface = base.rgb * (0.16 + 1.0 * diff) * ao + vec3(0.9, 0.95, 1.0) * spec * 0.35;
-
-    // The lettering is a brighter inlaid material that catches the light harder.
-    vec3 ink = vec3(0.78, 0.86, 1.0) * (0.22 + 1.25 * diff) + vec3(1.0) * spec * 0.9;
-
-    return mix(surface, ink, clamp(c, 0.0, 1.0));
+    // One carved material: dark stone, with the strokes as a slightly brighter,
+    // more reflective inlay. Crucially the inlay shares the *same* relief-lit
+    // normal `n`, so the letters' shading comes from their bevels catching the
+    // moving light — one side bright, the other in shadow — not from a flat fill.
+    float ink = clamp(c, 0.0, 1.0);
+    float ao = 0.85 + 0.15 * h0;
+    vec3 albedo = mix(base.rgb, vec3(0.34, 0.40, 0.52), ink);
+    vec3 lit = albedo * (0.13 + (0.85 + 0.45 * ink) * diff) * ao
+             + vec3(0.85, 0.92, 1.0) * spec * (0.35 + 0.9 * ink);
+    return lit;
 }

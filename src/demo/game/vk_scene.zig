@@ -327,9 +327,18 @@ pub const VkSceneRenderer = struct {
         vk.vkCmdBindVertexBuffers(cmd, 0, 1, &quad_buf, &quad_off);
         vk.vkCmdDraw(cmd, 6, 1, 0, 0);
 
-        // 2/3/4. snail passes (depth-tested via caller's depth_test pipelines).
-        try self.drawSnailPass(cmd, desc0, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
-        try self.drawSnailPass(cmd, desc0, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
+        // 2/3. Label + translucent panel, depth-tested against the material
+        // quad but writing no depth, so drawn back-to-front among themselves
+        // (see Scene.labelBeforePanel) — otherwise the panel paints over a
+        // nearer label.
+        if (scene.labelBeforePanel()) {
+            try self.drawSnailPass(cmd, desc0, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, desc0, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
+        } else {
+            try self.drawSnailPass(cmd, desc0, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, desc0, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+        }
+        // 4. HUD.
         const hud_mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         try self.drawSnailPass(cmd, desc0, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
     }

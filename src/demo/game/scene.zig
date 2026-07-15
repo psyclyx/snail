@@ -43,7 +43,7 @@ pub const vulkan_z_fix = snail.Mat4{ .data = .{
 pub const OrbitCamera = struct {
     // Default: a near face-on framing (sign occludes the label behind it),
     // static until `R` starts the orbit.
-    angle: f32 = 0.16,
+    angle: f32 = 0.42,
     radius: f32 = 6.2,
     height: f32 = 1.75,
     target: Vec3 = .{ .x = 0.0, .y = 1.45, .z = 0.0 },
@@ -120,26 +120,30 @@ pub const Scene = struct {
         var hud = try buildHud(allocator, fonts, window_w, "renderer …", "");
         errdefer hud.deinit();
 
-        // material quad: an opaque lit sign centered a touch above the target.
-        const material_model = common.composeModel(.{ .x = 0.0, .y = 1.55, .z = 0.0 }, 0.0, 0.0, .{ .x = 3.1, .y = 1.72, .z = 1.0 });
-        // label plane: centered *behind* the sign, a little wider than it, so
-        // the opaque material quad occludes the middle while the ends peek past
-        // both edges. Kept narrow enough that its ends don't reach the panel.
+        // material quad: an opaque lit sign, the hero, centered a touch above
+        // the target and slightly toward the camera so it occludes the label.
+        const material_model = common.composeModel(.{ .x = -1.75, .y = 1.55, .z = 0.35 }, 0.0, 0.0, .{ .x = 3.1, .y = 1.72, .z = 1.0 });
+        // label plane: a world sign to the right, its left edge tucked *behind*
+        // the opaque material quad so the quad depth-occludes it (opaque over
+        // opaque) — the demo's "depth-tested world text".
         const label_plane = Plane{
             .scene_w = label_scene_w,
             .scene_h = label_scene_h,
-            .pos = .{ .x = 1.95, .y = 1.52, .z = -0.5 },
-            .rot_y = -0.12,
-            .world_w = 3.4,
-            .world_h = 1.2,
+            .pos = .{ .x = 0.55, .y = 1.55, .z = 0.0 },
+            .rot_y = -0.18,
+            .world_w = 3.0,
+            .world_h = 1.06,
         };
-        // translucent glass panel: floating well to the left, angled toward the
-        // camera, clear of the label's peeking ends.
+        // translucent glass panel: behind the label and offset right, so it
+        // peeks out past the label's right edge while the label correctly
+        // occludes the part behind it (the fix: back-to-front compositing, not
+        // "translucent painted over the nearer sign"). As the camera orbits, the
+        // two swap depth order and the panel reads as glass in front instead.
         const panel_plane = Plane{
             .scene_w = panel_scene_w,
             .scene_h = panel_scene_h,
-            .pos = .{ .x = -3.85, .y = 1.4, .z = 1.4 },
-            .rot_y = 0.6,
+            .pos = .{ .x = 2.05, .y = 1.5, .z = -1.15 },
+            .rot_y = 0.5,
             .world_w = 2.25,
             .world_h = 1.47,
         };
@@ -182,6 +186,17 @@ pub const Scene = struct {
         return common.buildViewProjection(self.cam.camera(), aspect);
     }
 
+    /// Should the label be drawn before the panel? The label and panel are both
+    /// depth-tested against the opaque material quad but write no depth
+    /// themselves (one is translucent), so they must be composited in
+    /// back-to-front painter's order among themselves — otherwise a translucent
+    /// panel drawn after a nearer opaque label paints over it. Returns true when
+    /// the label is the farther of the two from the camera (draw it first).
+    pub fn labelBeforePanel(self: *const Scene) bool {
+        const cam = self.cam.camera().pos;
+        return camDist2(cam, self.label_plane.pos) >= camDist2(cam, self.panel_plane.pos);
+    }
+
     /// Tangent-space light direction for the material surface; sweeps with
     /// `light_phase` so the light rakes across the roughness + text relief.
     pub fn lightDir(self: *const Scene) [3]f32 {
@@ -194,6 +209,13 @@ pub const Scene = struct {
         return v;
     }
 };
+
+fn camDist2(cam: Vec3, p: Vec3) f32 {
+    const dx = cam.x - p.x;
+    const dy = cam.y - p.y;
+    const dz = cam.z - p.z;
+    return dx * dx + dy * dy + dz * dz;
+}
 
 // Material surface parameters (linear).
 pub const material_base_color = [4]f32{ 0.055, 0.065, 0.085, 1.0 };

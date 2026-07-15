@@ -132,12 +132,19 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
                 output_srgb,
             );
 
-            // 2. Depth-tested occluded label (depth-test on, depth-write off).
+            // 2 & 3. The label (opaque sign) and translucent panel are both
+            // depth-tested against the material quad but write no depth
+            // themselves, so they must be drawn back-to-front among themselves
+            // (painter's order) — otherwise the translucent panel paints over a
+            // nearer label. Draw the farther one first.
             gl.glDepthMask(gl.GL_FALSE);
-            try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), surface);
-
-            // 3. Translucent world panel (painter's order; depth-write off).
-            try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), surface);
+            if (scene.labelBeforePanel()) {
+                try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), surface);
+                try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), surface);
+            } else {
+                try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), surface);
+                try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), surface);
+            }
 
             // 4. HUD overlay (screen space; no depth).
             gl.glDisable(gl.GL_DEPTH_TEST);

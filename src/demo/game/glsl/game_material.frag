@@ -44,7 +44,7 @@ layout(push_constant) uniform PC {
 
 void main() {
     vec2 scene_pos = vec2(v_uv.x * pc.scene_size.x, (1.0 - v_uv.y) * pc.scene_size.y);
-    vec2 texel = pc.scene_size * 0.004;
+    vec2 texel = pc.scene_size * 0.009;
     vec3 lin = snailGameMaterial(v_uv, scene_pos, texel, pc.light_dir.xyz, pc.base_color, pc.relief, pc.roughness);
     // The Vulkan swapchain/offscreen target is an sRGB format that encodes on
     // store, so emit linear.
