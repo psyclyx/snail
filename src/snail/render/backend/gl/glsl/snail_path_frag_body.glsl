@@ -219,19 +219,33 @@ void appendCoverageContribution(inout float cov, inout float wgt, float distance
 void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p0y, float p2x, float p2y, float ppe, bool horizontal) {
     float rootAxis0 = horizontal ? p0y : p0x;
     float rootAxis2 = horizontal ? p2y : p2x;
+
+    // Half-open sign-of-zero crossing test (same convention as `calcRootCode`).
+    // A vertex exactly on the scanline snaps to +0 and reads as the positive
+    // side, so a vertex shared with the next segment is owned by exactly one of
+    // them. This replaces a plain `isNearEndRoot && isEndpointRootDelta` skip of
+    // the line's end vertex: that skip assumed the next segment would count the
+    // shared vertex, but at a line->conic junction the conic's start root can
+    // FP-drift just outside [0,1] (worst at small authoring frames) and also
+    // drop it -- leaving the crossing counted by neither, which collapses an
+    // interior pixel's winding to zero (a dropped speck under perspective).
+    float a0 = rootCodeCoord(rootAxis0);
+    float a2 = rootCodeCoord(rootAxis2);
+    if ((a0 < 0.0) == (a2 < 0.0)) return;
+
     float denom = rootAxis2 - rootAxis0;
     if (abs(denom) < 1e-10) return;
-
-    float tRaw = -rootAxis0 / denom;
-    if (tRaw < -kParamEps || tRaw > 1.0 + kParamEps) return;
-    float t = clamp(tRaw, 0.0, 1.0);
-    if (isNearEndRoot(t) && isEndpointRootDelta(rootAxis2)) return;
+    float t = clamp(-rootAxis0 / denom, 0.0, 1.0);
 
     float derivativeAxis = horizontal ? p2y - p0y : p0x - p2x;
     if (abs(derivativeAxis) <= kParamEps) return;
 
     float distance = (horizontal ? p0x + (p2x - p0x) * t : p0y + (p2y - p0y) * t) * ppe;
     appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
+}
+
+float distToUnitInterval(float t) {
+    return max(max(0.0, -t), t - 1.0);
 }
 
 void accumulateConicRoot(inout float cov,
@@ -250,8 +264,11 @@ void accumulateConicRoot(inout float cov,
                          float denA,
                          float denB,
                          float denC) {
-    if (isNearEndRoot(t) && isEndpointRootDelta(endRootDelta)) return;
-
+    // No endpoint skip: crossing ownership at a shared vertex is decided by the
+    // sign-of-zero `calcRootCode` gate in accumulateConicCoverage (matching the
+    // line + quadratic paths), so the conic must count every root that survives
+    // the gate -- otherwise a vertex the conic owns (conic-end meeting a
+    // line-start on the scanline) is dropped by both segments.
     float den = max((denA * t + denB) * t + denC, kCoordEps);
     float along = ((alongA * t + alongB) * t + alongC) / den;
     float rootNumer = (rootA * t + rootB) * t + rootC;
@@ -280,35 +297,53 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float c0 = seg.weights.x * (p0Root - sampleRoot);
     float c1 = seg.weights.y * (p1Root - sampleRoot);
     float c2 = seg.weights.z * (p2Root - sampleRoot);
+    // Half-open ownership gate (same sign-of-zero convention as the line and the
+    // quadratic-bezier path): the conic contributes a crossing only where the
+    // Bernstein control values (c0,c1,c2) actually change sign. This keeps the
+    // conic from double-claiming -- or, at a shared vertex, both dropping -- a
+    // crossing that the neighbouring line owns. Weights are positive, so the c_i
+    // signs match the raw coordinate deltas the code expects.
+    uint code = calcRootCode(c0, c1, c2);
+    if (code == 0u) return;
+
+    // `calcRootCode` is the robust source of truth for the crossing count. The
+    // polynomial solve only supplies the parameter values, which can FP-drift
+    // just outside [0,1] at a shared vertex; clamp them in (never reject) so a
+    // crossing the conic owns is not dropped. `want` = popcount of the code.
+    int want = (code == 0x0101u) ? 2 : 1;
     float quadA = c0 - 2.0 * c1 + c2;
     float quadB = 2.0 * (c1 - c0);
-    float root0 = 0.0;
-    float root1 = 0.0;
-    int rootCount = 0;
+    float cand0 = 0.0;
+    float cand1 = 0.0;
+    int ncand = 0;
     if (abs(quadA) < kCoordEps) {
-        if (abs(quadB) >= kCoordEps && clampSegmentRoot(-c0 / quadB, root0)) rootCount = 1;
+        if (abs(quadB) >= kCoordEps) {
+            cand0 = -c0 / quadB;
+            ncand = 1;
+        }
     } else {
-        float disc = quadB * quadB - 4.0 * quadA * c0;
-        if (disc < 0.0) {
-            if (disc > -1e-6) disc = 0.0;
-        }
-        if (disc >= 0.0) {
-            float sqrtDisc = sqrt(disc);
-            float inv2a = 0.5 / quadA;
-            float tRaw0 = (-quadB - sqrtDisc) * inv2a;
-            float tRaw1 = (-quadB + sqrtDisc) * inv2a;
-            if (clampSegmentRoot(tRaw0, root0)) rootCount = 1;
-            if (clampSegmentRoot(tRaw1, root1)) {
-                if (rootCount == 0) {
-                    root0 = root1;
-                    rootCount = 1;
-                } else if (abs(root1 - root0) > kParamEps) {
-                    rootCount = 2;
-                }
-            }
-        }
+        float disc = max(quadB * quadB - 4.0 * quadA * c0, 0.0); // <0: near-tangent double root
+        float sqrtDisc = sqrt(disc);
+        float inv2a = 0.5 / quadA;
+        cand0 = (-quadB - sqrtDisc) * inv2a;
+        cand1 = (-quadB + sqrtDisc) * inv2a;
+        ncand = 2;
     }
-    if (rootCount == 0) return;
+    if (ncand == 0) return;
+
+    float root0;
+    float root1 = 0.0;
+    int rootCount;
+    if (want == 1) {
+        // Nearest candidate to [0,1], clamped.
+        root0 = (ncand == 2 && distToUnitInterval(cand1) < distToUnitInterval(cand0)) ? cand1 : cand0;
+        root0 = clamp(root0, 0.0, 1.0);
+        rootCount = 1;
+    } else {
+        root0 = clamp(cand0, 0.0, 1.0);
+        root1 = clamp(cand1, 0.0, 1.0);
+        rootCount = 2;
+    }
 
     float rootA = p0Root * seg.weights.x - 2.0 * p1Root * seg.weights.y + p2Root * seg.weights.z;
     float rootB = 2.0 * (p1Root * seg.weights.y - p0Root * seg.weights.x);

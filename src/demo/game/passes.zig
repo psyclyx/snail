@@ -251,6 +251,41 @@ pub const PassBuilder = struct {
         try self.addPathFillAndInsideStroke(&p, local_fill, unit_stroke, to_paint);
     }
 
+    /// Fill-only counterpart of `addRoundedRectWithInsideStroke`: identical
+    /// unit-frame authoring + uniform placement + paint remap, but no stroke
+    /// and no composite. The composite probe uses this to isolate whether the
+    /// fill layer's coverage alone holes at a given `rc`.
+    pub fn addRoundedRectFilledUnit(
+        self: *PassBuilder,
+        rect: snail.Rect,
+        fill: snail.Paint,
+        radius: f32,
+    ) !void {
+        var p = try snail_helpers.unitRoundedRectPathFor(self.allocator, rect, radius);
+        defer p.deinit();
+        const to_paint = snail_helpers.placeRectUniform(rect);
+        const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
+        const fill_curves = try p.toCurves(self.allocator, self.allocator);
+        if (fill_curves.isEmpty()) {
+            var owned = fill_curves;
+            owned.deinit();
+            return;
+        }
+        try self.path_curves_owned.append(self.allocator, fill_curves);
+        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
+        self.next_path_id += 1;
+        try self.path_entries.append(self.allocator, .{
+            .key = key,
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+            .paint = local_fill,
+        });
+        try self.path_shapes.append(self.allocator, .{
+            .key = key,
+            .local_transform = to_paint,
+            .local_color = .{ 1, 1, 1, 1 },
+        });
+    }
+
     pub fn addFilledRect(self: *PassBuilder, rect: snail.Rect, paint: snail.Paint) !void {
         var p = snail.Path.init(self.allocator);
         defer p.deinit();

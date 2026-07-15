@@ -698,6 +698,47 @@ fn addScreenshotSteps(
         game_shot_step.dependOn(&run_game_shot.step);
     }
 
+    // Regression gate for the fill_stroke_inside composite: sweeps a rounded-rect
+    // panel through perspective and fails if any interior coverage hole appears.
+    if (config.core_options.enable_gl44) {
+        const comp_probe_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/composite_probe.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
+                .{ .name = "support", .module = release_support_mod },
+            },
+        });
+        configureEglOffscreenModule(comp_probe_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+        const comp_probe_exe = b.addExecutable(.{ .name = "snail-composite-probe", .root_module = comp_probe_mod });
+        const run_comp_probe = b.addRunArtifact(comp_probe_exe);
+        const comp_probe_step = b.step("run-composite-probe", "Sweep a fill_stroke_inside panel through perspective and gate on interior coverage holes");
+        comp_probe_step.dependOn(&run_comp_probe.step);
+    }
+
+    // CPU port of the path coverage evaluator to root-cause the conic
+    // grazing-corner hole deterministically (both conic solvers, swept footprint).
+    {
+        const cov_probe_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/coverage_probe.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
+            },
+        });
+        const cov_probe_exe = b.addExecutable(.{ .name = "snail-coverage-probe", .root_module = cov_probe_mod });
+        const run_cov_probe = b.addRunArtifact(cov_probe_exe);
+        const cov_probe_step = b.step("run-coverage-probe", "Sweep the conic coverage solver (deriv vs code) across grazing footprints and count holes");
+        cov_probe_step.dependOn(&run_cov_probe.step);
+    }
+
     // CPU-vs-GL pixel parity gate over the shared content scene.
     const backend_compare_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/backend_compare.zig"),
