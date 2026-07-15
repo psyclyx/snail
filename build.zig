@@ -652,6 +652,30 @@ fn addScreenshotSteps(
     const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
     screenshot_gl_step.dependOn(&run_screenshot_gl.step);
 
+    // Offscreen Vulkan game-scene screenshot (depth-tested) → zig-out/game-vulkan.tga.
+    if (config.core_options.enable_vulkan) {
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const game_shot_vk_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/game_screenshot_vulkan.zig"),
+            .target = config.target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-helpers", .module = release_helpers_mod },
+                .{ .name = "support", .module = release_support_mod },
+                .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
+                .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
+            },
+        });
+        addGameShaderSpirv(b, game_shot_vk_mod);
+        const game_shot_vk_exe = b.addExecutable(.{ .name = "snail-game-screenshot-vulkan", .root_module = game_shot_vk_mod });
+        const run_game_shot_vk = b.addRunArtifact(game_shot_vk_exe);
+        const game_shot_vk_step = b.step("run-game-screenshot-vulkan", "Render the game scene offscreen through Vulkan → zig-out/game-vulkan.tga");
+        game_shot_vk_step.dependOn(&run_game_shot_vk.step);
+    }
+
     // Offscreen (no-window) game-scene screenshot per GL backend — the game's
     // headless verification harness. Writes zig-out/game-<backend>.tga.
     if (config.core_options.enable_gl33 or config.core_options.enable_gl44 or config.core_options.enable_gles30) {
@@ -804,6 +828,16 @@ fn addInteractiveDemoStep(
     if (b.args) |args| run_demo.addArgs(args);
     const run_step = b.step("run", "Run the interactive Wayland banner demo");
     run_step.dependOn(&run_demo.step);
+}
+
+/// Compile the game's custom Vulkan material shaders (which #include snail's
+/// coverage + records GLSL) to SPIR-V and inject them into `mod` as anonymous
+/// imports for `game/game_shaders.zig`.
+fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
+    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{});
+    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{});
+    mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = vert });
+    mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = frag });
 }
 
 fn addGameDemoStep(

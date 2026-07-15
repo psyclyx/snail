@@ -29,6 +29,17 @@ const Vec3 = common.Vec3;
 pub const material_scene_w: f32 = 560.0;
 pub const material_scene_h: f32 = 300.0;
 
+/// Clip-space Z remap from GL convention ([-1,1]) to Vulkan ([0,1]):
+/// z' = 0.5·z + 0.5·w. Left-multiply the (GL-convention) view-projection for
+/// the Vulkan backend so perspective depth lands in Vulkan's clip range. (Y is
+/// handled by the Y-flipped viewport, matching embed_vulkan.)
+pub const vulkan_z_fix = snail.Mat4{ .data = .{
+    1, 0, 0,   0,
+    0, 1, 0,   0,
+    0, 0, 0.5, 0,
+    0, 0, 0.5, 1,
+} };
+
 pub const OrbitCamera = struct {
     // Default: a near face-on framing (sign occludes the label behind it),
     // static until `R` starts the orbit.
