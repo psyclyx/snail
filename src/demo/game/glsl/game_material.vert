@@ -6,10 +6,12 @@ layout(location = 1) in vec2 a_uv;
 layout(push_constant) uniform PC {
     mat4 mvp;
     vec4 base_color;
+    vec4 light_dir;
     vec2 scene_size;
     int glyph_count;
     int output_srgb;
-    float light;
+    float relief;
+    float roughness;
 } pc;
 
 layout(location = 0) out vec2 v_uv;

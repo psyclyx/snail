@@ -84,6 +84,7 @@ pub fn main() !void {
         }
 
         scene.cam.update(dt);
+        scene.light_phase += dt * 0.9; // sweep the material light
 
         hud_timer += dt;
         if (hud_timer >= hud_period) {

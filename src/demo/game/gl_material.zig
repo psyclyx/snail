@@ -78,7 +78,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
         u_view_proj: gl.GLint = -1,
         u_model: gl.GLint = -1,
         u_scene_size: gl.GLint = -1,
-        u_light: gl.GLint = -1,
+        u_light_dir: gl.GLint = -1,
+        u_relief: gl.GLint = -1,
+        u_roughness: gl.GLint = -1,
         u_base_color: gl.GLint = -1,
         u_output_srgb: gl.GLint = -1,
         u_records: gl.GLint = -1,
@@ -101,7 +103,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             self.u_view_proj = gl.glGetUniformLocation(self.program, "u_view_proj");
             self.u_model = gl.glGetUniformLocation(self.program, "u_model");
             self.u_scene_size = gl.glGetUniformLocation(self.program, "u_scene_size");
-            self.u_light = gl.glGetUniformLocation(self.program, "u_light");
+            self.u_light_dir = gl.glGetUniformLocation(self.program, "u_light_dir");
+            self.u_relief = gl.glGetUniformLocation(self.program, "u_relief");
+            self.u_roughness = gl.glGetUniformLocation(self.program, "u_roughness");
             self.u_base_color = gl.glGetUniformLocation(self.program, "u_base_color");
             self.u_output_srgb = gl.glGetUniformLocation(self.program, "u_output_srgb");
             self.u_records = gl.glGetUniformLocation(self.program, "u_snail_text_records");
@@ -200,7 +204,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             model: snail.Mat4,
             scene_size: [2]f32,
             base_color: [4]f32,
-            light: f32,
+            light_dir: [3]f32,
+            relief: f32,
+            roughness: f32,
             output_srgb: bool,
         ) !void {
             gl.glUseProgram(self.program);
@@ -208,7 +214,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             gl.glUniformMatrix4fv(self.u_view_proj, 1, gl.GL_FALSE, &view_proj.data[0]);
             gl.glUniformMatrix4fv(self.u_model, 1, gl.GL_FALSE, &model.data[0]);
             gl.glUniform2f(self.u_scene_size, scene_size[0], scene_size[1]);
-            gl.glUniform1f(self.u_light, light);
+            gl.glUniform3f(self.u_light_dir, light_dir[0], light_dir[1], light_dir[2]);
+            gl.glUniform1f(self.u_relief, relief);
+            gl.glUniform1f(self.u_roughness, roughness);
             gl.glUniform4f(self.u_base_color, base_color[0], base_color[1], base_color[2], base_color[3]);
             if (self.u_output_srgb >= 0) gl.glUniform1i(self.u_output_srgb, if (output_srgb) 1 else 0);
 
@@ -274,9 +282,12 @@ pub fn GlMaterial(comptime variant: Variant) type {
             Sources.coverage_functions ++ "\n" ++
             Sources.sample_interface ++ "\n" ++
             Sources.sample_functions ++ "\n" ++
+            @embedFile("glsl/game_material_body.glsl") ++ "\n" ++
             \\in vec2 v_uv;
             \\uniform vec2 u_scene_size;
-            \\uniform float u_light;
+            \\uniform vec3 u_light_dir;
+            \\uniform float u_relief;
+            \\uniform float u_roughness;
             \\uniform vec4 u_base_color;
             \\uniform int u_output_srgb;
             \\out vec4 frag_color;
@@ -290,9 +301,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
             \\
             \\void main() {
             \\    vec2 scene_pos = vec2(v_uv.x * u_scene_size.x, (1.0 - v_uv.y) * u_scene_size.y);
-            \\    vec4 paint = snail_text_sample_premul_linear(scene_pos); // premultiplied linear
-            \\    vec3 base = u_base_color.rgb * u_light;                  // linear panel
-            \\    vec3 lin = base * (1.0 - paint.a) + paint.rgb;          // text over panel
+            \\    vec2 texel = u_scene_size * 0.004;
+            \\    vec3 lin = snailGameMaterial(v_uv, scene_pos, texel, u_light_dir, u_base_color, u_relief, u_roughness);
             \\    vec3 outc = (u_output_srgb == 1) ? encodeSrgb(lin) : lin;
             \\    frag_color = vec4(outc, 1.0);
             \\}

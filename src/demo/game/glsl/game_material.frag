@@ -16,10 +16,12 @@ layout(set = 0, binding = 1) uniform usampler2DArray u_band_tex;
 layout(push_constant) uniform PC {
     mat4 mvp;
     vec4 base_color;
+    vec4 light_dir;   // xyz = tangent-space light
     vec2 scene_size;
     int glyph_count;
     int output_srgb;
-    float light;
+    float relief;
+    float roughness;
 } pc;
 
 // Coverage-math configuration the snail includes expect.
@@ -38,12 +40,12 @@ layout(push_constant) uniform PC {
 #include "snail_text_frag_body.glsl"                 // evalGlyphCoverage
 #include "snail_text_sample.interface.vulkan.glsl"   // records SSBO (set 1) + accessor
 #include "snail_text_sample_body.glsl"               // snail_text_sample_premul_linear
+#include "game_material_body.glsl"                    // snailGameMaterial (rough lit surface)
 
 void main() {
     vec2 scene_pos = vec2(v_uv.x * pc.scene_size.x, (1.0 - v_uv.y) * pc.scene_size.y);
-    vec4 paint = snail_text_sample_premul_linear(scene_pos); // premultiplied linear
-    vec3 base = pc.base_color.rgb * pc.light;                // linear panel
-    vec3 lin = base * (1.0 - paint.a) + paint.rgb;           // text over panel
+    vec2 texel = pc.scene_size * 0.004;
+    vec3 lin = snailGameMaterial(v_uv, scene_pos, texel, pc.light_dir.xyz, pc.base_color, pc.relief, pc.roughness);
     // The Vulkan swapchain/offscreen target is an sRGB format that encodes on
     // store, so emit linear.
     frag_color = vec4(lin, 1.0);

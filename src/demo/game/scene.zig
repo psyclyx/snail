@@ -101,8 +101,8 @@ pub const Scene = struct {
     panel_plane: Plane,
 
     cam: OrbitCamera = .{},
-    light_pos: Vec3 = .{ .x = 2.6, .y = 3.4, .z = 3.2 },
-    light_color: [3]f32 = .{ 1.35, 1.2, 0.98 },
+    /// Phase of the tangent-space light that rakes across the material surface.
+    light_phase: f32 = 0.7,
 
     // Last window size the HUD was laid out for, so we rebuild on resize.
     hud_w: u32 = 0,
@@ -120,24 +120,26 @@ pub const Scene = struct {
         var hud = try buildHud(allocator, fonts, window_w, "renderer …", "");
         errdefer hud.deinit();
 
-        // material quad: a wide opaque sign centered a touch above the target.
-        const material_model = common.composeModel(.{ .x = 0.0, .y = 1.55, .z = 0.0 }, 0.0, 0.0, .{ .x = 3.4, .y = 1.82, .z = 1.0 });
-        // label plane: centered *behind* the sign and wider than it, so the
-        // opaque quad occludes the middle while the ends peek past both edges.
+        // material quad: an opaque lit sign centered a touch above the target.
+        const material_model = common.composeModel(.{ .x = 0.0, .y = 1.55, .z = 0.0 }, 0.0, 0.0, .{ .x = 3.1, .y = 1.72, .z = 1.0 });
+        // label plane: centered *behind* the sign, a little wider than it, so
+        // the opaque material quad occludes the middle while the ends peek past
+        // both edges. Kept narrow enough that its ends don't reach the panel.
         const label_plane = Plane{
             .scene_w = label_scene_w,
             .scene_h = label_scene_h,
-            .pos = .{ .x = 0.1, .y = 1.55, .z = -1.3 },
-            .rot_y = 0.0,
-            .world_w = 5.4,
-            .world_h = 1.5,
+            .pos = .{ .x = 1.95, .y = 1.52, .z = -0.5 },
+            .rot_y = -0.12,
+            .world_w = 3.4,
+            .world_h = 1.2,
         };
-        // translucent panel: floating to the left, angled toward the camera.
+        // translucent glass panel: floating well to the left, angled toward the
+        // camera, clear of the label's peeking ends.
         const panel_plane = Plane{
             .scene_w = panel_scene_w,
             .scene_h = panel_scene_h,
-            .pos = .{ .x = -2.75, .y = 1.35, .z = 1.5 },
-            .rot_y = 0.62,
+            .pos = .{ .x = -3.85, .y = 1.4, .z = 1.4 },
+            .rot_y = 0.6,
             .world_w = 2.25,
             .world_h = 1.47,
         };
@@ -179,7 +181,24 @@ pub const Scene = struct {
     pub fn viewProj(self: *const Scene, aspect: f32) snail.Mat4 {
         return common.buildViewProjection(self.cam.camera(), aspect);
     }
+
+    /// Tangent-space light direction for the material surface; sweeps with
+    /// `light_phase` so the light rakes across the roughness + text relief.
+    pub fn lightDir(self: *const Scene) [3]f32 {
+        const a = self.light_phase;
+        var v = [3]f32{ @cos(a) * 0.85, @sin(a * 0.8) * 0.5 + 0.12, 0.6 };
+        const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+        v[0] /= len;
+        v[1] /= len;
+        v[2] /= len;
+        return v;
+    }
 };
+
+// Material surface parameters (linear).
+pub const material_base_color = [4]f32{ 0.055, 0.065, 0.085, 1.0 };
+pub const material_relief: f32 = 1.7;
+pub const material_roughness: f32 = 1.1;
 
 // ── Content builders ──
 
@@ -187,26 +206,37 @@ fn buildMaterialText(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass 
     var b = PassBuilder.init(allocator, fonts);
     defer b.deinit();
     // Authored in the material scene frame (material_scene_w × material_scene_h).
-    _ = try b.appendText(.{ .weight = .bold }, "SNAIL", 40.0, 150.0, 130.0, .{ 1, 1, 1, 1 });
-    _ = try b.appendText(.{}, "coverage sampled in a custom material shader", 42.0, 205.0, 24.0, .{ 1, 1, 1, 1 });
-    _ = try b.appendText(.{}, "same words, four backends", 42.0, 240.0, 21.0, .{ 1, 1, 1, 1 });
+    // This text is *sampled by the material shader* and carved into the lit
+    // surface — so it must fit inside the frame.
+    _ = try b.appendText(.{ .weight = .bold }, "SNAIL", 44.0, 150.0, 128.0, .{ 1, 1, 1, 1 });
+    _ = try b.appendText(.{}, "vector text carved into a lit surface", 46.0, 205.0, 22.0, .{ 1, 1, 1, 1 });
+    _ = try b.appendText(.{}, "sampled live in a custom shader", 46.0, 238.0, 20.0, .{ 1, 1, 1, 1 });
     return b.freeze(fonts.pool);
 }
 
 fn buildLabel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
-    // Authored in the label_scene frame; spans wide so the sign in front cuts
-    // through the middle of the word (the occlusion showcase).
+    // A world-space sign plate: its left portion tucks behind the opaque material
+    // quad (depth-tested → occluded), the rest reads clearly. The plate makes the
+    // occlusion obvious.
+    const w: f32 = label_scene_w;
     var b = PassBuilder.init(allocator, fonts);
     defer b.deinit();
-    _ = try b.appendText(.{ .weight = .bold }, "DEPTH  TESTED", 24.0, 110.0, 86.0, .{ 0.62, 0.86, 1.0, 1.0 });
-    _ = try b.appendText(.{}, "world text occluded by the opaque sign in front", 26.0, 158.0, 22.0, .{ 0.5, 0.72, 0.9, 1.0 });
+    const rect = snail.Rect{ .x = 8.0, .y = 8.0, .w = w - 16.0, .h = label_scene_h - 16.0 };
+    try b.addRoundedRectWithInsideStroke(
+        rect,
+        .{ .solid = .{ 0.10, 0.13, 0.18, 0.94 } },
+        .{ .paint = .{ .solid = .{ 0.30, 0.50, 0.70, 0.85 } }, .width = 2.5, .placement = .inside },
+        16.0,
+    );
+    _ = try b.appendText(.{ .weight = .bold }, "DEPTH TESTED", 34.0, 116.0, 64.0, .{ 0.72, 0.88, 1.0, 1.0 });
+    _ = try b.appendText(.{}, "world text occluded by the sign", 36.0, 156.0, 19.0, .{ 0.6, 0.78, 0.92, 1.0 });
     return b.freeze(fonts.pool);
 }
 
 /// Label text is authored in this frame; the plane maps it onto the world quad.
-/// Aspect matches the label plane's world aspect (5.4/1.5) so text isn't stretched.
-pub const label_scene_w: f32 = 720.0;
-pub const label_scene_h: f32 = 200.0;
+/// Aspect matches the label plane's world aspect (3.4/1.2) so text isn't stretched.
+pub const label_scene_w: f32 = 560.0;
+pub const label_scene_h: f32 = 198.0;
 
 fn buildPanel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     // Authored in a 460×300 frame.

@@ -834,8 +834,9 @@ fn addInteractiveDemoStep(
 /// coverage + records GLSL) to SPIR-V and inject them into `mod` as anonymous
 /// imports for `game/game_shaders.zig`.
 fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
-    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{});
-    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{});
+    const game_glsl = [_][]const u8{"src/demo/game/glsl"};
+    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, &game_glsl);
+    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{}, &game_glsl);
     mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = vert });
     mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = frag });
 }

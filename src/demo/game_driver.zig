@@ -213,7 +213,9 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
 
             gl.glViewport(0, 0, @intCast(fb[0]), @intCast(fb[1]));
             gl.glDepthMask(gl.GL_TRUE);
-            gl.glClearColor(0.035, 0.045, 0.065, 1.0);
+            // Clear in linear; the sRGB target encodes on store (snail enables
+            // GL_FRAMEBUFFER_SRGB), so pass linear to land on the sRGB bg.
+            gl.glClearColor(srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0);
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
             const surface = snail.TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = target_encoding };

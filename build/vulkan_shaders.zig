@@ -81,9 +81,14 @@ pub fn compileCallerShader(
     stage_arg: []const u8,
     output_name: []const u8,
     defines: []const []const u8,
+    extra_include_dirs: []const []const u8,
 ) std.Build.LazyPath {
     const compile_step = b.addSystemCommand(&.{ "glslc", stage_arg });
     for (defines) |d| compile_step.addArg(d);
+    for (extra_include_dirs) |dir| {
+        compile_step.addArg("-I");
+        compile_step.addDirectoryArg(b.path(dir));
+    }
     compile_step.addArg("-I");
     compile_step.addDirectoryArg(b.path(vulkan_glsl_include_dir));
     compile_step.addArg("-I");

@@ -25,10 +25,12 @@ const PreparedPass = passes.PreparedPass;
 const MaterialPush = extern struct {
     mvp: [16]f32,
     base_color: [4]f32,
+    light_dir: [4]f32, // xyz = tangent-space light
     scene_size: [2]f32,
     glyph_count: i32,
     output_srgb: i32,
-    light: f32,
+    relief: f32,
+    roughness: f32,
 };
 
 const SLOT_BYTES: usize = 4 * 1024 * 1024;
@@ -308,13 +310,16 @@ pub const VkSceneRenderer = struct {
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.material_pipeline);
         var sets = [2]vk.VkDescriptorSet{ desc0, self.ssbo_set };
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.material_layout, 0, 2, &sets, 0, null);
+        const ld = scene.lightDir();
         var push = MaterialPush{
             .mvp = snail.Mat4.multiply(view_proj, scene.material_model).data,
-            .base_color = .{ 0.03, 0.05, 0.09, 1.0 },
+            .base_color = scene_mod.material_base_color,
+            .light_dir = .{ ld[0], ld[1], ld[2], 0.0 },
             .scene_size = .{ scene_mod.material_scene_w, scene_mod.material_scene_h },
             .glyph_count = self.glyph_count,
             .output_srgb = 0,
-            .light = 0.95,
+            .relief = scene_mod.material_relief,
+            .roughness = scene_mod.material_roughness,
         };
         vk.vkCmdPushConstants(cmd, self.material_layout, vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT, 0, @sizeOf(MaterialPush), &push);
         var quad_buf = self.quad.buffer;

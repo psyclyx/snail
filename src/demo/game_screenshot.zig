@@ -18,6 +18,10 @@ const gl_material = @import("game/gl_material.zig");
 const W: u32 = 1280;
 const H: u32 = 800;
 
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}
+
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
     defer _ = da.deinit();
@@ -86,7 +90,8 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
 
     gl.glViewport(0, 0, @intCast(W), @intCast(H));
     gl.glDepthMask(gl.GL_TRUE);
-    gl.glClearColor(0.035, 0.045, 0.065, 1.0);
+    // Clear in linear (the sRGB target encodes on store) so the bg matches Vulkan.
+    gl.glClearColor(srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
     const view_proj = scene.viewProj(@as(f32, @floatFromInt(W)) / @as(f32, @floatFromInt(H)));
