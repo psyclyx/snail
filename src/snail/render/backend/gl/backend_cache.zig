@@ -31,6 +31,7 @@ const paint_records = @import("snail_core").files.atlas_paint_records;
 const upload_common = @import("snail_core").files.format_upload_common;
 const image_mod = @import("snail_core").files.image;
 const cache_base = @import("snail_core").files.backend_cache_base;
+const upload_plan = @import("snail_core").files.atlas_upload_plan;
 const range_allocator = @import("snail_core").files.backend_range_allocator;
 
 const RangeAllocator = range_allocator.RangeAllocator;
@@ -68,7 +69,7 @@ const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = paint_records.info_width;
 
 pub const CacheOptions = cache_base.GpuCacheOptions;
-pub const UploadError = cache_base.BaseUploadError || error{ImageTooLarge};
+pub const UploadError = cache_base.BaseUploadError || upload_plan.Error || error{ImageTooLarge};
 pub const ResizeError = cache_base.BaseResizeError;
 
 pub fn GlBackendCacheFor(comptime variant: Variant) type {
@@ -89,87 +90,86 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
         // Persistent layer-info texture (RGBA32F INFO_WIDTH × layer_info_height).
         layer_info_tex: gl.GLuint = 0,
-        layer_info_ranges: RangeAllocator = .{},
 
         // Persistent image array (TEXTURE_2D_ARRAY of sRGBA8).
         image_array_tex: gl.GLuint = 0,
-        image_ranges: RangeAllocator = .{},
-        // Slot-level image identity, for dedup within an upload.
-        image_storage: []?*const Image = &.{},
 
-        // Per-binding slots.
-        bindings: []BindingSlot,
+        // Font-atlas upload planning — caller-owned state (snail.AtlasUploadPlanner).
+        // The cache keeps only the GL textures; allocation/deltas/patching are the
+        // planner's. Backing slices are cache-owned.
+        planner: upload_plan.Planner,
+        plan_gen: []u16,
+        plan_curve: []u32,
+        plan_band: []u32,
+        plan_slots: []upload_plan.Slot,
+        plan_info_free: []upload_plan.Range,
+        plan_image_free: []upload_plan.Range,
+        plan_regions: []upload_plan.Region,
+        plan_info_scratch: []f32,
+        info_scratch_stride: usize,
         active_bindings: u32 = 0,
 
-        // Per-pool-layer streaming watermarks (page generation + used words).
-        prepared_generation: []u16,
-        prepared_curve_words: []u32,
-        prepared_band_words: []u32,
-
-        upload_generation: u32 = 0,
-
-        pub const BindingSlot = struct {
-            active: bool = false,
-            generation: u32 = 0,
-            info_row_base: u32 = 0,
-            info_height: u32 = 0,
-            image_layer_base: u32 = 0,
-            image_count: u32 = 0,
-        };
+        fn plannerOptions(pool: *PagePool, options: CacheOptions) upload_plan.Options {
+            return .{
+                .max_layers = pool.options.max_layers,
+                .max_bindings = options.max_bindings,
+                .layer_info_height = options.layer_info_height,
+                .max_images = options.max_images,
+                .max_image_width = options.max_image_width,
+                .max_image_height = options.max_image_height,
+                .curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW,
+                .band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW,
+            };
+        }
 
         pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !Self {
-            const max_layers = pool.options.max_layers;
+            const opts = plannerOptions(pool, options);
+            const sz = upload_plan.sizes(opts);
 
-            const gen = try allocator.alloc(u16, max_layers);
+            const gen = try allocator.alloc(u16, sz.generation);
             errdefer allocator.free(gen);
-            const curve_words = try allocator.alloc(u32, max_layers);
+            const curve_words = try allocator.alloc(u32, sz.curve_words);
             errdefer allocator.free(curve_words);
-            const band_words = try allocator.alloc(u32, max_layers);
+            const band_words = try allocator.alloc(u32, sz.band_words);
             errdefer allocator.free(band_words);
-            @memset(gen, 0);
-            @memset(curve_words, 0);
-            @memset(band_words, 0);
-
-            const bindings = try allocator.alloc(BindingSlot, options.max_bindings);
-            errdefer allocator.free(bindings);
-            for (bindings) |*b| b.* = .{};
-
-            const image_storage = if (options.max_images > 0)
-                try allocator.alloc(?*const Image, options.max_images)
-            else
-                @as([]?*const Image, &.{});
-            errdefer if (options.max_images > 0) allocator.free(image_storage);
-            if (options.max_images > 0) @memset(image_storage, null);
-
-            var layer_info_ranges = try RangeAllocator.init(allocator, options.layer_info_height);
-            errdefer layer_info_ranges.deinit(allocator);
-
-            var image_ranges = try RangeAllocator.init(allocator, options.max_images);
-            errdefer image_ranges.deinit(allocator);
+            const slots = try allocator.alloc(upload_plan.Slot, sz.bindings);
+            errdefer allocator.free(slots);
+            const info_free = try allocator.alloc(upload_plan.Range, sz.info_free);
+            errdefer allocator.free(info_free);
+            const image_free = try allocator.alloc(upload_plan.Range, sz.image_free);
+            errdefer allocator.free(image_free);
+            const regions = try allocator.alloc(upload_plan.Region, sz.regions);
+            errdefer allocator.free(regions);
+            const info_scratch = try allocator.alloc(f32, sz.layer_info_scratch * options.max_bindings);
+            errdefer allocator.free(info_scratch);
 
             return .{
                 .allocator = allocator,
                 .pool = pool,
                 .options = options,
-                .prepared_generation = gen,
-                .prepared_curve_words = curve_words,
-                .prepared_band_words = band_words,
-                .bindings = bindings,
-                .image_storage = image_storage,
-                .layer_info_ranges = layer_info_ranges,
-                .image_ranges = image_ranges,
+                .planner = upload_plan.Planner.init(opts, gen, curve_words, band_words, slots, info_free, image_free),
+                .plan_gen = gen,
+                .plan_curve = curve_words,
+                .plan_band = band_words,
+                .plan_slots = slots,
+                .plan_info_free = info_free,
+                .plan_image_free = image_free,
+                .plan_regions = regions,
+                .plan_info_scratch = info_scratch,
+                .info_scratch_stride = sz.layer_info_scratch,
             };
         }
 
         pub fn deinit(self: *Self) void {
             self.destroyTextures();
-            self.allocator.free(self.prepared_generation);
-            self.allocator.free(self.prepared_curve_words);
-            self.allocator.free(self.prepared_band_words);
-            self.allocator.free(self.bindings);
-            if (self.options.max_images > 0) self.allocator.free(self.image_storage);
-            self.layer_info_ranges.deinit(self.allocator);
-            self.image_ranges.deinit(self.allocator);
+            self.allocator.free(self.plan_gen);
+            self.allocator.free(self.plan_curve);
+            self.allocator.free(self.plan_band);
+            self.allocator.free(self.plan_slots);
+            self.allocator.free(self.plan_info_free);
+            self.allocator.free(self.plan_image_free);
+            self.allocator.free(self.plan_regions);
+            self.allocator.free(self.plan_info_scratch);
             self.* = undefined;
         }
 
@@ -214,19 +214,18 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.destroyTextures();
             self.options = options;
 
-            const new_bindings = try self.allocator.realloc(self.bindings, options.max_bindings);
-            for (new_bindings) |*b| b.* = .{};
-            self.bindings = new_bindings;
-
-            if (self.image_storage.len > 0) self.allocator.free(self.image_storage);
-            self.image_storage = if (options.max_images > 0)
-                try self.allocator.alloc(?*const Image, options.max_images)
-            else
-                &.{};
-            if (options.max_images > 0) @memset(self.image_storage, null);
-
-            try self.layer_info_ranges.reset(self.allocator, options.layer_info_height);
-            try self.image_ranges.reset(self.allocator, options.max_images);
+            const opts = plannerOptions(self.pool, options);
+            const sz = upload_plan.sizes(opts);
+            self.plan_gen = try self.allocator.realloc(self.plan_gen, sz.generation);
+            self.plan_curve = try self.allocator.realloc(self.plan_curve, sz.curve_words);
+            self.plan_band = try self.allocator.realloc(self.plan_band, sz.band_words);
+            self.plan_slots = try self.allocator.realloc(self.plan_slots, sz.bindings);
+            self.plan_info_free = try self.allocator.realloc(self.plan_info_free, sz.info_free);
+            self.plan_image_free = try self.allocator.realloc(self.plan_image_free, sz.image_free);
+            self.plan_regions = try self.allocator.realloc(self.plan_regions, sz.regions);
+            self.plan_info_scratch = try self.allocator.realloc(self.plan_info_scratch, sz.layer_info_scratch * options.max_bindings);
+            self.info_scratch_stride = sz.layer_info_scratch;
+            self.planner = upload_plan.Planner.init(opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
         }
 
         /// Upload one or more atlases into the cache, allocating a slot
@@ -247,66 +246,25 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 }
             }
 
+            _ = scratch;
             self.ensurePoolTextures();
             self.ensureLayerInfoTexture();
             try self.ensureImageArrayTexture(atlases);
 
-            var allocated_layer_ranges: std.ArrayList(Range) = .empty;
-            defer allocated_layer_ranges.deinit(scratch);
-            var allocated_image_ranges: std.ArrayList(Range) = .empty;
-            defer allocated_image_ranges.deinit(scratch);
-            var allocated_slot_indices: std.ArrayList(u32) = .empty;
-            defer allocated_slot_indices.deinit(scratch);
-
-            var success = false;
-            defer if (!success) {
-                for (allocated_layer_ranges.items) |r| self.layer_info_ranges.release(self.allocator, r) catch {};
-                for (allocated_image_ranges.items) |r| self.image_ranges.release(self.allocator, r) catch {};
-                for (allocated_slot_indices.items) |i| self.bindings[i] = .{};
+            var planned: usize = 0;
+            errdefer for (out_bindings[0..planned]) |b| {
+                _ = self.planner.release(b);
             };
 
             for (atlases, 0..) |atlas, i| {
-                const info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
-                const image_count = countUniqueImages(atlas);
-
-                const slot_index = self.findFreeBinding() orelse return error.NoFreeBinding;
-                try allocated_slot_indices.append(scratch, slot_index);
-
-                const info_range: Range = if (info_height == 0)
-                    .{ .base = 0, .size = 0 }
-                else
-                    self.layer_info_ranges.take(info_height) orelse return error.NoFreeLayerInfoRows;
-                try allocated_layer_ranges.append(scratch, info_range);
-
-                const image_range: Range = if (image_count == 0)
-                    .{ .base = 0, .size = 0 }
-                else
-                    self.image_ranges.take(image_count) orelse return error.NoFreeImageLayers;
-                try allocated_image_ranges.append(scratch, image_range);
-
-                self.upload_generation += 1;
-                const slot = &self.bindings[slot_index];
-                slot.* = .{
-                    .active = true,
-                    .generation = self.upload_generation,
-                    .info_row_base = info_range.base,
-                    .info_height = info_range.size,
-                    .image_layer_base = image_range.base,
-                    .image_count = image_range.size,
-                };
-
-                try self.writeBindingData(scratch, atlas, slot);
-
-                out_bindings[i] = .{
-                    .pool = self.pool,
-                    .generation = slot.generation,
-                    .info_row_base = slot.info_row_base,
-                    .image_layer_base = slot.image_layer_base,
-                };
+                var len: usize = 0;
+                const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
+                out_bindings[i] = try self.planner.plan(atlas, self.pool, self.plan_regions, &len, info_scratch);
+                planned = i + 1;
+                for (self.plan_regions[0..len]) |r| self.applyRegion(r);
             }
 
             self.active_bindings += @intCast(atlases.len);
-            success = true;
         }
 
         /// Incrementally upload `atlas` into the existing slot held by
@@ -353,48 +311,25 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             prev_binding: Binding,
             atlas: *const Atlas,
         ) UploadError!Binding {
+            _ = scratch;
             if (atlas.pool) |p| {
                 if (p != self.pool) return error.UnknownPool;
             }
-            const slot_index = self.findSlotByGeneration(prev_binding.generation) orelse return error.UnknownBinding;
-            const slot = &self.bindings[slot_index];
-            if (!slot.active) return error.UnknownBinding;
-
-            const need_info_height = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
-            if (need_info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
-            const need_image_count = countUniqueImages(atlas);
-            if (need_image_count > slot.image_count) return error.NoLayerInfoRoomToGrow;
-
             self.ensurePoolTextures();
             self.ensureLayerInfoTexture();
             try self.ensureImageArrayTexture(&.{atlas});
 
-            try self.writeBindingData(scratch, atlas, slot);
-
-            return .{
-                .pool = self.pool,
-                .generation = slot.generation,
-                .info_row_base = slot.info_row_base,
-                .image_layer_base = slot.image_layer_base,
-            };
+            var len: usize = 0;
+            const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
+            const binding = try self.planner.planDelta(prev_binding, atlas, self.pool, self.plan_regions, &len, info_scratch);
+            for (self.plan_regions[0..len]) |r| self.applyRegion(r);
+            return binding;
         }
 
         pub fn release(self: *Self, binding: Binding) void {
-            const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
-            const slot = &self.bindings[slot_index];
-            if (!slot.active) return;
-
-            if (slot.info_height > 0) {
-                self.layer_info_ranges.release(self.allocator, .{ .base = slot.info_row_base, .size = slot.info_height }) catch {};
+            if (self.planner.release(binding)) {
+                if (self.active_bindings > 0) self.active_bindings -= 1;
             }
-            if (slot.image_count > 0) {
-                for (slot.image_layer_base..slot.image_layer_base + slot.image_count) |layer| {
-                    self.image_storage[layer] = null;
-                }
-                self.image_ranges.release(self.allocator, .{ .base = slot.image_layer_base, .size = slot.image_count }) catch {};
-            }
-            slot.* = .{};
-            self.active_bindings -= 1;
         }
 
         // ── Per-pool-layer (curve/band) texture upload ──
@@ -477,123 +412,38 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             }
         }
 
-        fn uploadPageFull(self: *Self, p: *const AtlasPage) void {
-            const layer = p.layer_index;
-            const curve_src = p.curve.data;
-            const band_src = p.band.data;
-            std.debug.assert(curve_src.len % CURVE_WORDS_PER_ROW == 0);
-            std.debug.assert(band_src.len % BAND_WORDS_PER_ROW == 0);
+        // ── Apply a planner Region to the caller's textures ──
 
+        fn applyRegion(self: *Self, r: upload_plan.Region) void {
+            switch (r.target) {
+                .curve => self.texSubImage3D(self.curve_array, 0, r.layer, r.width, r.height, gl.GL_RGBA, gl.GL_HALF_FLOAT, r.src.ptr),
+                .band => self.texSubImage3D(self.band_array, 1, r.layer, r.width, r.height, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, r.src.ptr),
+                .image => self.texSubImage3D(self.image_array_tex, 3, r.layer, r.width, r.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, r.src.ptr),
+                .layer_info => self.texSubImage2D(self.layer_info_tex, 2, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_FLOAT, r.src.ptr),
+            }
+        }
+
+        fn texSubImage3D(self: *Self, tex: gl.GLuint, unit: gl.GLenum, layer: u32, width: u32, height: u32, format: gl.GLenum, ty: gl.GLenum, ptr: ?*const anyopaque) void {
+            _ = self;
             if (comptime variant.supportsDsa()) {
-                gl.glTextureSubImage3D(self.curve_array, 0, 0, 0, @intCast(layer), @intCast(CURVE_TEX_WIDTH), @intCast(self.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, curve_src.ptr);
-                gl.glTextureSubImage3D(self.band_array, 0, 0, 0, @intCast(layer), @intCast(BAND_TEX_WIDTH), @intCast(self.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, band_src.ptr);
+                gl.glTextureSubImage3D(tex, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             } else {
-                gl.glActiveTexture(gl.GL_TEXTURE0);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.curve_array);
-                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer), @intCast(CURVE_TEX_WIDTH), @intCast(self.curve_height), 1, gl.GL_RGBA, gl.GL_HALF_FLOAT, curve_src.ptr);
-                gl.glActiveTexture(gl.GL_TEXTURE1);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.band_array);
-                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer), @intCast(BAND_TEX_WIDTH), @intCast(self.band_height), 1, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, band_src.ptr);
-            }
-
-            self.prepared_curve_words[layer] = p.curve.usedWords();
-            self.prepared_band_words[layer] = p.band.usedWords();
-        }
-
-        fn writeBindingData(self: *Self, scratch: std.mem.Allocator, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
-            // Push stale pages.
-            for (atlas.pages) |p| {
-                const layer = p.layer_index;
-                if (layer >= self.layer_count) return error.PageNotInPool;
-                const cur_gen = p.currentGeneration();
-                const cur_curve = p.curve.usedWords();
-                const cur_band = p.band.usedWords();
-                const stale = self.prepared_generation[layer] != cur_gen or
-                    cur_curve != self.prepared_curve_words[layer] or
-                    cur_band != self.prepared_band_words[layer];
-                if (!stale) continue;
-                self.prepared_generation[layer] = cur_gen;
-                self.uploadPageFull(p);
-            }
-
-            if (atlas.layer_info_data == null) return;
-
-            const src = atlas.layer_info_data.?;
-            std.debug.assert(atlas.layer_info_width == INFO_WIDTH);
-            std.debug.assert(@as(usize, atlas.layer_info_height) * INFO_WIDTH * 4 == src.len);
-
-            const data_copy = try scratch.dupe(f32, src);
-            defer scratch.free(data_copy);
-
-            // Upload each unique image into its assigned slot layer and
-            // patch the layer_info records with (abs_layer, uv_scale).
-            if (atlas.paint_image_records) |records| {
-                var local_layer: u32 = 0;
-                var seen = std.AutoHashMap(*const Image, u32).init(scratch);
-                defer seen.deinit();
-                for (records) |maybe_rec| {
-                    const rec = maybe_rec orelse continue;
-                    const gop = try seen.getOrPut(rec.image);
-                    if (!gop.found_existing) {
-                        gop.value_ptr.* = local_layer;
-                        const abs_layer = slot.image_layer_base + local_layer;
-                        self.image_storage[abs_layer] = rec.image;
-                        self.uploadImageLayer(rec.image, abs_layer);
-                        local_layer += 1;
-                    }
-                    const abs_layer = slot.image_layer_base + gop.value_ptr.*;
-                    const uv_scale_x: f32 = @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(self.options.max_image_width));
-                    const uv_scale_y: f32 = @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(self.options.max_image_height));
-                    const View = struct {
-                        layer: u32,
-                        uv_scale: struct { x: f32, y: f32 },
-                    };
-                    upload_common.patchImagePaintRecord(data_copy, INFO_WIDTH, INFO_WIDTH, 0, rec.texel_offset, View{
-                        .layer = abs_layer,
-                        .uv_scale = .{ .x = uv_scale_x, .y = uv_scale_y },
-                    });
-                }
-            }
-
-            // Write patched data into the slot's row band of layer_info_tex.
-            self.uploadLayerInfoRows(data_copy, slot.info_row_base, slot.info_height);
-        }
-
-        fn uploadImageLayer(self: *Self, img: *const Image, abs_layer: u32) void {
-            if (comptime variant.supportsDsa()) {
-                gl.glTextureSubImage3D(self.image_array_tex, 0, 0, 0, @intCast(abs_layer), @intCast(img.width), @intCast(img.height), 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, img.pixels.ptr);
-            } else {
-                gl.glActiveTexture(gl.GL_TEXTURE3);
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.image_array_tex);
-                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(abs_layer), @intCast(img.width), @intCast(img.height), 1, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, img.pixels.ptr);
+                gl.glActiveTexture(gl.GL_TEXTURE0 + unit);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, tex);
+                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             }
         }
 
-        fn uploadLayerInfoRows(self: *Self, data: []const f32, row_base: u32, height: u32) void {
+        fn texSubImage2D(self: *Self, tex: gl.GLuint, unit: gl.GLenum, row_base: u32, width: u32, height: u32, format: gl.GLenum, ty: gl.GLenum, ptr: ?*const anyopaque) void {
+            _ = self;
             if (height == 0) return;
             if (comptime variant.supportsDsa()) {
-                gl.glTextureSubImage2D(self.layer_info_tex, 0, 0, @intCast(row_base), @intCast(INFO_WIDTH), @intCast(height), gl.GL_RGBA, gl.GL_FLOAT, data.ptr);
+                gl.glTextureSubImage2D(tex, 0, 0, @intCast(row_base), @intCast(width), @intCast(height), format, ty, ptr);
             } else {
-                gl.glActiveTexture(gl.GL_TEXTURE2);
-                gl.glBindTexture(gl.GL_TEXTURE_2D, self.layer_info_tex);
-                gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, @intCast(row_base), @intCast(INFO_WIDTH), @intCast(height), gl.GL_RGBA, gl.GL_FLOAT, data.ptr);
+                gl.glActiveTexture(gl.GL_TEXTURE0 + unit);
+                gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
+                gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, @intCast(row_base), @intCast(width), @intCast(height), format, ty, ptr);
             }
-        }
-
-        // ── Slot allocator ──
-
-        fn findFreeBinding(self: *Self) ?u32 {
-            for (self.bindings, 0..) |*slot, i| {
-                if (!slot.active) return @intCast(i);
-            }
-            return null;
-        }
-
-        fn findSlotByGeneration(self: *const Self, generation: u32) ?u32 {
-            for (self.bindings, 0..) |*slot, i| {
-                if (slot.active and slot.generation == generation) return @intCast(i);
-            }
-            return null;
         }
 
         // ── GL helpers ──
@@ -618,24 +468,6 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
     };
 }
 
-fn countUniqueImages(atlas: *const Atlas) u32 {
-    const records = atlas.paint_image_records orelse return 0;
-    var seen_count: u32 = 0;
-    for (records, 0..) |maybe_rec, i| {
-        const rec = maybe_rec orelse continue;
-        var duplicate = false;
-        var j: usize = 0;
-        while (j < i) : (j += 1) {
-            const prev = records[j] orelse continue;
-            if (prev.image == rec.image) {
-                duplicate = true;
-                break;
-            }
-        }
-        if (!duplicate) seen_count += 1;
-    }
-    return seen_count;
-}
 
 pub const Gl33BackendCache = GlBackendCacheFor(.gl33);
 pub const Gl44BackendCache = GlBackendCacheFor(.gl44);
@@ -662,38 +494,10 @@ test "GlBackendCache init allocates fixed-capacity slots" {
     });
     defer cache.deinit();
 
-    try testing.expectEqual(@as(usize, 3), cache.bindings.len);
-    try testing.expectEqual(@as(usize, 2), cache.image_storage.len);
-    try testing.expectEqual(@as(usize, 1), cache.layer_info_ranges.free.items.len);
-    try testing.expectEqual(@as(u32, 8), cache.layer_info_ranges.free.items[0].size);
-    try testing.expectEqual(@as(usize, 1), cache.image_ranges.free.items.len);
-    try testing.expectEqual(@as(u32, 2), cache.image_ranges.free.items[0].size);
-}
-
-test "GlBackendCache release returns slot ranges to free list" {
-    var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
-        .curve_words_per_page = CURVE_WORDS_PER_ROW,
-        .band_words_per_page = BAND_WORDS_PER_ROW,
-    });
-    defer pool.deinit();
-
-    var cache = try Gl33BackendCache.init(testing.allocator, pool, .{
-        .max_bindings = 2,
-        .layer_info_height = 4,
-        .max_images = 0,
-    });
-    defer cache.deinit();
-
-    // Forge a slot rather than calling upload (which would touch GL).
-    cache.bindings[0] = .{ .active = true, .generation = 1, .info_row_base = 0, .info_height = 2 };
-    cache.active_bindings = 1;
-    _ = cache.layer_info_ranges.take(2);
-
-    cache.release(.{ .pool = pool, .generation = 1 });
-    try testing.expectEqual(@as(u32, 0), cache.active_bindings);
-    try testing.expectEqual(@as(usize, 1), cache.layer_info_ranges.free.items.len);
-    try testing.expectEqual(@as(u32, 4), cache.layer_info_ranges.free.items[0].size);
+    // Planner backing sized from the caller's options (allocation + range logic
+    // now lives in `snail.AtlasUploadPlanner`, unit-tested in upload_plan.zig).
+    try testing.expectEqual(@as(usize, 3), cache.plan_slots.len);
+    try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
 }
 
 comptime {
