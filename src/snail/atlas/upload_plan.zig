@@ -90,7 +90,10 @@ pub fn sizes(opts: Options) Sizes {
         .info_free = opts.max_bindings + 1,
         .image_free = opts.max_bindings + 1,
         .regions = @as(usize, opts.max_layers) * 2 + 1 + opts.max_images,
-        .layer_info_scratch = @as(usize, INFO_WIDTH) * opts.layer_info_height,
+        // layer_info is RGBA32F — 4 f32 per INFO_WIDTH texel. `layer_info_data`
+        // is `INFO_WIDTH * height * 4` floats, and `plan` memcpys the whole slab
+        // into this scratch, so it must be 4× the texel count (not ×1).
+        .layer_info_scratch = @as(usize, INFO_WIDTH) * opts.layer_info_height * 4,
     };
 }
 

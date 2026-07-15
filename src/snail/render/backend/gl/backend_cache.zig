@@ -108,6 +108,10 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         plan_info_scratch: []f32,
         info_scratch_stride: usize,
         active_bindings: u32 = 0,
+        // Highest atlas generation uploaded so far — a coarse residency proxy the
+        // all-in-one renderer uses to reject stale bindings. Advanced by the
+        // planner-driven upload paths; never affects texel output.
+        upload_generation: u32 = 0,
 
         fn plannerOptions(pool: *PagePool, options: CacheOptions) upload_plan.Options {
             return .{
@@ -262,6 +266,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 out_bindings[i] = try self.planner.plan(atlas, self.pool, self.plan_regions, &len, info_scratch);
                 planned = i + 1;
                 for (self.plan_regions[0..len]) |r| self.applyRegion(r);
+                self.upload_generation = @max(self.upload_generation, out_bindings[i].generation);
             }
 
             self.active_bindings += @intCast(atlases.len);
@@ -323,6 +328,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
             const binding = try self.planner.planDelta(prev_binding, atlas, self.pool, self.plan_regions, &len, info_scratch);
             for (self.plan_regions[0..len]) |r| self.applyRegion(r);
+            self.upload_generation = @max(self.upload_generation, binding.generation);
             return binding;
         }
 
@@ -428,7 +434,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             if (comptime variant.supportsDsa()) {
                 gl.glTextureSubImage3D(tex, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             } else {
-                gl.glActiveTexture(gl.GL_TEXTURE0 + unit);
+                gl.glActiveTexture(@intCast(@as(i64, @intCast(gl.GL_TEXTURE0)) + @as(i64, @intCast(unit))));
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, tex);
                 gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             }
@@ -440,7 +446,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             if (comptime variant.supportsDsa()) {
                 gl.glTextureSubImage2D(tex, 0, 0, @intCast(row_base), @intCast(width), @intCast(height), format, ty, ptr);
             } else {
-                gl.glActiveTexture(gl.GL_TEXTURE0 + unit);
+                gl.glActiveTexture(@intCast(@as(i64, @intCast(gl.GL_TEXTURE0)) + @as(i64, @intCast(unit))));
                 gl.glBindTexture(gl.GL_TEXTURE_2D, tex);
                 gl.glTexSubImage2D(gl.GL_TEXTURE_2D, 0, 0, @intCast(row_base), @intCast(width), @intCast(height), format, ty, ptr);
             }

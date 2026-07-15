@@ -388,7 +388,13 @@ pub const QuadRenderer = struct {
                 .curve_tex_unit = TEXT_CURVE_TEXTURE_UNIT,
                 .band_tex_unit = TEXT_BAND_TEXTURE_UNIT,
             };
-            const backend = snail.gl.embeddable.Gl33Backend.from(input.text.gl_renderer, input.text.cache);
+            const cache = input.text.cache;
+            const backend = snail.gl.embeddable.Gl33Backend.from(.{
+                .curve_array = cache.curve_array,
+                .band_array = cache.band_array,
+                .layer_info_tex = cache.layer_info_tex,
+                .image_array_tex = cache.image_array_tex,
+            });
             try backend.bindProgram(gl_program);
             // The snail emit path encodes the absolute atlas layer into each
             // per-instance glyph word, so `layer_base` is always 0.

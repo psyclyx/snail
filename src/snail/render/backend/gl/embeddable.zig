@@ -40,35 +40,18 @@ else
         pub const text_sample_body = "";
     };
 
-const gl_backend_cache = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("backend_cache.zig")
-else
-    struct {
-        pub const Gl33BackendCache = void;
-        pub const Gl44BackendCache = void;
-    };
+/// Which GL family a program/backend targets. Part of the embeddable contract:
+/// selects the shader dialect (GL 3.3/4.4 vs GLES 3.0) and whether DSA texture
+/// binding is available. The caller-owned atlas cache mirrors this enum.
+pub const Variant = enum {
+    gl33,
+    gl44,
+    gles30,
 
-const gles30_backend_cache = if (build_options.enable_gles30)
-    @import("backend_cache.zig")
-else
-    struct {
-        pub const Gles30BackendCache = void;
-    };
-
-const gl_state = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("state.zig")
-else
-    struct {
-        pub const Gl33Renderer = void;
-        pub const Gl44Renderer = void;
-    };
-
-const gles30_state = if (build_options.enable_gles30)
-    @import("gles30/state.zig")
-else
-    struct {
-        pub const Gles30Renderer = void;
-    };
+    pub fn supportsDsa(self: Variant) bool {
+        return self == .gl44;
+    }
+};
 
 const gl_bindings = if (build_options.enable_gl33 or build_options.enable_gl44)
     @import("bindings.zig")
@@ -238,51 +221,52 @@ pub const Gles30Program = struct {
 /// types, so cross-backend union code compiles even when GL is off.
 const Disabled = struct {};
 
-fn GlBackendFor(comptime variant: gl_backend_cache.Variant) type {
+/// The four snail atlas textures a caller binds for a coverage draw. The caller
+/// reads these off its own atlas cache; a `0` handle means "not present" (no
+/// layer-info / no images) and is skipped. Decouples the binding contract from
+/// any particular cache type — snail owns *which unit gets which texture*, the
+/// caller owns the textures.
+pub const TextureHandles = struct {
+    curve_array: c_uint = 0,
+    band_array: c_uint = 0,
+    layer_info_tex: c_uint = 0,
+    image_array_tex: c_uint = 0,
+};
+
+fn GlBackendFor(comptime variant: Variant) type {
     return struct {
         const Self = @This();
-        const BackendCache = switch (variant) {
-            .gl33 => gl_backend_cache.Gl33BackendCache,
-            .gl44 => gl_backend_cache.Gl44BackendCache,
-            .gles30 => unreachable, // covered by Gles30Backend below
-        };
-        const TextState = switch (variant) {
-            .gl33 => gl_state.Gl33TextState,
-            .gl44 => gl_state.Gl44TextState,
-            .gles30 => unreachable,
-        };
         const dsa = (variant == .gl44);
 
-        cache: *const BackendCache,
-        state: *TextState,
+        tex: TextureHandles,
 
-        /// Build from a `Gl{33,44}Renderer` + matching `Gl{33,44}BackendCache` cache.
-        pub fn from(renderer: anytype, cache: *const BackendCache) Self {
-            return .{ .cache = cache, .state = &renderer.state };
+        /// Build from the caller's atlas texture handles (read off its cache).
+        pub fn from(tex: TextureHandles) Self {
+            return .{ .tex = tex };
         }
 
         /// Bind snail's atlas textures to the texture units named in `program`.
         pub fn bindProgram(self: Self, program: GlProgram) !void {
             const gl = gl_bindings.gl;
             if (dsa) {
-                gl.glBindTextureUnit(@intCast(program.curve_tex_unit), self.cache.curve_array);
-                gl.glBindTextureUnit(@intCast(program.band_tex_unit), self.cache.band_array);
-                if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0)
-                    gl.glBindTextureUnit(@intCast(program.layer_tex_unit), self.cache.layer_info_tex);
-                if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0)
-                    gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.cache.image_array_tex);
+                gl.glBindTextureUnit(@intCast(program.curve_tex_unit), self.tex.curve_array);
+                gl.glBindTextureUnit(@intCast(program.band_tex_unit), self.tex.band_array);
+                if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0)
+                    gl.glBindTextureUnit(@intCast(program.layer_tex_unit), self.tex.layer_info_tex);
+                if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0)
+                    gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.tex.image_array_tex);
             } else {
                 gl.glActiveTexture(textureUnitEnum(program.curve_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.curve_array);
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.curve_array);
                 gl.glActiveTexture(textureUnitEnum(program.band_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.band_array);
-                if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0) {
+                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.band_array);
+                if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0) {
                     gl.glActiveTexture(textureUnitEnum(program.layer_tex_unit));
-                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.cache.layer_info_tex);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.tex.layer_info_tex);
                 }
-                if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0) {
+                if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0) {
                     gl.glActiveTexture(textureUnitEnum(program.image_tex_unit));
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.image_array_tex);
+                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.image_array_tex);
                 }
             }
             if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
@@ -312,26 +296,25 @@ pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else 
 pub const Gles30Backend = if (build_options.enable_gles30) struct {
     const Self = @This();
 
-    cache: *const gles30_backend_cache.Gles30BackendCache,
-    state: *gles30_state.Gles30TextState,
+    tex: TextureHandles,
 
-    pub fn from(renderer: anytype, cache: *const gles30_backend_cache.Gles30BackendCache) Self {
-        return .{ .cache = cache, .state = &renderer.state };
+    pub fn from(tex: TextureHandles) Self {
+        return .{ .tex = tex };
     }
 
     pub fn bindProgram(self: Self, program: Gles30Program) !void {
         const gl = gles30_bindings.gl;
         gl.glActiveTexture(textureUnitEnumGles(program.curve_tex_unit));
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.curve_array);
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.curve_array);
         gl.glActiveTexture(textureUnitEnumGles(program.band_tex_unit));
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.band_array);
-        if (program.layer_tex_loc >= 0 and self.cache.layer_info_tex != 0) {
+        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.band_array);
+        if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0) {
             gl.glActiveTexture(textureUnitEnumGles(program.layer_tex_unit));
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.cache.layer_info_tex);
+            gl.glBindTexture(gl.GL_TEXTURE_2D, self.tex.layer_info_tex);
         }
-        if (program.image_tex_loc >= 0 and self.cache.image_array_tex != 0) {
+        if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0) {
             gl.glActiveTexture(textureUnitEnumGles(program.image_tex_unit));
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.cache.image_array_tex);
+            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.image_array_tex);
         }
         if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
         if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, program.band_tex_unit);
