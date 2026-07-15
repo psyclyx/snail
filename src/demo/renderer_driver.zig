@@ -399,7 +399,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     last_timings: FrameTimings = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
-        const ctx = try vulkan_platform.initForWindow(window);
+        const ctx = try vulkan_platform.initForWindow(window, false);
         errdefer vulkan_platform.deinit();
         // Standalone embeddable setup — resource layout + transfer pool + the
         // reference caller renderer. No all-in-one VulkanRenderer.

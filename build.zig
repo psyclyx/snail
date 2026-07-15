@@ -875,6 +875,14 @@ fn addGameDemoStep(
     game_mod.linkSystemLibrary("wayland-egl", .{});
     if (config.core_options.enable_gl33 or config.core_options.enable_gl44) game_mod.linkSystemLibrary("OpenGL", .{});
     if (config.core_options.enable_gles30) game_mod.linkSystemLibrary("GLESv2", .{});
+    if (config.core_options.enable_vulkan) {
+        // vk_scene uses the reference caller renderer; the windowed Vulkan
+        // platform is a relative file compiled into game_mod (its own vk cImport
+        // via linkSystemLibrary). game/game_shaders.zig gets the material SPIR-V.
+        game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail));
+        addGameShaderSpirv(b, game_mod);
+        game_mod.linkSystemLibrary("vulkan", .{});
+    }
     if (config.core_options.enable_harfbuzz) game_mod.linkSystemLibrary("harfbuzz", .{});
 
     const game_exe = b.addExecutable(.{ .name = "snail-game-demo", .root_module = game_mod });

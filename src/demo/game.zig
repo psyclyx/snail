@@ -72,11 +72,12 @@ pub fn main() !void {
         if (window.isKeyPressed(KEY_C)) {
             const nk = game_driver.nextKind(driver.kind());
             if (nk != driver.kind()) {
+                // Set the HUD to the new backend's name *before* init so the new
+                // driver uploads it (matters for Vulkan's upload-once HUD).
+                try scene.rebuildHud(logical_w, game_driver.label(nk), perf_str);
                 driver.deinit();
                 driver = try game_driver.Driver.init(allocator, window, &scene, nk);
                 std.debug.print("Backend: {s}\n", .{driver.backendName()});
-                // Refresh the HUD's backend name on the new driver.
-                try scene.rebuildHud(logical_w, driver.backendName(), perf_str);
                 last = wayland.getTime();
                 continue;
             }
@@ -93,7 +94,9 @@ pub fn main() !void {
                 @as(f32, @floatFromInt(snap.p50_us)) / 1000.0,
                 @as(f32, @floatFromInt(snap.p95_us)) / 1000.0,
             }) catch "";
-            try scene.rebuildHud(logical_w, driver.backendName(), perf_str);
+            // Vulkan's HUD is static after init (upload-once cache); only the
+            // GL family rebuilds the live perf line each tick.
+            if (driver.wantsHudRebuild()) try scene.rebuildHud(logical_w, driver.backendName(), perf_str);
         }
 
         try driver.renderFrame(&scene);

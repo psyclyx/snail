@@ -23,10 +23,9 @@ const Scene = scene_mod.Scene;
 const any_gl = build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30;
 const gl_platform = if (any_gl) @import("platform/gl.zig") else struct {};
 
-/// Vulkan game path lands in a later stage; until then the game cycles only the
-/// GL family even when the build enables the Vulkan backend.
-const vulkan_ready = false;
-const game_vulkan = build_options.enable_vulkan and vulkan_ready;
+const game_vulkan = build_options.enable_vulkan;
+const vulkan_platform = if (game_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
+const vk_scene = if (game_vulkan) @import("game/vk_scene.zig") else struct {};
 
 /// Default-framebuffer depth bits the scene's depth testing needs.
 const DEPTH_BITS: i32 = 24;
@@ -129,6 +128,14 @@ pub const Driver = union(Kind) {
         return label(self.kind());
     }
 
+    /// The GL family re-uploads the HUD atlas each rebuild (live perf line). The
+    /// Vulkan cache uploads atlases once, so its HUD is static after init — the
+    /// loop shouldn't rebuild it mid-session (it would emit against a stale
+    /// binding). It's refreshed on backend switch instead.
+    pub fn wantsHudRebuild(self: *const Driver) bool {
+        return self.kind() != .vulkan;
+    }
+
     pub fn shouldClose(self: *Driver) bool {
         return switch (self.*) {
             .gl44, .gl33, .gles30 => if (comptime any_gl) gl_platform.shouldClose() else true,
@@ -219,16 +226,47 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
 // ── Vulkan (added in a later stage) ──────────────────────────────────────────
 
 const VulkanGameDriver = if (game_vulkan) struct {
-    // Filled in Stage C.
-    fn init(_: std.mem.Allocator, _: *wayland.Window, _: *Scene) !@This() {
-        return error.VulkanGameNotImplemented;
+    const Self = @This();
+    ctx: snail.VulkanContext,
+    sr: vk_scene.VkSceneRenderer,
+
+    fn init(allocator: std.mem.Allocator, window: *wayland.Window, scene: *Scene) !Self {
+        const ctx = try vulkan_platform.initForWindow(window, true);
+        errdefer vulkan_platform.deinit();
+        const sr = try vk_scene.VkSceneRenderer.init(allocator, ctx, scene, vulkan_platform.MAX_FRAMES_IN_FLIGHT);
+        return .{ .ctx = ctx, .sr = sr };
     }
-    fn deinit(_: *@This()) void {}
-    fn shouldClose(_: *@This()) bool {
-        return true;
+
+    fn deinit(self: *Self) void {
+        self.sr.deinit();
+        vulkan_platform.deinit();
     }
-    fn presentationInfo(_: *@This()) presentation.Info {
-        return .{};
+
+    fn shouldClose(_: *Self) bool {
+        return vulkan_platform.shouldClose();
     }
-    fn renderFrame(_: *@This(), _: *Scene) !void {}
+
+    fn presentationInfo(_: *Self) presentation.Info {
+        return vulkan_platform.presentationInfo();
+    }
+
+    fn renderFrame(self: *Self, scene: *Scene) !void {
+        const present = vulkan_platform.presentationInfo();
+        const fb = present.framebuffer_size;
+        if (fb[0] == 0 or fb[1] == 0) return;
+        const fb_w: f32 = @floatFromInt(fb[0]);
+        const fb_h: f32 = @floatFromInt(fb[1]);
+        // Clear in linear (the sRGB swapchain encodes on store).
+        const clear = [4]f32{ srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0 };
+        const platform_cmd = vulkan_platform.beginFrame(clear) orelse return;
+        const cmd: vk_scene.vk.VkCommandBuffer = @ptrCast(platform_cmd);
+        const view_proj = snail.Mat4.multiply(scene_mod.vulkan_z_fix, scene.viewProj(fb_w / fb_h));
+        const surface = snail.TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = snail.TargetEncoding.srgb };
+        try self.sr.record(cmd, vulkan_platform.currentFrameIndex(), scene, view_proj, surface);
+        vulkan_platform.endFrame();
+    }
 } else void;
+
+fn srgbToLinear(v: f32) f32 {
+    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
+}

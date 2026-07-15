@@ -17,7 +17,7 @@ const scene_mod = @import("scene.zig");
 const game_shaders = @import("game_shaders.zig");
 const passes = @import("passes.zig");
 
-const vk = embed_vulkan.vk;
+pub const vk = embed_vulkan.vk;
 const Scene = scene_mod.Scene;
 const PreparedPass = passes.PreparedPass;
 

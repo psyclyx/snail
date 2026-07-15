@@ -1933,7 +1933,7 @@ fn benchVulkan(
 
     var max_words: usize = 0;
     for (bundles[0..bundle_count]) |*b| max_words = @max(max_words, snail.emit.wordBudget(b.picture.shapes.len, 0));
-    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), max_words * @sizeOf(u32), vulkan_platform.OFFSCREEN_FRAMES_IN_FLIGHT);
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), max_words * @sizeOf(u32), vulkan_platform.OFFSCREEN_FRAMES_IN_FLIGHT, false);
     defer caller.deinit();
 
     const backend_name = "Vulkan";

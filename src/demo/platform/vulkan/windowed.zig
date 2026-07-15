@@ -47,6 +47,13 @@ var swapchain_count: u32 = 0;
 var swapchain_format: vk.VkFormat = vk.VK_FORMAT_B8G8R8A8_UNORM;
 var swapchain_extent: vk.VkExtent2D = .{ .width = 0, .height = 0 };
 
+// Opt-in depth attachment (the game demo's depth-tested scene; 2D demo opts out).
+const DEPTH_FORMAT: vk.VkFormat = vk.VK_FORMAT_D32_SFLOAT;
+var win_use_depth: bool = false;
+var depth_image: vk.VkImage = null;
+var depth_memory: vk.VkDeviceMemory = null;
+var depth_view: vk.VkImageView = null;
+
 var render_pass: vk.VkRenderPass = null;
 var framebuffers: [8]vk.VkFramebuffer = .{null} ** 8;
 
@@ -152,6 +159,7 @@ var cmd_ready_ns: u64 = 0; // set just before beginFrame returns
 var timing_reports_enabled: bool = false;
 
 pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext {
+    win_use_depth = false;
     // Note: this demo platform and the library Vulkan renderer have separate @cImport blocks
     // for Vulkan, creating incompatible opaque pointer types. We use @ptrCast at the
     // boundary to convert between them.
@@ -168,9 +176,10 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext 
     return initForCurrentWindow();
 }
 
-pub fn initForWindow(shared_window: *wayland.Window) !snail.VulkanContext {
+pub fn initForWindow(shared_window: *wayland.Window, use_depth: bool) !snail.VulkanContext {
     window = shared_window;
     owns_window = false;
+    win_use_depth = use_depth;
     errdefer {
         window = null;
         owns_window = false;
@@ -190,6 +199,7 @@ fn initForCurrentWindow() !snail.VulkanContext {
     try createLogicalDevice();
     const fb_size = window.?.getFramebufferSize();
     try createSwapchain(fb_size[0], fb_size[1]);
+    if (win_use_depth) try createDepthResources();
     try createRenderPass();
     try createFramebuffers();
     try createCommandResources();
@@ -314,14 +324,17 @@ pub fn beginFrame(clear_color: ?[4]f32) ?vk.VkCommandBuffer {
     // the per-pass loop.
     resetTimestampsForSlot(cmd, current_frame);
 
-    const clear_value = vk.VkClearValue{ .color = .{ .float32 = clear_color orelse DEFAULT_CLEAR_COLOR } };
+    const clear_values = [2]vk.VkClearValue{
+        .{ .color = .{ .float32 = clear_color orelse DEFAULT_CLEAR_COLOR } },
+        .{ .depthStencil = .{ .depth = 1.0, .stencil = 0 } },
+    };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = render_pass,
         .framebuffer = framebuffers[current_image_index],
         .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = swapchain_extent },
-        .clearValueCount = 1,
-        .pClearValues = &clear_value,
+        .clearValueCount = if (win_use_depth) @as(u32, 2) else 1,
+        .pClearValues = &clear_values,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
     cmd_ready_ns = nowNs();
@@ -675,30 +688,46 @@ fn createRenderPass() !void {
         .finalLayout = vk.VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
     });
 
+    const depth_attachment = std.mem.zeroInit(vk.VkAttachmentDescription, .{
+        .format = DEPTH_FORMAT,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    });
+    const atts = [2]vk.VkAttachmentDescription{ color_attachment, depth_attachment };
     const color_ref = vk.VkAttachmentReference{
         .attachment = 0,
         .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    const depth_ref = vk.VkAttachmentReference{
+        .attachment = 1,
+        .layout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
 
     const subpass = std.mem.zeroInit(vk.VkSubpassDescription, .{
         .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = if (win_use_depth) &depth_ref else null,
     });
 
     const dependency = std.mem.zeroInit(vk.VkSubpassDependency, .{
         .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     });
 
     const rp_ci = std.mem.zeroInit(vk.VkRenderPassCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_attachment,
+        .attachmentCount = if (win_use_depth) @as(u32, 2) else 1,
+        .pAttachments = &atts,
         .subpassCount = 1,
         .pSubpasses = &subpass,
         .dependencyCount = 1,
@@ -707,13 +736,75 @@ fn createRenderPass() !void {
     try checkVk(vk.vkCreateRenderPass(device, &rp_ci, null, &render_pass));
 }
 
+fn createDepthResources() !void {
+    const img_ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = vk.VK_IMAGE_TYPE_2D,
+        .format = DEPTH_FORMAT,
+        .extent = .{ .width = swapchain_extent.width, .height = swapchain_extent.height, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
+        .usage = vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    });
+    try checkVk(vk.vkCreateImage(device, &img_ci, null, &depth_image));
+    var mem_req: vk.VkMemoryRequirements = undefined;
+    vk.vkGetImageMemoryRequirements(device, depth_image, &mem_req);
+    const alloc_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = try findMemoryTypeIndex(mem_req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT),
+    });
+    try checkVk(vk.vkAllocateMemory(device, &alloc_info, null, &depth_memory));
+    try checkVk(vk.vkBindImageMemory(device, depth_image, depth_memory, 0));
+    const iv_ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = depth_image,
+        .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
+        .format = DEPTH_FORMAT,
+        .subresourceRange = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    });
+    try checkVk(vk.vkCreateImageView(device, &iv_ci, null, &depth_view));
+}
+
+fn destroyDepthResources() void {
+    if (depth_view != null) vk.vkDestroyImageView(device, depth_view, null);
+    if (depth_image != null) vk.vkDestroyImage(device, depth_image, null);
+    if (depth_memory != null) vk.vkFreeMemory(device, depth_memory, null);
+    depth_view = null;
+    depth_image = null;
+    depth_memory = null;
+}
+
+fn findMemoryTypeIndex(type_filter: u32, properties: vk.VkMemoryPropertyFlags) !u32 {
+    var mem_props: vk.VkPhysicalDeviceMemoryProperties = undefined;
+    vk.vkGetPhysicalDeviceMemoryProperties(physical_device, &mem_props);
+    for (0..mem_props.memoryTypeCount) |i| {
+        const bit: u32 = @as(u32, 1) << @intCast(i);
+        if ((type_filter & bit != 0) and (mem_props.memoryTypes[i].propertyFlags & properties) == properties) {
+            return @intCast(i);
+        }
+    }
+    return error.NoSuitableMemoryType;
+}
+
 fn createFramebuffers() !void {
     for (0..swapchain_count) |i| {
+        const fb_atts = [2]vk.VkImageView{ swapchain_views[i], depth_view };
         const fb_ci = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
             .renderPass = render_pass,
-            .attachmentCount = 1,
-            .pAttachments = &swapchain_views[i],
+            .attachmentCount = if (win_use_depth) @as(u32, 2) else 1,
+            .pAttachments = &fb_atts,
             .width = swapchain_extent.width,
             .height = swapchain_extent.height,
             .layers = 1,
@@ -894,6 +985,7 @@ fn cleanupSwapchain() void {
         images_in_flight[i] = null;
     }
     if (swapchain != null) vk.vkDestroySwapchainKHR(device, swapchain, null);
+    if (win_use_depth) destroyDepthResources();
     swapchain = null;
     swapchain_count = 0;
 }
@@ -909,6 +1001,7 @@ fn recreateSwapchain() !void {
     _ = vk.vkDeviceWaitIdle(device);
     cleanupSwapchain();
     try createSwapchain(size[0], size[1]);
+    if (win_use_depth) try createDepthResources();
     try createFramebuffers();
 }
 
