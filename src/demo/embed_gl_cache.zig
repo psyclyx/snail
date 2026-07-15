@@ -405,15 +405,33 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
             if (self.image_array_tex != 0) return;
 
+            const mw: u32 = self.options.max_image_width;
+            const mh: u32 = self.options.max_image_height;
+            const layers: u32 = self.options.max_images;
+
+            // Zero-initialize the whole array. Each image is uploaded to the
+            // top-left w×h corner of a mw×mh layer, but the sampler is GL_LINEAR:
+            // at the image's right/bottom edge, bilinear filtering reads the
+            // neighbouring padding texel (CLAMP_TO_EDGE clamps to the *layer*
+            // edge, not the image edge). Left undefined, that padding is stale
+            // VRAM — the NVIDIA driver doesn't zero-fill on allocation — which
+            // makes the rendered image edges non-deterministic run-to-run. A
+            // one-time clear to transparent black makes the edge blend toward 0
+            // deterministically.
+            const zeros = try self.allocator.alloc(u8, @as(usize, mw) * mh * layers * 4);
+            defer self.allocator.free(zeros);
+            @memset(zeros, 0);
+
             if (comptime variant.supportsDsa()) {
                 gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &self.image_array_tex);
-                gl.glTextureStorage3D(self.image_array_tex, 1, gl.GL_SRGB8_ALPHA8, @intCast(self.options.max_image_width), @intCast(self.options.max_image_height), @intCast(self.options.max_images));
+                gl.glTextureStorage3D(self.image_array_tex, 1, gl.GL_SRGB8_ALPHA8, @intCast(mw), @intCast(mh), @intCast(layers));
+                gl.glTextureSubImage3D(self.image_array_tex, 0, 0, 0, 0, @intCast(mw), @intCast(mh), @intCast(layers), gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, zeros.ptr);
                 setSampleParamsDsa(self.image_array_tex, .linear);
             } else {
                 gl.glGenTextures(1, &self.image_array_tex);
                 gl.glActiveTexture(gl.GL_TEXTURE3);
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.image_array_tex);
-                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_SRGB8_ALPHA8, @intCast(self.options.max_image_width), @intCast(self.options.max_image_height), @intCast(self.options.max_images), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
+                gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_SRGB8_ALPHA8, @intCast(mw), @intCast(mh), @intCast(layers), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, zeros.ptr);
                 setSampleParamsBind(gl.GL_TEXTURE_2D_ARRAY, .linear);
             }
         }
