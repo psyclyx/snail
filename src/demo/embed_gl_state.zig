@@ -676,6 +676,19 @@ fn TextStateFor(comptime backend: Backend) type {
             self.frame_begun = false;
             self.cached_heterogeneous_vao_bound = false;
             self.cached_replicated_vao_bound = false;
+
+            // Re-assert the global blend/sRGB state snail's draw depends on.
+            // Like the program/VAO bind above, this is foreign-mutable: the
+            // app's own GL work between frames can change it (e.g. the game's
+            // world pass disables GL_BLEND for opaque geometry, then draws the
+            // HUD text). Invalidating `cached_blend_mode` forces the next
+            // setBlendMode to actually re-issue glEnable(GL_BLEND) + blend func
+            // instead of trusting its shadow; otherwise the first pass renders
+            // unblended, writing premultiplied glyph edges opaque = hard/dark AA
+            // fringes (worst on no-backing text over a varied background).
+            self.cached_blend_mode = .uninitialized;
+            gl.glEnable(gl.GL_FRAMEBUFFER_SRGB);
+
             if (comptime backend == .gl44) self.ring.beginFrame();
         }
 
