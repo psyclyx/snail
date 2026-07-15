@@ -14,6 +14,7 @@ const snail_helpers = @import("snail-helpers");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
+const driver_common = @import("driver_common.zig");
 const demo_banner = @import("banner.zig");
 const hud_mod = @import("hud.zig");
 const autohint_compare = @import("autohint_compare.zig");
@@ -487,80 +488,7 @@ fn printStutterLine(f: FrameSample, recent_avg_us: f64, moving: bool) void {
 // long compositor wait at the top of the loop shows up faithfully as
 // a long frame.
 
-const FrameTimeStats = struct {
-    const WINDOW: usize = 120; // ~2 s at 60 fps
-    const VSYNC_US: u32 = 16_667;
-
-    times_us: [WINDOW]u32 = [_]u32{0} ** WINDOW,
-    write_idx: usize = 0,
-    count: usize = 0,
-
-    fn record(self: *FrameTimeStats, frame_us: u32) void {
-        self.times_us[self.write_idx] = frame_us;
-        self.write_idx = (self.write_idx + 1) % WINDOW;
-        if (self.count < WINDOW) self.count += 1;
-    }
-
-    const Snapshot = struct {
-        fps: f32 = 0,
-        p50_us: u32 = 0,
-        p95_us: u32 = 0,
-        max_us: u32 = 0,
-        /// Frames bucketed by which 60 Hz vsync interval they spanned.
-        /// `cadence[0]` = "made it inside one vsync" (smooth 60),
-        /// `cadence[1]` = "took 2 vsyncs" (smooth 30 if every frame),
-        /// `cadence[2]` = "took 3" (smooth 20), `cadence[3]` = "≥ 4".
-        /// A split distribution = judder.
-        cadence: [4]u32 = .{ 0, 0, 0, 0 },
-        count: u32 = 0,
-    };
-
-    fn snapshot(self: *const FrameTimeStats) Snapshot {
-        if (self.count == 0) return .{};
-        var sorted: [WINDOW]u32 = undefined;
-        @memcpy(sorted[0..self.count], self.times_us[0..self.count]);
-        std.sort.pdq(u32, sorted[0..self.count], {}, std.sort.asc(u32));
-
-        var cad = [_]u32{ 0, 0, 0, 0 };
-        var sum_us: u64 = 0;
-        for (self.times_us[0..self.count]) |t| {
-            sum_us += t;
-            // Round `t` to the nearest whole vsync count, then bucket.
-            // Putting the boundary at the *midpoint* between vsyncs
-            // (8.33 ms, 25 ms, 41.67 ms) instead of on each vsync
-            // (16.67, 33.33, 50) gives ±half-vsync of slack to absorb
-            // the few ms of CPU-scheduling / event-pump / driver-side
-            // jitter present in any real loop. Without this slack, a
-            // perfectly steady 60 fps stream — where consecutive `dt`
-            // samples drift 14.5, 17.1, 15.8, 18.2, ... around the
-            // true 16.67 ms interval — bins as "half 1×, half 2×"
-            // even though the display itself never drops a frame.
-            // That false split is what made the Vulkan backend (which
-            // genuinely never misses vsync on this hardware) look
-            // identical to a struggling CPU backend in the histogram.
-            const vsync_count = (t + VSYNC_US / 2) / VSYNC_US;
-            const bucket: usize = if (vsync_count <= 1) 0
-                else if (vsync_count == 2) 1
-                else if (vsync_count == 3) 2
-                else 3;
-            cad[bucket] += 1;
-        }
-        const mean_us: f32 = if (sum_us > 0)
-            @as(f32, @floatFromInt(sum_us)) / @as(f32, @floatFromInt(self.count))
-        else
-            0;
-        const fps: f32 = if (mean_us > 1.0) 1_000_000.0 / mean_us else 0;
-        const n = self.count;
-        return .{
-            .fps = fps,
-            .p50_us = sorted[n / 2],
-            .p95_us = sorted[@min((n * 95) / 100, n - 1)],
-            .max_us = sorted[n - 1],
-            .cadence = cad,
-            .count = @intCast(n),
-        };
-    }
-};
+const FrameTimeStats = driver_common.FrameTimeStats;
 
 /// Running per-stage sums for the HUD's stage-breakdown lines (the same
 /// information the `T` stdout prints carry, but on-screen and live).

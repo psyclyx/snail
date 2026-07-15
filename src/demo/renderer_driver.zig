@@ -18,6 +18,7 @@ const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
 const wayland = @import("platform/wayland.zig");
 const demo_banner = @import("banner.zig");
+const driver_common = @import("driver_common.zig");
 
 const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
@@ -113,24 +114,10 @@ fn cpuThreadCount(kind: Kind) ?usize {
 /// `dirty=true` when any atlas in the pass added entries since the
 /// last upload; the driver releases and re-issues that pass's
 /// bindings.
-pub const Pass = struct {
-    atlases: []const *const snail.Atlas,
-    pictures: []const *const snail_helpers.Picture,
-    draw_state: snail.DrawState,
-    dirty: bool,
-    /// CPU-backend hint: when true, fan tile work across the driver's
-    /// thread pool; when false, rasterize on the calling thread. Small
-    /// overlays (HUD-style) should set this to false — the per-strip
-    /// dispatch + barrier cost outweighs the rasterization work for
-    /// tiny batches. GPU backends ignore this field.
-    cpu_parallel: bool = true,
-};
+pub const Pass = driver_common.Pass;
 
-/// Cap on the number of passes a single frame can run. Picked so the
-/// per-driver pass state lives in inline arrays (no heap), bumpable.
-pub const MAX_PASSES: usize = 4;
-/// Per-pass max binding count, mirroring max_bindings on the cache.
-pub const MAX_BINDINGS_PER_PASS: usize = 4;
+pub const MAX_PASSES = driver_common.MAX_PASSES;
+pub const MAX_BINDINGS_PER_PASS = driver_common.MAX_BINDINGS_PER_PASS;
 
 /// Per-frame stage timings (µs) for the CPU backend. GPU drivers report
 /// zero for every field except `swap_us` (their per-stage cost lives on
@@ -141,41 +128,9 @@ pub const MAX_BINDINGS_PER_PASS: usize = 4;
 /// `pass_us` is indexed 1:1 with the input passes; trailing entries stay
 /// zero. The sum across all fields is the wall-clock the backend spent
 /// inside `renderFrame`.
-pub const FrameTimings = struct {
-    clear_us: f64 = 0,
-    sync_us: f64 = 0,
-    emit_us: f64 = 0,
-    pass_us: [MAX_PASSES]f64 = [_]f64{0} ** MAX_PASSES,
-    swap_us: f64 = 0,
-};
+pub const FrameTimings = driver_common.FrameTimings;
 
-// Buffer for new-API draw words + segments. Owned by the driver, grown on
-// demand each frame. Two segments are enough (paths + text picture).
-const ScratchBuf = struct {
-    allocator: std.mem.Allocator,
-    words: []u32 = &.{},
-    segs: []snail.DrawSegment = &.{},
-
-    fn init(allocator: std.mem.Allocator) ScratchBuf {
-        return .{ .allocator = allocator };
-    }
-
-    fn deinit(self: *ScratchBuf) void {
-        if (self.words.len > 0) self.allocator.free(self.words);
-        if (self.segs.len > 0) self.allocator.free(self.segs);
-    }
-
-    fn ensure(self: *ScratchBuf, word_count: usize, seg_count: usize) !void {
-        if (self.words.len < word_count) {
-            if (self.words.len > 0) self.allocator.free(self.words);
-            self.words = try self.allocator.alloc(u32, word_count);
-        }
-        if (self.segs.len < seg_count) {
-            if (self.segs.len > 0) self.allocator.free(self.segs);
-            self.segs = try self.allocator.alloc(snail.DrawSegment, seg_count);
-        }
-    }
-};
+const ScratchBuf = driver_common.ScratchBuf;
 
 pub const Driver = union(Kind) {
     vulkan: if (build_options.enable_vulkan) VulkanDriver else void,
@@ -338,110 +293,14 @@ pub const Driver = union(Kind) {
 
 // ── Utility ───────────────────────────────────────────────────────────────
 
-fn unitToU8(v: f32) u8 {
-    return @intFromFloat(std.math.clamp(v, 0, 1) * 255);
-}
+const unitToU8 = driver_common.unitToU8;
+const srgbToLinear = driver_common.srgbToLinear;
+const clearColorForShader = driver_common.clearColorForShader;
 
-fn srgbToLinear(v: f32) f32 {
-    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-}
-
-fn clearColorForShader(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f32 {
-    return switch (encoding.shaderOutputEncoding()) {
-        .linear => .{ srgbToLinear(color_srgb[0]), srgbToLinear(color_srgb[1]), srgbToLinear(color_srgb[2]), color_srgb[3] },
-        .srgb => color_srgb,
-    };
-}
-
-/// Per-pass view onto the shared scratch buffer. `words` spans the
-/// full emitted range across every pass (segment `words_offset` values
-/// index it directly); `segs` is the pass's own sub-slice of segments.
-/// Each draw call gets the same `words` and only its own `segs`.
-const PassRecords = struct {
-    words: []const u32,
-    segs: []const snail.DrawSegment,
-};
-
-/// Driver-side per-pass binding state. Indexed by pass position; the
-/// caller passes the same pass count and order each frame so the
-/// indexes stay stable.
-const PassState = struct {
-    bindings: [MAX_BINDINGS_PER_PASS]snail.Binding = undefined,
-    count: u8 = 0,
-    initialized: bool = false,
-};
-
-/// Total words needed to emit every picture across every pass.
-fn passesWordBudget(passes: []const Pass) usize {
-    var total: usize = 0;
-    for (passes) |pass| {
-        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture.shapes.len, 0);
-    }
-    return total;
-}
-
-/// Conservative seg budget: one segment per (pass × picture) plus one
-/// of slack. emit's `mergeIfAdjacent` may produce fewer.
-fn passesSegBudget(passes: []const Pass) usize {
-    var total: usize = 1;
-    for (passes) |pass| total += pass.pictures.len;
-    return total;
-}
-
-/// Emit every pass into a contiguous scratch run. Every PassRecords
-/// shares the same `words` slice (the full emitted extent) so segment
-/// `words_offset` values keep their absolute meaning; each pass owns
-/// only its segment sub-slice.
-fn emitPasses(
-    scratch: *ScratchBuf,
-    passes: []const Pass,
-    pass_states: []const PassState,
-    out_records: []PassRecords,
-) !void {
-    std.debug.assert(passes.len == out_records.len);
-    try scratch.ensure(passesWordBudget(passes), passesSegBudget(passes));
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    for (passes, pass_states, 0..) |pass, state, i| {
-        std.debug.assert(state.initialized);
-        std.debug.assert(state.count == pass.atlases.len);
-        const seg_start = slen;
-        for (pass.atlases, pass.pictures, state.bindings[0..state.count]) |atlas, picture, binding| {
-            _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
-        }
-        out_records[i] = .{
-            // .words patched after the loop once `wlen` is final.
-            .words = scratch.words[0..0],
-            .segs = scratch.segs[seg_start..slen],
-        };
-    }
-    const full_words = scratch.words[0..wlen];
-    for (out_records) |*rec| rec.words = full_words;
-}
-
-/// Ensure each pass's bindings are live in `cache`. Releases stale
-/// bindings on `pass.dirty`; reuses bindings otherwise.
-fn syncPassBindings(
-    comptime CacheType: type,
-    cache: *CacheType,
-    allocator: std.mem.Allocator,
-    passes: []const Pass,
-    pass_states: []PassState,
-    cache_was_reinitialized: bool,
-) !void {
-    for (passes, pass_states) |pass, *state| {
-        const needs_upload = cache_was_reinitialized or pass.dirty or !state.initialized;
-        if (!needs_upload) continue;
-        if (state.initialized and !cache_was_reinitialized) {
-            for (state.bindings[0..state.count]) |b| cache.release(b);
-        }
-        state.initialized = false;
-        std.debug.assert(pass.atlases.len <= MAX_BINDINGS_PER_PASS);
-        try cache.upload(allocator, pass.atlases, state.bindings[0..pass.atlases.len]);
-        state.count = @intCast(pass.atlases.len);
-        state.initialized = true;
-    }
-}
+const PassRecords = driver_common.PassRecords;
+const PassState = driver_common.PassState;
+const emitPasses = driver_common.emitPasses;
+const syncPassBindings = driver_common.syncPassBindings;
 
 // ── GL timer-query ring ───────────────────────────────────────────────────
 //
