@@ -258,6 +258,27 @@ pub const PassBuilder = struct {
         try self.addFilledPath(&p, paint);
     }
 
+    /// Filled rounded rect + a separate center-stroke border, as two independent
+    /// shapes. Unlike `addRoundedRectWithInsideStroke` (the `fill_stroke_inside`
+    /// composite), this leaves no coverage residue under perspective — the
+    /// composite clips a center-stroke to the fill interior *per fragment*, and
+    /// combining two coverage fields at grazing angles produces specks/seams.
+    pub fn addRoundedRectFilledStroked(
+        self: *PassBuilder,
+        rect: snail.Rect,
+        fill: snail.Paint,
+        stroke_paint: snail.Paint,
+        stroke_width: f32,
+        radius: f32,
+    ) !void {
+        var p = snail.Path.init(self.allocator);
+        defer p.deinit();
+        try p.addRoundedRect(rect, radius);
+        try self.addFilledPath(&p, fill);
+        if (stroke_width > 0)
+            try self.addStrokedPath(&p, .{ .paint = stroke_paint, .width = stroke_width, .placement = .center });
+    }
+
     pub const TextResult = struct {
         advance_x: f32,
     };

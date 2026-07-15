@@ -222,10 +222,11 @@ fn buildLabel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     var b = PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const rect = snail.Rect{ .x = 8.0, .y = 8.0, .w = w - 16.0, .h = label_scene_h - 16.0 };
-    try b.addRoundedRectWithInsideStroke(
+    try b.addRoundedRectFilledStroked(
         rect,
         .{ .solid = .{ 0.10, 0.13, 0.18, 0.94 } },
-        .{ .paint = .{ .solid = .{ 0.30, 0.50, 0.70, 0.85 } }, .width = 2.5, .placement = .inside },
+        .{ .solid = .{ 0.30, 0.50, 0.70, 0.85 } },
+        2.5,
         16.0,
     );
     _ = try b.appendText(.{ .weight = .bold }, "DEPTH TESTED", 34.0, 116.0, 64.0, .{ 0.72, 0.88, 1.0, 1.0 });
@@ -244,10 +245,11 @@ fn buildPanel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     var b = PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const rect = snail.Rect{ .x = 16.0, .y = 16.0, .w = w - 32.0, .h = 268.0 };
-    try b.addRoundedRectWithInsideStroke(
+    try b.addRoundedRectFilledStroked(
         rect,
         .{ .solid = .{ 0.30, 0.60, 0.95, 0.34 } },
-        .{ .paint = .{ .solid = .{ 0.70, 0.90, 1.0, 0.60 } }, .width = 2.5, .placement = .inside },
+        .{ .solid = .{ 0.70, 0.90, 1.0, 0.60 } },
+        2.5,
         22.0,
     );
     _ = try b.appendText(.{ .weight = .bold }, "TRANSLUCENT", 40.0, 84.0, 40.0, .{ 0.95, 0.99, 1.0, 0.85 });
