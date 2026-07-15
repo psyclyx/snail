@@ -555,7 +555,11 @@ fn TextStateFor(comptime backend: Backend) type {
                 self.frame_begun = true;
             }
 
-            const cache_changed = self.active_cache != cache;
+            // Rebind on program change too, not just cache change: the layer /
+            // image sampler binding is *program-dependent* (a path/colr program
+            // samples `u_layer_tex` on unit 2, the text program doesn't), so a
+            // text→path switch on the same cache must (re)bind unit 2 for path.
+            const cache_changed = self.active_cache != cache or program_changed;
             if (cache_changed) {
                 self.active_cache = cache;
                 if (comptime backend == .gl44) {
