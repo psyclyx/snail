@@ -237,7 +237,10 @@ pub fn createModule(b: *std.Build, enable_vulkan: bool) *std.Build.Module {
     }
 
     const shader_dir = b.path("src/snail/render/backend/vulkan_glsl");
-    const shared_shader_dir = b.path("src/snail/render/backend/glsl");
+    // The shared GLSL (color/coverage commons, vert body) lives in gl/glsl; the
+    // Vulkan wrappers `#include` some of it directly (e.g. snail.vert pulls in
+    // snail_color_common.glsl), so it must be on glslc's include path.
+    const shared_shader_dir = b.path("src/snail/render/backend/gl/glsl");
     const generated_shaders = b.addWriteFiles();
 
     var spv_outputs: [shader_specs.len]std.Build.LazyPath = undefined;
