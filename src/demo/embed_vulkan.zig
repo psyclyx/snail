@@ -52,7 +52,12 @@ pub const Renderer = struct {
     /// buffer and a `slot_bytes`×`num_slots` vertex ring. Use `num_slots` = the
     /// caller's frames-in-flight (1 if it waits idle each frame); `slot_bytes`
     /// must fit the largest frame's `emit` words.
-    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, slot_bytes: usize, num_slots: u32) !Renderer {
+    /// `depth_test` makes the pipelines depth-test (LESS_OR_EQUAL, write off) so
+    /// a caller rendering into a render pass with a depth attachment can have
+    /// snail passes occluded by prior opaque geometry. Pass `false` for the
+    /// color-only case (the default the 2D demo + screenshots use). The
+    /// depth-stencil config is thus caller-controlled, not baked in.
+    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, slot_bytes: usize, num_slots: u32, depth_test: bool) !Renderer {
         const device = ctx.device;
 
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
@@ -84,10 +89,10 @@ pub const Renderer = struct {
             if (p != null) vk.vkDestroyPipeline(device, p, null);
         };
         for (PREMUL_FAMILIES) |family| {
-            self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family));
+            self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family), depth_test);
         }
         if (self.supports_dual_src) {
-            self.pipelines[@intFromEnum(contract.Family.subpixel)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(.subpixel));
+            self.pipelines[@intFromEnum(contract.Family.subpixel)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(.subpixel), depth_test);
         }
 
         self.ibo = try HostBuffer.init(ctx, @sizeOf(@TypeOf(contract.QUAD_INDICES)), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
@@ -239,7 +244,7 @@ pub fn createTransferPool(ctx: snail.VulkanContext) !vk.VkCommandPool {
     return pool;
 }
 
-fn buildPipeline(ctx: snail.VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe) !vk.VkPipeline {
+fn buildPipeline(ctx: snail.VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe, depth_test: bool) !vk.VkPipeline {
     const device = ctx.device;
     const vert_module = try shaderModule(device, contract.vert_spv);
     defer vk.vkDestroyShaderModule(device, vert_module, null);
@@ -298,6 +303,11 @@ fn buildPipeline(ctx: snail.VulkanContext, layout: vk.VkPipelineLayout, r: contr
     });
     const ds_info = std.mem.zeroInit(vk.VkPipelineDepthStencilStateCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
+        // Caller-controlled: depth-test (never write) so snail passes can be
+        // occluded by prior opaque geometry when a depth attachment is present.
+        .depthTestEnable = @intFromBool(depth_test),
+        .depthWriteEnable = 0,
+        .depthCompareOp = @as(vk.VkCompareOp, @intCast(if (depth_test) vk.VK_COMPARE_OP_LESS_OR_EQUAL else vk.VK_COMPARE_OP_NEVER)),
     });
     const dyn_states = [2]vk.VkDynamicState{ vk.VK_DYNAMIC_STATE_VIEWPORT, vk.VK_DYNAMIC_STATE_SCISSOR };
     const dyn_info = std.mem.zeroInit(vk.VkPipelineDynamicStateCreateInfo, .{

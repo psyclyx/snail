@@ -22,11 +22,16 @@ var command_pool: vk.VkCommandPool = null;
 // Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
 
 const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_SRGB;
+const DEPTH_FORMAT: vk.VkFormat = vk.VK_FORMAT_D32_SFLOAT;
 pub const OFFSCREEN_FRAMES_IN_FLIGHT = 8;
 
 var offscreen_image: vk.VkImage = null;
 var offscreen_memory: vk.VkDeviceMemory = null;
 var offscreen_view: vk.VkImageView = null;
+var offscreen_depth_image: vk.VkImage = null;
+var offscreen_depth_memory: vk.VkDeviceMemory = null;
+var offscreen_depth_view: vk.VkImageView = null;
+var offscreen_use_depth: bool = false;
 var offscreen_render_pass: vk.VkRenderPass = null;
 var offscreen_framebuffer: vk.VkFramebuffer = null;
 var offscreen_cmds: [OFFSCREEN_FRAMES_IN_FLIGHT]vk.VkCommandBuffer = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
@@ -38,6 +43,13 @@ var offscreen_extent: vk.VkExtent2D = .{ .width = 0, .height = 0 };
 /// Initialise Vulkan for offscreen rendering. No window or swapchain.
 /// Call deinitOffscreen() when done.
 pub fn initOffscreen(width: u32, height: u32) !snail.VulkanContext {
+    return initOffscreenOpts(width, height, false);
+}
+
+/// `use_depth` attaches a D32 depth buffer to the offscreen render pass (for
+/// the game's depth-tested scene). Color-only tools call `initOffscreen`.
+pub fn initOffscreenOpts(width: u32, height: u32, use_depth: bool) !snail.VulkanContext {
+    offscreen_use_depth = use_depth;
     try createInstanceOffscreen();
     try pickPhysicalDeviceOffscreen();
     try createDeviceOffscreen();
@@ -74,6 +86,9 @@ pub fn deinitOffscreen() void {
     if (offscreen_view != null) vk.vkDestroyImageView(device, offscreen_view, null);
     if (offscreen_image != null) vk.vkDestroyImage(device, offscreen_image, null);
     if (offscreen_memory != null) vk.vkFreeMemory(device, offscreen_memory, null);
+    if (offscreen_depth_view != null) vk.vkDestroyImageView(device, offscreen_depth_view, null);
+    if (offscreen_depth_image != null) vk.vkDestroyImage(device, offscreen_depth_image, null);
+    if (offscreen_depth_memory != null) vk.vkFreeMemory(device, offscreen_depth_memory, null);
     for (offscreen_fences) |fence| {
         if (fence != null) vk.vkDestroyFence(device, fence, null);
     }
@@ -83,6 +98,10 @@ pub fn deinitOffscreen() void {
     offscreen_image = null;
     offscreen_memory = null;
     offscreen_view = null;
+    offscreen_depth_image = null;
+    offscreen_depth_memory = null;
+    offscreen_depth_view = null;
+    offscreen_use_depth = false;
     offscreen_render_pass = null;
     offscreen_framebuffer = null;
     offscreen_cmds = .{null} ** OFFSCREEN_FRAMES_IN_FLIGHT;
@@ -119,14 +138,17 @@ pub fn beginFrameOffscreenWithClear(clear_color: [4]f32) vk.VkCommandBuffer {
     });
     _ = vk.vkBeginCommandBuffer(cmd, &begin_info);
 
-    const clear_value = vk.VkClearValue{ .color = .{ .float32 = clear_color } };
+    const clear_values = [2]vk.VkClearValue{
+        .{ .color = .{ .float32 = clear_color } },
+        .{ .depthStencil = .{ .depth = 1.0, .stencil = 0 } },
+    };
     const rp_info = std.mem.zeroInit(vk.VkRenderPassBeginInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO,
         .renderPass = offscreen_render_pass,
         .framebuffer = offscreen_framebuffer,
         .renderArea = .{ .offset = .{ .x = 0, .y = 0 }, .extent = offscreen_extent },
-        .clearValueCount = 1,
-        .pClearValues = &clear_value,
+        .clearValueCount = if (offscreen_use_depth) @as(u32, 2) else 1,
+        .pClearValues = &clear_values,
     });
     vk.vkCmdBeginRenderPass(cmd, &rp_info, vk.VK_SUBPASS_CONTENTS_INLINE);
     offscreen_active_frame = frame;
@@ -459,6 +481,8 @@ fn createOffscreenResources(width: u32, height: u32) !void {
     });
     try checkVk(vk.vkCreateImageView(device, &iv_ci, null, &offscreen_view));
 
+    if (offscreen_use_depth) try createOffscreenDepth(width, height);
+
     // Render pass (final layout COLOR_ATTACHMENT_OPTIMAL, not PRESENT_SRC_KHR)
     const color_att = std.mem.zeroInit(vk.VkAttachmentDescription, .{
         .format = OFFSCREEN_FORMAT,
@@ -470,27 +494,43 @@ fn createOffscreenResources(width: u32, height: u32) !void {
         .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
         .finalLayout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
     });
+    const depth_att = std.mem.zeroInit(vk.VkAttachmentDescription, .{
+        .format = DEPTH_FORMAT,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .loadOp = vk.VK_ATTACHMENT_LOAD_OP_CLEAR,
+        .storeOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .stencilLoadOp = vk.VK_ATTACHMENT_LOAD_OP_DONT_CARE,
+        .stencilStoreOp = vk.VK_ATTACHMENT_STORE_OP_DONT_CARE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+        .finalLayout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
+    });
+    const atts = [2]vk.VkAttachmentDescription{ color_att, depth_att };
     const color_ref = vk.VkAttachmentReference{
         .attachment = 0,
         .layout = vk.VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
+    };
+    const depth_ref = vk.VkAttachmentReference{
+        .attachment = 1,
+        .layout = vk.VK_IMAGE_LAYOUT_DEPTH_STENCIL_ATTACHMENT_OPTIMAL,
     };
     const subpass = std.mem.zeroInit(vk.VkSubpassDescription, .{
         .pipelineBindPoint = vk.VK_PIPELINE_BIND_POINT_GRAPHICS,
         .colorAttachmentCount = 1,
         .pColorAttachments = &color_ref,
+        .pDepthStencilAttachment = if (offscreen_use_depth) &depth_ref else null,
     });
     const dependency = std.mem.zeroInit(vk.VkSubpassDependency, .{
         .srcSubpass = vk.VK_SUBPASS_EXTERNAL,
         .dstSubpass = 0,
-        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
-        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT,
+        .srcStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
+        .dstStageMask = vk.VK_PIPELINE_STAGE_COLOR_ATTACHMENT_OUTPUT_BIT | vk.VK_PIPELINE_STAGE_EARLY_FRAGMENT_TESTS_BIT,
         .srcAccessMask = 0,
-        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT,
+        .dstAccessMask = vk.VK_ACCESS_COLOR_ATTACHMENT_WRITE_BIT | vk.VK_ACCESS_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
     });
     const rp_ci = std.mem.zeroInit(vk.VkRenderPassCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_RENDER_PASS_CREATE_INFO,
-        .attachmentCount = 1,
-        .pAttachments = &color_att,
+        .attachmentCount = if (offscreen_use_depth) @as(u32, 2) else 1,
+        .pAttachments = &atts,
         .subpassCount = 1,
         .pSubpasses = &subpass,
         .dependencyCount = 1,
@@ -498,16 +538,58 @@ fn createOffscreenResources(width: u32, height: u32) !void {
     });
     try checkVk(vk.vkCreateRenderPass(device, &rp_ci, null, &offscreen_render_pass));
 
+    const fb_atts = [2]vk.VkImageView{ offscreen_view, offscreen_depth_view };
     const fb_ci = std.mem.zeroInit(vk.VkFramebufferCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_FRAMEBUFFER_CREATE_INFO,
         .renderPass = offscreen_render_pass,
-        .attachmentCount = 1,
-        .pAttachments = &offscreen_view,
+        .attachmentCount = if (offscreen_use_depth) @as(u32, 2) else 1,
+        .pAttachments = &fb_atts,
         .width = width,
         .height = height,
         .layers = 1,
     });
     try checkVk(vk.vkCreateFramebuffer(device, &fb_ci, null, &offscreen_framebuffer));
+}
+
+fn createOffscreenDepth(width: u32, height: u32) !void {
+    const img_ci = std.mem.zeroInit(vk.VkImageCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+        .imageType = vk.VK_IMAGE_TYPE_2D,
+        .format = DEPTH_FORMAT,
+        .extent = .{ .width = width, .height = height, .depth = 1 },
+        .mipLevels = 1,
+        .arrayLayers = 1,
+        .samples = vk.VK_SAMPLE_COUNT_1_BIT,
+        .tiling = vk.VK_IMAGE_TILING_OPTIMAL,
+        .usage = vk.VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT,
+        .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
+        .initialLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    });
+    try checkVk(vk.vkCreateImage(device, &img_ci, null, &offscreen_depth_image));
+    var mem_req: vk.VkMemoryRequirements = undefined;
+    vk.vkGetImageMemoryRequirements(device, offscreen_depth_image, &mem_req);
+    const mem_type = try findMemoryType(mem_req.memoryTypeBits, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    const alloc_info = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mem_req.size,
+        .memoryTypeIndex = mem_type,
+    });
+    try checkVk(vk.vkAllocateMemory(device, &alloc_info, null, &offscreen_depth_memory));
+    try checkVk(vk.vkBindImageMemory(device, offscreen_depth_image, offscreen_depth_memory, 0));
+    const iv_ci = std.mem.zeroInit(vk.VkImageViewCreateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO,
+        .image = offscreen_depth_image,
+        .viewType = vk.VK_IMAGE_VIEW_TYPE_2D,
+        .format = DEPTH_FORMAT,
+        .subresourceRange = .{
+            .aspectMask = vk.VK_IMAGE_ASPECT_DEPTH_BIT,
+            .baseMipLevel = 0,
+            .levelCount = 1,
+            .baseArrayLayer = 0,
+            .layerCount = 1,
+        },
+    });
+    try checkVk(vk.vkCreateImageView(device, &iv_ci, null, &offscreen_depth_view));
 }
 
 /// Block until all GPU work submitted to the graphics queue is complete.
