@@ -62,6 +62,37 @@ fn compile(
     return compile_step.addOutputFileArg(output_name);
 }
 
+/// Snail's shipped GLSL include directories. A caller compiling their own
+/// Vulkan shader that `#include`s snail's coverage/sample sources (see
+/// `snail.vulkan.embeddable`) puts both on glslc's `-I` path.
+pub const gl_glsl_include_dir = "src/snail/render/backend/gl/glsl";
+pub const vulkan_glsl_include_dir = "src/snail/render/backend/vulkan_glsl";
+
+/// Compile a caller-authored GLSL shader to SPIR-V with snail's include dirs on
+/// the glslc `-I` path. This is the build-time analog of the GL family's
+/// runtime source injection: the caller `#include`s snail's shipped `.glsl`
+/// (the coverage math + the Vulkan records interface) and compiles their own
+/// combined material shader. `defines` carries any `-D` macros (e.g. the
+/// per-instance word stride). Returns the compiled `.spv` LazyPath, suitable
+/// for `module.addAnonymousImport`.
+pub fn compileCallerShader(
+    b: *std.Build,
+    source: std.Build.LazyPath,
+    stage_arg: []const u8,
+    output_name: []const u8,
+    defines: []const []const u8,
+) std.Build.LazyPath {
+    const compile_step = b.addSystemCommand(&.{ "glslc", stage_arg });
+    for (defines) |d| compile_step.addArg(d);
+    compile_step.addArg("-I");
+    compile_step.addDirectoryArg(b.path(vulkan_glsl_include_dir));
+    compile_step.addArg("-I");
+    compile_step.addDirectoryArg(b.path(gl_glsl_include_dir));
+    compile_step.addFileArg(source);
+    compile_step.addArg("-o");
+    return compile_step.addOutputFileArg(output_name);
+}
+
 const ShaderSpec = struct {
     import_name: []const u8,
     generated_source_path: []const u8,

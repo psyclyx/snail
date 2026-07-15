@@ -8,8 +8,13 @@ struct SnailTextSampleRecord {
     vec4 tint;
 };
 
+// `snailTextRecordWord(int linear_index)` — fetch one u32 word of the emit
+// record stream — is supplied by the records *interface* (which differs per
+// backend: a texel buffer on desktop GL, a 2D R32UI texture on GLES 3.0, an
+// SSBO on Vulkan). This body is identical everywhere; only the storage the
+// accessor reads changes.
 uint snailTextSampleWord(int glyph_index, int word_offset) {
-    return texelFetch(u_snail_text_records, glyph_index * SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + word_offset).r;
+    return snailTextRecordWord(glyph_index * SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + word_offset);
 }
 
 float snailDecodeFloat16(uint bits) {

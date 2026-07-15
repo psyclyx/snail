@@ -172,6 +172,13 @@ pub const Gles30ShaderSources = struct {
     pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
 };
 
+/// Width (in texels) of the 2D `GL_R32UI` texture the GLES 3.0 records plane
+/// expects. GLES 3.0 has no buffer textures, so the emit words are uploaded
+/// row-major into a 2D texture of this width (height = ceil(word_count / width)).
+/// Must match `SNAIL_TEXT_RECORDS_TEX_WIDTH` in
+/// `glsl/snail_text_sample.interface.gles30.glsl`.
+pub const gles30_records_tex_width: u32 = 1024;
+
 // ── Program descriptors ──
 
 const gl_GLint = gl_bindings.gl.GLint;

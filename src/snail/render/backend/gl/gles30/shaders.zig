@@ -14,7 +14,10 @@ const gles30_vert_interface = @embedFile("../glsl/snail_vert.interface.glsl");
 const gles30_frag_interface = @embedFile("../glsl/snail_frag.interface.glsl");
 const gles30_text_subpixel_interface = @embedFile("../glsl/snail_text_subpixel.interface.glsl");
 const gles30_text_coverage_interface = @embedFile("../glsl/snail_text_coverage.interface.glsl");
-const gles30_text_sample_interface = @embedFile("../glsl/snail_text_sample.interface.glsl");
+// GLES 3.0 uses a 2D R32UI texture for the records plane (no buffer textures
+// in ES 3.0 core), so it needs its own sample interface — the shared body is
+// storage-agnostic and reused as-is.
+const gles30_text_sample_interface = @embedFile("../glsl/snail_text_sample.interface.gles30.glsl");
 
 const shared_render_abi = @embedFile("../glsl/snail_render_abi.glsl");
 const shared_vertex_body = @embedFile("../glsl/snail_vert_body.glsl");

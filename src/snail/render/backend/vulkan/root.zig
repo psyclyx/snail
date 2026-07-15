@@ -10,10 +10,12 @@
 
 pub const types = @import("types.zig");
 pub const contract = @import("contract.zig");
+pub const embeddable = @import("embeddable.zig");
 
 pub const VulkanContext = types.VulkanContext;
 
 test {
     _ = types;
     _ = contract;
+    _ = embeddable;
 }
