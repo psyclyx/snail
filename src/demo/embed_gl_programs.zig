@@ -1,5 +1,5 @@
 const std = @import("std");
-const gl = @import("bindings.zig").gl;
+const gl = @import("snail").gl.bindings.gl;
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,

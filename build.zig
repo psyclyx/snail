@@ -45,9 +45,13 @@ fn configureEglOffscreenModule(
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
     vk_shaders: *std.Build.Module,
+    embed_gl_mod: *std.Build.Module,
 ) void {
     configureCoreModule(mod, build_options_mod, options, vk_shaders);
     mod.linkSystemLibrary("EGL", .{});
+    // Every EGL-offscreen tool renders GL through the caller-owned reference
+    // renderer (embeddable-only); wire it once here.
+    mod.addImport("embed_gl", embed_gl_mod);
 }
 
 fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
@@ -97,6 +101,26 @@ fn createEmbedVulkanModule(
 ) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("src/demo/embed_vulkan.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "snail", .module = snail_mod },
+        },
+    });
+}
+
+/// Reference caller-owned GL all-in-one renderer + atlas cache (embeddable-only;
+/// the GL analog of `createEmbedVulkanModule`). GL library linkage comes
+/// transitively through `snail` (snail_gl links OpenGL/GLESv2 for its contract).
+fn createEmbedGlModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/demo/embed_gl.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -421,6 +445,7 @@ fn addScreenshotSteps(
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
     const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
@@ -453,7 +478,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
     const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
     const autohint_shot_step = b.step("run-autohint-screenshot", "Render the composable autohint policy comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
@@ -557,7 +582,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const banner_screenshot_gl_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gl", .root_module = banner_screenshot_gl_mod });
     const run_banner_screenshot_gl = b.addRunArtifact(banner_screenshot_gl_exe);
     const banner_screenshot_gl_step = b.step("run-banner-screenshot-gl", "Render the full banner scene through GL and write zig-out/banner-screenshot-gl.tga");
@@ -576,7 +601,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const banner_screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gles30", .root_module = banner_screenshot_gles30_mod });
     const run_banner_screenshot_gles30 = b.addRunArtifact(banner_screenshot_gles30_exe);
     const banner_screenshot_gles30_step = b.step("run-banner-screenshot-gles30", "Render the full banner scene through GLES 3.0 and write zig-out/banner-screenshot-gles30.tga");
@@ -618,7 +643,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-gl", .root_module = screenshot_gl_mod });
     const run_screenshot_gl = b.addRunArtifact(screenshot_gl_exe);
     const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
@@ -637,7 +662,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(backend_compare_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(backend_compare_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_mod });
     const run_backend_compare = b.addRunArtifact(backend_compare_exe);
     const backend_compare_step = b.step("run-backend-compare", "Render the content scene through CPU and GL and fail if they diverge beyond the AA tolerance");
@@ -658,7 +683,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(gamma_probe_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(gamma_probe_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const gamma_probe_exe = b.addExecutable(.{ .name = "snail-gamma-probe", .root_module = gamma_probe_mod });
     const run_gamma_probe = b.addRunArtifact(gamma_probe_exe);
     const gamma_probe_step = b.step("run-gamma-probe", "Check interior-pixel gamma (encode round-trip) across CPU/GL33/GLES30");
@@ -677,7 +702,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-gles30", .root_module = screenshot_gles30_mod });
     const run_screenshot_gles30 = b.addRunArtifact(screenshot_gles30_exe);
     const screenshot_gles30_step = b.step("run-screenshot-gles30", "Render the demo through the GLES30 backend and write zig-out/demo-screenshot-gles30.tga");
@@ -717,6 +742,7 @@ fn addInteractiveDemoStep(
     // shape/emit path that a Debug build is visibly slower; explicit
     // override (e.g. `-Doptimize=Debug` for debugging) still wins.
     const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail);
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/main.zig"),
         .target = config.target,
@@ -728,6 +754,7 @@ fn addInteractiveDemoStep(
             .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
+            .{ .name = "embed_gl", .module = demo_embed_gl_mod },
         },
     });
     // Interactive demo wraps every backend's platform layer: Wayland +
@@ -766,6 +793,7 @@ fn addGameDemoStep(
     if (!config.core_options.enable_gl33) return;
 
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail);
     const game_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/game.zig"),
         .target = config.target,
@@ -777,6 +805,7 @@ fn addGameDemoStep(
             .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
+            .{ .name = "embed_gl", .module = game_embed_gl_mod },
         },
     });
     game_mod.linkSystemLibrary("wayland-client", .{});
@@ -829,6 +858,7 @@ fn addBenchStep(
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
     const offscreen_gl_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
@@ -862,7 +892,7 @@ fn addBenchStep(
         .link_libc = true,
         .imports = bench_imports.items,
     });
-    configureEglOffscreenModule(bench_mod, modules.options, config.core_options, modules.vk_shaders);
+    configureEglOffscreenModule(bench_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
     bench_mod.linkSystemLibrary("freetype2", .{});
 
     const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_mod });

@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const embed_gl = @import("embed_gl");
 const snail_helpers = @import("snail-helpers");
 const gl = @import("support").gl;
 const common = @import("common.zig");
@@ -691,8 +692,8 @@ pub const SurfaceTextDraw = struct {
     allocator: std.mem.Allocator,
     atlas: *const snail.Atlas,
     picture: *const snail_helpers.Picture,
-    gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33BackendCache,
+    gl_renderer: *embed_gl.Gl33Renderer,
+    cache: *const embed_gl.Gl33BackendCache,
     coverage_words: []u32 = &.{},
     coverage: snail.gl.embeddable.TextCoverageRecords,
     record_buffer: gl.GLuint = 0,
@@ -700,8 +701,8 @@ pub const SurfaceTextDraw = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        gl_renderer: *snail.Gl33Renderer,
-        cache: *const snail.Gl33BackendCache,
+        gl_renderer: *embed_gl.Gl33Renderer,
+        cache: *const embed_gl.Gl33BackendCache,
         atlas: *const snail.Atlas,
         picture: *const snail_helpers.Picture,
         binding: snail.Binding,

@@ -4,7 +4,7 @@
 //!   - World passes (rough wall, center panel, glass) and HUD passes (plain,
 //!     translucent, solid) each carry their own atlases + pictures (paths and
 //!     text). All atlases share the same `PagePool` owned by `Fonts`.
-//!   - A single `snail.Gl33Renderer` + `snail.Gl33BackendCache` cache backs
+//!   - A single `embed_gl.Gl33Renderer` + `embed_gl.Gl33BackendCache` cache backs
 //!     every draw. Each pass gets two cache bindings (one per atlas) at
 //!     upload time, fetched again whenever the HUD is rebuilt on resize.
 //!   - The rough-wall and center-panel passes additionally route their text
@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const embed_gl = @import("embed_gl");
 const platform = @import("platform/gl.zig");
 const gl = platform.gl;
 const subpixel_detect = @import("platform/subpixel.zig");
@@ -60,7 +61,7 @@ const PassBindings = struct {
 
 fn uploadPass(
     allocator: std.mem.Allocator,
-    cache: *snail.Gl33BackendCache,
+    cache: *embed_gl.Gl33BackendCache,
     pass: *const PreparedPass,
 ) !PassBindings {
     var bindings: [2]snail.Binding = undefined;
@@ -68,7 +69,7 @@ fn uploadPass(
     return .{ .path = bindings[0], .text = bindings[1] };
 }
 
-fn releasePass(cache: *snail.Gl33BackendCache, bindings: PassBindings) void {
+fn releasePass(cache: *embed_gl.Gl33BackendCache, bindings: PassBindings) void {
     cache.release(bindings.path);
     cache.release(bindings.text);
 }
@@ -112,13 +113,13 @@ pub fn main() !void {
     var fonts = try demo_passes.initFonts(allocator);
     defer fonts.deinit();
 
-    var gl_renderer = try snail.Gl33Renderer.init(allocator);
+    var gl_renderer = try embed_gl.Gl33Renderer.init(allocator);
     defer gl_renderer.deinit();
 
     var quad_renderer = try QuadRenderer.init();
     defer quad_renderer.deinit();
 
-    var cache = try snail.Gl33BackendCache.init(allocator, fonts.pool, .{
+    var cache = try embed_gl.Gl33BackendCache.init(allocator, fonts.pool, .{
         .max_bindings = CACHE_MAX_BINDINGS,
         .layer_info_height = 256,
         .max_images = CACHE_MAX_IMAGES,
@@ -336,7 +337,7 @@ const HudBindings = struct {
     translucent: PassBindings,
     solid: PassBindings,
 
-    fn release(self: HudBindings, cache: *snail.Gl33BackendCache) void {
+    fn release(self: HudBindings, cache: *embed_gl.Gl33BackendCache) void {
         releasePass(cache, self.plain);
         releasePass(cache, self.translucent);
         releasePass(cache, self.solid);
@@ -344,8 +345,8 @@ const HudBindings = struct {
 };
 
 fn drawPassPair(
-    gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33BackendCache,
+    gl_renderer: *embed_gl.Gl33Renderer,
+    cache: *const embed_gl.Gl33BackendCache,
     scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     pass: *const PreparedPass,
@@ -398,8 +399,8 @@ fn updateCamera(camera: *Camera, dt: f32) void {
 }
 
 fn renderPlanePass(
-    gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33BackendCache,
+    gl_renderer: *embed_gl.Gl33Renderer,
+    cache: *const embed_gl.Gl33BackendCache,
     scratch: *ScratchBuf,
     allocator: std.mem.Allocator,
     pass: *const PlanePass,
@@ -429,8 +430,8 @@ fn renderPlanePass(
 
 fn renderWorld(
     quad_renderer: *const QuadRenderer,
-    gl_renderer: *snail.Gl33Renderer,
-    cache: *const snail.Gl33BackendCache,
+    gl_renderer: *embed_gl.Gl33Renderer,
+    cache: *const embed_gl.Gl33BackendCache,
     world_passes: *const WorldPasses,
     rough_wall_text: *const SurfaceTextDraw,
     center_panel_text: *const SurfaceTextDraw,

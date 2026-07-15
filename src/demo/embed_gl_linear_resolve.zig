@@ -14,8 +14,8 @@
 //! texture format choice.
 
 const std = @import("std");
-const snail_mod = @import("snail_core");
-const gl_common = @import("gl_common.zig");
+const snail_mod = @import("snail").core;
+const gl_common = @import("embed_gl_common.zig");
 
 const LinearResolve = snail_mod.LinearResolve;
 const IntermediateFormat = LinearResolve.Format;

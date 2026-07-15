@@ -11,6 +11,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
+const embed_gl = @import("embed_gl");
 const snail_helpers = @import("snail-helpers");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
@@ -1641,10 +1642,10 @@ fn benchGl33(
     const fb = render_timing.initFramebuffer(WIDTH, HEIGHT);
     defer render_timing.destroyFramebuffer(fb);
 
-    var renderer = try snail.Gl33Renderer.init(allocator);
+    var renderer = try embed_gl.Gl33Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gl33BackendCache.init(allocator, pool, .{
+    var cache = try embed_gl.Gl33BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -1739,10 +1740,10 @@ fn benchGl44(
     const fb = render_timing.initFramebuffer(WIDTH, HEIGHT);
     defer render_timing.destroyFramebuffer(fb);
 
-    var renderer = try snail.Gl44Renderer.init(allocator);
+    var renderer = try embed_gl.Gl44Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gl44BackendCache.init(allocator, pool, .{
+    var cache = try embed_gl.Gl44BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,
@@ -1824,10 +1825,10 @@ fn benchGles30(
     const fb = render_timing.initFramebuffer(WIDTH, HEIGHT);
     defer render_timing.destroyFramebuffer(fb);
 
-    var renderer = try snail.Gles30Renderer.init(allocator);
+    var renderer = try embed_gl.Gles30Renderer.init(allocator);
     defer renderer.deinit();
 
-    var cache = try snail.Gles30BackendCache.init(allocator, pool, .{
+    var cache = try embed_gl.Gles30BackendCache.init(allocator, pool, .{
         .max_bindings = 16,
         .layer_info_height = 256,
         .max_images = 4,

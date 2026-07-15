@@ -1,34 +1,28 @@
 //! snail_gl module root — the OpenGL family (GL 3.3 / 4.4 / GLES 3.0).
 //!
-//! GLES 3.0 shares this module: it reuses the GL cache
-//! (`GlBackendCacheFor(.gles30)`) and the GL-family shared infra
-//! (`gl_common`, `linear_resolve`). Depends on `snail_core`.
+//! Font-necessary only: snail provides the embeddable pipeline `contract` +
+//! texture-binding shims (`embeddable`) and the GLSL shader sources
+//! (`shaders` / `gles30_shaders` / `glsl`), over the backend-agnostic atlas
+//! upload plan in `snail_core` (`AtlasUploadPlanner`). GLES 3.0 shares this
+//! module (its own bindings/shaders variants). Depends on `snail_core`.
+//!
+//! The all-in-one GL renderer, atlas cache, program compilation, ring buffer,
+//! and linear-resolve pass are the caller's — see the reference caller under
+//! `src/demo/embed_gl*.zig`.
 
-pub const state = @import("state.zig");
-pub const gles30_state = @import("gles30/state.zig");
-pub const backend_cache = @import("backend_cache.zig");
+// The GL embeddable coverage surface: gl-typed programs + texture-binding
+// backends (over caller-supplied `TextureHandles`) + `Variant`. The facade
+// `coverage` aggregation and callers reach programs/backends through here.
+pub const embeddable = @import("embeddable.zig");
 
-// Internals the `coverage` custom-shader facade re-aggregates.
+// GLSL source fragments the coverage custom-shader path re-aggregates.
 pub const shaders = @import("shaders.zig");
 pub const gles30_shaders = @import("gles30/shaders.zig");
+
+// Raw GL symbol bindings, needed by the caller's renderer + cache.
 pub const bindings = @import("bindings.zig");
 pub const gles30_bindings = @import("gles30/bindings.zig");
 
-// The GL embeddable coverage surface (gl-typed programs + backends + GLSL
-// source fragments). The facade `coverage.zig` aggregates this with the other
-// backends into the cross-backend unions.
-pub const embeddable = @import("embeddable.zig");
-
-pub const Gl33Renderer = state.Gl33Renderer;
-pub const Gl44Renderer = state.Gl44Renderer;
-pub const Gles30Renderer = gles30_state.Gles30Renderer;
-pub const Gl33BackendCache = backend_cache.Gl33BackendCache;
-pub const Gl44BackendCache = backend_cache.Gl44BackendCache;
-pub const Gles30BackendCache = backend_cache.Gles30BackendCache;
-
 test {
-    _ = state;
-    _ = gles30_state;
-    _ = backend_cache;
     _ = embeddable;
 }

@@ -121,12 +121,9 @@ pub const InstanceProfileBuf = cpu.InstanceProfileBuf;
 pub const CpuBackendCache = cpu.CpuBackendCache;
 pub const drawCpu = cpu.drawCpu;
 
-pub const Gl33Renderer = gl.Gl33Renderer;
-pub const Gl44Renderer = gl.Gl44Renderer;
-pub const Gles30Renderer = gl.Gles30Renderer;
-pub const Gl33BackendCache = gl.Gl33BackendCache;
-pub const Gl44BackendCache = gl.Gl44BackendCache;
-pub const Gles30BackendCache = gl.Gles30BackendCache;
+// The all-in-one GL renderer + atlas cache are the caller's (embeddable-only);
+// the reference implementation lives in `src/demo/embed_gl*.zig`. snail exposes
+// only the GL contract + shaders under `snail.gl`.
 
 pub const VulkanContext = vulkan.VulkanContext;
 

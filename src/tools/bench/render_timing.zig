@@ -8,6 +8,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const snail = @import("snail");
+const embed_gl = @import("embed_gl");
 const gl = @import("support").gl;
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
@@ -86,10 +87,10 @@ pub fn timeCpuDraw(
 
 pub fn timeGl33Draw(
     allocator: std.mem.Allocator,
-    renderer: *snail.Gl33Renderer,
+    renderer: *embed_gl.Gl33Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl33BackendCache,
+    caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -128,10 +129,10 @@ pub const Gl33Breakdown = struct {
 /// should be filtered out.
 pub fn timeGl33DrawGpu(
     allocator: std.mem.Allocator,
-    renderer: *snail.Gl33Renderer,
+    renderer: *embed_gl.Gl33Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl33BackendCache,
+    caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
     frames: usize,
     samples: usize,
@@ -173,10 +174,10 @@ pub fn timeGl33DrawGpu(
 /// non-breakdown harness depends on.
 pub fn timeGl33DrawBreakdown(
     allocator: std.mem.Allocator,
-    renderer: *snail.Gl33Renderer,
+    renderer: *embed_gl.Gl33Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl33BackendCache,
+    caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !Gl33Breakdown {
@@ -221,10 +222,10 @@ pub fn timeGl33DrawBreakdown(
 
 pub fn timeGl44Draw(
     allocator: std.mem.Allocator,
-    renderer: *snail.Gl44Renderer,
+    renderer: *embed_gl.Gl44Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gl44BackendCache,
+    caches: []const *const embed_gl.Gl44BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {
@@ -247,10 +248,10 @@ pub fn timeGl44Draw(
 
 pub fn timeGles30Draw(
     allocator: std.mem.Allocator,
-    renderer: *snail.Gles30Renderer,
+    renderer: *embed_gl.Gles30Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.Gles30BackendCache,
+    caches: []const *const embed_gl.Gles30BackendCache,
     warmup_frames: usize,
     frames: usize,
 ) !f64 {

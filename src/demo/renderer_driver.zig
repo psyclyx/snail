@@ -12,6 +12,7 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("snail");
+const embed_gl = @import("embed_gl");
 const snail_helpers = @import("snail-helpers");
 const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
@@ -652,8 +653,8 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
 
 const Gl44Driver = if (build_options.enable_gl44) struct {
     allocator: std.mem.Allocator,
-    renderer_state: snail.Gl44Renderer,
-    cache: ?snail.Gl44BackendCache = null,
+    renderer_state: embed_gl.Gl44Renderer,
+    cache: ?embed_gl.Gl44BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -663,7 +664,7 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl44Driver {
         try gl_platform.initForWindow(window, .gl44);
         errdefer gl_platform.deinit();
-        var renderer_state = try snail.Gl44Renderer.init(allocator);
+        var renderer_state = try embed_gl.Gl44Renderer.init(allocator);
         errdefer renderer_state.deinit();
         return .{
             .allocator = allocator,
@@ -681,14 +682,14 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     }
 
     fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl44BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gl44BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 
 const Gl33Driver = if (build_options.enable_gl33) struct {
     allocator: std.mem.Allocator,
-    renderer_state: snail.Gl33Renderer,
-    cache: ?snail.Gl33BackendCache = null,
+    renderer_state: embed_gl.Gl33Renderer,
+    cache: ?embed_gl.Gl33BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -698,7 +699,7 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl33Driver {
         try gl_platform.initForWindow(window, .gl33);
         errdefer gl_platform.deinit();
-        var renderer_state = try snail.Gl33Renderer.init(allocator);
+        var renderer_state = try embed_gl.Gl33Renderer.init(allocator);
         errdefer renderer_state.deinit();
         return .{
             .allocator = allocator,
@@ -716,14 +717,14 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     }
 
     fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gl33BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gl33BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 
 const Gles30Driver = if (build_options.enable_gles30) struct {
     allocator: std.mem.Allocator,
-    renderer_state: snail.Gles30Renderer,
-    cache: ?snail.Gles30BackendCache = null,
+    renderer_state: embed_gl.Gles30Renderer,
+    cache: ?embed_gl.Gles30BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -732,7 +733,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gles30Driver {
         try gl_platform.initForWindow(window, .gles30);
         errdefer gl_platform.deinit();
-        var renderer_state = try snail.Gles30Renderer.init(allocator);
+        var renderer_state = try embed_gl.Gles30Renderer.init(allocator);
         errdefer renderer_state.deinit();
         return .{
             .allocator = allocator,
@@ -749,7 +750,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     }
 
     fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, snail.Gles30BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gles30BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
 } else void;
 

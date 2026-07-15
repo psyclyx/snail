@@ -293,13 +293,17 @@ pub fn renderGlToPixels(
     height: u32,
     opts: GlOptions,
 ) ![]u8 {
+    // Function-local so only modules that actually render GL pull in the
+    // caller-owned reference renderer (embeddable-only); CPU/Vulkan tools import
+    // this harness without needing `embed_gl` wired.
+    const embed_gl = @import("embed_gl");
     const RendererT = switch (backend) {
-        .gl33 => snail.Gl33Renderer,
-        .gles30 => snail.Gles30Renderer,
+        .gl33 => embed_gl.Gl33Renderer,
+        .gles30 => embed_gl.Gles30Renderer,
     };
     const CacheT = switch (backend) {
-        .gl33 => snail.Gl33BackendCache,
-        .gles30 => snail.Gles30BackendCache,
+        .gl33 => embed_gl.Gl33BackendCache,
+        .gles30 => embed_gl.Gles30BackendCache,
     };
 
     var renderer = try RendererT.init(allocator);
@@ -338,9 +342,10 @@ pub fn renderGlToPixels(
 /// (so the shader emits painted alpha to `.r`) and read the single channel
 /// back. Verifies GPU masks. GL 3.3 only.
 pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, height: u32, opts: GlOptions) ![]u8 {
-    var renderer = try snail.Gl33Renderer.init(allocator);
+    const embed_gl = @import("embed_gl");
+    var renderer = try embed_gl.Gl33Renderer.init(allocator);
     defer renderer.deinit();
-    var cache = try snail.Gl33BackendCache.init(allocator, scene.pool, .{
+    var cache = try embed_gl.Gl33BackendCache.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,
