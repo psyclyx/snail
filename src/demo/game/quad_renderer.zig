@@ -390,7 +390,7 @@ pub const QuadRenderer = struct {
                 .band_tex_unit = TEXT_BAND_TEXTURE_UNIT,
             };
             const cache = input.text.cache;
-            const backend = snail.gl.embeddable.Gl33Backend.from(.{
+            const backend = embed_gl.Gl33Backend.from(.{
                 .curve_array = cache.curve_array,
                 .band_array = cache.band_array,
                 .layer_info_tex = cache.layer_info_tex,

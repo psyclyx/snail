@@ -13,7 +13,6 @@ const core = @import("snail_core");
 
 const SubpixelOrder = core.SubpixelOrder;
 const CoverageTransfer = core.CoverageTransfer;
-const FillRule = core.FillRule;
 const WORDS_PER_INSTANCE: usize = core.WORDS_PER_INSTANCE;
 
 // ── Backend-module selection (empty stubs when a variant is disabled) ──
@@ -215,11 +214,12 @@ pub const Gles30Program = struct {
     image_tex_unit: gles30_GLint = 3,
 };
 
-// ── Backends (binding shims over the BackendCache caches) ──
-
-/// No-op backend used as the disabled-variant fallback for the GL backend
-/// types, so cross-backend union code compiles even when GL is off.
-const Disabled = struct {};
+// ── Texture handles (data) ──
+//
+// The library exposes *which atlas texture goes on which unit* as data; the
+// caller runs the actual glBindTexture/glUniform loop (see the reference
+// binding helper `src/demo/embed_gl_bind.zig`). So snail_gl makes no live GL
+// calls and links no OpenGL — symmetric with snail_vulkan's pure-data contract.
 
 /// The four snail atlas textures a caller binds for a coverage draw. The caller
 /// reads these off its own atlas cache; a `0` handle means "not present" (no
@@ -233,113 +233,6 @@ pub const TextureHandles = struct {
     image_array_tex: c_uint = 0,
 };
 
-fn GlBackendFor(comptime variant: Variant) type {
-    return struct {
-        const Self = @This();
-        const dsa = (variant == .gl44);
-
-        tex: TextureHandles,
-
-        /// Build from the caller's atlas texture handles (read off its cache).
-        pub fn from(tex: TextureHandles) Self {
-            return .{ .tex = tex };
-        }
-
-        /// Bind snail's atlas textures to the texture units named in `program`.
-        pub fn bindProgram(self: Self, program: GlProgram) !void {
-            const gl = gl_bindings.gl;
-            if (dsa) {
-                gl.glBindTextureUnit(@intCast(program.curve_tex_unit), self.tex.curve_array);
-                gl.glBindTextureUnit(@intCast(program.band_tex_unit), self.tex.band_array);
-                if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0)
-                    gl.glBindTextureUnit(@intCast(program.layer_tex_unit), self.tex.layer_info_tex);
-                if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0)
-                    gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.tex.image_array_tex);
-            } else {
-                gl.glActiveTexture(textureUnitEnum(program.curve_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.curve_array);
-                gl.glActiveTexture(textureUnitEnum(program.band_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.band_array);
-                if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0) {
-                    gl.glActiveTexture(textureUnitEnum(program.layer_tex_unit));
-                    gl.glBindTexture(gl.GL_TEXTURE_2D, self.tex.layer_info_tex);
-                }
-                if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0) {
-                    gl.glActiveTexture(textureUnitEnum(program.image_tex_unit));
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.image_array_tex);
-                }
-            }
-            if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
-            if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, program.band_tex_unit);
-            if (program.layer_tex_loc >= 0) gl.glUniform1i(program.layer_tex_loc, program.layer_tex_unit);
-            if (program.image_tex_loc >= 0) gl.glUniform1i(program.image_tex_loc, program.image_tex_unit);
-        }
-
-        /// Set the snail uniforms named in `program` from the caller's
-        /// `DrawState`. Fill rule for text is always non-zero (font convention);
-        /// callers using the same program to draw paths set it themselves.
-        pub fn bindDrawState(self: Self, program: GlProgram, state: DrawState) !void {
-            _ = self;
-            const gl = gl_bindings.gl;
-            if (program.fill_rule_loc >= 0) gl.glUniform1i(program.fill_rule_loc, @intFromEnum(FillRule.non_zero));
-            if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
-            if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
-            if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
-            if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
-        }
-    };
-}
-
-pub const Gl33Backend = if (build_options.enable_gl33) GlBackendFor(.gl33) else Disabled;
-pub const Gl44Backend = if (build_options.enable_gl44) GlBackendFor(.gl44) else Disabled;
-
-pub const Gles30Backend = if (build_options.enable_gles30) struct {
-    const Self = @This();
-
-    tex: TextureHandles,
-
-    pub fn from(tex: TextureHandles) Self {
-        return .{ .tex = tex };
-    }
-
-    pub fn bindProgram(self: Self, program: Gles30Program) !void {
-        const gl = gles30_bindings.gl;
-        gl.glActiveTexture(textureUnitEnumGles(program.curve_tex_unit));
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.curve_array);
-        gl.glActiveTexture(textureUnitEnumGles(program.band_tex_unit));
-        gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.band_array);
-        if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0) {
-            gl.glActiveTexture(textureUnitEnumGles(program.layer_tex_unit));
-            gl.glBindTexture(gl.GL_TEXTURE_2D, self.tex.layer_info_tex);
-        }
-        if (program.image_tex_loc >= 0 and self.tex.image_array_tex != 0) {
-            gl.glActiveTexture(textureUnitEnumGles(program.image_tex_unit));
-            gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.image_array_tex);
-        }
-        if (program.curve_tex_loc >= 0) gl.glUniform1i(program.curve_tex_loc, program.curve_tex_unit);
-        if (program.band_tex_loc >= 0) gl.glUniform1i(program.band_tex_loc, program.band_tex_unit);
-        if (program.layer_tex_loc >= 0) gl.glUniform1i(program.layer_tex_loc, program.layer_tex_unit);
-        if (program.image_tex_loc >= 0) gl.glUniform1i(program.image_tex_loc, program.image_tex_unit);
-    }
-
-    pub fn bindDrawState(self: Self, program: Gles30Program, state: DrawState) !void {
-        _ = self;
-        const gl = gles30_bindings.gl;
-        if (program.fill_rule_loc >= 0) gl.glUniform1i(program.fill_rule_loc, @intFromEnum(FillRule.non_zero));
-        if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
-        if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
-        if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
-        if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
-    }
-
-    fn textureUnitEnumGles(unit: gles30_GLint) gles30_bindings.gl.GLenum {
-        return @intCast(@as(i64, @intCast(gles30_bindings.gl.GL_TEXTURE0)) + @as(i64, unit));
-    }
-} else Disabled;
-
-fn textureUnitEnum(unit: gl_GLint) gl_bindings.gl.GLenum {
-    return @intCast(@as(i64, @intCast(gl_bindings.gl.GL_TEXTURE0)) + @as(i64, unit));
-}
 
 // ── TextCoverageRecords ──
 

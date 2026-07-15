@@ -110,9 +110,11 @@ fn createEmbedVulkanModule(
     });
 }
 
-/// Reference caller-owned GL all-in-one renderer + atlas cache (embeddable-only;
-/// the GL analog of `createEmbedVulkanModule`). GL library linkage comes
-/// transitively through `snail` (snail_gl links OpenGL/GLESv2 for its contract).
+/// Reference caller-owned GL all-in-one renderer + atlas cache + binding helper
+/// (embeddable-only; the GL analog of `createEmbedVulkanModule`). This module
+/// makes the live GL calls, so the *consuming exe* must link OpenGL/GLESv2
+/// (every GL consumer already does via `configureCoreModule`); snail_gl itself
+/// links no GL.
 fn createEmbedGlModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -220,8 +222,9 @@ fn buildSnailGraphFull(
 
     const gl = mk(b, "src/snail/render/backend/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
     gl.addImport("snail_core", core);
-    if (options.enable_gl33 or options.enable_gl44) gl.linkSystemLibrary("OpenGL", .{});
-    if (options.enable_gles30) gl.linkSystemLibrary("GLESv2", .{});
+    // snail_gl links NO OpenGL: it's a pure-data contract (shader sources +
+    // GlProgram layout + binding order), making no live GL calls. GL linkage is
+    // the caller's, who owns the context — same as snail_vulkan links no Vulkan.
 
     const vk = mk(b, "src/snail/render/backend/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
     vk.addImport("snail_core", core);

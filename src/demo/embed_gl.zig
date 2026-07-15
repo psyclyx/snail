@@ -28,3 +28,11 @@ pub const Gl44BackendCache = cache.Gl44BackendCache;
 pub const Gles30BackendCache = cache.Gles30BackendCache;
 
 pub const linear_resolve = @import("embed_gl_linear_resolve.zig");
+
+// Caller-side texture/uniform binding for the coverage contract (custom-shader
+// path). snail_gl ships the contract as data; this runs the glBind/glUniform
+// loop. Used by the game's quad_renderer.
+const bind = @import("embed_gl_bind.zig");
+pub const Gl33Backend = bind.Gl33Backend;
+pub const Gl44Backend = bind.Gl44Backend;
+pub const Gles30Backend = bind.Gles30Backend;
