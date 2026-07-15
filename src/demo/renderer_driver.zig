@@ -521,7 +521,7 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     gl_timer: GlTimer = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl44Driver {
-        try gl_platform.initForWindow(window, .gl44);
+        try gl_platform.initForWindow(window, .gl44, 0);
         errdefer gl_platform.deinit();
         var renderer_state = try embed_gl.Gl44Renderer.init(allocator);
         errdefer renderer_state.deinit();
@@ -556,7 +556,7 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     gl_timer: GlTimer = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gl33Driver {
-        try gl_platform.initForWindow(window, .gl33);
+        try gl_platform.initForWindow(window, .gl33, 0);
         errdefer gl_platform.deinit();
         var renderer_state = try embed_gl.Gl33Renderer.init(allocator);
         errdefer renderer_state.deinit();
@@ -590,7 +590,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     last_timings: FrameTimings = .{},
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !Gles30Driver {
-        try gl_platform.initForWindow(window, .gles30);
+        try gl_platform.initForWindow(window, .gles30, 0);
         errdefer gl_platform.deinit();
         var renderer_state = try embed_gl.Gles30Renderer.init(allocator);
         errdefer renderer_state.deinit();
