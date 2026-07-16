@@ -1,5 +1,5 @@
 const std = @import("std");
-const vulkan_types = @import("snail").vulkan.types;
+const vulkan_types = @import("vulkan_types");
 
 pub const vk = vulkan_types.vk;
 

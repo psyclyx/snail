@@ -43,14 +43,11 @@ pub const Region = struct {
 };
 
 pub const Options = struct {
-    max_layers: u32,
     max_bindings: u32,
     layer_info_height: u32,
     max_images: u32,
     max_image_width: u32,
     max_image_height: u32,
-    curve_height: u32,
-    band_height: u32,
 };
 
 pub const Error = error{
@@ -59,9 +56,17 @@ pub const Error = error{
     NoFreeBinding,
     NoFreeLayerInfoRows,
     NoFreeImageLayers,
+    NoLayerInfoRoomToGrow,
+    NoImageRoomToGrow,
     UnknownBinding,
     RegionBufferFull,
+    LayerInfoScratchTooSmall,
     FreeListFull,
+};
+
+pub const InitError = error{
+    BackingTooSmall,
+    InvalidOptions,
 };
 
 /// Byte counts the caller must provide for each state buffer.
@@ -80,16 +85,16 @@ pub const Sizes = struct {
     layer_info_scratch: usize,
 };
 
-pub fn sizes(opts: Options) Sizes {
+pub fn sizes(pool: *const PagePool, opts: Options) Sizes {
     return .{
-        .generation = opts.max_layers,
-        .curve_words = opts.max_layers,
-        .band_words = opts.max_layers,
+        .generation = pool.options.max_layers,
+        .curve_words = pool.options.max_layers,
+        .band_words = pool.options.max_layers,
         .bindings = opts.max_bindings,
         // First-fit free-list fragments to at most one span per binding, +1.
         .info_free = opts.max_bindings + 1,
         .image_free = opts.max_bindings + 1,
-        .regions = @as(usize, opts.max_layers) * 2 + 1 + opts.max_images,
+        .regions = @as(usize, pool.options.max_layers) * 2 + 1 + opts.max_images,
         // layer_info is RGBA32F — 4 f32 per INFO_WIDTH texel. `layer_info_data`
         // is `INFO_WIDTH * height * 4` floats, and `plan` memcpys the whole slab
         // into this scratch, so it must be 4× the texel count (not ×1).
@@ -176,8 +181,10 @@ pub const Slot = struct {
 };
 
 /// Caller-owned planning state. Backing slices are the caller's; `Planner` never
-/// allocates. Build the slices sized to `sizes(opts)` and pass them to `init`.
+/// allocates. Build the slices sized to `sizes(pool, opts)` and pass them to
+/// `init`.
 pub const Planner = struct {
+    pool: *PagePool,
     opts: Options,
     prepared_generation: []u16,
     prepared_curve_words: []u32,
@@ -188,6 +195,7 @@ pub const Planner = struct {
     upload_generation: u32 = 0,
 
     pub fn init(
+        pool: *PagePool,
         opts: Options,
         generation: []u16,
         curve_words: []u32,
@@ -195,12 +203,29 @@ pub const Planner = struct {
         binding_slots: []Slot,
         info_free_backing: []Range,
         image_free_backing: []Range,
-    ) Planner {
+    ) InitError!Planner {
+        const layers = pool.options.max_layers;
+        if (generation.len < layers or
+            curve_words.len < layers or
+            band_words.len < layers or
+            binding_slots.len < opts.max_bindings or
+            info_free_backing.len < @as(usize, opts.max_bindings) + 1 or
+            image_free_backing.len < @as(usize, opts.max_bindings) + 1)
+        {
+            return error.BackingTooSmall;
+        }
+        if (pool.options.curve_words_per_page % (CURVE_TEX_WIDTH * 4) != 0 or
+            pool.options.band_words_per_page % (BAND_TEX_WIDTH * 2) != 0 or
+            (opts.max_images > 0 and (opts.max_image_width == 0 or opts.max_image_height == 0)))
+        {
+            return error.InvalidOptions;
+        }
         @memset(generation, 0);
         @memset(curve_words, 0);
         @memset(band_words, 0);
         for (binding_slots) |*b| b.* = .{};
         var self = Planner{
+            .pool = pool,
             .opts = opts,
             .prepared_generation = generation,
             .prepared_curve_words = curve_words,
@@ -214,12 +239,13 @@ pub const Planner = struct {
         return self;
     }
 
-    /// Plan the upload for a fresh binding of `atlas` in `pool`. Fills
+    /// Plan the upload for a fresh binding of `atlas`. Fills
     /// `out_regions` (up to `sizes().regions`), sets `out_len`, and returns the
     /// `Binding` for `emit`.
-    pub fn plan(self: *Planner, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+    pub fn plan(self: *Planner, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+        out_len.* = 0;
         if (atlas.pool) |p| {
-            if (p != pool) return error.UnknownPool;
+            if (p != self.pool) return error.UnknownPool;
         }
         const info_height: u32 = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
         const image_count = countUniqueImages(atlas);
@@ -232,6 +258,7 @@ pub const Planner = struct {
 
         self.upload_generation += 1;
         const slot = &self.bindings[slot_index];
+        errdefer slot.* = .{};
         slot.* = .{
             .active = true,
             .generation = self.upload_generation,
@@ -241,29 +268,33 @@ pub const Planner = struct {
             .image_count = image_range.size,
         };
 
-        out_len.* = 0;
         try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
-        return .{ .pool = pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
+        return .{ .pool = self.pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
     }
 
     /// Plan an incremental re-upload of `atlas` into the slot `prev_binding`
     /// already owns (only changed curve/band/layer-info/image regions).
-    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, pool: *PagePool, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+        out_len.* = 0;
+        if (prev_binding.pool != self.pool) return error.UnknownPool;
         if (atlas.pool) |p| {
-            if (p != pool) return error.UnknownPool;
+            if (p != self.pool) return error.UnknownPool;
         }
         const slot_index = self.findSlotByGeneration(prev_binding.generation) orelse return error.UnknownBinding;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return error.UnknownBinding;
+        const info_height: u32 = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
+        if (info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
+        if (countUniqueImages(atlas) > slot.image_count) return error.NoImageRoomToGrow;
 
-        out_len.* = 0;
         try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
-        return .{ .pool = pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
+        return .{ .pool = self.pool, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
     }
 
     /// Free the binding's slot + ranges. Returns whether a live slot was freed
     /// (false if the binding was unknown/already released).
     pub fn release(self: *Planner, binding: Binding) bool {
+        if (binding.pool != self.pool) return false;
         const slot_index = self.findSlotByGeneration(binding.generation) orelse return false;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return false;
@@ -273,10 +304,44 @@ pub const Planner = struct {
         return true;
     }
 
+    /// Forget the page upload watermarks after the caller fails to apply a
+    /// previously returned region list. Bindings and their placement remain
+    /// valid, but the next plan conservatively re-emits every referenced page.
+    /// Callers must invoke this when GPU upload/recording fails after `plan` or
+    /// `planDelta` succeeds; otherwise a retry could skip bytes that never
+    /// reached the GPU.
+    pub fn invalidateUploads(self: *Planner) void {
+        @memset(self.prepared_generation, 0);
+        @memset(self.prepared_curve_words, 0);
+        @memset(self.prepared_band_words, 0);
+    }
+
     fn queue(self: *Planner, atlas: *const Atlas, slot: *Slot, out: []Region, out_len: *usize, layer_info_scratch: []f32) Error!void {
+        // Validate the entire request before changing any watermark. Once this
+        // preflight succeeds, emitting the regions cannot fail halfway through
+        // and leave planner state ahead of the returned list.
+        var region_count: usize = 0;
         for (atlas.pages) |p| {
             const layer: u32 = p.layer_index;
-            if (layer >= self.opts.max_layers) return error.PageNotInPool;
+            if (layer >= self.pool.options.max_layers or self.pool.pages[layer] != p) return error.PageNotInPool;
+            const stale = self.prepared_generation[layer] != p.currentGeneration() or
+                p.curve.usedWords() != self.prepared_curve_words[layer] or
+                p.band.usedWords() != self.prepared_band_words[layer];
+            if (stale) region_count += 2;
+        }
+        if (atlas.paint_image_records) |records| {
+            for (records, 0..) |maybe_rec, i| {
+                if (maybe_rec != null and firstOccurrence(records, i)) region_count += 1;
+            }
+        }
+        if (atlas.layer_info_data) |info| {
+            if (info.len > layer_info_scratch.len) return error.LayerInfoScratchTooSmall;
+            if (atlas.layer_info_height > 0) region_count += 1;
+        }
+        if (region_count > out.len) return error.RegionBufferFull;
+
+        for (atlas.pages) |p| {
+            const layer: u32 = p.layer_index;
             const cur_gen = p.currentGeneration();
             const cur_curve = p.curve.usedWords();
             const cur_band = p.band.usedWords();
@@ -288,8 +353,8 @@ pub const Planner = struct {
 
             const curve_bytes = p.curve.data.len * @sizeOf(page_mod.Word);
             const band_bytes = p.band.data.len * @sizeOf(page_mod.Word);
-            try emitRegion(out, out_len, .{ .target = .curve, .layer = layer, .src = @as([*]const u8, @ptrCast(p.curve.data.ptr))[0..curve_bytes], .width = CURVE_TEX_WIDTH, .height = self.opts.curve_height });
-            try emitRegion(out, out_len, .{ .target = .band, .layer = layer, .src = @as([*]const u8, @ptrCast(p.band.data.ptr))[0..band_bytes], .width = BAND_TEX_WIDTH, .height = self.opts.band_height });
+            try emitRegion(out, out_len, .{ .target = .curve, .layer = layer, .src = @as([*]const u8, @ptrCast(p.curve.data.ptr))[0..curve_bytes], .width = CURVE_TEX_WIDTH, .height = self.pool.options.curve_words_per_page / (CURVE_TEX_WIDTH * 4) });
+            try emitRegion(out, out_len, .{ .target = .band, .layer = layer, .src = @as([*]const u8, @ptrCast(p.band.data.ptr))[0..band_bytes], .width = BAND_TEX_WIDTH, .height = self.pool.options.band_words_per_page / (BAND_TEX_WIDTH * 2) });
             self.prepared_curve_words[layer] = cur_curve;
             self.prepared_band_words[layer] = cur_band;
         }
@@ -405,4 +470,67 @@ test "FreeList matches RangeAllocator take/release semantics" {
     try std.testing.expectEqual(@as(u32, 0), c.base);
     const d = fl.take(8).?;
     try std.testing.expectEqual(@as(u32, 8), d.base);
+}
+
+test "Planner preflights atomically and is bound to one page pool" {
+    const allocator = std.testing.allocator;
+    var pool = try PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = CURVE_TEX_WIDTH * 4 * 2,
+        .band_words_per_page = BAND_TEX_WIDTH * 2 * 2,
+    });
+    defer pool.deinit();
+    var other_pool = try PagePool.init(allocator, pool.options);
+    defer other_pool.deinit();
+
+    const path_mod = @import("../path.zig");
+    var path = path_mod.Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
+    var prepared_path = try path.prepare(allocator);
+    defer prepared_path.deinit();
+    var curves = try prepared_path.fillCurves(allocator, allocator);
+    defer curves.deinit();
+    var atlas = try Atlas.from(allocator, pool, &.{.{
+        .key = @import("record_key.zig").unhintedGlyph(0, 1),
+        .curves = curves,
+    }});
+    defer atlas.deinit();
+
+    const opts = Options{
+        .max_bindings = 1,
+        .layer_info_height = 0,
+        .max_images = 0,
+        .max_image_width = 1,
+        .max_image_height = 1,
+    };
+    const sz = sizes(pool, opts);
+    const generation = try allocator.alloc(u16, sz.generation);
+    defer allocator.free(generation);
+    const curve_words = try allocator.alloc(u32, sz.curve_words);
+    defer allocator.free(curve_words);
+    const band_words = try allocator.alloc(u32, sz.band_words);
+    defer allocator.free(band_words);
+    const slots = try allocator.alloc(Slot, sz.bindings);
+    defer allocator.free(slots);
+    const info_free = try allocator.alloc(Range, sz.info_free);
+    defer allocator.free(info_free);
+    const image_free = try allocator.alloc(Range, sz.image_free);
+    defer allocator.free(image_free);
+    const regions = try allocator.alloc(Region, sz.regions);
+    defer allocator.free(regions);
+
+    var planner = try Planner.init(pool, opts, generation, curve_words, band_words, slots, info_free, image_free);
+    var region_len: usize = 0;
+    try std.testing.expectError(error.RegionBufferFull, planner.plan(&atlas, regions[0..0], &region_len, &.{}));
+    try std.testing.expect(!slots[0].active);
+    try std.testing.expectEqual(@as(u16, 0), generation[atlas.pages[0].layer_index]);
+
+    const binding = try planner.plan(&atlas, regions, &region_len, &.{});
+    try std.testing.expectEqual(@as(usize, 2), region_len);
+    var foreign_binding = binding;
+    foreign_binding.pool = other_pool;
+    try std.testing.expectError(error.UnknownPool, planner.planDelta(foreign_binding, &atlas, regions, &region_len, &.{}));
+    try std.testing.expect(!planner.release(foreign_binding));
+    try std.testing.expect(planner.release(binding));
 }

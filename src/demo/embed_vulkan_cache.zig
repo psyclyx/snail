@@ -36,10 +36,10 @@ const band_tex = @import("snail").core.files.format_band_texture;
 const paint_records = @import("snail").core.files.atlas_paint_records;
 const upload_common = @import("snail").core.files.format_upload_common;
 const image_mod = @import("snail").core.files.image;
-const vk_types = @import("snail").vulkan.types;
+const vk_types = @import("vulkan_types");
 const vk_device = @import("embed_vulkan_device.zig");
 const cache_base = @import("snail").core.files.backend_cache_base;
-const upload_plan = @import("snail").core.files.atlas_upload_plan;
+const upload_plan = @import("snail").atlas_upload;
 
 pub const vk = vk_types.vk;
 pub const VulkanContext = vk_types.VulkanContext;
@@ -64,7 +64,7 @@ pub const UploadError = cache_base.BaseUploadError || upload_plan.Error || error
     VulkanError,
     VulkanMapMemoryReturnedNull,
 };
-pub const ResizeError = cache_base.BaseResizeError || error{VulkanError};
+pub const ResizeError = cache_base.BaseResizeError || upload_plan.InitError || error{VulkanError};
 
 /// Minimal pipeline-shape adapter the cache talks to. The real
 /// `VulkanPipeline` satisfies this surface; tests can stub it.
@@ -142,22 +142,19 @@ pub const VulkanBackendCache = struct {
         memory: vk.VkDeviceMemory,
     };
 
-    fn plannerOptions(pool: *PagePool, options: CacheOptions) upload_plan.Options {
+    fn plannerOptions(options: CacheOptions) upload_plan.Options {
         return .{
-            .max_layers = pool.options.max_layers,
             .max_bindings = options.max_bindings,
             .layer_info_height = options.layer_info_height,
             .max_images = options.max_images,
             .max_image_width = options.max_image_width,
             .max_image_height = options.max_image_height,
-            .curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW,
-            .band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW,
         };
     }
 
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: CacheOptions) !Self {
-        const opts = plannerOptions(pool, options);
-        const sz = upload_plan.sizes(opts);
+        const opts = plannerOptions(options);
+        const sz = upload_plan.sizes(pool, opts);
 
         const gen = try allocator.alloc(u16, sz.generation);
         errdefer allocator.free(gen);
@@ -181,7 +178,7 @@ pub const VulkanBackendCache = struct {
             .pool = pool,
             .options = options,
             .pipeline = pipeline,
-            .planner = upload_plan.Planner.init(opts, gen, curve_words, band_words, slots, info_free, image_free),
+            .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
             .plan_gen = gen,
             .plan_curve = curve_words,
             .plan_band = band_words,
@@ -276,8 +273,8 @@ pub const VulkanBackendCache = struct {
         self.destroyGpuResources();
         self.options = options;
 
-        const opts = plannerOptions(self.pool, options);
-        const sz = upload_plan.sizes(opts);
+        const opts = plannerOptions(options);
+        const sz = upload_plan.sizes(self.pool, opts);
         self.plan_gen = try self.allocator.realloc(self.plan_gen, sz.generation);
         self.plan_curve = try self.allocator.realloc(self.plan_curve, sz.curve_words);
         self.plan_band = try self.allocator.realloc(self.plan_band, sz.band_words);
@@ -287,7 +284,7 @@ pub const VulkanBackendCache = struct {
         self.plan_regions = try self.allocator.realloc(self.plan_regions, sz.regions);
         self.plan_info_scratch = try self.allocator.realloc(self.plan_info_scratch, sz.layer_info_scratch * options.max_bindings);
         self.info_scratch_stride = sz.layer_info_scratch;
-        self.planner = upload_plan.Planner.init(opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
+        self.planner = try upload_plan.Planner.init(self.pool, opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
     }
 
     pub fn descriptorSet(self: *const Self) vk.VkDescriptorSet {
@@ -329,14 +326,15 @@ pub const VulkanBackendCache = struct {
 
         // Roll back planner state if any atlas (or the flush) fails.
         var planned: usize = 0;
-        errdefer for (out_bindings[0..planned]) |b| {
-            _ = self.planner.release(b);
-        };
+        errdefer {
+            self.planner.invalidateUploads();
+            for (out_bindings[0..planned]) |b| _ = self.planner.release(b);
+        }
 
         for (atlases, 0..) |atlas, i| {
             var len: usize = 0;
             const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
-            out_bindings[i] = try self.planner.plan(atlas, self.pool, self.plan_regions, &len, info_scratch);
+            out_bindings[i] = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
             planned = i + 1;
             try appendRegions(scratch, &batch, self.plan_regions[0..len]);
         }
@@ -375,7 +373,8 @@ pub const VulkanBackendCache = struct {
 
         var len: usize = 0;
         const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
-        const binding = try self.planner.planDelta(prev_binding, atlas, self.pool, self.plan_regions, &len, info_scratch);
+        const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
+        errdefer self.planner.invalidateUploads();
         try appendRegions(scratch, &batch, self.plan_regions[0..len]);
         try self.flushBatch(scratch, &batch);
         return binding;
@@ -600,7 +599,6 @@ pub const VulkanBackendCache = struct {
             try self.pending_staging.append(self.allocator, .{ .buffer = staging_buf, .memory = staging_mem });
         }
     }
-
 };
 
 const ArrayCopyOp = struct {
@@ -632,7 +630,6 @@ const UploadBatch = struct {
         self.layer_info_ops.deinit(allocator);
     }
 };
-
 
 const testing = std.testing;
 

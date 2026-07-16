@@ -3,7 +3,7 @@
 //! Relocated out of the snail library as part of the embeddable-only direction
 //! (snail is a font library, not a renderer): the caller owns the GL context,
 //! programs, VAO, cache, and draw loop. snail provides only the pipeline
-//! contract + shader sources (`snail.gl.embeddable` / `snail.gl.shaders`) and
+//! packed contracts + includable shader functions (`snail.gl.embeddable`) and
 //! the backend-agnostic atlas upload plan (`snail.AtlasUploadPlanner`).
 //!
 //! This module is the worked example integrators copy. It bundles:
@@ -36,3 +36,5 @@ const bind = @import("embed_gl_bind.zig");
 pub const Gl33Backend = bind.Gl33Backend;
 pub const Gl44Backend = bind.Gl44Backend;
 pub const Gles30Backend = bind.Gles30Backend;
+pub const GlProgram = bind.GlProgram;
+pub const Gles30Program = bind.Gles30Program;

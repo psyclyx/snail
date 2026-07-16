@@ -22,7 +22,7 @@ const driver_common = @import("driver_common.zig");
 
 const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
-const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan.zig") else struct {};
+const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
 const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
 const gl = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("support").gl else struct {};
 
@@ -388,7 +388,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
     const SLOT_BYTES: usize = 8 * 1024 * 1024;
 
     allocator: std.mem.Allocator,
-    ctx: snail.VulkanContext,
+    ctx: embed_vulkan.VulkanContext,
     layout: embed_vulkan.VulkanResourceLayout,
     transfer_pool: embed_vulkan.vk.VkCommandPool,
     caller: embed_vulkan.Renderer,

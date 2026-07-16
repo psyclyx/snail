@@ -339,11 +339,11 @@ pub fn main() !void {
         std.debug.print(
             "   '{c}'   {d:>3}    {d:>5.3} {d:>5.2} {d:>5.1}%      {d:>5.3} {d:>5.2} {d:>5.1}%      {d:>5.3} {d:>5.2} {d:>5.1}%\n",
             .{
-                ch,               r.touched,
-                r.indep.rms,      r.indep.max,
-                pct(r.indep),     r.chain.rms,
-                r.chain.max,      pct(r.chain),
-                r.chaincvt.rms,   r.chaincvt.max,
+                ch,              r.touched,
+                r.indep.rms,     r.indep.max,
+                pct(r.indep),    r.chain.rms,
+                r.chain.max,     pct(r.chain),
+                r.chaincvt.rms,  r.chaincvt.max,
                 pct(r.chaincvt),
             },
         );
@@ -355,9 +355,9 @@ pub fn main() !void {
     agg_chain.finish();
     agg_cvt.finish();
     std.debug.print("\n  ALL          {d:>5.3} {d:>5.2} {d:>5.1}%      {d:>5.3} {d:>5.2} {d:>5.1}%      {d:>5.3} {d:>5.2} {d:>5.1}%\n", .{
-        agg_indep.rms,  agg_indep.max, pct(agg_indep),
-        agg_chain.rms,  agg_chain.max, pct(agg_chain),
-        agg_cvt.rms,    agg_cvt.max,   pct(agg_cvt),
+        agg_indep.rms, agg_indep.max, pct(agg_indep),
+        agg_chain.rms, agg_chain.max, pct(agg_chain),
+        agg_cvt.rms,   agg_cvt.max,   pct(agg_cvt),
     });
 }
 

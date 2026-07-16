@@ -100,7 +100,7 @@ pub const PassState = struct {
 pub fn passesWordBudget(passes: []const Pass) usize {
     var total: usize = 0;
     for (passes) |pass| {
-        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture.shapes.len, 0);
+        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture.shapes.len);
     }
     return total;
 }

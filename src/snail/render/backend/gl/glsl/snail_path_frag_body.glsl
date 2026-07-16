@@ -659,7 +659,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
     return PathCompositeSample(result, has_gradient);
 }
 
-void main() {
+void snailPathFragment() {
     vec2 rc = v_texcoord;
     vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
     vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));

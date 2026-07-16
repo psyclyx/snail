@@ -17,6 +17,16 @@ const passes = @import("passes.zig");
 
 const Scene = scene_mod.Scene;
 const PreparedPass = passes.PreparedPass;
+const desktop_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/gl.h");
+    @cInclude("GL/glext.h");
+});
+const gles_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GLES3/gl3.h");
+    @cInclude("GLES2/gl2ext.h");
+});
 
 pub const PassBindings = struct { path: snail.Binding, text: snail.Binding };
 
@@ -24,8 +34,8 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
     return struct {
         const Self = @This();
         const gl = switch (variant) {
-            .gles30 => snail.gl.gles30_bindings.gl,
-            else => snail.gl.bindings.gl,
+            .gles30 => gles_gl,
+            else => desktop_gl,
         };
         pub const Renderer = switch (variant) {
             .gl44 => embed_gl.Gl44Renderer,
@@ -153,7 +163,7 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
         }
 
         fn drawSnailPass(self: *Self, pass: *const PreparedPass, b: PassBindings, mvp: snail.Mat4, surface: snail.TargetSurface) !void {
-            const needed = snail.emit.wordBudget(pass.path_picture.shapes.len, 0) + snail.emit.wordBudget(pass.text_picture.shapes.len, 0);
+            const needed = snail.emit.wordBudget(pass.path_picture.shapes.len) + snail.emit.wordBudget(pass.text_picture.shapes.len);
             try self.scratch.ensure(needed, 4);
             var wlen: usize = 0;
             var slen: usize = 0;

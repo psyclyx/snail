@@ -355,7 +355,6 @@ fn lerpColor(a: [4]f32, b: [4]f32, t: f32) [4]f32 {
     };
 }
 
-
 fn sampleImageLinear(image: *const snail.Image, uv: Vec2, filter: snail.ImageFilter) [4]f32 {
     if (image.width == 0 or image.height == 0) return .{ 0, 0, 0, 0 };
     if (filter == .nearest) {

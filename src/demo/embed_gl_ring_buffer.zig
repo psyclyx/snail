@@ -13,7 +13,7 @@
 //! commit API hands back absolute byte offsets so callers can issue
 //! `glVertexArrayVertexBuffer(..., offset, ...)`.
 
-const gl = @import("snail").gl.bindings.gl;
+const gl = @import("embed_gl_bindings.zig").gl;
 
 pub const SEGMENTS: u32 = 3;
 pub const TOTAL_BYTES: usize = 12 * 1024 * 1024; // 12 MB (4 MB per segment)

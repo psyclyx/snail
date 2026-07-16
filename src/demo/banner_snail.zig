@@ -28,7 +28,9 @@ pub const Builder = struct {
         paint: snail.Paint,
         transform: snail.Transform2D,
     ) !void {
-        const curves = try path.toCurves(self.allocator, self.scratch_arena.allocator());
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const curves = try prepared.fillCurves(self.allocator, self.scratch_arena.allocator());
         _ = self.scratch_arena.reset(.retain_capacity);
         if (curves.isEmpty()) {
             var owned = curves;
@@ -41,11 +43,11 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = paint,
+            .paint = prepared.paintForDesign(paint),
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = transform,
+            .local_transform = prepared.placedBy(transform),
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
@@ -56,7 +58,9 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        const curves = try path.strokeToCurves(self.allocator, self.scratch_arena.allocator(), stroke);
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const curves = try prepared.strokeCurves(self.allocator, self.scratch_arena.allocator(), stroke);
         _ = self.scratch_arena.reset(.retain_capacity);
         if (curves.isEmpty()) {
             var owned = curves;
@@ -69,11 +73,11 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = stroke.paint,
+            .paint = prepared.paintForDesign(stroke.paint),
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = transform,
+            .local_transform = prepared.placedBy(transform),
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
@@ -131,7 +135,9 @@ pub const Builder = struct {
             return;
         }
 
-        const fill_curves = try path.toCurves(self.allocator, self.scratch_arena.allocator());
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const fill_curves = try prepared.fillCurves(self.allocator, self.scratch_arena.allocator());
         _ = self.scratch_arena.reset(.retain_capacity);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
@@ -140,7 +146,7 @@ pub const Builder = struct {
             try self.addStrokedPath(path, stroke, transform);
             return;
         }
-        const stroke_curves = try path.strokeToCurves(self.allocator, self.scratch_arena.allocator(), stroke);
+        const stroke_curves = try prepared.strokeCurves(self.allocator, self.scratch_arena.allocator(), stroke);
         _ = self.scratch_arena.reset(.retain_capacity);
         if (stroke_curves.isEmpty()) {
             // Stroke degenerate — emit fill only.
@@ -150,11 +156,11 @@ pub const Builder = struct {
             try self.entries.append(self.allocator, .{
                 .key = key,
                 .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-                .paint = fill,
+                .paint = prepared.paintForDesign(fill),
             });
             try self.shapes.append(self.allocator, .{
                 .key = key,
-                .local_transform = transform,
+                .local_transform = prepared.placedBy(transform),
                 .local_color = .{ 1, 1, 1, 1 },
             });
             var owned_stroke = stroke_curves;
@@ -168,7 +174,7 @@ pub const Builder = struct {
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = stroke.paint,
+            .paint = prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
@@ -177,13 +183,13 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
-            .paint = fill,
+            .paint = prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = transform,
+            .local_transform = prepared.placedBy(transform),
             .local_color = .{ 1, 1, 1, 1 },
         });
     }

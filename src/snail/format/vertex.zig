@@ -28,9 +28,6 @@ pub const Instance = extern struct {
 
 pub const BYTES_PER_INSTANCE: usize = @sizeOf(Instance);
 pub const WORDS_PER_INSTANCE: usize = @divExact(BYTES_PER_INSTANCE, @sizeOf(u32));
-/// One override block (used by `emitInstanced`): 6 f32 transform fields
-/// + a packed u8x4 tint + one reserved word, = 8 u32 words = 32 bytes.
-pub const WORDS_PER_OVERRIDE: usize = 8;
 
 /// One instance per glyph quad (instanced rendering).
 pub const INSTANCES_PER_GLYPH: usize = 1;

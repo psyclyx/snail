@@ -15,7 +15,11 @@
 const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
-const gl = snail.gl.bindings.gl;
+const gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/gl.h");
+    @cInclude("GL/glext.h");
+});
 const offscreen_gl = @import("platform/offscreen_gl.zig");
 const passes = @import("game/passes.zig");
 const common = @import("game/common.zig");
@@ -85,7 +89,7 @@ const Panel = struct {
         var bindings: [1]snail.Binding = undefined;
         try cache.upload(allocator, &.{&pass.path_atlas}, &bindings);
 
-        const words = try allocator.alloc(u32, snail.emit.wordBudget(pass.path_picture.shapes.len, 0));
+        const words = try allocator.alloc(u32, snail.emit.wordBudget(pass.path_picture.shapes.len));
         errdefer allocator.free(words);
         const segs = try allocator.alloc(snail.DrawSegment, 4);
         errdefer allocator.free(segs);

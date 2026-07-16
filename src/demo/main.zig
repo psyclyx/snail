@@ -142,7 +142,7 @@ fn dumpReproFrame(
         if (hint_active) "" else " (off)",
     });
     std.debug.print("logical_size={}x{} framebuffer={}x{}\n", .{
-        present.logical_size[0],   present.logical_size[1],
+        present.logical_size[0],     present.logical_size[1],
         present.framebuffer_size[0], present.framebuffer_size[1],
     });
     std.debug.print("pan=({d:.2},{d:.2}) zoom={d:.4} angle={d:.4}\n", .{ pan_x, pan_y, zoom, angle });

@@ -14,6 +14,16 @@ const passes = @import("game/passes.zig");
 const scene_mod = @import("game/scene.zig");
 const gl_scene = @import("game/gl_scene.zig");
 const gl_material = @import("game/gl_material.zig");
+const desktop_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/gl.h");
+    @cInclude("GL/glext.h");
+});
+const gles_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GLES3/gl3.h");
+    @cInclude("GLES2/gl2ext.h");
+});
 
 const W: u32 = 1280;
 const H: u32 = 800;
@@ -40,8 +50,8 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
         .gles30 => .gles30,
     };
     const gl = switch (variant) {
-        .gles30 => snail.gl.gles30_bindings.gl,
-        else => snail.gl.bindings.gl,
+        .gles30 => gles_gl,
+        else => desktop_gl,
     };
 
     var ctx = try offscreen_gl.Context.init(W, H, api);

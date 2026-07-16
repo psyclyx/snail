@@ -82,9 +82,10 @@ pub const CompositeMode = core.CompositeMode;
 pub const AtlasLayer = core.AtlasLayer;
 pub const PaintRecordInfo = core.PaintRecordInfo;
 pub const AtlasRecord = core.AtlasRecord;
+pub const atlas_upload = core.atlas_upload;
+pub const AtlasUploadPlanner = core.AtlasUploadPlanner;
 
 pub const Shape = core.Shape;
-pub const Override = core.Override;
 pub const DrawSegment = core.DrawSegment;
 pub const Binding = core.Binding;
 pub const emit = core.emit;
@@ -95,7 +96,6 @@ pub const decodeInstance = core.decodeInstance;
 pub const BindingTexels = core.BindingTexels;
 pub const bindingTexels = core.bindingTexels;
 pub const WORDS_PER_INSTANCE = core.WORDS_PER_INSTANCE;
-pub const WORDS_PER_OVERRIDE = core.WORDS_PER_OVERRIDE;
 
 pub const autohint = core.autohint;
 pub const HintVm = core.HintVm;
@@ -104,12 +104,13 @@ pub const HintVmStats = core.HintVmStats;
 pub const HintError = core.HintError;
 
 pub const Path = core.Path;
+pub const PreparedPath = core.PreparedPath;
 pub const snap = core.snap;
 pub const ThreadPool = core.ThreadPool;
 
 // ── Renderer backends (each a separate compiler module, exposed as a
 //    namespace; the per-backend embeddable coverage surface lives under
-//    `gl.embeddable` / `vulkan.embeddable` + `vulkan.contract`) ──
+//    `gl.embeddable` / `vulkan.embeddable`) ──
 
 pub const cpu = @import("snail_cpu");
 pub const gl = @import("snail_gl");
@@ -124,8 +125,6 @@ pub const drawCpu = cpu.drawCpu;
 // The all-in-one GL renderer + atlas cache are the caller's (embeddable-only);
 // the reference implementation lives in `src/demo/embed_gl*.zig`. snail exposes
 // only the GL contract + shaders under `snail.gl`.
-
-pub const VulkanContext = vulkan.VulkanContext;
 
 test {
     _ = core;

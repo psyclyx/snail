@@ -126,7 +126,9 @@ pub const PassBuilder = struct {
     }
 
     pub fn addFilledPath(self: *PassBuilder, path: *const snail.Path, paint: snail.Paint) !void {
-        const curves = try path.toCurves(self.allocator, self.allocator);
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const curves = try prepared.fillCurves(self.allocator, self.allocator);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -138,17 +140,19 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = paint,
+            .paint = prepared.paintForDesign(paint),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = .identity,
+            .local_transform = prepared.design_to_source,
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
 
     pub fn addStrokedPath(self: *PassBuilder, path: *const snail.Path, stroke: snail.StrokeStyle) !void {
-        const curves = try path.strokeToCurves(self.allocator, self.allocator, stroke);
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const curves = try prepared.strokeCurves(self.allocator, self.allocator, stroke);
         if (curves.isEmpty()) {
             var owned = curves;
             owned.deinit();
@@ -160,11 +164,11 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = stroke.paint,
+            .paint = prepared.paintForDesign(stroke.paint),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = .identity,
+            .local_transform = prepared.design_to_source,
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
@@ -178,14 +182,16 @@ pub const PassBuilder = struct {
     ) !void {
         std.debug.assert(stroke.placement == .inside);
 
-        const fill_curves = try path.toCurves(self.allocator, self.allocator);
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const fill_curves = try prepared.fillCurves(self.allocator, self.allocator);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
             owned.deinit();
             try self.addStrokedPath(path, stroke);
             return;
         }
-        const stroke_curves = try path.strokeToCurves(self.allocator, self.allocator, stroke);
+        const stroke_curves = try prepared.strokeCurves(self.allocator, self.allocator, stroke);
         if (stroke_curves.isEmpty()) {
             try self.path_curves_owned.append(self.allocator, fill_curves);
             const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
@@ -193,11 +199,11 @@ pub const PassBuilder = struct {
             try self.path_entries.append(self.allocator, .{
                 .key = key,
                 .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-                .paint = fill,
+                .paint = prepared.paintForDesign(fill),
             });
             try self.path_shapes.append(self.allocator, .{
                 .key = key,
-                .local_transform = place,
+                .local_transform = prepared.placedBy(place),
                 .local_color = .{ 1, 1, 1, 1 },
             });
             var owned_stroke = stroke_curves;
@@ -211,7 +217,7 @@ pub const PassBuilder = struct {
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = stroke.paint,
+            .paint = prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
@@ -220,13 +226,13 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 2],
-            .paint = fill,
+            .paint = prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = place,
+            .local_transform = prepared.placedBy(place),
             .local_color = .{ 1, 1, 1, 1 },
         });
     }
@@ -265,7 +271,9 @@ pub const PassBuilder = struct {
         defer p.deinit();
         const to_paint = snail_helpers.placeRectUniform(rect);
         const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
-        const fill_curves = try p.toCurves(self.allocator, self.allocator);
+        var prepared = try p.prepare(self.allocator);
+        defer prepared.deinit();
+        const fill_curves = try prepared.fillCurves(self.allocator, self.allocator);
         if (fill_curves.isEmpty()) {
             var owned = fill_curves;
             owned.deinit();
@@ -277,11 +285,11 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = local_fill,
+            .paint = prepared.paintForDesign(local_fill),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
-            .local_transform = to_paint,
+            .local_transform = prepared.placedBy(to_paint),
             .local_color = .{ 1, 1, 1, 1 },
         });
     }

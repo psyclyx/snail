@@ -13,8 +13,8 @@
 
 const std = @import("std");
 
-const contract = @import("snail").vulkan.contract;
-const vulkan_types = @import("snail").vulkan.types;
+const contract = @import("embed_vulkan_contract.zig");
+const vulkan_types = @import("vulkan_types");
 const vulkan_device = @import("embed_vulkan_device.zig");
 
 pub const vk = vulkan_types.vk;

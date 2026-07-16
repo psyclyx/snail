@@ -116,7 +116,7 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, 
     return applyCoverageTransfer(cov);
 }
 
-void main() {
+void snailColrFragment() {
     int atlas_layer = (v_glyph.w >> 8) & 0xFF;
     int special_kind = v_glyph.w & 0xFF;
     if (atlas_layer != SNAIL_SPECIAL_LAYER_SENTINEL || special_kind != SNAIL_SPECIAL_KIND_COLR) discard;

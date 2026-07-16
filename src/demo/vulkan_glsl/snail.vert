@@ -10,11 +10,6 @@ layout(location = 5) in vec4 a_col;    // base color RGBA
 layout(location = 6) in vec4 a_tint;   // instance tint RGBA
 layout(location = 7) in uvec4 a_policy0;
 layout(location = 8) in uvec3 a_policy1;
-#ifdef SNAIL_REPLICATED
-layout(location = 9) in vec4 b_xform_a;
-layout(location = 10) in vec4 b_xform_b;
-layout(location = 11) in vec4 b_tint;
-#endif
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
@@ -37,3 +32,5 @@ layout(location = 6) flat out uvec3 v_policy1;
 
 #include "snail_color_common.glsl"
 #include "snail_vert_body.glsl"
+
+void main() { snailVertex(); }

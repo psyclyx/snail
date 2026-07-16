@@ -1,13 +1,9 @@
-//! Public embeddable-pipeline contract for the Vulkan text-coverage path.
+//! Complete pipeline contract for Snail's reference Vulkan renderer.
 //!
-//! An embeddable caller owns their own `VkPipeline` — snail owns the font data
-//! and hands over the resources to sample plus the *contract* the caller's
-//! pipeline must match. This module is the stable, all-in-one-renderer-
-//! independent home for that contract: the push-constant layout, the
-//! descriptor binding order, the vertex-input descriptors, the quad index
-//! pattern, and the compiled shader modules. It has no dependency on the
-//! `VulkanPipeline` all-in-one renderer, so it survives that renderer's
-//! removal (embeddable-only end state).
+//! This intentionally lives under `src/demo`: it includes complete SPIR-V,
+//! Vulkan pipeline structs, blend state, and dispatch policy. The library
+//! exports only the data ABI and includable shader pieces; applications own
+//! these renderer choices.
 //!
 //! To build a compatible text-coverage pipeline, a caller:
 //!   1. Builds a `VkPipelineLayout` from snail's descriptor-set layout
@@ -23,10 +19,10 @@
 //!      `vkCmdDrawIndexed(INDICES_PER_GLYPH, glyph_count, ...)`.
 
 const std = @import("std");
-const core = @import("snail_core");
-const vertex = @import("snail_core").files.format_vertex;
-const subpixel_policy = @import("snail_core").files.backend_subpixel_policy;
-const vulkan_types = @import("types.zig");
+const core = @import("snail").core;
+const vertex = core.files.format_vertex;
+const subpixel_policy = core.files.backend_subpixel_policy;
+const vulkan_types = @import("vulkan_types");
 const vk_shaders = @import("vulkan_shaders");
 
 pub const vk = vulkan_types.vk;

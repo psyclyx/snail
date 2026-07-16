@@ -1,8 +1,8 @@
 //! snail_gl module root — the OpenGL family (GL 3.3 / 4.4 / GLES 3.0).
 //!
 //! Font-necessary only: snail provides the embeddable pipeline `contract` +
-//! texture-binding shims (`embeddable`) and the GLSL shader sources
-//! (`shaders` / `gles30_shaders` / `glsl`), over the backend-agnostic atlas
+//! data contract (`embeddable`) and includable GLSL algorithm fragments
+//! (`shader_library`), over the backend-agnostic atlas
 //! upload plan in `snail_core` (`AtlasUploadPlanner`). GLES 3.0 shares this
 //! module (its own bindings/shaders variants). Depends on `snail_core`.
 //!
@@ -15,13 +15,8 @@
 // `coverage` aggregation and callers reach programs/backends through here.
 pub const embeddable = @import("embeddable.zig");
 
-// GLSL source fragments the coverage custom-shader path re-aggregates.
-pub const shaders = @import("shaders.zig");
-pub const gles30_shaders = @import("gles30/shaders.zig");
-
-// Raw GL symbol bindings, needed by the caller's renderer + cache.
-pub const bindings = @import("bindings.zig");
-pub const gles30_bindings = @import("gles30/bindings.zig");
+// No complete stages or entry points: callers own their shaders.
+pub const shader_library = @import("shaders.zig");
 
 test {
     _ = embeddable;

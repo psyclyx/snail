@@ -2,7 +2,8 @@
 //!
 //! This is the worked example an integrator copies: snail owns the font data
 //! (atlas, cache, descriptor set, `emit` words) and hands over the public
-//! `snail.vulkan.contract`; this owns the pipelines and the draw. It builds one
+//! the includable snail shader pieces; this owns the complete shaders,
+//! pipelines, and draw. It builds one
 //! pipeline per shape family, walks the emit stream's glyph runs, and binds the
 //! family pipeline each run needs — reproducing the all-in-one `VulkanRenderer`
 //! from the public surface alone.
@@ -14,8 +15,9 @@
 const std = @import("std");
 const snail = @import("snail");
 
-const contract = snail.vulkan.contract;
+pub const contract = @import("embed_vulkan_contract.zig");
 pub const vk = contract.vk;
+pub const VulkanContext = @import("vulkan_types").VulkanContext;
 
 // The caller-side atlas cache + resource layout used to live in snail_vulkan;
 // they're generic GPU machinery, so they're demo (caller) code now. Re-export
@@ -57,7 +59,7 @@ pub const Renderer = struct {
     /// snail passes occluded by prior opaque geometry. Pass `false` for the
     /// color-only case (the default the 2D demo + screenshots use). The
     /// depth-stencil config is thus caller-controlled, not baked in.
-    pub fn init(ctx: snail.VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, slot_bytes: usize, num_slots: u32, depth_test: bool) !Renderer {
+    pub fn init(ctx: VulkanContext, desc_set_layout: vk.VkDescriptorSetLayout, slot_bytes: usize, num_slots: u32, depth_test: bool) !Renderer {
         const device = ctx.device;
 
         const push_range = std.mem.zeroInit(vk.VkPushConstantRange, .{
@@ -145,6 +147,7 @@ pub const Renderer = struct {
 
         for (segments) |seg| {
             const seg_words = words[seg.words_offset..][0..seg.words_len];
+            std.debug.assert(seg_words.len == @as(usize, seg.shape_count) * snail.WORDS_PER_INSTANCE);
             var runs = contract.glyphRuns(seg_words);
             while (runs.next()) |run| {
                 const mode: contract.TextRenderMode = if (run.kind == .regular)
@@ -184,7 +187,7 @@ pub const Renderer = struct {
 /// example for hosts that can't cede their queue to snail.
 pub fn cacheWithDecoupledUpload(
     allocator: std.mem.Allocator,
-    ctx: snail.VulkanContext,
+    ctx: VulkanContext,
     page_pool: *snail.PagePool,
     layout: *const VulkanResourceLayout,
     atlases: []const *const snail.Atlas,
@@ -233,7 +236,7 @@ pub fn cacheWithDecoupledUpload(
 
 /// Build a transfer command pool on the graphics queue family — what a
 /// standalone `VulkanBackendCache` needs (see `embeddable.cachePipelineShape`).
-pub fn createTransferPool(ctx: snail.VulkanContext) !vk.VkCommandPool {
+pub fn createTransferPool(ctx: VulkanContext) !vk.VkCommandPool {
     const ci = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
         .flags = vk.VK_COMMAND_POOL_CREATE_TRANSIENT_BIT,
@@ -244,7 +247,7 @@ pub fn createTransferPool(ctx: snail.VulkanContext) !vk.VkCommandPool {
     return pool;
 }
 
-fn buildPipeline(ctx: snail.VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe, depth_test: bool) !vk.VkPipeline {
+fn buildPipeline(ctx: VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe, depth_test: bool) !vk.VkPipeline {
     const device = ctx.device;
     const vert_module = try shaderModule(device, contract.vert_spv);
     defer vk.vkDestroyShaderModule(device, vert_module, null);
@@ -354,7 +357,7 @@ pub const HostBuffer = struct {
     mapped: [*]u8,
     size: usize,
 
-    pub fn init(ctx: snail.VulkanContext, size: usize, usage: vk.VkBufferUsageFlags) !HostBuffer {
+    pub fn init(ctx: VulkanContext, size: usize, usage: vk.VkBufferUsageFlags) !HostBuffer {
         const device = ctx.device;
         const bi = std.mem.zeroInit(vk.VkBufferCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,

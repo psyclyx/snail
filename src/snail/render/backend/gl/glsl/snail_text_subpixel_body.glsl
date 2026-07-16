@@ -234,7 +234,7 @@ vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 ba
     return vec4(applyCoverageTransfer(coverage.rgb), applyCoverageTransfer(coverage.a));
 }
 
-void main() {
+void snailSubpixelFragment() {
 #ifdef SNAIL_DUAL_SOURCE
     frag_blend = vec4(0.0);
 #endif

@@ -218,7 +218,7 @@ float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 band
     return applyCoverageTransfer(cov);
 }
 
-void main() {
+void snailHintedTextFragment() {
     int layer_byte = (v_glyph.w >> 8) & 0xFF;
     if (layer_byte != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
     int special_kind = v_glyph.w & 0xFF;

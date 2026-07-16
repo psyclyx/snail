@@ -347,7 +347,9 @@ fn addFilledPath(
     path: *const snail.Path,
     paint: snail.Paint,
 ) !void {
-    const curves = try path.toCurves(self.allocator, self.scratch());
+    var prepared = try path.prepare(self.allocator);
+    defer prepared.deinit();
+    const curves = try prepared.fillCurves(self.allocator, self.scratch());
     self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
@@ -360,11 +362,11 @@ fn addFilledPath(
     try self.entries.append(self.allocator, .{
         .key = key,
         .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-        .paint = paint,
+        .paint = prepared.paintForDesign(paint),
     });
     try self.shapes.append(self.allocator, .{
         .key = key,
-        .local_transform = .identity,
+        .local_transform = prepared.design_to_source,
         .local_color = .{ 1, 1, 1, 1 },
     });
 }
@@ -374,7 +376,9 @@ fn addStrokedPath(
     path: *const snail.Path,
     stroke: snail.StrokeStyle,
 ) !void {
-    const curves = try path.strokeToCurves(self.allocator, self.scratch(), stroke);
+    var prepared = try path.prepare(self.allocator);
+    defer prepared.deinit();
+    const curves = try prepared.strokeCurves(self.allocator, self.scratch(), stroke);
     self.resetScratch();
     if (curves.isEmpty()) {
         var owned = curves;
@@ -387,11 +391,11 @@ fn addStrokedPath(
     try self.entries.append(self.allocator, .{
         .key = key,
         .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-        .paint = stroke.paint,
+        .paint = prepared.paintForDesign(stroke.paint),
     });
     try self.shapes.append(self.allocator, .{
         .key = key,
-        .local_transform = .identity,
+        .local_transform = prepared.design_to_source,
         .local_color = .{ 1, 1, 1, 1 },
     });
 }
@@ -1224,10 +1228,10 @@ fn timeRecordEmit(
     atlas: *const snail.Atlas,
     picture: *const snail_helpers.Picture,
 ) !struct { us: f64, words: usize, segments: usize } {
-    const word_cap = snail.emit.wordBudget(picture.shapes.len, 0);
+    const word_cap = snail.emit.wordBudget(picture.shapes.len);
     const words = try allocator.alloc(u32, word_cap);
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, snail.emit.segmentBudget(picture.shapes.len, 0));
+    const segs = try allocator.alloc(snail.DrawSegment, snail.emit.segmentBudget(picture.shapes.len));
     defer allocator.free(segs);
 
     var wlen: usize = 0;
@@ -1271,10 +1275,10 @@ fn emitScene(
     atlas: *const snail.Atlas,
     picture: *const snail_helpers.Picture,
 ) !EmittedRecords {
-    const word_cap = snail.emit.wordBudget(picture.shapes.len, 0);
+    const word_cap = snail.emit.wordBudget(picture.shapes.len);
     const words = try allocator.alloc(u32, word_cap);
     errdefer allocator.free(words);
-    const seg_cap = @max(snail.emit.segmentBudget(picture.shapes.len, 0), 1);
+    const seg_cap = @max(snail.emit.segmentBudget(picture.shapes.len), 1);
     const segs = try allocator.alloc(snail.DrawSegment, seg_cap);
     errdefer allocator.free(segs);
     var wlen: usize = 0;
@@ -1932,7 +1936,7 @@ fn benchVulkan(
     }
 
     var max_words: usize = 0;
-    for (bundles[0..bundle_count]) |*b| max_words = @max(max_words, snail.emit.wordBudget(b.picture.shapes.len, 0));
+    for (bundles[0..bundle_count]) |*b| max_words = @max(max_words, snail.emit.wordBudget(b.picture.shapes.len));
     var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), max_words * @sizeOf(u32), vulkan_platform.OFFSCREEN_FRAMES_IN_FLIGHT, false);
     defer caller.deinit();
 

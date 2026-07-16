@@ -16,6 +16,16 @@ const snail = @import("snail");
 const embed_gl = @import("embed_gl");
 const embeddable = snail.gl.embeddable;
 const common = @import("common.zig");
+const desktop_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/gl.h");
+    @cInclude("GL/glext.h");
+});
+const gles_gl = @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GLES3/gl3.h");
+    @cInclude("GLES2/gl2ext.h");
+});
 
 pub const Variant = enum { gl33, gl44, gles30 };
 
@@ -31,8 +41,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
         const Self = @This();
 
         const gl = switch (variant) {
-            .gl33, .gl44 => snail.gl.bindings.gl,
-            .gles30 => snail.gl.gles30_bindings.gl,
+            .gl33, .gl44 => desktop_gl,
+            .gles30 => gles_gl,
         };
         const Sources = switch (variant) {
             .gl33, .gl44 => embeddable.GlShaderSources,
@@ -49,15 +59,14 @@ pub fn GlMaterial(comptime variant: Variant) type {
             .gles30 => embed_gl.Gles30Backend,
         };
         const Program = switch (variant) {
-            .gles30 => embeddable.Gles30Program,
-            else => embeddable.GlProgram,
+            .gles30 => embed_gl.Gles30Program,
+            else => embed_gl.GlProgram,
         };
         const version_prefix = switch (variant) {
             // snail's own GL 3.3/4.4 shaders are both #version 330 core (DSA is
             // an API concern, not a shader-dialect one), so the material matches.
             .gl33, .gl44 => "#version 330 core\n",
-            .gles30 =>
-            "#version 300 es\n" ++
+            .gles30 => "#version 300 es\n" ++
                 "precision highp float;\n" ++
                 "precision highp int;\n" ++
                 "precision highp sampler2DArray;\n" ++
@@ -152,7 +161,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
             try cache.upload(allocator, &.{&material_pass.text_atlas}, &binding);
 
             const shapes = material_pass.text_picture.shapes;
-            const word_budget = snail.emit.wordBudget(shapes.len, 0);
+            const word_budget = snail.emit.wordBudget(shapes.len);
             const words = try allocator.alloc(u32, word_budget);
             defer allocator.free(words);
             var segs: [4]snail.DrawSegment = undefined;
@@ -160,9 +169,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
             var slen: usize = 0;
             _ = try snail.emit.emit(words, &segs, &wlen, &slen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
 
-            var records = embeddable.TextCoverageRecords.init(words);
-            records.len = wlen;
-            self.glyph_count = @intCast(records.glyphCount());
+            if (wlen % snail.WORDS_PER_INSTANCE != 0) return error.InvalidEmitRecordLength;
+            self.glyph_count = @intCast(wlen / snail.WORDS_PER_INSTANCE);
 
             switch (variant) {
                 .gl33, .gl44 => {

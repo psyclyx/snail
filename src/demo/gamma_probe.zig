@@ -66,13 +66,15 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
     for (bands, 0..) |v, i| {
         var p = try snail_helpers.unitRectPath(allocator);
         defer p.deinit();
-        curves[i] = try p.toCurves(allocator, allocator);
+        var prepared = try p.prepare(allocator);
+        defer prepared.deinit();
+        curves[i] = try prepared.fillCurves(allocator, allocator);
         built += 1;
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = @intCast(i) };
         entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = .{ v, v, v, 1 } } };
         shapes[i] = .{
             .key = key,
-            .local_transform = snail_helpers.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) }),
+            .local_transform = prepared.placedBy(snail_helpers.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) })),
             .local_color = .{ 1, 1, 1, 1 },
         };
     }

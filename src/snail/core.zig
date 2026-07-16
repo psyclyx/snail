@@ -6,8 +6,8 @@
 //! backend; backends (`cpu`/`gl`/`vulkan`) and the `snail` facade both
 //! depend on it, never the reverse.
 //!
-//! `root.zig` re-exports this whole surface as the public `snail` API and
-//! adds the backend renderers/caches + the `coverage` custom-shader facade.
+//! `root.zig` re-exports this whole surface as the public `snail` API and adds
+//! the CPU renderer plus backend shader/include namespaces.
 
 const math = @import("math.zig");
 const text_mod = @import("text.zig");
@@ -96,7 +96,11 @@ pub const AtlasPage = @import("atlas/page.zig").AtlasPage;
 
 const atlas_mod = @import("atlas.zig");
 pub const Atlas = atlas_mod.Atlas;
-pub const AtlasUploadPlanner = @import("atlas/upload_plan.zig").Planner;
+/// Backend-neutral atlas upload descriptions and the optional fixed-capacity
+/// placement planner. The complete contract is public so callers never need
+/// to reach through the internal `files` namespace for its backing types.
+pub const atlas_upload = @import("atlas/upload_plan.zig");
+pub const AtlasUploadPlanner = atlas_upload.Planner;
 pub const AtlasEntry = atlas_mod.Entry;
 pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
@@ -107,7 +111,6 @@ pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 
 const shape_mod = @import("picture/shape.zig");
 pub const Shape = shape_mod.Shape;
-pub const Override = shape_mod.Override;
 
 pub const DrawSegment = @import("picture/draw_records.zig").DrawSegment;
 pub const Binding = @import("picture/draw_records.zig").Binding;
@@ -127,7 +130,6 @@ pub const decodeInstance = vertex_mod.decodeInstance;
 pub const BindingTexels = vertex_mod.BindingTexels;
 pub const bindingTexels = vertex_mod.bindingTexels;
 pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
-pub const WORDS_PER_OVERRIDE = vertex_mod.WORDS_PER_OVERRIDE;
 
 pub const autohint = struct {
     pub const policy = @import("font/autohint/policy.zig");
@@ -149,6 +151,7 @@ pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
 pub const HintError = @import("font/hint_vm.zig").HintError;
 
 pub const Path = @import("path.zig").Path;
+pub const PreparedPath = @import("path.zig").PreparedPath;
 pub const snap = @import("snap.zig");
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 

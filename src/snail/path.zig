@@ -11,6 +11,7 @@ const CurveSegment = bezier.CurveSegment;
 const Rect = target_mod.Rect;
 const StrokeStyle = paint_mod.StrokeStyle;
 const Vec2 = vec.Vec2;
+const Transform2D = vec.Transform2D;
 
 // Recursion-depth caps for path subdivision. These are quality / cost
 // budgets, not caller-facing limits: hitting the cap yields a slightly
@@ -351,6 +352,61 @@ pub const Path = struct {
         return self.curves.items.len == 0;
     }
 
+    /// Normalize arbitrary source-space geometry into a small design space
+    /// near the origin before it is quantized into the f16 curve format.
+    /// `PreparedPath.design_to_source` carries the inverse placement, and its
+    /// paint/stroke helpers keep the whole shape in the same coordinate frame.
+    pub fn prepare(self: *const Path, allocator: std.mem.Allocator) !PreparedPath {
+        var design = Path.init(allocator);
+        errdefer design.deinit();
+
+        const bb = self.bounds() orelse return .{
+            .design = design,
+            .design_to_source = .identity,
+            .source_to_design = .identity,
+            .source_scale = 1,
+        };
+        const width = bb.max.x - bb.min.x;
+        const height = bb.max.y - bb.min.y;
+        const extent = @max(width, height);
+        if (!std.math.isFinite(extent) or extent <= 1.0 / 65536.0) return .{
+            .design = design,
+            .design_to_source = .identity,
+            .source_to_design = .identity,
+            .source_scale = 1,
+        };
+
+        const inv_extent = 1.0 / extent;
+        const source_to_design = Transform2D{
+            .xx = inv_extent,
+            .yy = inv_extent,
+            .tx = -bb.min.x * inv_extent,
+            .ty = -bb.min.y * inv_extent,
+        };
+        const design_to_source = Transform2D{
+            .xx = extent,
+            .yy = extent,
+            .tx = bb.min.x,
+            .ty = bb.min.y,
+        };
+
+        for (self.contours.items) |contour| {
+            try design.moveTo(source_to_design.applyPoint(contour.start_point));
+            for (self.curves.items[contour.curve_start..contour.curve_end]) |curve| {
+                design.band_curve_count += 1;
+                try design.appendSegment(transformCurve(curve, source_to_design));
+            }
+            if (contour.closed) try design.close();
+        }
+
+        return .{
+            .design = design,
+            .design_to_source = design_to_source,
+            .source_to_design = source_to_design,
+            .source_scale = extent,
+        };
+    }
+
     pub fn moveTo(self: *Path, point: Vec2) !void {
         if (self.contours.items.len > 0) {
             var contour = &self.contours.items[self.contours.items.len - 1];
@@ -621,33 +677,93 @@ pub const Path = struct {
             .logical_curve_count = self.filledBandCurveCount() * 2,
         };
     }
+};
 
-    /// Pack this path's filled outline as `GlyphCurves`. Returns an
-    /// empty value for paths with no curves or unbounded extent.
-    ///
-    /// `allocator` owns the returned `GlyphCurves`. `scratch` holds the
-    /// intermediate curve buffers (cloned segments, split-at-extrema,
-    /// quantized, band scratch). For batched callers, pass an arena as
-    /// `scratch` and reset it between calls; for one-shot callers, pass
-    /// the same allocator twice — both have the same lifetime semantics.
-    pub fn toCurves(
-        self: *const Path,
-        allocator: std.mem.Allocator,
-        scratch: std.mem.Allocator,
-    ) !@import("atlas/curves.zig").GlyphCurves {
-        return @import("paths.zig").pathToCurves(allocator, scratch, self);
+fn transformCurve(curve: CurveSegment, transform: Transform2D) CurveSegment {
+    var out = curve;
+    out.p0 = transform.applyPoint(curve.p0);
+    out.p1 = transform.applyPoint(curve.p1);
+    out.p2 = transform.applyPoint(curve.p2);
+    if (curve.kind == .cubic) out.p3 = transform.applyPoint(curve.p3);
+    return out;
+}
+
+/// A path expressed in Snail's precision-safe design space. Geometry is kept
+/// near the origin with a uniform scale so aspect ratios, circular strokes,
+/// and conic weights are preserved. Compose `design_to_source` into the
+/// shape's local transform when emitting the packed curves.
+pub const PreparedPath = struct {
+    design: Path,
+    design_to_source: Transform2D,
+    source_to_design: Transform2D,
+    source_scale: f32,
+
+    pub fn deinit(self: *PreparedPath) void {
+        self.design.deinit();
+        self.* = undefined;
     }
 
-    /// Pack this path's stroked outline as `GlyphCurves`. Returns an
-    /// empty value if the stroke is degenerate (zero width, no
-    /// contours). See `toCurves` for the `(allocator, scratch)`
-    /// allocator convention.
-    pub fn strokeToCurves(
-        self: *const Path,
+    pub fn fillCurves(
+        self: *const PreparedPath,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
-        stroke: StrokeStyle,
     ) !@import("atlas/curves.zig").GlyphCurves {
-        return @import("paths.zig").strokeToCurves(allocator, scratch, self, stroke);
+        return @import("paths.zig").pathToCurves(allocator, scratch, &self.design);
+    }
+
+    pub fn strokeCurves(
+        self: *const PreparedPath,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        source_stroke: StrokeStyle,
+    ) !@import("atlas/curves.zig").GlyphCurves {
+        return @import("paths.zig").strokeToCurves(allocator, scratch, &self.design, self.strokeForDesign(source_stroke));
+    }
+
+    /// Re-express source-space paint parameters in the prepared design space.
+    pub fn paintForDesign(self: *const PreparedPath, source_paint: paint_mod.Paint) paint_mod.Paint {
+        return paint_mod.mapToLocal(source_paint, self.design_to_source) orelse source_paint;
+    }
+
+    /// Normalize stroke width and paint together with the path geometry.
+    pub fn strokeForDesign(self: *const PreparedPath, source_stroke: StrokeStyle) StrokeStyle {
+        var stroke = source_stroke;
+        stroke.width /= self.source_scale;
+        stroke.paint = self.paintForDesign(source_stroke.paint);
+        return stroke;
+    }
+
+    /// Compose an existing source/world transform with the placement needed to
+    /// restore the prepared design geometry to the path's authored space.
+    pub fn placedBy(self: *const PreparedPath, outer: Transform2D) Transform2D {
+        return Transform2D.multiply(outer, self.design_to_source);
     }
 };
+
+test "prepare normalizes arbitrary coordinates and preserves placement" {
+    var source = Path.init(std.testing.allocator);
+    defer source.deinit();
+    try source.addRect(.{ .x = 5000, .y = -3000, .w = 200, .h = 100 });
+
+    var prepared = try source.prepare(std.testing.allocator);
+    defer prepared.deinit();
+
+    const design_bounds = prepared.design.bounds().?;
+    try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.y, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), design_bounds.max.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), design_bounds.max.y, 1e-6);
+
+    const restored_min = prepared.design_to_source.applyPoint(design_bounds.min);
+    const restored_max = prepared.design_to_source.applyPoint(design_bounds.max);
+    try std.testing.expectApproxEqAbs(@as(f32, 5000), restored_min.x, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, -3000), restored_min.y, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, 5200), restored_max.x, 1e-3);
+    try std.testing.expectApproxEqAbs(@as(f32, -2900), restored_max.y, 1e-3);
+
+    const stroke = prepared.strokeForDesign(.{
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+        .width = 10,
+    });
+    try std.testing.expectApproxEqAbs(@as(f32, 0.05), stroke.width, 1e-6);
+}

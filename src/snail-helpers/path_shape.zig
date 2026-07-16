@@ -92,7 +92,6 @@ pub fn unitStrokeWidth(rect: Rect, width: f32) f32 {
     return if (rect.w != 0) width / rect.w else width;
 }
 
-
 // ── tests ────────────────────────────────────────────────────────────────
 
 const testing = std.testing;
@@ -159,50 +158,36 @@ test "parametric unit builders are byte-deterministic (dedup precondition)" {
     var b = try unitRoundedRectPath(testing.allocator, 0.2);
     defer b.deinit();
 
-    var ca = try a.toCurves(testing.allocator, testing.allocator);
+    var prepared_a = try a.prepare(testing.allocator);
+    defer prepared_a.deinit();
+    var prepared_b = try b.prepare(testing.allocator);
+    defer prepared_b.deinit();
+    var ca = try prepared_a.fillCurves(testing.allocator, testing.allocator);
     defer ca.deinit();
-    var cb = try b.toCurves(testing.allocator, testing.allocator);
+    var cb = try prepared_b.fillCurves(testing.allocator, testing.allocator);
     defer cb.deinit();
 
     try testing.expectEqualSlices(u16, ca.curve_bytes, cb.curve_bytes);
     try testing.expectEqualSlices(u16, ca.band_bytes, cb.band_bytes);
 }
 
-test "unit authoring keeps f16 precision that screen authoring loses" {
-    // Same ellipse, far from the origin at 1:1 — the wobble's worst case.
+test "prepared authoring keeps f16 precision at large coordinates" {
     const target = Rect{ .x = 5000, .y = 5000, .w = 100, .h = 100 };
 
-    // Screen authoring: geometry baked at world coordinates, drawn 1:1.
     var screen = Path.init(testing.allocator);
     defer screen.deinit();
     try screen.addEllipse(target);
-    const screen_authored = try screen.cloneFilledCurves(testing.allocator);
-    defer testing.allocator.free(screen_authored);
-    var screen_curves = try screen.toCurves(testing.allocator, testing.allocator);
-    defer screen_curves.deinit();
-    const screen_err = maxQuantError(
-        &.{ screen_authored[0].p0, screen_authored[0].p1, screen_authored[0].p2, screen_authored[0].p3 },
-        decodeFirstSegment(screen_curves.curve_bytes),
+    var prepared = try screen.prepare(testing.allocator);
+    defer prepared.deinit();
+    const authored = try prepared.design.cloneFilledCurves(testing.allocator);
+    defer testing.allocator.free(authored);
+    var curves = try prepared.fillCurves(testing.allocator, testing.allocator);
+    defer curves.deinit();
+    const error_local = maxQuantError(
+        &.{ authored[0].p0, authored[0].p1, authored[0].p2, authored[0].p3 },
+        decodeFirstSegment(curves.curve_bytes),
     );
+    const error_screen = error_local * prepared.source_scale;
 
-    // Unit authoring: geometry in [0,1]², placed by transform. Error is
-    // measured in unit space then scaled by the placement (×100) to compare
-    // like-for-like on screen.
-    var unit = try unitEllipsePath(testing.allocator);
-    defer unit.deinit();
-    const unit_authored = try unit.cloneFilledCurves(testing.allocator);
-    defer testing.allocator.free(unit_authored);
-    var unit_curves = try unit.toCurves(testing.allocator, testing.allocator);
-    defer unit_curves.deinit();
-    const unit_err_local = maxQuantError(
-        &.{ unit_authored[0].p0, unit_authored[0].p1, unit_authored[0].p2, unit_authored[0].p3 },
-        decodeFirstSegment(unit_curves.curve_bytes),
-    );
-    const unit_err_screen = unit_err_local * target.w;
-
-    // The unit path stays well under a pixel; screen authoring is an order
-    // of magnitude worse at this offset.
-    try testing.expect(unit_err_screen < 0.05);
-    try testing.expect(screen_err > 1.0);
-    try testing.expect(screen_err > unit_err_screen * 10.0);
+    try testing.expect(error_screen < 0.05);
 }

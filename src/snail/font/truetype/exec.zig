@@ -1283,7 +1283,6 @@ pub const Context = struct {
     }
 };
 
-
 const Pair = struct {
     lhs: i32,
     rhs: i32,
@@ -1474,10 +1473,9 @@ const tail_dispatch: [256]TailHandler = blk: {
     // zone setters, loop count, round mode bases, cut-in values.
     for ([_]u8{
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1A, 0x1D, 0x1E, 0x1F,
-        0x86, 0x87,
+        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1D, 0x1E, 0x1F, 0x86, 0x87,
     }) |op| t[op] = handleSimple(Context.executeGraphicsOp, op);
 
     // Stack: DUP, POP, CLEAR, SWAP, DEPTH, CINDEX, MINDEX.
@@ -1493,9 +1491,11 @@ const tail_dispatch: [256]TailHandler = blk: {
     for ([_]u8{
         0x4B, 0x4C, 0x4D, 0x4E,
         0x56, 0x57, 0x5E, 0x5F,
-        0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
-        0x76, 0x77,
-        0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E,
+        0x68, 0x69, 0x6A, 0x6B,
+        0x6C, 0x6D, 0x6E, 0x6F,
+        0x76, 0x77, 0x7A, 0x7C,
+        0x7D, 0x85, 0x88, 0x8A,
+        0x8D, 0x8E,
     }) |op| t[op] = handleSimple(Context.executeStateOp, op);
 
     // RTDG (0x3D) — round to double grid. Wired through the slow path since
@@ -1521,9 +1521,17 @@ const tail_dispatch: [256]TailHandler = blk: {
     // is a real win — `relativeFlags(op, base)` becomes a comptime constant.
     for ([_]u8{
         0x27, 0x29,
-        0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-        0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3E, 0x3F,
-        0x46, 0x47, 0x48, 0x49, 0x4A,
+        0x2E, 0x2F,
+        0x30, 0x31,
+        0x32, 0x33,
+        0x34, 0x35,
+        0x36, 0x37,
+        0x38, 0x39,
+        0x3A, 0x3B,
+        0x3C, 0x3E,
+        0x3F, 0x46,
+        0x47, 0x48,
+        0x49, 0x4A,
     }) |op| t[op] = handleSimple(Context.executePointOp, op);
     for (0xC0..0x100) |op| t[op] = handleSimple(Context.executePointOp, @intCast(op));
 
@@ -2076,7 +2084,7 @@ test "tt executor resets dual projection except for SDPVTL" {
         0xB0, 0, 0x47, // GC[1] now measures y, not the stale SDPVTL dual vector.
     });
 
-    try expectStack(&ctx, &.{ 0 });
+    try expectStack(&ctx, &.{0});
 }
 
 test "tt executor scales WCVTF and RCVT through the projection-relative ratio" {
@@ -2103,10 +2111,10 @@ test "tt executor scales WCVTF and RCVT through the projection-relative ratio" {
         0x01, // SVTCA[x]
         0xB0, 0, 0x45, // RCVT cvt[0] → 32 (x-axis)
         0x00, // SVTCA[y]
-        0xB0, 1, 0x45, // RCVT cvt[1] → 38 (y-axis)
+        0xB0, 1,    0x45, // RCVT cvt[1] → 38 (y-axis)
         // And cross-read: cvt[1] in x-axis projection should rescale down to ~32.
-        0x01,
-        0xB0, 1, 0x45,
+        0x01, 0xB0, 1,
+        0x45,
     });
 
     // Both cells canonical-stored at base ppem=12 → 38, regardless of write axis.
@@ -2398,9 +2406,10 @@ test "tt executor applies delta point and cvt exceptions" {
         // DELTAC1: ppem 12, low=6 → -2 steps × 8 = -16/64 px, cvt 0
         0xB2, 0x36, 0, 1, 0x73,
         0xB0, 10, 0x5E, // SDB 10
-        0xB0, 4, 0x5F, // SDS 4
+        0xB0, 4,    0x5F, // SDS 4
         // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=4 → 4) = +8/64 px, point 1
-        0xB2, 0x29, 1, 1, 0x5D,
+        0xB2, 0x29, 1,
+        1,    0x5D,
     });
 
     try std.testing.expectEqual(@as(i32, 16), glyph_points[0].x);

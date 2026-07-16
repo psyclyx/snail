@@ -252,4 +252,3 @@ fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
-

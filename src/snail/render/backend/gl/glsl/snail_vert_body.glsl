@@ -11,7 +11,7 @@ float snailVertexDilationScale() {
     return kCornerAxisScale * ((SNAIL_SUBPIXEL_ORDER == 0) ? 1.0 : kLcdAxisSupportScale);
 }
 
-void main() {
+void snailVertex() {
     vec2 t = kCorners[SNAIL_VERTEX_INDEX];
 
     vec2 em = mix(a_rect.xy, a_rect.zw, t);
@@ -19,32 +19,9 @@ void main() {
     // Outward corner normal in local space (dilation direction).
     vec2 nd = t * 2.0 - 1.0;
 
-    // Effective instance transform. In replicated mode, compose
-    // override × shape (override applied to shape-transformed points)
-    // and let the override's tint replace the shape's identity tint.
-#ifdef SNAIL_REPLICATED
-    // override.xform: [oxx, oxy, otx, oyx] in b_xform_a; [oyy, oty] in
-    // b_xform_b. b_tint is the packed RGBA u8x4 unpacked to vec4.
-    float oxx = b_xform_a.x; float oxy = b_xform_a.y;
-    float otx = b_xform_a.z; float oyx = b_xform_a.w;
-    float oyy = b_xform_b.x; float oty = b_xform_b.y;
-    // shape.xform: a_xform = (xx, xy, yx, yy); shape origin = a_origin.
-    vec4 eff_xform = vec4(
-        oxx * a_xform.x + oxy * a_xform.z,  // combined xx
-        oxx * a_xform.y + oxy * a_xform.w,  // combined xy
-        oyx * a_xform.x + oyy * a_xform.z,  // combined yx
-        oyx * a_xform.y + oyy * a_xform.w   // combined yy
-    );
-    vec2 eff_origin = vec2(
-        oxx * a_origin.x + oxy * a_origin.y + otx,
-        oyx * a_origin.x + oyy * a_origin.y + oty
-    );
-    vec4 eff_tint = b_tint;
-#else
     vec4 eff_xform = a_xform;
     vec2 eff_origin = a_origin;
     vec4 eff_tint = a_tint;
-#endif
 
     vec2 pos = vec2(
         eff_xform.x * em.x + eff_xform.y * em.y + eff_origin.x,

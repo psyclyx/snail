@@ -1,7 +1,6 @@
 //! Demo-only headless Vulkan platform path used by benchmarks and capture tools.
 
 const std = @import("std");
-const snail = @import("snail");
 
 const c = @cImport({
     @cInclude("vulkan/vulkan.h");
@@ -42,13 +41,13 @@ var offscreen_extent: vk.VkExtent2D = .{ .width = 0, .height = 0 };
 
 /// Initialise Vulkan for offscreen rendering. No window or swapchain.
 /// Call deinitOffscreen() when done.
-pub fn initOffscreen(width: u32, height: u32) !snail.VulkanContext {
+pub fn initOffscreen(width: u32, height: u32) !@import("vulkan_types").VulkanContext {
     return initOffscreenOpts(width, height, false);
 }
 
 /// `use_depth` attaches a D32 depth buffer to the offscreen render pass (for
 /// the game's depth-tested scene). Color-only tools call `initOffscreen`.
-pub fn initOffscreenOpts(width: u32, height: u32, use_depth: bool) !snail.VulkanContext {
+pub fn initOffscreenOpts(width: u32, height: u32, use_depth: bool) !@import("vulkan_types").VulkanContext {
     offscreen_use_depth = use_depth;
     try createInstanceOffscreen();
     try pickPhysicalDeviceOffscreen();
@@ -220,8 +219,6 @@ fn createInstanceOffscreen() !void {
     const app_info = std.mem.zeroInit(vk.VkApplicationInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
         .pApplicationName = "snail-bench",
-        // Vulkan 1.1 is the minimum for VK_EXT_vertex_attribute_divisor
-        // promotion paths; we still enable the extension explicitly.
         .apiVersion = vk.VK_API_VERSION_1_1,
     });
     const ci = std.mem.zeroInit(vk.VkInstanceCreateInfo, .{
@@ -275,22 +272,11 @@ fn createDeviceOffscreen() !void {
     var enabled_features = std.mem.zeroes(vk.VkPhysicalDeviceFeatures);
     if (supports_dual_source_blend) enabled_features.dualSrcBlend = vk.VK_TRUE;
 
-    // Enable VK_EXT_vertex_attribute_divisor for the replicated draw
-    // path's hardware instancing (shape divisor M, override divisor 1).
-    const divisor_ext_name: [*c]const u8 = "VK_EXT_vertex_attribute_divisor";
-    var divisor_features = std.mem.zeroInit(vk.VkPhysicalDeviceVertexAttributeDivisorFeaturesEXT, .{
-        .sType = vk.VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VERTEX_ATTRIBUTE_DIVISOR_FEATURES_EXT,
-        .vertexAttributeInstanceRateDivisor = vk.VK_TRUE,
-        .vertexAttributeInstanceRateZeroDivisor = vk.VK_FALSE,
-    });
     const dev_ci = std.mem.zeroInit(vk.VkDeviceCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        .pNext = &divisor_features,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &queue_ci,
         .pEnabledFeatures = &enabled_features,
-        .enabledExtensionCount = 1,
-        .ppEnabledExtensionNames = &divisor_ext_name,
     });
     try checkVk(vk.vkCreateDevice(physical_device, &dev_ci, null, &device));
     vk.vkGetDeviceQueue(device, queue_family_index, 0, &graphics_queue);

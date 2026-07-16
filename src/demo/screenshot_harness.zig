@@ -79,7 +79,7 @@ pub fn drawStateExp(width: u32, height: u32, exponent: f32) snail.DrawState {
 
 /// Sum of the word budgets for both pictures in the scene.
 pub fn wordBudget(scene: Scene) usize {
-    return snail.emit.wordBudget(scene.paths_picture.shapes.len, 0) + snail.emit.wordBudget(scene.text_picture.shapes.len, 0);
+    return snail.emit.wordBudget(scene.paths_picture.shapes.len) + snail.emit.wordBudget(scene.text_picture.shapes.len);
 }
 
 pub const EmitOut = struct { words_len: usize, segs_len: usize };

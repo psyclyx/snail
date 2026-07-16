@@ -22,10 +22,21 @@ const Scene = scene_mod.Scene;
 
 const any_gl = build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30;
 const gl_platform = if (any_gl) @import("platform/gl.zig") else struct {};
+const desktop_gl = if (build_options.enable_gl33 or build_options.enable_gl44) @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GL/gl.h");
+    @cInclude("GL/glext.h");
+}) else struct {};
+const gles_gl = if (build_options.enable_gles30) @cImport({
+    @cDefine("GL_GLEXT_PROTOTYPES", "1");
+    @cInclude("GLES3/gl3.h");
+    @cInclude("GLES2/gl2ext.h");
+}) else struct {};
 
 const game_vulkan = build_options.enable_vulkan;
 const vulkan_platform = if (game_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
 const vk_scene = if (game_vulkan) @import("game/vk_scene.zig") else struct {};
+const embed_vulkan = if (game_vulkan) @import("embed_vulkan") else struct {};
 
 /// Default-framebuffer depth bits the scene's depth testing needs.
 const DEPTH_BITS: i32 = 24;
@@ -174,8 +185,8 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
             .gles30 => .gles30,
         };
         const gl = switch (variant) {
-            .gles30 => snail.gl.gles30_bindings.gl,
-            else => snail.gl.bindings.gl,
+            .gles30 => gles_gl,
+            else => desktop_gl,
         };
         const SceneRenderer = gl_scene.GlSceneRenderer(variant);
 
@@ -229,7 +240,7 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
 
 const VulkanGameDriver = if (game_vulkan) struct {
     const Self = @This();
-    ctx: snail.VulkanContext,
+    ctx: embed_vulkan.VulkanContext,
     sr: vk_scene.VkSceneRenderer,
 
     fn init(allocator: std.mem.Allocator, window: *wayland.Window, scene: *Scene) !Self {

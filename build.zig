@@ -30,12 +30,10 @@ fn configureCoreModule(
     mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
 ) void {
     mod.addImport("build_options", build_options_mod);
     if (options.enable_gl33 or options.enable_gl44) mod.linkSystemLibrary("OpenGL", .{});
     if (options.enable_gles30) mod.linkSystemLibrary("GLESv2", .{});
-    mod.addImport("vulkan_shaders", vk_shaders);
     if (options.enable_vulkan) mod.linkSystemLibrary("vulkan", .{});
     if (options.enable_harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
 }
@@ -44,10 +42,9 @@ fn configureEglOffscreenModule(
     mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
     embed_gl_mod: *std.Build.Module,
 ) void {
-    configureCoreModule(mod, build_options_mod, options, vk_shaders);
+    configureCoreModule(mod, build_options_mod, options);
     mod.linkSystemLibrary("EGL", .{});
     // Every EGL-offscreen tool renders GL through the caller-owned reference
     // renderer (embeddable-only); wire it once here.
@@ -75,6 +72,7 @@ fn createDemoVulkanPlatformModule(
     optimize: std.builtin.OptimizeMode,
     build_options_mod: *std.Build.Module,
     snail_mod: *std.Build.Module,
+    vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
         .root_source_file = b.path("src/demo/platform/vulkan.zig"),
@@ -84,6 +82,7 @@ fn createDemoVulkanPlatformModule(
         .imports = &.{
             .{ .name = "build_options", .module = build_options_mod },
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "vulkan_types", .module = vulkan_types_mod },
         },
     });
     mod.linkSystemLibrary("vulkan", .{});
@@ -98,6 +97,8 @@ fn createEmbedVulkanModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
+    vk_shaders: *std.Build.Module,
+    vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("src/demo/embed_vulkan.zig"),
@@ -106,8 +107,25 @@ fn createEmbedVulkanModule(
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "vulkan_shaders", .module = vk_shaders },
+            .{ .name = "vulkan_types", .module = vulkan_types_mod },
         },
     });
+}
+
+fn createDemoVulkanTypesModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+) *std.Build.Module {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/embed_vulkan_types.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    mod.linkSystemLibrary("vulkan", .{});
+    return mod;
 }
 
 /// Reference caller-owned GL all-in-one renderer + atlas cache + binding helper
@@ -121,7 +139,7 @@ fn createEmbedGlModule(
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
 ) *std.Build.Module {
-    return b.createModule(.{
+    const mod = b.createModule(.{
         .root_source_file = b.path("src/demo/embed_gl.zig"),
         .target = target,
         .optimize = optimize,
@@ -130,6 +148,23 @@ fn createEmbedGlModule(
             .{ .name = "snail", .module = snail_mod },
         },
     });
+    const shader_dir = "src/snail/render/backend/gl/glsl/";
+    inline for (.{
+        .{ "snail_ref_vert_interface", "snail_vert.interface.glsl" },
+        .{ "snail_ref_frag_interface", "snail_frag.interface.glsl" },
+        .{ "snail_ref_text_interface", "snail_text_subpixel.interface.glsl" },
+        .{ "snail_ref_vert_body", "snail_vert_body.glsl" },
+        .{ "snail_ref_text_main", "snail_text_main.glsl" },
+        .{ "snail_ref_colr_body", "snail_colr_frag_body.glsl" },
+        .{ "snail_ref_path_body", "snail_path_frag_body.glsl" },
+        .{ "snail_ref_hinted_body", "snail_hinted_text_frag_body.glsl" },
+        .{ "snail_ref_autohint_warp", "snail_autohint_warp.glsl" },
+        .{ "snail_ref_autohint_main", "snail_autohint_main.glsl" },
+        .{ "snail_ref_subpixel_body", "snail_text_subpixel_body.glsl" },
+    }) |entry| {
+        mod.addAnonymousImport(entry[0], .{ .root_source_file = b.path(shader_dir ++ entry[1]) });
+    }
+    return mod;
 }
 
 fn createSupportModule(
@@ -153,7 +188,6 @@ fn createCoreTestModule(
     assets_mod: *std.Build.Module,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
     strip: ?bool,
 ) *std.Build.Module {
     const mod = b.createModule(.{
@@ -164,7 +198,7 @@ fn createCoreTestModule(
         .strip = strip,
         .imports = &.{.{ .name = "assets", .module = assets_mod }},
     });
-    configureCoreModule(mod, build_options_mod, options, vk_shaders);
+    configureCoreModule(mod, build_options_mod, options);
     return mod;
 }
 
@@ -173,11 +207,11 @@ fn createCoreTestModule(
 ///
 ///   snail_core ── snail_cpu / snail_gl / snail_vulkan ── snail (facade)
 ///
-/// `snail_core` is backend-independent (links only harfbuzz for shaping);
-/// each backend module links only its own system libs (GL / Vulkan); the
-/// facade re-exports everything. A dependent that only wants Vulkan pulls
-/// `snail_core` + `snail_vulkan` and links no GL. `public_name` addModule's
-/// the facade (for external dependents) vs. an internal createModule.
+/// `snail_core` is backend-independent (links only harfbuzz for shaping).
+/// `snail_gl` and `snail_vulkan` are pure shader/resource contracts and link
+/// no graphics APIs; the caller-owned renderer chooses and links those.
+/// `public_name` addModule's the facade (for external dependents) vs. an
+/// internal createModule.
 const SnailGraph = struct {
     core: *std.Build.Module,
     cpu: *std.Build.Module,
@@ -192,7 +226,6 @@ fn buildSnailGraphFull(
     optimize: std.builtin.OptimizeMode,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
     public_name: ?[]const u8,
     // When non-null, wired into every module and strip applied — for test
     // artifacts, whose test blocks pull font assets and want strip control.
@@ -222,14 +255,11 @@ fn buildSnailGraphFull(
 
     const gl = mk(b, "src/snail/render/backend/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
     gl.addImport("snail_core", core);
-    // snail_gl links NO OpenGL: it's a pure-data contract (shader sources +
-    // GlProgram layout + binding order), making no live GL calls. GL linkage is
-    // the caller's, who owns the context — same as snail_vulkan links no Vulkan.
+    // snail_gl links NO OpenGL: it is a pure-data shader/resource contract and
+    // makes no live GL calls. GL linkage belongs to the context-owning caller,
+    // just as snail_vulkan links no Vulkan.
 
     const vk = mk(b, "src/snail/render/backend/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
-    vk.addImport("snail_core", core);
-    vk.addImport("vulkan_shaders", vk_shaders);
-    if (options.enable_vulkan) vk.linkSystemLibrary("vulkan", .{});
 
     const facade = if (public_name) |name| b.addModule(name, .{
         .root_source_file = b.path("src/snail/root.zig"),
@@ -255,10 +285,9 @@ fn buildSnailGraph(
     optimize: std.builtin.OptimizeMode,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
     public_name: ?[]const u8,
 ) *std.Build.Module {
-    return buildSnailGraphFull(b, target, optimize, build_options_mod, options, vk_shaders, public_name, null, null).facade;
+    return buildSnailGraphFull(b, target, optimize, build_options_mod, options, public_name, null, null).facade;
 }
 
 fn createSnailModule(
@@ -267,9 +296,8 @@ fn createSnailModule(
     optimize: std.builtin.OptimizeMode,
     build_options_mod: *std.Build.Module,
     options: ModuleOptions,
-    vk_shaders: *std.Build.Module,
 ) *std.Build.Module {
-    return buildSnailGraph(b, target, optimize, build_options_mod, options, vk_shaders, null);
+    return buildSnailGraph(b, target, optimize, build_options_mod, options, null);
 }
 
 /// For use as a dependency: returns a module with only the core snail library.
@@ -290,7 +318,6 @@ pub fn moduleWithOptions(
         optimize,
         createBuildOptionsModule(b, module_options),
         module_options,
-        vulkan_shaders.createModule(b, module_options.enable_vulkan),
     );
 }
 
@@ -333,9 +360,8 @@ fn addSnailModule(
     b: *std.Build,
     config: BuildConfig,
     options_mod: *std.Build.Module,
-    vk_shaders_mod: *std.Build.Module,
 ) *std.Build.Module {
-    return buildSnailGraph(b, config.target, config.optimize, options_mod, config.core_options, vk_shaders_mod, "snail");
+    return buildSnailGraph(b, config.target, config.optimize, options_mod, config.core_options, "snail");
 }
 
 fn addSnailHelpersModule(
@@ -369,6 +395,7 @@ const ProjectModules = struct {
     support: *std.Build.Module,
     options: *std.Build.Module,
     vk_shaders: *std.Build.Module,
+    demo_vulkan_types: *std.Build.Module,
     snail: *std.Build.Module,
     snail_helpers: *std.Build.Module,
 };
@@ -381,7 +408,7 @@ fn addTestSteps(
     const test_step = b.step("test", "Run unit tests");
     // The snail library is a module graph (core + per-backend + facade);
     // each module's tests run in their own artifact.
-    const test_graph = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, modules.vk_shaders, null, modules.assets, null);
+    const test_graph = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, null, modules.assets, null);
     inline for (.{ test_graph.core, test_graph.cpu, test_graph.gl, test_graph.vulkan, test_graph.facade }) |m| {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
@@ -431,7 +458,7 @@ fn addTestSteps(
     test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
-    const vg = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, modules.vk_shaders, null, modules.assets, true);
+    const vg = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, null, modules.assets, true);
     inline for (.{ vg.core, vg.cpu, vg.gl, vg.vulkan, vg.facade }) |m| {
         const vt = b.addTest(.{ .root_module = m });
         configureValgrindTest(vt);
@@ -444,10 +471,10 @@ fn addScreenshotSteps(
     config: BuildConfig,
     modules: ProjectModules,
 ) void {
-    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
+    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
-    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
     // CPU screenshot.
@@ -481,7 +508,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(autohint_shot_mod, modules.options, config.core_options, embed_gl_mod);
     const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
     const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
     const autohint_shot_step = b.step("run-autohint-screenshot", "Render the composable autohint policy comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
@@ -585,7 +612,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.core_options, embed_gl_mod);
     const banner_screenshot_gl_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gl", .root_module = banner_screenshot_gl_mod });
     const run_banner_screenshot_gl = b.addRunArtifact(banner_screenshot_gl_exe);
     const banner_screenshot_gl_step = b.step("run-banner-screenshot-gl", "Render the full banner scene through GL and write zig-out/banner-screenshot-gl.tga");
@@ -604,7 +631,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.core_options, embed_gl_mod);
     const banner_screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gles30", .root_module = banner_screenshot_gles30_mod });
     const run_banner_screenshot_gles30 = b.addRunArtifact(banner_screenshot_gles30_exe);
     const banner_screenshot_gles30_step = b.step("run-banner-screenshot-gles30", "Render the full banner scene through GLES 3.0 and write zig-out/banner-screenshot-gles30.tga");
@@ -612,7 +639,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — Vulkan offscreen.
     if (config.core_options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
         const banner_screenshot_vk_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/banner_screenshot_vulkan.zig"),
             .target = config.target,
@@ -646,7 +673,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.core_options, embed_gl_mod);
     const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-gl", .root_module = screenshot_gl_mod });
     const run_screenshot_gl = b.addRunArtifact(screenshot_gl_exe);
     const screenshot_gl_step = b.step("run-screenshot-gl", "Render the demo through the GL backend and write zig-out/demo-screenshot-gl.tga");
@@ -654,7 +681,7 @@ fn addScreenshotSteps(
 
     // Offscreen Vulkan game-scene screenshot (depth-tested) → zig-out/game-vulkan.tga.
     if (config.core_options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
         const game_shot_vk_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/game_screenshot_vulkan.zig"),
             .target = config.target,
@@ -691,7 +718,7 @@ fn addScreenshotSteps(
                 .{ .name = "support", .module = release_support_mod },
             },
         });
-        configureEglOffscreenModule(game_shot_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+        configureEglOffscreenModule(game_shot_mod, modules.options, config.core_options, embed_gl_mod);
         const game_shot_exe = b.addExecutable(.{ .name = "snail-game-screenshot", .root_module = game_shot_mod });
         const run_game_shot = b.addRunArtifact(game_shot_exe);
         const game_shot_step = b.step("run-game-screenshot", "Render the game scene offscreen per GL backend → zig-out/game-<backend>.tga");
@@ -713,7 +740,7 @@ fn addScreenshotSteps(
                 .{ .name = "support", .module = release_support_mod },
             },
         });
-        configureEglOffscreenModule(comp_probe_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+        configureEglOffscreenModule(comp_probe_mod, modules.options, config.core_options, embed_gl_mod);
         const comp_probe_exe = b.addExecutable(.{ .name = "snail-composite-probe", .root_module = comp_probe_mod });
         const run_comp_probe = b.addRunArtifact(comp_probe_exe);
         const comp_probe_step = b.step("run-composite-probe", "Sweep a fill_stroke_inside panel through perspective and gate on interior coverage holes");
@@ -752,7 +779,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(backend_compare_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(backend_compare_mod, modules.options, config.core_options, embed_gl_mod);
     const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_mod });
     const run_backend_compare = b.addRunArtifact(backend_compare_exe);
     const backend_compare_step = b.step("run-backend-compare", "Render the content scene through CPU and GL and fail if they diverge beyond the AA tolerance");
@@ -773,7 +800,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(gamma_probe_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(gamma_probe_mod, modules.options, config.core_options, embed_gl_mod);
     const gamma_probe_exe = b.addExecutable(.{ .name = "snail-gamma-probe", .root_module = gamma_probe_mod });
     const run_gamma_probe = b.addRunArtifact(gamma_probe_exe);
     const gamma_probe_step = b.step("run-gamma-probe", "Check interior-pixel gamma (encode round-trip) across CPU/GL33/GLES30");
@@ -792,7 +819,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
-    configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.core_options, embed_gl_mod);
     const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-gles30", .root_module = screenshot_gles30_mod });
     const run_screenshot_gles30 = b.addRunArtifact(screenshot_gles30_exe);
     const screenshot_gles30_step = b.step("run-screenshot-gles30", "Render the demo through the GLES30 backend and write zig-out/demo-screenshot-gles30.tga");
@@ -800,7 +827,7 @@ fn addScreenshotSteps(
 
     // Vulkan screenshot.
     if (config.core_options.enable_vulkan) {
-        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
         const screenshot_vulkan_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/screenshot_vulkan.zig"),
             .target = config.target,
@@ -833,6 +860,7 @@ fn addInteractiveDemoStep(
     // override (e.g. `-Doptimize=Debug` for debugging) still wins.
     const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
     const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail);
+    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types);
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/main.zig"),
         .target = config.target,
@@ -845,6 +873,8 @@ fn addInteractiveDemoStep(
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
             .{ .name = "embed_gl", .module = demo_embed_gl_mod },
+            .{ .name = "embed_vulkan", .module = demo_embed_vulkan_mod },
+            .{ .name = "vulkan_types", .module = modules.demo_vulkan_types },
         },
     });
     // Interactive demo wraps every backend's platform layer: Wayland +
@@ -875,9 +905,13 @@ fn addInteractiveDemoStep(
 /// coverage + records GLSL) to SPIR-V and inject them into `mod` as anonymous
 /// imports for `game/game_shaders.zig`.
 fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
-    const game_glsl = [_][]const u8{"src/demo/game/glsl"};
-    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, &game_glsl);
-    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{}, &game_glsl);
+    const snail_includes = vulkan_shaders.IncludeDirs{
+        .shared = b.path("src/snail/render/backend/gl/glsl"),
+        .vulkan = b.path("src/snail/render/backend/vulkan_glsl"),
+    };
+    const game_glsl = [_]std.Build.LazyPath{b.path("src/demo/game/glsl")};
+    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
+    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{}, snail_includes, &game_glsl);
     mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = vert });
     mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = frag });
 }
@@ -921,7 +955,8 @@ fn addGameDemoStep(
         // vk_scene uses the reference caller renderer; the windowed Vulkan
         // platform is a relative file compiled into game_mod (its own vk cImport
         // via linkSystemLibrary). game/game_shaders.zig gets the material SPIR-V.
-        game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail));
+        game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types));
+        game_mod.addImport("vulkan_types", modules.demo_vulkan_types);
         addGameShaderSpirv(b, game_mod);
         game_mod.linkSystemLibrary("vulkan", .{});
     }
@@ -937,18 +972,24 @@ fn addGameDemoStep(
 
 pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
+    // Consumers use `dependency.namedLazyPath(...)` for glslc `-I` arguments;
+    // the paths stay dependency-relative instead of assuming their build root.
+    b.addNamedLazyPath("snail_glsl_shared", b.path("src/snail/render/backend/gl/glsl"));
+    b.addNamedLazyPath("snail_glsl_vulkan", b.path("src/snail/render/backend/vulkan_glsl"));
     const options_mod = createBuildOptionsModule(b, config.core_options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const support_mod = createSupportModule(b, config.target, config.optimize);
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.core_options.enable_vulkan);
+    const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
 
-    const snail_mod = addSnailModule(b, config, options_mod, vk_shaders_mod);
+    const snail_mod = addSnailModule(b, config, options_mod);
     const snail_helpers_mod = addSnailHelpersModule(b, config, snail_mod);
     const modules = ProjectModules{
         .assets = assets_mod,
         .support = support_mod,
         .options = options_mod,
         .vk_shaders = vk_shaders_mod,
+        .demo_vulkan_types = demo_vulkan_types_mod,
         .snail = snail_mod,
         .snail_helpers = snail_helpers_mod,
     };
@@ -965,7 +1006,7 @@ fn addBenchStep(
     config: BuildConfig,
     modules: ProjectModules,
 ) void {
-    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options, modules.vk_shaders);
+    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
     const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
@@ -989,9 +1030,9 @@ fn addBenchStep(
     }) catch @panic("OOM");
 
     if (config.core_options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
         bench_imports.append(b.allocator, .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod }) catch @panic("OOM");
-        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod);
+        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
         bench_imports.append(b.allocator, .{ .name = "embed_vulkan", .module = embed_vulkan_mod }) catch @panic("OOM");
     }
 
@@ -1002,7 +1043,7 @@ fn addBenchStep(
         .link_libc = true,
         .imports = bench_imports.items,
     });
-    configureEglOffscreenModule(bench_mod, modules.options, config.core_options, modules.vk_shaders, embed_gl_mod);
+    configureEglOffscreenModule(bench_mod, modules.options, config.core_options, embed_gl_mod);
     bench_mod.linkSystemLibrary("freetype2", .{});
 
     const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_mod });

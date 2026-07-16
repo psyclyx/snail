@@ -31,7 +31,7 @@ const paint_records = @import("snail").core.files.atlas_paint_records;
 const upload_common = @import("snail").core.files.format_upload_common;
 const image_mod = @import("snail").core.files.image;
 const cache_base = @import("snail").core.files.backend_cache_base;
-const upload_plan = @import("snail").core.files.atlas_upload_plan;
+const upload_plan = @import("snail").atlas_upload;
 const range_allocator = @import("snail").core.files.backend_range_allocator;
 
 const RangeAllocator = range_allocator.RangeAllocator;
@@ -49,8 +49,8 @@ pub const Variant = enum {
 
 inline fn bindingsFor(comptime v: Variant) type {
     return switch (v) {
-        .gl33, .gl44 => @import("snail").gl.bindings,
-        .gles30 => @import("snail").gl.gles30_bindings,
+        .gl33, .gl44 => @import("embed_gl_bindings.zig"),
+        .gles30 => @import("embed_gles30_bindings.zig"),
     };
 }
 
@@ -70,7 +70,7 @@ const INFO_WIDTH: u32 = paint_records.info_width;
 
 pub const CacheOptions = cache_base.GpuCacheOptions;
 pub const UploadError = cache_base.BaseUploadError || upload_plan.Error || error{ImageTooLarge};
-pub const ResizeError = cache_base.BaseResizeError;
+pub const ResizeError = cache_base.BaseResizeError || upload_plan.InitError;
 
 pub fn GlBackendCacheFor(comptime variant: Variant) type {
     const gl = bindingsFor(variant).gl;
@@ -113,22 +113,19 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         // planner-driven upload paths; never affects texel output.
         upload_generation: u32 = 0,
 
-        fn plannerOptions(pool: *PagePool, options: CacheOptions) upload_plan.Options {
+        fn plannerOptions(options: CacheOptions) upload_plan.Options {
             return .{
-                .max_layers = pool.options.max_layers,
                 .max_bindings = options.max_bindings,
                 .layer_info_height = options.layer_info_height,
                 .max_images = options.max_images,
                 .max_image_width = options.max_image_width,
                 .max_image_height = options.max_image_height,
-                .curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW,
-                .band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW,
             };
         }
 
         pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !Self {
-            const opts = plannerOptions(pool, options);
-            const sz = upload_plan.sizes(opts);
+            const opts = plannerOptions(options);
+            const sz = upload_plan.sizes(pool, opts);
 
             const gen = try allocator.alloc(u16, sz.generation);
             errdefer allocator.free(gen);
@@ -151,7 +148,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
                 .allocator = allocator,
                 .pool = pool,
                 .options = options,
-                .planner = upload_plan.Planner.init(opts, gen, curve_words, band_words, slots, info_free, image_free),
+                .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
                 .plan_gen = gen,
                 .plan_curve = curve_words,
                 .plan_band = band_words,
@@ -218,8 +215,8 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.destroyTextures();
             self.options = options;
 
-            const opts = plannerOptions(self.pool, options);
-            const sz = upload_plan.sizes(opts);
+            const opts = plannerOptions(options);
+            const sz = upload_plan.sizes(self.pool, opts);
             self.plan_gen = try self.allocator.realloc(self.plan_gen, sz.generation);
             self.plan_curve = try self.allocator.realloc(self.plan_curve, sz.curve_words);
             self.plan_band = try self.allocator.realloc(self.plan_band, sz.band_words);
@@ -229,7 +226,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             self.plan_regions = try self.allocator.realloc(self.plan_regions, sz.regions);
             self.plan_info_scratch = try self.allocator.realloc(self.plan_info_scratch, sz.layer_info_scratch * options.max_bindings);
             self.info_scratch_stride = sz.layer_info_scratch;
-            self.planner = upload_plan.Planner.init(opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
+            self.planner = try upload_plan.Planner.init(self.pool, opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
         }
 
         /// Upload one or more atlases into the cache, allocating a slot
@@ -256,14 +253,15 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             try self.ensureImageArrayTexture(atlases);
 
             var planned: usize = 0;
-            errdefer for (out_bindings[0..planned]) |b| {
-                _ = self.planner.release(b);
-            };
+            errdefer {
+                self.planner.invalidateUploads();
+                for (out_bindings[0..planned]) |b| _ = self.planner.release(b);
+            }
 
             for (atlases, 0..) |atlas, i| {
                 var len: usize = 0;
                 const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
-                out_bindings[i] = try self.planner.plan(atlas, self.pool, self.plan_regions, &len, info_scratch);
+                out_bindings[i] = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
                 planned = i + 1;
                 for (self.plan_regions[0..len]) |r| self.applyRegion(r);
                 self.upload_generation = @max(self.upload_generation, out_bindings[i].generation);
@@ -326,7 +324,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
             var len: usize = 0;
             const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
-            const binding = try self.planner.planDelta(prev_binding, atlas, self.pool, self.plan_regions, &len, info_scratch);
+            const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
             for (self.plan_regions[0..len]) |r| self.applyRegion(r);
             self.upload_generation = @max(self.upload_generation, binding.generation);
             return binding;
@@ -491,7 +489,6 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         }
     };
 }
-
 
 pub const Gl33BackendCache = GlBackendCacheFor(.gl33);
 pub const Gl44BackendCache = GlBackendCacheFor(.gl44);

@@ -7,15 +7,6 @@ layout(location = 5) in vec4 a_col;     // base color RGBA
 layout(location = 6) in vec4 a_tint;    // instance tint RGBA
 layout(location = 7) in uvec4 a_policy0; // packed autohint policy words 0..3
 layout(location = 8) in uvec3 a_policy1; // packed autohint policy words 4..6
-#ifdef SNAIL_REPLICATED
-// Override stream: drives gpu hardware instancing of N shapes × M overrides.
-// Sourced from a second vertex buffer with divisor 1 while the shape
-// stream (locations 0-6) uses divisor M. Layout matches `Override` emit:
-// b_xform_a = (xx, xy, tx, yx), b_xform_b = (yy, ty, _, _), b_tint = RGBA.
-layout(location = 9) in vec4 b_xform_a;
-layout(location = 10) in vec4 b_xform_b;
-layout(location = 11) in vec4 b_tint;
-#endif
 
 uniform mat4 u_mvp;
 uniform vec2 u_viewport;

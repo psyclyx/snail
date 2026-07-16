@@ -164,7 +164,9 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     {
         var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
-        try path_curves_owned.append(allocator, try p.toCurves(allocator, allocator));
+        var prepared = try p.prepare(allocator);
+        defer prepared.deinit();
+        try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
@@ -172,16 +174,19 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
             .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 1.0 } },
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = card_place, .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(card_place), .local_color = .{ 1, 1, 1, 1 } });
     }
     // Card stroke.
     {
         var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
-        try path_curves_owned.append(allocator, try p.strokeToCurves(allocator, allocator, .{
+        var prepared = try p.prepare(allocator);
+        defer prepared.deinit();
+        const stroke = snail.StrokeStyle{
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
             .width = snail_helpers.unitStrokeWidth(card_rect, 1.5),
-        }));
+        };
+        try path_curves_owned.append(allocator, try prepared.strokeCurves(allocator, allocator, stroke));
         const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
@@ -189,7 +194,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = card_place, .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(card_place), .local_color = .{ 1, 1, 1, 1 } });
     }
     // Conic-gradient swatch (bottom-left) — exercises the conic paint through
     // the shared scene so the CPU/GL backend-compare covers it.
@@ -197,19 +202,22 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const rect = snail.Rect{ .x = 18, .y = @as(f32, @floatFromInt(height)) - 46, .w = 32, .h = 32 };
         var p = try snail_helpers.unitEllipsePath(allocator);
         defer p.deinit();
-        try path_curves_owned.append(allocator, try p.toCurves(allocator, allocator));
+        var prepared = try p.prepare(allocator);
+        defer prepared.deinit();
+        try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
         const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
+        const paint = snail.Paint{ .conic_gradient = .{
+            .center = .{ .x = 0.5, .y = 0.5 },
+            .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
+            .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
+        } };
         try path_entries.append(allocator, .{
             .key = key,
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
-            .paint = .{ .conic_gradient = .{
-                .center = .{ .x = 0.5, .y = 0.5 },
-                .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
-                .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
-            } },
+            .paint = prepared.paintForDesign(paint),
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = snail_helpers.placeRect(rect), .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(snail_helpers.placeRect(rect)), .local_color = .{ 1, 1, 1, 1 } });
     }
     // Vector snail.
     {

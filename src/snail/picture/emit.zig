@@ -2,15 +2,8 @@
 //! against an `Atlas`, plus a `DrawSegment` describing how the renderer
 //! should bind and dispatch them.
 //!
-//! Two primitives:
-//!   - `emit` walks heterogeneous shape lists (one transform/color per shape).
-//!     Writes one 23-word `Instance` per shape.
-//!   - `emitInstanced` walks a shape list replicated under M overrides.
-//!     Writes N shape blocks (23 words each) + M override blocks
-//!     (8 words each); the backend materializes N*M instances at dispatch.
-//!
-//! Both primitives write into caller-provided buffers and return word/segment
-//! counts. Consecutive calls that share a binding/kind/contiguity coalesce
+//! `emit` walks shape lists and writes one 23-word `Instance` per shape into
+//! caller-provided buffers. Consecutive calls that share a binding/contiguity coalesce
 //! their segments (`draw_records.mergeIfAdjacent`).
 //!
 //! These functions operate on a raw `[]const Shape` directly; whatever
@@ -32,13 +25,10 @@ const InstanceCursor = instance_emit.Cursor;
 pub const Transform2D = math.Transform2D;
 pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
-pub const Kind = draw_records.Kind;
 pub const DrawSegment = draw_records.DrawSegment;
 pub const Shape = shape_mod.Shape;
-pub const Override = shape_mod.Override;
 
 const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
-const WORDS_PER_OVERRIDE = vertex.WORDS_PER_OVERRIDE;
 
 pub const EmitError = error{
     /// Picture references a key not present in the atlas.
@@ -179,12 +169,10 @@ pub fn emit(
 
     var seg_added: u32 = 0;
     const seg = DrawSegment{
-        .kind = .heterogeneous,
         .binding = binding,
         .words_offset = start_offset,
         .words_len = wrote_words,
         .shape_count = emitted,
-        .override_count = 1,
         .kind_mask = kind_mask,
     };
     if (!draw_records.mergeIfAdjacent(segs_buf, seg_len, seg)) {
@@ -201,161 +189,15 @@ pub fn emit(
     };
 }
 
-/// Replicated emit. Writes N shape blocks + M override blocks. The backend
-/// materializes N*M instances at dispatch by combining each shape with each
-/// override.
-///
-/// Shape blocks use the same 23-word `Instance` format as heterogeneous
-/// emit, with `color = shape.local_color`, `tint = identity`, and the
-/// instance transform set to `shape.local_transform` (no world composition).
-/// Override blocks are 8 words each: 6 f32 transform fields then a packed
-/// u8x4 tint and one reserved word.
-pub fn emitInstanced(
-    words_buf: []u32,
-    segs_buf: []DrawSegment,
-    word_len: *usize,
-    seg_len: *usize,
-    binding: Binding,
-    atlas: *const Atlas,
-    shapes: []const Shape,
-    overrides: []const Override,
-) EmitError!EmitResult {
-    const need_words = shapes.len * WORDS_PER_INSTANCE + overrides.len * WORDS_PER_OVERRIDE;
-    if (words_buf.len - word_len.* < need_words) return error.BufferTooSmall;
-    if (seg_len.* >= segs_buf.len) return error.BufferTooSmall;
-
-    const start_offset: u32 = @intCast(word_len.*);
-    var cursor: usize = word_len.*;
-    const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
-    var shape_emitted: u32 = 0;
-    var kind_mask: u8 = 0;
-
-    for (shapes) |shape| {
-        const rec = atlas.lookupRecord(shape.key) orelse return error.MissingRecord;
-        const ah_info_opt = atlas.lookupAutohintRecord(shape.key);
-        const packed_policy = if (ah_info_opt != null) blk: {
-            const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
-            policy.validate() catch return error.InvalidAutohintPolicy;
-            break :blk policy.pack();
-        } else blk: {
-            if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
-            break :blk [_]u32{0} ** 7;
-        };
-
-        // Match the heterogeneous behavior: skip non-rendering records
-        // entirely. This means the replicated shape count may differ
-        // from picture.shapes.len.
-        if (rec.curve_count == 0) continue;
-        const page = atlas.pages[rec.page_index];
-        if (page.layer_index > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
-        const atlas_layer: u8 = @intCast(page.layer_index);
-
-        if (ah_info_opt) |ah_info| {
-            kind_mask |= draw_records.KIND_BIT_AUTOHINT;
-            try cur.appendAutohintTransformedTinted(
-                rec.bbox,
-                ah_info.info_x,
-                try addRowBase(ah_info.info_y, binding.info_row_base),
-                ah_info.layer_count,
-                shape.local_color,
-                .{ 1, 1, 1, 1 },
-                atlas_layer,
-                shape.local_transform,
-                packed_policy,
-            );
-        } else {
-            kind_mask |= draw_records.KIND_BIT_REGULAR;
-            try cur.appendGlyphTransformedTinted(
-                rec.bbox,
-                .{
-                    .glyph_x = rec.bands.glyph_x,
-                    .glyph_y = rec.bands.glyph_y,
-                    .h_band_count = rec.bands.h_band_count,
-                    .v_band_count = rec.bands.v_band_count,
-                    .band_scale_x = rec.bands.band_scale_x,
-                    .band_scale_y = rec.bands.band_scale_y,
-                    .band_offset_x = rec.bands.band_offset_x,
-                    .band_offset_y = rec.bands.band_offset_y,
-                },
-                shape.local_color,
-                .{ 1, 1, 1, 1 },
-                atlas_layer,
-                shape.local_transform,
-            );
-        }
-        shape_emitted += 1;
-    }
-
-    for (overrides) |ov| {
-        writeOverride(words_buf[cursor..][0..WORDS_PER_OVERRIDE], ov);
-        cursor += WORDS_PER_OVERRIDE;
-    }
-
-    const wrote_words: u32 = @intCast(cursor - word_len.*);
-    word_len.* = cursor;
-
-    if (shape_emitted == 0 or overrides.len == 0) {
-        return .{ .shape_count = shape_emitted, .word_count = wrote_words, .segment_count = 0 };
-    }
-
-    segs_buf[seg_len.*] = .{
-        .kind = .replicated,
-        .binding = binding,
-        .words_offset = start_offset,
-        .words_len = wrote_words,
-        .shape_count = shape_emitted,
-        .override_count = @intCast(overrides.len),
-        .kind_mask = kind_mask,
-    };
-    seg_len.* += 1;
-
-    return .{
-        .shape_count = shape_emitted,
-        .word_count = wrote_words,
-        .segment_count = 1,
-    };
-}
-
-/// Conservative upper bound on words written for an emit/emitInstanced call.
-pub fn wordBudget(shape_count: usize, override_count: usize) usize {
-    if (override_count == 0) {
-        // Heterogeneous: one Instance per shape.
-        return shape_count * WORDS_PER_INSTANCE;
-    }
-    // Replicated: shape blocks + override blocks.
-    return shape_count * WORDS_PER_INSTANCE + override_count * WORDS_PER_OVERRIDE;
+/// Conservative upper bound on words written for an `emit` call.
+pub fn wordBudget(shape_count: usize) usize {
+    return shape_count * WORDS_PER_INSTANCE;
 }
 
 /// Conservative upper bound on segments written for one emit call.
-pub fn segmentBudget(shape_count: usize, override_count: usize) usize {
+pub fn segmentBudget(shape_count: usize) usize {
     _ = shape_count;
-    _ = override_count;
     return 1;
-}
-
-fn writeOverride(buf: []u32, ov: Override) void {
-    std.debug.assert(buf.len == WORDS_PER_OVERRIDE);
-    buf[0] = @bitCast(ov.transform.xx);
-    buf[1] = @bitCast(ov.transform.xy);
-    buf[2] = @bitCast(ov.transform.tx);
-    buf[3] = @bitCast(ov.transform.yx);
-    buf[4] = @bitCast(ov.transform.yy);
-    buf[5] = @bitCast(ov.transform.ty);
-    buf[6] = packU8x4(ov.tint);
-    buf[7] = 0;
-}
-
-fn packU8x4(c: [4]f32) u32 {
-    const r: u32 = unorm8(c[0]);
-    const g: u32 = unorm8(c[1]);
-    const b: u32 = unorm8(c[2]);
-    const a: u32 = unorm8(c[3]);
-    return r | (g << 8) | (b << 16) | (a << 24);
-}
-
-fn unorm8(v: f32) u32 {
-    const clamped = std.math.clamp(v, 0.0, 1.0);
-    return @intFromFloat(@round(clamped * 255.0));
 }
 
 // ---------------------------------------------------------------------------
@@ -487,12 +329,6 @@ test "autohint shapes share lookup data and emit distinct seven-word policies" {
     try testing.expectEqual(slab_ptr, atlas.layer_info_data.?.ptr);
     try testing.expectEqual(slab_len, atlas.layer_info_data.?.len);
 
-    var replicated_words: [WORDS_PER_INSTANCE + WORDS_PER_OVERRIDE]u32 = undefined;
-    wlen = 0;
-    slen = 0;
-    _ = try emitInstanced(&replicated_words, &segs, &wlen, &slen, .{ .pool = pool }, &atlas, shapes[0..1], &.{.{}});
-    const replicated = vertex.decodeInstance(replicated_words[0..WORDS_PER_INSTANCE]);
-    try testing.expectEqualSlices(u32, &packed_a, &replicated.policy);
     try testing.expectEqual(draw_records.KIND_BIT_AUTOHINT, segs[0].kind_mask);
 }
 
@@ -541,7 +377,7 @@ test "emit writes one instance per shape" {
         .{ .key = record_key_mod.unhintedGlyph(0, 1), .local_transform = .translate(10, 20) },
         .{ .key = record_key_mod.unhintedGlyph(0, 2), .local_transform = .translate(30, 40) },
     };
-    const need = wordBudget(shapes.len, 0);
+    const need = wordBudget(shapes.len);
     const words = try testing.allocator.alloc(u32, need);
     defer testing.allocator.free(words);
     var segs: [4]DrawSegment = undefined;
@@ -555,7 +391,6 @@ test "emit writes one instance per shape" {
     try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE), result.word_count);
     try testing.expectEqual(@as(u32, 1), result.segment_count);
     try testing.expectEqual(@as(usize, 1), slen);
-    try testing.expectEqual(Kind.heterogeneous, segs[0].kind);
     try testing.expectEqual(@as(u32, 2), segs[0].shape_count);
     try testing.expectEqual(@as(u32, 0), segs[0].words_offset);
 
@@ -702,46 +537,7 @@ test "emit produces separate segments for different bindings" {
     try testing.expect(segs[1].binding.pool == pool_b);
 }
 
-test "emitInstanced writes shape and override blocks" {
-    var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
-        .curve_words_per_page = 1024,
-        .band_words_per_page = 256,
-    });
-    defer pool.deinit();
-    var atlas = try buildTestAtlas(pool, &.{ 1, 2 });
-    defer atlas.deinit();
-
-    const shapes = [_]Shape{
-        .{ .key = record_key_mod.unhintedGlyph(0, 1) },
-        .{ .key = record_key_mod.unhintedGlyph(0, 2) },
-    };
-
-    const overrides = [_]Override{
-        .{ .transform = .translate(100, 0) },
-        .{ .transform = .translate(0, 100) },
-        .{ .transform = .translate(50, 50) },
-    };
-
-    const need = wordBudget(shapes.len, overrides.len);
-    const words = try testing.allocator.alloc(u32, need);
-    defer testing.allocator.free(words);
-    var segs: [1]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-
-    const result = try emitInstanced(words, segs[0..], &wlen, &slen, .{ .pool = pool }, &atlas, &shapes, &overrides);
-    try testing.expectEqual(@as(u32, 2), result.shape_count);
-    try testing.expectEqual(@as(u32, 1), result.segment_count);
-    try testing.expectEqual(Kind.replicated, segs[0].kind);
-    try testing.expectEqual(@as(u32, 2), segs[0].shape_count);
-    try testing.expectEqual(@as(u32, 3), segs[0].override_count);
-    try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE + 3 * WORDS_PER_OVERRIDE), segs[0].words_len);
-}
-
 test "wordBudget bounds match actual emit output" {
     const shape_count: usize = 3;
-    const overrides = [_]Override{ .{}, .{} };
-    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(shape_count, 0));
-    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE + 2 * WORDS_PER_OVERRIDE), wordBudget(shape_count, overrides.len));
+    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(shape_count));
 }

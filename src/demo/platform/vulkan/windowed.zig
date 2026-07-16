@@ -158,7 +158,7 @@ var frame_start_ns: u64 = 0;
 var cmd_ready_ns: u64 = 0; // set just before beginFrame returns
 var timing_reports_enabled: bool = false;
 
-pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext {
+pub fn init(width: u32, height: u32, title: [*:0]const u8) !@import("vulkan_types").VulkanContext {
     win_use_depth = false;
     // Note: this demo platform and the library Vulkan renderer have separate @cImport blocks
     // for Vulkan, creating incompatible opaque pointer types. We use @ptrCast at the
@@ -176,7 +176,7 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8) !snail.VulkanContext 
     return initForCurrentWindow();
 }
 
-pub fn initForWindow(shared_window: *wayland.Window, use_depth: bool) !snail.VulkanContext {
+pub fn initForWindow(shared_window: *wayland.Window, use_depth: bool) !@import("vulkan_types").VulkanContext {
     window = shared_window;
     owns_window = false;
     win_use_depth = use_depth;
@@ -188,7 +188,7 @@ pub fn initForWindow(shared_window: *wayland.Window, use_depth: bool) !snail.Vul
     return initForCurrentWindow();
 }
 
-fn initForCurrentWindow() !snail.VulkanContext {
+fn initForCurrentWindow() !@import("vulkan_types").VulkanContext {
     errdefer destroyVulkanResources();
 
     timing_reports_enabled = std.c.getenv("SNAIL_VK_TIMING") != null;
@@ -931,7 +931,6 @@ fn resetTimestampsForSlot(cmd: vk.VkCommandBuffer, slot: u32) void {
 }
 
 /// Public hooks the renderer driver calls inside the per-pass loop.
-
 pub fn beginPassTimestamp(cmd: vk.VkCommandBuffer, pass_index: u32) void {
     if (!timestamps_supported or pass_index >= MAX_TIMED_PASSES) return;
     const base = timestampSliceBase(current_frame);

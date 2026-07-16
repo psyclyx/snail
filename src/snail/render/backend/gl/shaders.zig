@@ -1,8 +1,7 @@
-// Shared GLSL assembled for the GL backend.
-
-const glsl_330_version = "#version 330 core\n\n";
-const glsl_330_dual_source = "#define SNAIL_DUAL_SOURCE 1\n\n";
-const glsl_330_replicated = "#define SNAIL_REPLICATED 1\n\n";
+//! Reusable GLSL source fragments. These deliberately contain no `#version`,
+//! resource binding numbers, output declarations, or complete shader stages.
+//! Applications concatenate/include the pieces they need inside shader entry
+//! points they own. Complete reference shaders live under `src/demo`.
 
 const gl330_vert_interface = @embedFile("glsl/snail_vert.interface.glsl");
 const gl330_frag_interface = @embedFile("glsl/snail_frag.interface.glsl");
@@ -11,7 +10,6 @@ const gl330_text_coverage_interface = @embedFile("glsl/snail_text_coverage.inter
 const gl330_text_sample_interface = @embedFile("glsl/snail_text_sample.interface.glsl");
 
 const shared_render_abi = @embedFile("glsl/snail_render_abi.glsl");
-const shared_vertex_body = @embedFile("glsl/snail_vert_body.glsl");
 const shared_coverage_common = @embedFile("glsl/snail_coverage_common.glsl");
 const shared_color_common = @embedFile("glsl/snail_color_common.glsl");
 const shared_text_coverage_fragment_body =
@@ -22,8 +20,6 @@ const shared_text_coverage_fragment_body =
     shared_color_common ++
     "\n" ++
     @embedFile("glsl/snail_text_frag_body.glsl");
-const shared_text_fragment_main = @embedFile("glsl/snail_text_main.glsl");
-const shared_text_fragment_body = shared_text_coverage_fragment_body ++ "\n" ++ shared_text_fragment_main;
 const shared_colr_fragment_body =
     shared_render_abi ++
     "\n" ++
@@ -68,69 +64,19 @@ pub const text_vertex_interface = gl330_vert_interface;
 pub const text_fragment_interface = gl330_text_subpixel_interface;
 pub const text_coverage_fragment_interface = gl330_text_coverage_interface;
 pub const text_sample_interface = gl330_text_sample_interface;
-pub const text_vertex_body = shared_vertex_body;
-pub const text_fragment_body = shared_text_fragment_body;
 pub const text_coverage_fragment_body = shared_text_coverage_fragment_body;
 pub const text_sample_body = shared_text_sample_body;
+pub const render_abi = shared_render_abi;
+pub const coverage_functions = shared_coverage_common;
+pub const color_functions = shared_color_common;
+pub const gles30_text_sample_interface = @embedFile("glsl/snail_text_sample.interface.gles30.glsl");
 
-pub const vertex_shader =
-    glsl_330_version ++
-    gl330_vert_interface ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    shared_vertex_body;
-
-pub const vertex_shader_replicated =
-    glsl_330_version ++
-    glsl_330_replicated ++
-    gl330_vert_interface ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    shared_vertex_body;
-
-pub const fragment_shader_text =
-    glsl_330_version ++
-    gl330_text_subpixel_interface ++
-    "\n" ++
-    shared_text_fragment_body;
-
-pub const fragment_shader_colr =
-    glsl_330_version ++
-    gl330_frag_interface ++
-    "\n" ++
-    shared_colr_fragment_body;
-
-pub const fragment_shader_path =
-    glsl_330_version ++
-    gl330_frag_interface ++
-    "\n" ++
-    shared_path_fragment_body;
-
-pub const fragment_shader_hinted_text =
-    glsl_330_version ++
-    gl330_frag_interface ++
-    "\n" ++
-    shared_hinted_text_fragment_body;
-
-pub const fragment_shader_autohint =
-    glsl_330_version ++
-    gl330_frag_interface ++
-    "\n" ++
-    shared_autohint_fragment_body;
-
-pub const fragment_shader_text_subpixel_dual =
-    glsl_330_version ++
-    glsl_330_dual_source ++
-    gl330_text_subpixel_interface ++
-    "\n" ++
-    shared_text_subpixel_body;
-
-test "GL 330 autohint source carries policy and bounded transient fitter" {
+test "shader library contains reusable coverage and sampling functions" {
     const std = @import("std");
-    try std.testing.expect(std.mem.indexOf(u8, vertex_shader, "a_policy0") != null);
-    try std.testing.expect(std.mem.indexOf(u8, vertex_shader_replicated, "a_policy1") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fragment_shader_autohint, "snailDecodeAutohintPolicy") != null);
-    try std.testing.expect(std.mem.indexOf(u8, fragment_shader_autohint, "snailFitAutohintAxis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_coverage_fragment_body, "evalGlyphCoverage") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_sample_body, "snail_text_sample_premul_linear") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text_coverage_fragment_body, "void main") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_sample_body, "void main") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_vertex_interface, "void main") == null);
+    try std.testing.expect(std.mem.indexOf(u8, text_fragment_interface, "void main") == null);
 }

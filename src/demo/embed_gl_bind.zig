@@ -1,8 +1,9 @@
 //! Caller-side GL texture/uniform binding for snail's coverage contract.
 //!
 //! In the embeddable-only model the library ships the contract as *data*
-//! (`snail.gl.embeddable`: `GlProgram` uniform locations + texture-unit
-//! assignments, `TextureHandles`, `DrawState`, shader sources) and makes no live
+//! The program locations, texture handles, and draw binding policy are all
+//! caller-owned values defined here; Snail only supplies shader algorithms and
+//! packed data contracts.
 //! GL calls — so `snail_gl` links no OpenGL, exactly like `snail_vulkan` links
 //! no Vulkan. The actual `glBindTexture`/`glUniform*` loop lives here, in caller
 //! code, because the caller owns the GL context. This is the GL analog of the
@@ -14,15 +15,43 @@
 const snail = @import("snail");
 
 const embeddable = snail.gl.embeddable;
-const gl_bindings = snail.gl.bindings;
-const gles30_bindings = snail.gl.gles30_bindings;
+const gl_bindings = @import("embed_gl_bindings.zig");
+const gles30_bindings = @import("embed_gles30_bindings.zig");
 
 const Variant = embeddable.Variant;
-const GlProgram = embeddable.GlProgram;
-const Gles30Program = embeddable.Gles30Program;
-const DrawState = embeddable.DrawState;
-const TextureHandles = embeddable.TextureHandles;
 const FillRule = snail.core.FillRule;
+
+pub const DrawState = struct {
+    subpixel_order: snail.SubpixelOrder = .none,
+    output_srgb: bool = false,
+    coverage_transfer: snail.CoverageTransfer = .identity,
+    layer_base: u32 = 0,
+};
+
+pub const GlProgram = struct {
+    curve_tex_loc: i32 = -1,
+    band_tex_loc: i32 = -1,
+    layer_tex_loc: i32 = -1,
+    image_tex_loc: i32 = -1,
+    fill_rule_loc: i32 = -1,
+    subpixel_order_loc: i32 = -1,
+    output_srgb_loc: i32 = -1,
+    coverage_exponent_loc: i32 = -1,
+    layer_base_loc: i32 = -1,
+    curve_tex_unit: i32 = 0,
+    band_tex_unit: i32 = 1,
+    layer_tex_unit: i32 = 2,
+    image_tex_unit: i32 = 3,
+};
+
+pub const Gles30Program = GlProgram;
+
+pub const TextureHandles = struct {
+    curve_array: u32 = 0,
+    band_array: u32 = 0,
+    layer_info_tex: u32 = 0,
+    image_array_tex: u32 = 0,
+};
 
 fn GlBackendFor(comptime variant: Variant) type {
     return struct {

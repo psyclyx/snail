@@ -5,8 +5,8 @@
 //! SPIR-V at *build* time with `glslc`, so the injectable unit is a set of
 //! shipped `.glsl` files a caller `#include`s, plus the resource *contract* they
 //! must satisfy. This module documents that contract and names the include
-//! files; the build helper `build/vulkan_shaders.zig:compileCallerShader`
-//! compiles a caller shader against them.
+//! files. The caller's build compiles its shader against the corresponding
+//! include directories.
 //!
 //! ## Recipe: sample glyph coverage in your own material fragment shader
 //!
@@ -14,10 +14,10 @@
 //! material shader, author a `.frag` that:
 //!
 //!   1. `#version 450` + `#extension GL_GOOGLE_include_directive : require`.
-//!   2. Declares snail's **atlas plane** in set 0 (see `contract`):
+//!   2. Declares the caller-owned **atlas plane** in set 0:
 //!        layout(set=0, binding=0) uniform sampler2DArray  u_curve_tex;
 //!        layout(set=0, binding=1) uniform usampler2DArray u_band_tex;
-//!      and binds `snail.VulkanBackendCache.descriptorSet()` at set 0.
+//!      and binds the descriptor set it populated from `AtlasUploadPlanner`.
 //!   3. Provides the coverage macros the math expects, e.g.
 //!        #define SNAIL_FILL_RULE 1            // font convention: non-zero
 //!        #define SNAIL_COVERAGE_EXPONENT 1.0
@@ -40,27 +40,19 @@
 //! The caller uploads the emit words (`snail.emit.emit` output) into the set-1
 //! SSBO and pushes `u_snail_text_glyph_count = words.len / WORDS_PER_INSTANCE`.
 
-const contract = @import("contract.zig");
-
-/// Atlas plane (snail-owned) descriptor set index. Reuse
-/// `VulkanBackendCache.descriptorSet()` / `.descriptorSetLayout()` here.
+/// Conventional descriptor set for the caller-owned atlas textures.
 pub const ATLAS_SET: u32 = 0;
-pub const CURVE_BINDING: u32 = contract.CURVE_BINDING;
-pub const BAND_BINDING: u32 = contract.BAND_BINDING;
-pub const LAYER_INFO_BINDING: u32 = contract.LAYER_INFO_BINDING;
-pub const IMAGE_BINDING: u32 = contract.IMAGE_BINDING;
+pub const CURVE_BINDING: u32 = 0;
+pub const BAND_BINDING: u32 = 1;
+pub const LAYER_INFO_BINDING: u32 = 2;
+pub const IMAGE_BINDING: u32 = 3;
 
 /// Records plane (caller-owned) — the per-glyph emit words, as a read-only
-/// SSBO. Kept in a *separate* set so snail's set 0 stays reusable verbatim.
+/// SSBO. Kept in a separate set so the atlas set stays reusable verbatim.
 pub const RECORDS_SET: u32 = 1;
 pub const RECORDS_BINDING: u32 = 0;
 
-/// Include-file names a caller `#include`s (resolve via the include dirs the
-/// build helper puts on glslc's `-I` path).
+/// Include-file names a caller `#include`s from Snail's source tree.
 pub const records_interface_include = "snail_text_sample.interface.vulkan.glsl";
 pub const sample_body_include = "snail_text_sample_body.glsl";
 pub const coverage_body_include = "snail_text_frag_body.glsl";
-
-test {
-    _ = contract;
-}

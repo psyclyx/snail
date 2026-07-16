@@ -1,4 +1,4 @@
-void main() {
+void snailTextFragment() {
     int layer_byte = (v_glyph.w >> 8) & 0xFF;
     if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) discard;
     int atlas_layer = u_layer_base + layer_byte;

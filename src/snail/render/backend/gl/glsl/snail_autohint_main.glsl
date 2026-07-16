@@ -24,7 +24,7 @@ bool snailAhCount(float encoded, out int count) {
     return true;
 }
 
-void main() {
+void snailAutohintFragment() {
     int layer_byte = (v_glyph.w >> 8) & 0xFF;
     if (layer_byte != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
     if ((v_glyph.w & 0xFF) != SNAIL_SPECIAL_KIND_AUTOHINT) discard;

@@ -1,8 +1,8 @@
-//! Internal packing for `Path.toCurves` / `Path.strokeToCurves`. Not
-//! re-exported — callers reach this through the methods on `Path`, which
-//! is the public entry point. Kept in its own file so the curve/band
-//! texture format imports don't bleed into `path.zig`'s geometric
-//! surface.
+//! Internal packing for `PreparedPath.fillCurves` / `strokeCurves`. It is not
+//! re-exported: callers must first use `Path.prepare`, which normalizes authored
+//! coordinates into the precision-safe design space consumed here. Keeping the
+//! packer separate also prevents curve/band texture-format imports from
+//! bleeding into `path.zig`'s geometric surface.
 
 const std = @import("std");
 const bezier = @import("math/bezier.zig");

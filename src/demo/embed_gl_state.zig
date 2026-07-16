@@ -1,5 +1,5 @@
 const std = @import("std");
-const gl = @import("snail").gl.bindings.gl;
+const gl = @import("embed_gl_bindings.zig").gl;
 const gl_backend = @import("embed_gl_detect.zig");
 const gl_programs = @import("embed_gl_programs.zig");
 const gl_upload = @import("embed_gl_cache.zig");
@@ -8,7 +8,7 @@ const RingBuffer = ring_buffer_mod.RingBuffer;
 const gl_common = @import("embed_gl_common.zig");
 const linear_resolve = @import("embed_gl_linear_resolve.zig");
 const draw_records_mod = @import("snail").core.files.picture_draw_records;
-const shaders = @import("snail").gl.shaders;
+const shaders = @import("embed_gl_shaders.zig").Gl330;
 const subpixel_policy = @import("snail").core.files.backend_subpixel_policy;
 const vertex = @import("snail").core.files.format_vertex;
 const snail_mod = @import("snail").core;
@@ -54,30 +54,10 @@ fn TextStateFor(comptime backend: Backend) type {
         path_program: ProgramState = .{},
         hinted_text_program: ProgramState = .{},
         autohint_program: ProgramState = .{},
-        // Replicated variants: same fragment, vertex shader composes
-        // shape × override via per-attribute divisor. Used by the new-API
-        // replicated DrawSegment to issue N*M hardware-instanced draws.
-        text_program_replicated: ProgramState = .{},
-        text_subpixel_dual_program_replicated: ProgramState = .{},
-        colr_program_replicated: ProgramState = .{},
-        path_program_replicated: ProgramState = .{},
-        hinted_text_program_replicated: ProgramState = .{},
-        autohint_program_replicated: ProgramState = .{},
         linear_resolve: LinearResolveState = .{},
         vao: gl.GLuint = 0,
         vbo: gl.GLuint = 0,
         ebo: gl.GLuint = 0,
-        /// Replicated-draw VAO: attributes 0-6 sourced from a shape
-        /// stream (binding 0) with hardware divisor M, attributes 7-9
-        /// from an override stream (binding 1) with divisor 1. Backing
-        /// VBO is `vbo_replicated`; both bindings read from it at
-        /// different offsets within the same buffer.
-        vao_replicated: gl.GLuint = 0,
-        vbo_replicated: gl.GLuint = 0,
-        /// Active shape-stream divisor on `vao_replicated`. Tracked so we
-        /// only issue `glVertexAttribDivisor` when M changes between
-        /// successive replicated draws.
-        replicated_shape_divisor: u32 = 0,
         active_program: gl.GLuint = 0,
         frame_begun: bool = false,
         supports_dual_source_blend: bool = false,
@@ -95,10 +75,9 @@ fn TextStateFor(comptime backend: Backend) type {
         // and (defensively) when the bound cache changes.
         active_cache: ?*const GlBackendCache = null,
         program_cache_count: usize = 0,
-        program_uniform_caches: [10]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 10,
+        program_uniform_caches: [6]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 6,
         // Per-draw GL state shadows.
         cached_blend_mode: BlendMode = .uninitialized,
-        cached_replicated_vao_bound: bool = false,
         cached_heterogeneous_vao_bound: bool = false,
 
         const ProgramUniformCache = struct {
@@ -133,14 +112,6 @@ fn TextStateFor(comptime backend: Backend) type {
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
             }
-            self.text_program_replicated = try loadProgramState("text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_text, false);
-            self.colr_program_replicated = try loadProgramState("text-colr-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_colr, false);
-            self.path_program_replicated = try loadProgramState("path-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_path, false);
-            self.hinted_text_program_replicated = try loadProgramState("hinted-text-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_hinted_text, false);
-            self.autohint_program_replicated = try loadProgramState("autohint-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_autohint, false);
-            if (self.supports_dual_source_blend) {
-                self.text_subpixel_dual_program_replicated = try loadProgramState("text-subpixel-dual-replicated", shaders.vertex_shader_replicated, shaders.fragment_shader_text_subpixel_dual, true);
-            }
             try self.linear_resolve.init();
 
             if (comptime backend == .gl33) {
@@ -171,16 +142,6 @@ fn TextStateFor(comptime backend: Backend) type {
             initEbo();
             setupVertexAttribs();
             setupInstanceDivisors();
-
-            // Replicated VAO: attribute formats are stable, buffer
-            // offsets + shape divisor get updated per draw.
-            gl.glGenVertexArrays(1, &self.vao_replicated);
-            gl.glGenBuffers(1, &self.vbo_replicated);
-            gl.glBindVertexArray(self.vao_replicated);
-            gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
-            // Attributes are configured lazily in drawReplicated
-            // when the actual buffer + offsets are known.
-            gl.glBindVertexArray(self.vao);
         }
 
         fn initGl44(self: *GlTextState) !void {
@@ -209,15 +170,6 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glBindVertexArray(self.vao);
             gl.glBindBuffer(gl.GL_ELEMENT_ARRAY_BUFFER, self.ebo);
             initEbo();
-
-            // Replicated VAO + VBO: bindings 0 (shape, divisor M) and 1
-            // (override, divisor 1) configured statically; vertex buffer
-            // bindings + shape divisor updated per draw.
-            gl.glCreateVertexArrays(1, &self.vao_replicated);
-            gl.glCreateBuffers(1, &self.vbo_replicated);
-            gl.glVertexArrayElementBuffer(self.vao_replicated, self.ebo);
-            setupReplicatedVertexArrayAttribs(self.vao_replicated);
-            gl.glVertexArrayBindingDivisor(self.vao_replicated, 1, 1);
         }
 
         pub fn deinit(self: *GlTextState) void {
@@ -231,14 +183,6 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.path_program);
             deleteProgramState(&self.hinted_text_program);
             deleteProgramState(&self.autohint_program);
-            deleteProgramState(&self.text_program_replicated);
-            deleteProgramState(&self.text_subpixel_dual_program_replicated);
-            deleteProgramState(&self.colr_program_replicated);
-            deleteProgramState(&self.path_program_replicated);
-            deleteProgramState(&self.hinted_text_program_replicated);
-            deleteProgramState(&self.autohint_program_replicated);
-            if (self.vao_replicated != 0) gl.glDeleteVertexArrays(1, &self.vao_replicated);
-            if (self.vbo_replicated != 0) gl.glDeleteBuffers(1, &self.vbo_replicated);
             self.linear_resolve.deinit();
             if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
             if (self.vbo != 0) gl.glDeleteBuffers(1, &self.vbo);
@@ -286,8 +230,7 @@ fn TextStateFor(comptime backend: Backend) type {
 
         /// Walk `DrawRecords.segments`, bind each segment's matching
         /// `GlBackendCache` cache, dispatch the encoded instances through
-        /// the existing program set. Replicated segments materialize
-        /// composed instances in a caller-supplied scratch allocator.
+        /// the existing program set.
         pub fn draw(
             self: *GlTextState,
             scratch: std.mem.Allocator,
@@ -311,10 +254,9 @@ fn TextStateFor(comptime backend: Backend) type {
                 const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
                 if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-                switch (seg.kind) {
-                    .heterogeneous => try self.drawHeterogeneous(cache, draw_state, seg_words, seg.kind_mask),
-                    .replicated => try self.drawReplicated(scratch, cache, draw_state, seg, seg_words),
-                }
+                if (seg_words.len != @as(usize, seg.shape_count) * vertex.WORDS_PER_INSTANCE) return error.MalformedSegment;
+                _ = scratch;
+                try self.drawHeterogeneous(cache, draw_state, seg_words, seg.kind_mask);
             }
         }
 
@@ -344,14 +286,6 @@ fn TextStateFor(comptime backend: Backend) type {
             gl.glBindVertexArray(self.vao);
             if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
             self.cached_heterogeneous_vao_bound = true;
-            self.cached_replicated_vao_bound = false;
-        }
-
-        fn ensureReplicatedVaoBound(self: *GlTextState) void {
-            if (self.cached_replicated_vao_bound) return;
-            gl.glBindVertexArray(self.vao_replicated);
-            self.cached_replicated_vao_bound = true;
-            self.cached_heterogeneous_vao_bound = false;
         }
 
         fn drawHeterogeneous(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32, seg_kind_mask: u8) DrawError!void {
@@ -432,113 +366,6 @@ fn TextStateFor(comptime backend: Backend) type {
                 self.drawGlyphRange(vertices, run_start, run_end - run_start);
                 run_start = run_end;
             }
-        }
-
-        /// Real hardware GPU instancing for the replicated path. The
-        /// shape stream uses divisor M so that within one
-        /// `glDrawElementsInstanced(..., M)` call all M GPU instances
-        /// see the same shape; the override stream uses divisor 1 so
-        /// each instance picks up a different override. To handle N>1
-        /// shapes without OOB reads on the override stream (it has only
-        /// M entries), the draw is issued once per shape with the shape
-        /// binding's buffer offset shifted by s × `BYTES_PER_INSTANCE`. The
-        /// replicated vertex shader composes shape × override
-        /// per-instance and emits the final pixel.
-        ///
-        /// `scratch` is unused on this path — the whole point of GPU
-        /// instancing is avoiding the N*M CPU-side composition.
-        fn drawReplicated(
-            self: *GlTextState,
-            _: std.mem.Allocator,
-            cache: *const GlBackendCache,
-            draw_state: DrawState,
-            seg: draw_records_mod.DrawSegment,
-            seg_words: []const u32,
-        ) DrawError!void {
-            const n = seg.shape_count;
-            const m = seg.override_count;
-            if (n == 0 or m == 0) return;
-            const WORDS_PER_OVERRIDE: usize = vertex.WORDS_PER_OVERRIDE;
-            const expected = @as(usize, n) * vertex.WORDS_PER_INSTANCE + @as(usize, m) * WORDS_PER_OVERRIDE;
-            if (seg_words.len != expected) return error.MalformedSegment;
-
-            const shape_bytes: usize = @as(usize, n) * vertex.BYTES_PER_INSTANCE;
-            const override_bytes: usize = @as(usize, m) * 32;
-            const total_bytes: usize = shape_bytes + override_bytes;
-            const src_ptr: [*]const u8 = @ptrCast(seg_words.ptr);
-
-            // Upload shape + override data into the replicated VBO (laid
-            // out contiguously by emit).
-            self.ensureReplicatedVaoBound();
-            if (comptime backend == .gl44) {
-                gl.glNamedBufferData(self.vbo_replicated, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
-                gl.glVertexArrayVertexBuffer(self.vao_replicated, 1, self.vbo_replicated, @intCast(shape_bytes), 32);
-                if (self.replicated_shape_divisor != m) {
-                    gl.glVertexArrayBindingDivisor(self.vao_replicated, 0, m);
-                    self.replicated_shape_divisor = m;
-                }
-            } else {
-                gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo_replicated);
-                gl.glBufferData(gl.GL_ARRAY_BUFFER, @intCast(total_bytes), src_ptr, gl.GL_STREAM_DRAW);
-                if (self.replicated_shape_divisor != m) {
-                    inline for (0..9) |i| gl.glVertexAttribDivisor(@intCast(i), m);
-                    inline for (9..12) |i| gl.glVertexAttribDivisor(@intCast(i), 1);
-                    self.replicated_shape_divisor = m;
-                }
-            }
-
-            const allow_subpixel = true;
-            const shape_words_view = seg_words[0 .. @as(usize, n) * vertex.WORDS_PER_INSTANCE];
-
-            // Walk shape kind-runs. For each shape in a run, shift the
-            // shape vertex binding to that shape's offset and issue an
-            // instanced draw of M instances (one per override).
-            var run_start: usize = 0;
-            while (run_start < n) {
-                const run_kind = subpixel_policy.glyphRunKind(shape_words_view, run_start);
-                const run_end_in_shapes = subpixel_policy.glyphRunEnd(shape_words_view, run_start, run_kind);
-                const run_shape_count = run_end_in_shapes - run_start;
-                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
-                    .grayscale
-                else
-                    subpixel_policy.chooseTextRenderModeRange(
-                        shape_words_view,
-                        run_start,
-                        run_shape_count,
-                        draw_state.mvp,
-                        allow_subpixel,
-                        draw_state.raster.subpixel_order,
-                        self.supports_dual_source_blend,
-                    );
-                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
-                const prog_state = switch (run_kind) {
-                    .regular => switch (run_mode) {
-                        .grayscale => &self.text_program_replicated,
-                        .subpixel_dual_source => &self.text_subpixel_dual_program_replicated,
-                    },
-                    .colr => &self.colr_program_replicated,
-                    .path => &self.path_program_replicated,
-                    .hinted_text => &self.hinted_text_program_replicated,
-                    .autohint => &self.autohint_program_replicated,
-                };
-                self.bindProgramState(cache, prog_state, draw_state, run_mode);
-                var s: usize = run_start;
-                while (s < run_end_in_shapes) : (s += 1) {
-                    const shape_base: usize = s * vertex.BYTES_PER_INSTANCE;
-                    if (comptime backend == .gl44) {
-                        gl.glVertexArrayVertexBuffer(self.vao_replicated, 0, self.vbo_replicated, @intCast(shape_base), vertex.BYTES_PER_INSTANCE);
-                    } else {
-                        setupReplicatedVertexAttribs33(shape_base, shape_bytes);
-                    }
-                    gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(m));
-                }
-                run_start = run_end_in_shapes;
-            }
-
-            // Restore the main heterogeneous VAO for any subsequent
-            // segments in the same draw invocation.
-            gl.glBindVertexArray(self.vao);
-            if (comptime backend == .gl33) gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
         }
 
         /// Bind one GlBackendCache' texture set + uniforms. Texture-unit
@@ -630,9 +457,9 @@ fn TextStateFor(comptime backend: Backend) type {
         }
 
         /// Return the shadow-cache slot for `program`, allocating one
-        /// on first sighting. The slot array is small (10 entries —
-        /// regular + replicated × {text, text-subpixel, colr, path,
-        /// hinted_text}); a linear scan is faster than a hashmap at
+        /// on first sighting. The slot array is small (six entries —
+        /// text, text-subpixel, colr, path, hinted text, and autohint);
+        /// a linear scan is faster than a hashmap at
         /// this size and keeps `bindProgramState` allocation-free.
         fn programUniformCache(self: *GlTextState, program: gl.GLuint) *ProgramUniformCache {
             for (self.program_uniform_caches[0..self.program_cache_count]) |*slot| {
@@ -659,7 +486,6 @@ fn TextStateFor(comptime backend: Backend) type {
             self.active_program = 0;
             self.active_cache = null;
             self.cached_blend_mode = .uninitialized;
-            self.cached_replicated_vao_bound = false;
             self.cached_heterogeneous_vao_bound = false;
         }
 
@@ -679,7 +505,6 @@ fn TextStateFor(comptime backend: Backend) type {
             // identity might.
             self.frame_begun = false;
             self.cached_heterogeneous_vao_bound = false;
-            self.cached_replicated_vao_bound = false;
 
             // Re-assert the global blend/sRGB state snail's draw depends on.
             // Like the program/VAO bind above, this is foreign-mutable: the
@@ -837,66 +662,6 @@ fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl
     gl.glEnableVertexArrayAttrib(vao, loc);
     gl.glVertexArrayAttribFormat(vao, loc, components, ty, normalized, @intCast(offset));
     gl.glVertexArrayAttribBinding(vao, loc, 0);
-}
-
-/// DSA setup for the replicated VAO: same shape attributes as the
-/// heterogeneous VAO bound to binding 0 (configurable divisor M), plus
-/// policy attributes 7-8 on binding 0 and override attributes 9-11 on binding 1.
-fn setupReplicatedVertexArrayAttribs(vao: gl.GLuint) void {
-    // Shape attributes, binding 0.
-    setupVertexArrayAttrib(vao, 0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "rect"));
-    setupVertexArrayAttrib(vao, 1, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "xform"));
-    setupVertexArrayAttrib(vao, 2, 2, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "origin"));
-    gl.glEnableVertexArrayAttrib(vao, 3);
-    gl.glVertexArrayAttribIFormat(vao, 3, 2, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "glyph")));
-    gl.glVertexArrayAttribBinding(vao, 3, 0);
-    setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
-    setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
-    setupVertexArrayAttrib(vao, 6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "tint"));
-    gl.glEnableVertexArrayAttrib(vao, 7);
-    gl.glVertexArrayAttribIFormat(vao, 7, 4, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy")));
-    gl.glVertexArrayAttribBinding(vao, 7, 0);
-    gl.glEnableVertexArrayAttrib(vao, 8);
-    gl.glVertexArrayAttribIFormat(vao, 8, 3, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy") + 16));
-    gl.glVertexArrayAttribBinding(vao, 8, 0);
-    // Override attributes, binding 1. Layout matches `emit.writeOverride`:
-    // bytes 0-15  = vec4 (xx, xy, tx, yx)
-    // bytes 16-23 = vec2 (yy, ty); the shader reads only the first two
-    //               components of b_xform_b, so byte 24-31 (packed tint
-    //               + pad) safely cohabit the same vec4 slot.
-    // bytes 24-27 = packed u8x4 tint (read as b_tint with normalized u8)
-    gl.glEnableVertexArrayAttrib(vao, 9);
-    gl.glVertexArrayAttribFormat(vao, 9, 4, gl.GL_FLOAT, gl.GL_FALSE, 0);
-    gl.glVertexArrayAttribBinding(vao, 9, 1);
-    gl.glEnableVertexArrayAttrib(vao, 10);
-    gl.glVertexArrayAttribFormat(vao, 10, 4, gl.GL_FLOAT, gl.GL_FALSE, 16);
-    gl.glVertexArrayAttribBinding(vao, 10, 1);
-    gl.glEnableVertexArrayAttrib(vao, 11);
-    gl.glVertexArrayAttribFormat(vao, 11, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, 24);
-    gl.glVertexArrayAttribBinding(vao, 11, 1);
-}
-
-/// Classic (non-DSA) setup for the GL 3.3 replicated VAO. Both shape
-/// and override attributes read from the same bound VBO; absolute byte
-/// offsets are derived from `shape_base` and `override_base`.
-fn setupReplicatedVertexAttribs33(shape_base: usize, override_base: usize) void {
-    const shape_stride: gl.GLsizei = vertex.BYTES_PER_INSTANCE;
-    setupVertexAttrib(0, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, shape_stride, shape_base + @offsetOf(vertex.Instance, "rect"));
-    setupVertexAttrib(1, 4, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, shape_base + @offsetOf(vertex.Instance, "xform"));
-    setupVertexAttrib(2, 2, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, shape_base + @offsetOf(vertex.Instance, "origin"));
-    gl.glVertexAttribIPointer(3, 2, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "glyph")));
-    gl.glEnableVertexAttribArray(3);
-    setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, shape_stride, shape_base + @offsetOf(vertex.Instance, "band"));
-    setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, shape_base + @offsetOf(vertex.Instance, "color"));
-    setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, shape_stride, shape_base + @offsetOf(vertex.Instance, "tint"));
-    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy")));
-    gl.glEnableVertexAttribArray(7);
-    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, shape_stride, @ptrFromInt(shape_base + @offsetOf(vertex.Instance, "policy") + 16));
-    gl.glEnableVertexAttribArray(8);
-    const override_stride: gl.GLsizei = 32;
-    setupVertexAttrib(9, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 0);
-    setupVertexAttrib(10, 4, gl.GL_FLOAT, gl.GL_FALSE, override_stride, override_base + 16);
-    setupVertexAttrib(11, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, override_stride, override_base + 24);
 }
 
 fn initEbo() void {

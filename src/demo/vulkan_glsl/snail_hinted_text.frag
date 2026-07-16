@@ -9,6 +9,7 @@ layout(location = 4) in vec4 v_tint;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_curve_tex;
 layout(set = 0, binding = 1) uniform usampler2DArray u_band_tex;
+layout(set = 0, binding = 2) uniform sampler2D u_layer_tex;
 
 layout(push_constant) uniform PushConstants {
     mat4 mvp;
@@ -31,5 +32,6 @@ layout(location = 0) out vec4 frag_color;
 #include "snail_render_abi.glsl"
 #include "snail_coverage_common.glsl"
 #include "snail_color_common.glsl"
-#include "snail_text_frag_body.glsl"
-#include "snail_text_main.glsl"
+#include "snail_hinted_text_frag_body.glsl"
+
+void main() { snailHintedTextFragment(); }

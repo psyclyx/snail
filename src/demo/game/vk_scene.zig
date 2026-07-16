@@ -41,7 +41,7 @@ fn check(r: vk.VkResult) !void {
 
 pub const VkSceneRenderer = struct {
     allocator: std.mem.Allocator,
-    ctx: snail.VulkanContext,
+    ctx: embed_vulkan.VulkanContext,
     layout: embed_vulkan.VulkanResourceLayout,
     transfer_pool: vk.VkCommandPool,
     cache: embed_vulkan.VulkanBackendCache,
@@ -67,7 +67,7 @@ pub const VkSceneRenderer = struct {
     scratch: []u32,
     segs: [4]snail.DrawSegment = undefined,
 
-    pub fn init(allocator: std.mem.Allocator, ctx: snail.VulkanContext, scene: *Scene, num_slots: u32) !VkSceneRenderer {
+    pub fn init(allocator: std.mem.Allocator, ctx: embed_vulkan.VulkanContext, scene: *Scene, num_slots: u32) !VkSceneRenderer {
         var layout: embed_vulkan.VulkanResourceLayout = undefined;
         try layout.init(ctx);
         errdefer layout.deinit();
@@ -145,7 +145,7 @@ pub const VkSceneRenderer = struct {
     fn maxWordBudget(scene: *Scene) usize {
         var m: usize = 0;
         for ([_]*const PreparedPass{ &scene.material, &scene.label, &scene.panel, &scene.hud }) |p| {
-            const n = snail.emit.wordBudget(p.path_picture.shapes.len, 0) + snail.emit.wordBudget(p.text_picture.shapes.len, 0);
+            const n = snail.emit.wordBudget(p.path_picture.shapes.len) + snail.emit.wordBudget(p.text_picture.shapes.len);
             if (n > m) m = n;
         }
         return @max(m, 1);

@@ -1,47 +1,18 @@
 //! Embeddable coverage surface for the GL family (GL 3.3 / 4.4 / GLES 3.0).
 //!
-//! All `gl`-typed code (uniform-location programs, texture-binding backends)
-//! and the GL GLSL source fragments live here in the `snail_gl` module — the
-//! facade's `coverage.zig` only aggregates these into the cross-backend
-//! `Shader` / `Program` / `Backend` unions. Disabled backends degrade to empty
-//! shader strings + no-op backend types via `build_options`, so cross-backend
-//! caller code compiles regardless of which GL variants are enabled.
+//! This module contains only renderer-independent constants and reusable GLSL
+//! fragments. It creates no GL objects and makes no GL calls.
 
 const std = @import("std");
-const build_options = @import("build_options");
 const core = @import("snail_core");
 
-const SubpixelOrder = core.SubpixelOrder;
-const CoverageTransfer = core.CoverageTransfer;
 const WORDS_PER_INSTANCE: usize = core.WORDS_PER_INSTANCE;
 
-// ── Backend-module selection (empty stubs when a variant is disabled) ──
+const gl_shaders = @import("shaders.zig");
+const gles30_shaders = gl_shaders;
 
-const gl_shaders = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("shaders.zig")
-else
-    struct {
-        pub const text_vertex_interface = "";
-        pub const text_coverage_fragment_interface = "";
-        pub const text_coverage_fragment_body = "";
-        pub const text_sample_interface = "";
-        pub const text_sample_body = "";
-    };
-
-const gles30_shaders = if (build_options.enable_gles30)
-    @import("gles30/shaders.zig")
-else
-    struct {
-        pub const text_vertex_interface = "";
-        pub const text_coverage_fragment_interface = "";
-        pub const text_coverage_fragment_body = "";
-        pub const text_sample_interface = "";
-        pub const text_sample_body = "";
-    };
-
-/// Which GL family a program/backend targets. Part of the embeddable contract:
-/// selects the shader dialect (GL 3.3/4.4 vs GLES 3.0) and whether DSA texture
-/// binding is available. The caller-owned atlas cache mirrors this enum.
+/// Which GL dialect a caller targets. `supportsDsa` is a convenience for
+/// caller-owned cache/binding code.
 pub const Variant = enum {
     gl33,
     gl44,
@@ -50,41 +21,6 @@ pub const Variant = enum {
     pub fn supportsDsa(self: Variant) bool {
         return self == .gl44;
     }
-};
-
-const gl_bindings = if (build_options.enable_gl33 or build_options.enable_gl44)
-    @import("bindings.zig")
-else
-    struct {
-        pub const gl = struct {
-            pub const GLuint = u32;
-            pub const GLint = i32;
-        };
-    };
-
-const gles30_bindings = if (build_options.enable_gles30)
-    @import("gles30/bindings.zig")
-else
-    struct {
-        pub const gl = struct {
-            pub const GLuint = u32;
-            pub const GLint = i32;
-        };
-    };
-
-// ── DrawState ──
-
-/// The snail-side uniforms that change per draw. Filled by the caller from
-/// their `snail.DrawState` (or constructed by hand for non-snail draw paths).
-/// Only the GL family consumes this — the Vulkan path uses push constants.
-pub const DrawState = struct {
-    subpixel_order: SubpixelOrder = .none,
-    output_srgb: bool = false,
-    coverage_transfer: CoverageTransfer = .identity,
-    /// Added to the per-instance layer byte to compute the absolute atlas
-    /// texture-array layer. With the snail emit path this is always 0 (the
-    /// per-instance glyph data already encodes the absolute layer).
-    layer_base: u32 = 0,
 };
 
 // ── Shader sources ──
@@ -129,7 +65,7 @@ const TEXT_WORDS_PER_GLYPH_PRELUDE = std.fmt.comptimePrint(
 );
 
 /// GLSL source fragments callers concatenate into their own GL 3.3 / 4.4
-/// shaders. The facade exposes this as `coverage.Shader.gl33` / `.gl44`.
+/// shaders.
 pub const GlShaderSources = struct {
     /// Paste into a vertex shader that wants the standard snail per-
     /// instance attributes (the same `vertex.Instance` layout the snail
@@ -149,26 +85,20 @@ pub const GlShaderSources = struct {
     pub const sample_interface = gl_shaders.text_sample_interface;
     /// Function bodies for `snail_text_sample_premul_linear(vec2)` and
     /// friends — random-access sampling of the records buffer.
-    pub const sample_functions = if ((build_options.enable_gl33 or build_options.enable_gl44))
-        TEXT_WORDS_PER_GLYPH_PRELUDE ++ gl_shaders.text_sample_body
-    else
-        "";
+    pub const sample_functions = TEXT_WORDS_PER_GLYPH_PRELUDE ++ gl_shaders.text_sample_body;
     /// Full fragment body: coverage helpers + snail_text_coverage() +
     /// snail_text_color_*(). Paste after `fragment_interface`.
     pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
 };
 
-/// GLSL source fragments for GLES 3.0. Facade exposes as `coverage.Shader.gles30`.
+/// GLSL source fragments for GLES 3.0.
 pub const Gles30ShaderSources = struct {
     pub const vertex_interface = gles30_shaders.text_vertex_interface;
     pub const fragment_interface = gles30_shaders.text_coverage_fragment_interface;
     pub const resource_interface = resource_interface_glsl;
     pub const coverage_functions = gles30_shaders.text_coverage_fragment_body;
-    pub const sample_interface = gles30_shaders.text_sample_interface;
-    pub const sample_functions = if (build_options.enable_gles30)
-        TEXT_WORDS_PER_GLYPH_PRELUDE ++ gles30_shaders.text_sample_body
-    else
-        "";
+    pub const sample_interface = gles30_shaders.gles30_text_sample_interface;
+    pub const sample_functions = TEXT_WORDS_PER_GLYPH_PRELUDE ++ gles30_shaders.text_sample_body;
     pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
 };
 
@@ -178,103 +108,6 @@ pub const Gles30ShaderSources = struct {
 /// Must match `SNAIL_TEXT_RECORDS_TEX_WIDTH` in
 /// `glsl/snail_text_sample.interface.gles30.glsl`.
 pub const gles30_records_tex_width: u32 = 1024;
-
-// ── Program descriptors ──
-
-const gl_GLint = gl_bindings.gl.GLint;
-
-/// Snail-side uniform locations + texture units inside the caller's GL
-/// program. Fill in from `glGetUniformLocation` after link and pass to
-/// `Backend.bindProgram` / `Backend.bindDrawState`. A `_loc` of `-1` (the
-/// default) skips the corresponding uniform write.
-pub const GlProgram = struct {
-    curve_tex_loc: gl_GLint = -1,
-    band_tex_loc: gl_GLint = -1,
-    layer_tex_loc: gl_GLint = -1,
-    image_tex_loc: gl_GLint = -1,
-    fill_rule_loc: gl_GLint = -1,
-    subpixel_order_loc: gl_GLint = -1,
-    output_srgb_loc: gl_GLint = -1,
-    coverage_exponent_loc: gl_GLint = -1,
-    layer_base_loc: gl_GLint = -1,
-    curve_tex_unit: gl_GLint = 0,
-    band_tex_unit: gl_GLint = 1,
-    layer_tex_unit: gl_GLint = 2,
-    image_tex_unit: gl_GLint = 3,
-};
-
-const gles30_GLint = gles30_bindings.gl.GLint;
-
-pub const Gles30Program = struct {
-    curve_tex_loc: gles30_GLint = -1,
-    band_tex_loc: gles30_GLint = -1,
-    layer_tex_loc: gles30_GLint = -1,
-    image_tex_loc: gles30_GLint = -1,
-    fill_rule_loc: gles30_GLint = -1,
-    subpixel_order_loc: gles30_GLint = -1,
-    output_srgb_loc: gles30_GLint = -1,
-    coverage_exponent_loc: gles30_GLint = -1,
-    layer_base_loc: gles30_GLint = -1,
-    curve_tex_unit: gles30_GLint = 0,
-    band_tex_unit: gles30_GLint = 1,
-    layer_tex_unit: gles30_GLint = 2,
-    image_tex_unit: gles30_GLint = 3,
-};
-
-// ── Texture handles (data) ──
-//
-// The library exposes *which atlas texture goes on which unit* as data; the
-// caller runs the actual glBindTexture/glUniform loop (see the reference
-// binding helper `src/demo/embed_gl_bind.zig`). So snail_gl makes no live GL
-// calls and links no OpenGL — symmetric with snail_vulkan's pure-data contract.
-
-/// The four snail atlas textures a caller binds for a coverage draw. The caller
-/// reads these off its own atlas cache; a `0` handle means "not present" (no
-/// layer-info / no images) and is skipped. Decouples the binding contract from
-/// any particular cache type — snail owns *which unit gets which texture*, the
-/// caller owns the textures.
-pub const TextureHandles = struct {
-    curve_array: c_uint = 0,
-    band_array: c_uint = 0,
-    layer_info_tex: c_uint = 0,
-    image_array_tex: c_uint = 0,
-};
-
-
-// ── TextCoverageRecords ──
-
-/// Prepared per-glyph coverage records for a caller-owned material shader.
-///
-/// In the snail rewrite, the records are just the `u32` words `snail.emit.emit`
-/// produces (the same `vertex.Instance` format the snail GPU draw consumes).
-/// This struct is a thin wrapper that owns / borrows the words slice and
-/// reports the implied glyph count for the caller's shader's
-/// `u_snail_text_glyph_count` uniform.
-///
-/// To sample the records randomly in a fragment shader, upload the words
-/// as a `GL_TEXTURE_BUFFER` of `GL_R32UI` and the shader's
-/// `snail_text_sample_premul_linear(scene_pos)` (from `GlShaderSources.sample_functions`)
-/// will walk it. The caller is responsible for the buffer-object lifecycle.
-pub const TextCoverageRecords = struct {
-    buffer: []u32,
-    len: usize = 0,
-
-    pub fn init(buffer: []u32) TextCoverageRecords {
-        return .{ .buffer = buffer };
-    }
-
-    pub fn reset(self: *TextCoverageRecords) void {
-        self.len = 0;
-    }
-
-    pub fn glyphCount(self: *const TextCoverageRecords) usize {
-        return self.len / WORDS_PER_INSTANCE;
-    }
-
-    pub fn slice(self: *const TextCoverageRecords) []const u32 {
-        return self.buffer[0..self.len];
-    }
-};
 
 test {
     _ = WORDS_PER_INSTANCE;
