@@ -13,6 +13,13 @@ const StrokeStyle = paint_mod.StrokeStyle;
 const Vec2 = vec.Vec2;
 const Transform2D = vec.Transform2D;
 
+/// Canonical extent used by prepared path geometry. Every authored path still
+/// follows one mandatory normalization path; callers cannot select this scale
+/// or pack arbitrary coordinates. An extent of 64 keeps f16 relative precision
+/// while leaving enough absolute range for the coverage solver's epsilon
+/// budget (an exact [0,1] extent makes near-tangent classifications visible).
+const PREPARED_PATH_EXTENT: f32 = 64.0;
+
 // Recursion-depth caps for path subdivision. These are quality / cost
 // budgets, not caller-facing limits: hitting the cap yields a slightly
 // lower-fidelity tessellation rather than an error or truncation. Bumping
@@ -376,7 +383,8 @@ pub const Path = struct {
             .source_scale = 1,
         };
 
-        const inv_extent = 1.0 / extent;
+        const inv_extent = PREPARED_PATH_EXTENT / extent;
+        const source_per_design = extent / PREPARED_PATH_EXTENT;
         const source_to_design = Transform2D{
             .xx = inv_extent,
             .yy = inv_extent,
@@ -384,8 +392,8 @@ pub const Path = struct {
             .ty = -bb.min.y * inv_extent,
         };
         const design_to_source = Transform2D{
-            .xx = extent,
-            .yy = extent,
+            .xx = source_per_design,
+            .yy = source_per_design,
             .tx = bb.min.x,
             .ty = bb.min.y,
         };
@@ -403,7 +411,7 @@ pub const Path = struct {
             .design = design,
             .design_to_source = design_to_source,
             .source_to_design = source_to_design,
-            .source_scale = extent,
+            .source_scale = source_per_design,
         };
     }
 
@@ -751,8 +759,8 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
     const design_bounds = prepared.design.bounds().?;
     try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.x, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.y, 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 1), design_bounds.max.x, 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), design_bounds.max.y, 1e-6);
+    try std.testing.expectApproxEqAbs(PREPARED_PATH_EXTENT, design_bounds.max.x, 1e-6);
+    try std.testing.expectApproxEqAbs(PREPARED_PATH_EXTENT * 0.5, design_bounds.max.y, 1e-6);
 
     const restored_min = prepared.design_to_source.applyPoint(design_bounds.min);
     const restored_max = prepared.design_to_source.applyPoint(design_bounds.max);
@@ -765,5 +773,5 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 10,
     });
-    try std.testing.expectApproxEqAbs(@as(f32, 0.05), stroke.width, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 3.2), stroke.width, 1e-6);
 }

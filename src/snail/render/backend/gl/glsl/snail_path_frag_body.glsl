@@ -381,15 +381,29 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float rootA = -p0Root + 3.0 * p1Root - 3.0 * p2Root + p3Root;
     float rootB = 3.0 * p0Root - 6.0 * p1Root + 3.0 * p2Root;
     float rootC = -3.0 * p0Root + 3.0 * p1Root;
+
+    // Decide half-open endpoint ownership before solving, using the same +0
+    // convention as lines, quadratics, and conics. Reconstructing f(1) from
+    // rootA+rootB+rootC+d can move an endpoint root by a few ULPs; under a
+    // perspective transform that used to make ownership depend on the camera.
+    float startDelta = p0Root - sampleRoot;
+    float endDelta = p3Root - sampleRoot;
+    if ((rootCodeCoord(startDelta) < 0.0) == (rootCodeCoord(endDelta) < 0.0)) return;
+
     float t = 0.0;
-    if (!solveMonotonicCubicRoot(rootA, rootB, rootC, p0Root - sampleRoot, t)) return;
-    if (isNearEndRoot(t) && isEndpointRootDelta(segmentEndRootDelta(seg, sampleRc, horizontal))) return;
+    if (abs(startDelta) <= kCoordEps) {
+        t = 0.0;
+    } else if (abs(endDelta) <= kCoordEps) {
+        t = 1.0;
+    } else if (!solveMonotonicCubicRoot(rootA, rootB, rootC, startDelta, t)) {
+        return;
+    }
 
     float alongA = -p0Along + 3.0 * p1Along - 3.0 * p2Along + p3Along;
     float alongB = 3.0 * p0Along - 6.0 * p1Along + 3.0 * p2Along;
     float alongC = -3.0 * p0Along + 3.0 * p1Along;
 
-    float along = ((alongA * t + alongB) * t + alongC) * t + p0Along;
+    float along = (t == 1.0) ? p3Along : ((alongA * t + alongB) * t + alongC) * t + p0Along;
     float derivAxis = (3.0 * rootA * t + 2.0 * rootB) * t + rootC;
     if (!horizontal) derivAxis = -derivAxis;
     if (abs(derivAxis) <= kParamEps) return;

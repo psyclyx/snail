@@ -107,18 +107,37 @@ fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, axi
     const qb = 2.0 * b;
     const qc = c;
 
-    if (@abs(qa) < 1e-10) {
-        if (@abs(qb) < 1e-10) return;
+    // Affine transforms can make an analytically-zero leading coefficient
+    // land a few f32 ULPs away from zero through cancellation. An absolute
+    // epsilon misclassifies that near-linear derivative as quadratic on one
+    // side of otherwise mirrored geometry. Use a coefficient-relative test.
+    const coefficient_scale = @max(@abs(qa), @max(@abs(qb), @abs(qc)));
+    if (coefficient_scale == 0.0) return;
+    const coefficient_epsilon = coefficient_scale * (32.0 * std.math.floatEps(f32));
+    if (@abs(qa) <= coefficient_epsilon) {
+        if (@abs(qb) <= coefficient_epsilon) return;
         appendCubicExtremumRoot(roots, count, -qc / qb, axis_tag);
         return;
     }
 
-    const disc = qb * qb - 4.0 * qa * qc;
-    if (disc < 0.0) return;
+    const qb2 = qb * qb;
+    const four_ac = 4.0 * qa * qc;
+    var disc = qb2 - four_ac;
+    if (disc < 0.0) {
+        const disc_epsilon = @max(qb2, @abs(four_ac)) * (32.0 * std.math.floatEps(f32));
+        if (disc < -disc_epsilon) return;
+        disc = 0.0;
+    }
     const sqrt_disc = @sqrt(disc);
-    const inv_2a = 0.5 / qa;
-    appendCubicExtremumRoot(roots, count, (-qb - sqrt_disc) * inv_2a, axis_tag);
-    appendCubicExtremumRoot(roots, count, (-qb + sqrt_disc) * inv_2a, axis_tag);
+    // Stable quadratic form: one root is q/a, the other c/q. This avoids
+    // losing the small root when `qb` and `sqrt_disc` nearly cancel.
+    const q = -0.5 * (qb + if (qb >= 0.0) sqrt_disc else -sqrt_disc);
+    if (@abs(q) <= coefficient_epsilon) {
+        appendCubicExtremumRoot(roots, count, -qb / (2.0 * qa), axis_tag);
+        return;
+    }
+    appendCubicExtremumRoot(roots, count, q / qa, axis_tag);
+    appendCubicExtremumRoot(roots, count, qc / q, axis_tag);
 }
 
 // At an extremum split, the parent cubic has zero derivative in the split
@@ -825,8 +844,8 @@ test "prepareGlyphCurvesForPacking keeps adjacent joins identical" {
     const prepared = try prepareGlyphCurvesForPacking(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().x, prepared[1].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[0].endPoint().x, prepared[1].p0.x);
+    try std.testing.expectEqual(prepared[0].endPoint().y, prepared[1].p0.y);
 }
 
 test "prepareGlyphCurvesForPacking keeps closed contour wrap identical" {
@@ -848,8 +867,8 @@ test "prepareGlyphCurvesForPacking keeps closed contour wrap identical" {
     const prepared = try prepareGlyphCurvesForPacking(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y);
 }
 
 test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
@@ -871,8 +890,8 @@ test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
     const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().x, prepared[1].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[0].endPoint().x, prepared[1].p0.x);
+    try std.testing.expectEqual(prepared[0].endPoint().y, prepared[1].p0.y);
 }
 
 test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
@@ -894,8 +913,45 @@ test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
     const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y);
+}
+
+test "splitCubicsAtExtrema is symmetric after affine normalization" {
+    const right = CurveSegment.fromCubic(.{
+        .p0 = Vec2.new(28.8, 0.0),
+        .p1 = Vec2.new(57.6, 12.8),
+        .p2 = Vec2.new(57.6, 51.2),
+        .p3 = Vec2.new(28.8, 64.0),
+    });
+    const left = CurveSegment.fromCubic(.{
+        .p0 = Vec2.new(28.8, 64.0),
+        .p1 = Vec2.new(0.0, 51.2),
+        .p2 = Vec2.new(0.0, 12.8),
+        .p3 = Vec2.new(28.8, 0.0),
+    });
+
+    const right_split = try splitCubicsAtExtrema(std.testing.allocator, &.{right});
+    defer std.testing.allocator.free(right_split);
+    const left_split = try splitCubicsAtExtrema(std.testing.allocator, &.{left});
+    defer std.testing.allocator.free(left_split);
+
+    try std.testing.expectEqual(@as(usize, 2), right_split.len);
+    try std.testing.expectEqual(@as(usize, 2), left_split.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 32.0), right_split[0].p3.y, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 32.0), left_split[0].p3.y, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 57.6), right_split[0].p3.x + left_split[0].p3.x, 1e-4);
+
+    const leaf_split = try splitCubicsAtExtrema(std.testing.allocator, &.{ right, left });
+    defer std.testing.allocator.free(leaf_split);
+    const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, leaf_split, .zero);
+    defer std.testing.allocator.free(prepared);
+    try std.testing.expectEqual(@as(usize, 4), prepared.len);
+    for (prepared, 0..) |curve, i| {
+        const next = prepared[(i + 1) % prepared.len];
+        try std.testing.expectEqual(curve.endPoint().x, next.p0.x);
+        try std.testing.expectEqual(curve.endPoint().y, next.p0.y);
+    }
 }
 
 test "buildCurveTexture supports direct encoding for font glyphs" {

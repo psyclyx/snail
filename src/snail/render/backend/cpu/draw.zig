@@ -696,7 +696,14 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     for (scales) |scale| {
         for (offsets) |ox| {
             for (offsets) |oy| {
-                const inv = (Transform2D{ .xx = scale, .xy = 0, .yx = 0, .yy = scale, .tx = ox, .ty = oy }).inverse().?;
+                const inv = (Transform2D{
+                    .xx = scale * prepared_path.source_scale,
+                    .xy = 0,
+                    .yx = 0,
+                    .yy = scale * prepared_path.source_scale,
+                    .tx = ox,
+                    .ty = oy,
+                }).inverse().?;
                 const epp = geometry.glyphEdgePixelsPerPixel(inv);
                 const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
                 var py: i32 = @intFromFloat(@floor(oy));
@@ -709,7 +716,8 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
                     while (px < px_hi) : (px += 1) {
                         const lx = (@as(f32, @floatFromInt(px)) + 0.5 - ox) / scale;
                         if (@abs(lx - 0.5) > 0.2) continue; // deep interior, straddles the centre
-                        const cov = coverage.evalGlyphCoverageBandSpan(page, lx, ly, epp.x, epp.y, ppe.x, ppe.y, be, layer.band_max_h, layer.band_max_v, layer.fill_rule);
+                        const design = prepared_path.source_to_design.applyPoint(.{ .x = lx, .y = ly });
+                        const cov = coverage.evalGlyphCoverageBandSpan(page, design.x, design.y, epp.x, epp.y, ppe.x, ppe.y, be, layer.band_max_h, layer.band_max_v, layer.fill_rule);
                         worst = @max(worst, 1.0 - cov);
                     }
                 }

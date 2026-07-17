@@ -26,9 +26,11 @@ pub const PreparedAxisCurveCold = struct {
     cubic_a_root: f32 = 0.0,
     cubic_b_root: f32 = 0.0,
     cubic_c_root: f32 = 0.0,
+    cubic_p3_root: f32 = 0.0,
     cubic_a_along: f32 = 0.0,
     cubic_b_along: f32 = 0.0,
     cubic_c_along: f32 = 0.0,
+    cubic_p3_along: f32 = 0.0,
     conic_num_a_root: f32 = 0.0,
     conic_num_b_root: f32 = 0.0,
     conic_num_c_root: f32 = 0.0,
@@ -63,9 +65,11 @@ pub const PreparedAxisCurveCold = struct {
             .cubic_a_root = -p0_root + 3.0 * p1_root - 3.0 * p2_root + p3_root,
             .cubic_b_root = 3.0 * p0_root - 6.0 * p1_root + 3.0 * p2_root,
             .cubic_c_root = -3.0 * p0_root + 3.0 * p1_root,
+            .cubic_p3_root = p3_root,
             .cubic_a_along = -p0_along + 3.0 * p1_along - 3.0 * p2_along + p3_along,
             .cubic_b_along = 3.0 * p0_along - 6.0 * p1_along + 3.0 * p2_along,
             .cubic_c_along = -3.0 * p0_along + 3.0 * p1_along,
+            .cubic_p3_along = p3_along,
             .conic_num_a_root = p0_root_w - 2.0 * p1_root_w + p2_root_w,
             .conic_num_b_root = 2.0 * (p1_root_w - p0_root_w),
             .conic_num_c_root = p0_root_w,
@@ -243,7 +247,7 @@ fn initGlyphBandState(
 }
 
 const solveQuadraticRoots = cubic.solveQuadraticRoots;
-const solveCubicRoots = cubic.solveCubicRoots;
+const solveMonotonicCubicCrossing = cubic.solveMonotonicCubicCrossing;
 const solveSegmentHorizontalRoots = cubic.solveSegmentHorizontalRoots;
 const solveSegmentVerticalRoots = cubic.solveSegmentVerticalRoots;
 const segmentMaxX = cubic.segmentMaxX;
@@ -418,14 +422,14 @@ inline fn accumulateGlyphCoverageSegment(
         solveSegmentVerticalRoots(segment, sample_rc.x);
 
     for (roots.t[0..roots.count]) |t| {
-        if (isNearEndRoot(t)) {
+        if (segment.kind != .cubic and isNearEndRoot(t)) {
             const end_root_delta = switch (segment.kind) {
                 .conic, .quadratic, .line => if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x,
-                .cubic => if (horizontal) segment.p3.y - sample_rc.y else segment.p3.x - sample_rc.x,
+                .cubic => unreachable,
             };
             if (isEndpointRootDelta(end_root_delta)) continue;
         }
-        const point = segment.evaluate(t);
+        const point = if (segment.kind == .cubic and t == 1.0) segment.p3 else segment.evaluate(t);
         const deriv = segment.derivative(t);
         const derivative_axis = if (horizontal) deriv.y else -deriv.x;
         if (@abs(derivative_axis) <= 1e-5) continue;
@@ -525,11 +529,12 @@ inline fn solvePreparedConicRoots(cold: *const PreparedAxisCurveCold, sample_roo
 }
 
 inline fn solvePreparedCubicRoots(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
-    return solveCubicRoots(
+    return solveMonotonicCubicCrossing(
         cold.cubic_a_root,
         cold.cubic_b_root,
         cold.cubic_c_root,
         curve.p0_root - sample_root,
+        cold.cubic_p3_root - sample_root,
     );
 }
 
@@ -548,6 +553,7 @@ inline fn derivativePreparedConicRoot(cold: *const PreparedAxisCurveCold, t: f32
 }
 
 inline fn evaluatePreparedCubicAlong(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, t: f32) f32 {
+    if (t == 1.0) return cold.cubic_p3_along;
     return ((cold.cubic_a_along * t + cold.cubic_b_along) * t + cold.cubic_c_along) * t + curve.p0_along;
 }
 
@@ -619,8 +625,7 @@ pub inline fn accumulatePreparedCurveCoverage(
 
     const cold = preparedCurveCold(curve, cold_curves);
     if (curve.kind == .cubic) {
-        const p3_root = cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root;
-        if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, p3_root, sample_root)) return .continue_scan;
+        if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return .continue_scan;
     }
 
     const roots = switch (curve.kind) {
@@ -629,10 +634,10 @@ pub inline fn accumulatePreparedCurveCoverage(
         .quadratic, .line => unreachable,
     };
     for (roots.t[0..roots.count]) |t| {
-        if (isNearEndRoot(t)) {
+        if (curve.kind != .cubic and isNearEndRoot(t)) {
             const end_root = switch (curve.kind) {
                 .conic => curve.p2_root,
-                .cubic => cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root,
+                .cubic => unreachable,
                 .quadratic, .line => unreachable,
             };
             if (isEndpointRootDelta(end_root - sample_root)) continue;
@@ -1107,12 +1112,10 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
         .cubic => {
             if (curve.cold_index >= cold_curves.len) return null;
             const cold = &cold_curves[curve.cold_index];
-            const p3_root = cold.cubic_a_root + cold.cubic_b_root + cold.cubic_c_root + curve.p0_root;
-            if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, p3_root, sample_root)) return entry;
+            if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return entry;
             const roots = solvePreparedCubicRoots(curve, cold, sample_root);
             for (roots.t[0..roots.count], 0..) |t, idx| {
                 if (idx >= 3) break;
-                if (isNearEndRoot(t) and isEndpointRootDelta(p3_root - sample_root)) continue;
                 const root_deriv = derivativePreparedCubicRoot(cold, t);
                 if (@abs(root_deriv) <= 1e-5) continue;
                 entry.along[idx] = evaluatePreparedCubicAlong(curve, cold, t);
@@ -1350,7 +1353,7 @@ fn curveVAxisXExtent(curve: *const PreparedAxisCurve, cold_curves: []const Prepa
             hi = @max(@max(hi, curve.p1_root), curve.p2_root);
             if (curve.cold_index < cold_curves.len) {
                 const cold = &cold_curves[curve.cold_index];
-                const p3 = curve.p0_root + cold.cubic_c_root + cold.cubic_b_root + cold.cubic_a_root;
+                const p3 = cold.cubic_p3_root;
                 lo = @min(lo, p3);
                 hi = @max(hi, p3);
             }
@@ -1397,7 +1400,7 @@ fn classifySaturatedBelow(curve: *const PreparedAxisCurve, cold_curves: []const 
             // both axes (see path/picture_compile.zig: splitCubicsAtExtrema).
             if (curve.cold_index >= cold_curves.len) return null;
             const cold = &cold_curves[curve.cold_index];
-            const p3 = curve.p0_root + cold.cubic_c_root + cold.cubic_b_root + cold.cubic_a_root;
+            const p3 = cold.cubic_p3_root;
             // For a monotonic cubic, dx/dt has constant sign across t ∈ [0,1].
             // derivative_axis = -dx/dt, so its sign matches sign(p0 - p3).
             if (@abs(p3 - curve.p0_root) < 1e-10) return null;

@@ -120,6 +120,30 @@ pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
     return roots;
 }
 
+/// Solve the single crossing of a cubic that has already been split into a
+/// monotonic span. Endpoint signs use the same +0 convention as Slug's
+/// quadratic root code: a shared vertex is owned by exactly one adjacent
+/// span, independent of polynomial-reconstruction error at t=1.
+pub fn solveMonotonicCubicCrossing(a: f32, b: f32, c_val: f32, start_delta: f32, end_delta: f32) CurveRoots {
+    var roots = CurveRoots{};
+    const start_side = rootCodeCoord(start_delta) < 0.0;
+    const end_side = rootCodeCoord(end_delta) < 0.0;
+    if (start_side == end_side) return roots;
+
+    // Use a shared endpoint exactly when it lies in the coordinate epsilon
+    // band. Reconstructing f(1) as a+b+c+d can otherwise move the solved root
+    // across the half-open ownership threshold after a transform.
+    if (@abs(start_delta) <= root_code_eps) {
+        appendCurveRoot(&roots, 0.0);
+        return roots;
+    }
+    if (@abs(end_delta) <= root_code_eps) {
+        appendCurveRoot(&roots, 1.0);
+        return roots;
+    }
+    return solveCubicRoots(a, b, c_val, start_delta);
+}
+
 pub inline fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {
     return switch (segment.kind) {
         .line => solveQuadraticRoots(0.0, segment.p2.y - segment.p0.y, segment.p0.y - py),
@@ -138,8 +162,7 @@ pub inline fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveR
             const a = -segment.p0.y + 3.0 * segment.p1.y - 3.0 * segment.p2.y + segment.p3.y;
             const b = 3.0 * segment.p0.y - 6.0 * segment.p1.y + 3.0 * segment.p2.y;
             const c0 = -3.0 * segment.p0.y + 3.0 * segment.p1.y;
-            const d = segment.p0.y - py;
-            break :blk solveCubicRoots(a, b, c0, d);
+            break :blk solveMonotonicCubicCrossing(a, b, c0, segment.p0.y - py, segment.p3.y - py);
         },
     };
 }
@@ -162,8 +185,7 @@ pub inline fn solveSegmentVerticalRoots(segment: CurveSegment, px: f32) CurveRoo
             const a = -segment.p0.x + 3.0 * segment.p1.x - 3.0 * segment.p2.x + segment.p3.x;
             const b = 3.0 * segment.p0.x - 6.0 * segment.p1.x + 3.0 * segment.p2.x;
             const c0 = -3.0 * segment.p0.x + 3.0 * segment.p1.x;
-            const d = segment.p0.x - px;
-            break :blk solveCubicRoots(a, b, c0, d);
+            break :blk solveMonotonicCubicCrossing(a, b, c0, segment.p0.x - px, segment.p3.x - px);
         },
     };
 }
@@ -293,4 +315,20 @@ pub inline fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3
 test "root code treats tiny exact-edge drift as zero" {
     try std.testing.expectEqual(calcRootCode(0.0, -0.25, -0.5), calcRootCode(-root_code_eps * 0.5, -0.25, -0.5));
     try std.testing.expectEqual(@as(u16, 0), calcRootCode(-root_code_eps * 2.0, -0.25, -0.5));
+}
+
+test "monotonic cubic crossing gives a shared endpoint to one span" {
+    const no_start_crossing = solveMonotonicCubicCrossing(0, 0, 1, 0, 1);
+    try std.testing.expectEqual(@as(u8, 0), no_start_crossing.count);
+
+    const owned_end = solveMonotonicCubicCrossing(0, 0, 1, -1, 0);
+    try std.testing.expectEqual(@as(u8, 1), owned_end.count);
+    try std.testing.expectEqual(@as(f32, 1), owned_end.t[0]);
+
+    const owned_start = solveMonotonicCubicCrossing(0, 0, -1, 0, -1);
+    try std.testing.expectEqual(@as(u8, 1), owned_start.count);
+    try std.testing.expectEqual(@as(f32, 0), owned_start.t[0]);
+
+    const no_end_crossing = solveMonotonicCubicCrossing(0, 0, -1, 1, 0);
+    try std.testing.expectEqual(@as(u8, 0), no_end_crossing.count);
 }
