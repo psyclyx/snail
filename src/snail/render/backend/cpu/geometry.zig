@@ -68,13 +68,16 @@ pub fn expandBoundsForCoverageSupport(bounds: *ScreenBounds, order: SubpixelOrde
 }
 
 pub fn glyphEdgePixelsPerPixel(inverse: Transform2D) Vec2 {
+    // Match GLSL fwidth: a pixel's square support maps to the L1 norm of each
+    // inverse-transform row. A Euclidean row length underfilters rotated and
+    // perspective-projected edges by as much as sqrt(2).
     return .{
-        .x = @max(@sqrt(inverse.xx * inverse.xx + inverse.xy * inverse.xy), 1.0 / 65536.0),
-        .y = @max(@sqrt(inverse.yx * inverse.yx + inverse.yy * inverse.yy), 1.0 / 65536.0),
+        .x = @max(@abs(inverse.xx) + @abs(inverse.xy), 1.0 / 65536.0),
+        .y = @max(@abs(inverse.yx) + @abs(inverse.yy), 1.0 / 65536.0),
     };
 }
 
-test "CPU grayscale footprint matches shader derivative length" {
+test "CPU grayscale footprint matches shader fwidth" {
     const inv = Transform2D{
         .xx = 0.5,
         .xy = 0.5,
@@ -82,8 +85,8 @@ test "CPU grayscale footprint matches shader derivative length" {
         .yy = 0.25,
     };
     const epp = glyphEdgePixelsPerPixel(inv);
-    try std.testing.expectApproxEqAbs(@sqrt(@as(f32, 0.5)), epp.x, 0.0001);
-    try std.testing.expectApproxEqAbs(@sqrt(@as(f32, 0.125)), epp.y, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.0), epp.x, 0.0001);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), epp.y, 0.0001);
 }
 
 pub inline fn advanceLocalPixel(col: *u32, local: *Vec2, sample_dx: Vec2) void {

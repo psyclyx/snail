@@ -39,10 +39,9 @@ const text_color_funcs =
     \\    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) return 0.0;
     \\    int atlas_layer = u_layer_base + layer_byte;
     \\    vec2 rc = v_texcoord;
-    \\    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    \\    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    \\    vec2 ppe = vec2(1.0 / max(length(dx), 1.0 / 65536.0), 1.0 / max(length(dy), 1.0 / 65536.0));
-    \\    return evalGlyphCoverage(rc, ppe, v_glyph.xy,
+    \\    vec2 epp = fwidth(rc);
+    \\    vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
+    \\    return evalGlyphCoverage(rc, epp, ppe, v_glyph.xy,
     \\                             ivec2(v_glyph.w & 0xFF, v_glyph.z),
     \\                             v_banding, atlas_layer);
     \\}
@@ -111,4 +110,10 @@ pub const gles30_records_tex_width: u32 = 1024;
 
 test {
     _ = WORDS_PER_INSTANCE;
+}
+
+test "exported fragment helper uses the Slug pixel footprint" {
+    try std.testing.expect(std.mem.indexOf(u8, GlShaderSources.fragment_body, "vec2 epp = fwidth(rc);") != null);
+    try std.testing.expect(std.mem.indexOf(u8, GlShaderSources.fragment_body, "evalGlyphCoverage(rc, epp, ppe") != null);
+    try std.testing.expect(std.mem.indexOf(u8, GlShaderSources.fragment_body, "length(dx)") == null);
 }

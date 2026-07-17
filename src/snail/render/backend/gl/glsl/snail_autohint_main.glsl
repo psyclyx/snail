@@ -39,9 +39,7 @@ void snailAutohintFragment() {
     int texLayer = u_layer_base + int(v_banding.w);
 
     vec2 rc = v_texcoord;
-    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    vec2 epp = vec2(length(dx), length(dy));
+    vec2 epp = fwidth(rc);
     vec2 scale = vec2(1.0 / epp.x, 1.0 / epp.y);
 
     int xCount = 0;

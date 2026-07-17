@@ -187,7 +187,7 @@ test "prepared authoring keeps f16 precision at large coordinates" {
         &.{ authored[0].p0, authored[0].p1, authored[0].p2, authored[0].p3 },
         decodeFirstSegment(curves.curve_bytes),
     );
-    const error_screen = error_local * prepared.source_scale;
+    const error_screen = error_local * @max(@abs(prepared.design_to_source.xx), @abs(prepared.design_to_source.yy));
 
     try testing.expect(error_screen < 0.05);
 }

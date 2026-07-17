@@ -225,9 +225,7 @@ void snailHintedTextFragment() {
     if (special_kind != SNAIL_SPECIAL_KIND_HINTED_TEXT) discard;
 
     vec2 rc = v_texcoord;
-    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    vec2 epp = vec2(length(dx), length(dy));
+    vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / max(epp, vec2(kCoordEps));
 
     ivec2 infoBase = v_glyph.xy;

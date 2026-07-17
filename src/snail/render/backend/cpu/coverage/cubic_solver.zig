@@ -69,7 +69,7 @@ pub inline fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
     return roots;
 }
 
-pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
+fn solveCubicRootsBracketed(a: f32, b: f32, c_val: f32, d: f32, end_delta: f32) CurveRoots {
     // `splitCubicsAtExtrema` (paths.zig) makes every uploaded cubic monotonic
     // on both sampling axes, so along either axis a cubic piece contributes at
     // most one root in [0, 1]. Solve it the same way the GPU does
@@ -91,7 +91,7 @@ pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
     // iterations saved), so the count stays fixed.
     var roots = CurveRoots{};
     const f0 = d; // f(0) = curve_root(0) - sample
-    const f1 = ((a + b) + c_val) + d; // f(1) = curve_root(1) - sample
+    const f1 = end_delta; // Exact p3 - sample; do not reconstruct through a+b+c+d.
     // No sign change across [0,1] (both strictly outside the ±ε contour band)
     // means the monotonic curve never reaches the sample line here.
     if ((f0 < -root_code_eps and f1 < -root_code_eps) or (f0 > root_code_eps and f1 > root_code_eps)) return roots;
@@ -120,6 +120,10 @@ pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
     return roots;
 }
 
+pub fn solveCubicRoots(a: f32, b: f32, c_val: f32, d: f32) CurveRoots {
+    return solveCubicRootsBracketed(a, b, c_val, d, ((a + b) + c_val) + d);
+}
+
 /// Solve the single crossing of a cubic that has already been split into a
 /// monotonic span. Endpoint signs use the same +0 convention as Slug's
 /// quadratic root code: a shared vertex is owned by exactly one adjacent
@@ -141,7 +145,7 @@ pub fn solveMonotonicCubicCrossing(a: f32, b: f32, c_val: f32, start_delta: f32,
         appendCurveRoot(&roots, 1.0);
         return roots;
     }
-    return solveCubicRoots(a, b, c_val, start_delta);
+    return solveCubicRootsBracketed(a, b, c_val, start_delta, end_delta);
 }
 
 pub inline fn solveSegmentHorizontalRoots(segment: CurveSegment, py: f32) CurveRoots {

@@ -121,9 +121,7 @@ void snailColrFragment() {
     int special_kind = v_glyph.w & 0xFF;
     if (atlas_layer != SNAIL_SPECIAL_LAYER_SENTINEL || special_kind != SNAIL_SPECIAL_KIND_COLR) discard;
     vec2 rc = v_texcoord;
-    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    vec2 epp = vec2(length(dx), length(dy));
+    vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
     ivec2 infoBase = v_glyph.xy;
     int layer_count = v_glyph.z;

@@ -56,7 +56,7 @@ pub fn strokeToCurves(
     return packCurves(allocator, scratch, result.curves, result.bbox, result.logical_curve_count);
 }
 
-fn packCurves(
+pub fn packCurves(
     allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
     segs: []const CurveSegment,

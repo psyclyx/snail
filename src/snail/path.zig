@@ -13,12 +13,15 @@ const StrokeStyle = paint_mod.StrokeStyle;
 const Vec2 = vec.Vec2;
 const Transform2D = vec.Transform2D;
 
-/// Canonical extent used by prepared path geometry. Every authored path still
-/// follows one mandatory normalization path; callers cannot select this scale
-/// or pack arbitrary coordinates. An extent of 64 keeps f16 relative precision
-/// while leaving enough absolute range for the coverage solver's epsilon
-/// budget (an exact [0,1] extent makes near-tangent classifications visible).
-const PREPARED_PATH_EXTENT: f32 = 64.0;
+const StrokedCurves = struct {
+    curves: []CurveSegment,
+    bbox: BBox,
+    logical_curve_count: usize,
+};
+
+/// Prepared fills use the full signed f16 range on each non-degenerate bbox
+/// axis. The original aspect ratio is restored by the instance transform.
+const PREPARED_PATH_RADIUS: f32 = 1.0;
 
 // Recursion-depth caps for path subdivision. These are quality / cost
 // budgets, not caller-facing limits: hitting the cap yields a slightly
@@ -26,6 +29,10 @@ const PREPARED_PATH_EXTENT: f32 = 64.0;
 // them trades work for accuracy.
 pub const kPathArcSplitMaxDepth: u8 = 8;
 const kPathStrokeOffsetTolerance: f32 = 0.005;
+// Prepared paths spend the full signed f16 range on each axis. Keep offset-fit
+// error below roughly one quarter of a half-float ULP at |coord|=1; looser
+// source-space tolerances become visible as quadratic facets under zoom.
+const kPreparedStrokeOffsetTolerance: f32 = 1.0 / 8192.0;
 pub const kPathStrokeOffsetMaxDepth: u8 = 10;
 
 fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
@@ -122,6 +129,40 @@ fn appendAdaptiveArcConic(
     }
     path.band_curve_count += 1;
     try path.appendSegment(makePathArcConic(center, radii, start_angle, end_angle));
+}
+
+pub fn appendAdaptiveArcCubic(
+    path: *Path,
+    center: Vec2,
+    radii: Vec2,
+    start_angle: f32,
+    end_angle: f32,
+) !void {
+    const span = end_angle - start_angle;
+    if (@abs(span) <= 1e-6) return;
+    if (@abs(span) > std.math.pi * 0.5 + 1e-6) {
+        const mid_angle = (start_angle + end_angle) * 0.5;
+        try appendAdaptiveArcCubic(path, center, radii, start_angle, mid_angle);
+        try appendAdaptiveArcCubic(path, center, radii, mid_angle, end_angle);
+        return;
+    }
+
+    const cs = cosSnap(start_angle);
+    const ss = sinSnap(start_angle);
+    const ce = cosSnap(end_angle);
+    const se = sinSnap(end_angle);
+    const p0 = Vec2.add(center, .{ .x = cs * radii.x, .y = ss * radii.y });
+    const p3 = Vec2.add(center, .{ .x = ce * radii.x, .y = se * radii.y });
+    const handle = (4.0 / 3.0) * @tan(span * 0.25);
+    const tangent0 = Vec2.new(-ss * radii.x, cs * radii.y);
+    const tangent1 = Vec2.new(-se * radii.x, ce * radii.y);
+    path.band_curve_count += 1;
+    try path.appendSegment(CurveSegment.fromCubic(.{
+        .p0 = p0,
+        .p1 = Vec2.add(p0, Vec2.scale(tangent0, handle)),
+        .p2 = Vec2.sub(p3, Vec2.scale(tangent1, handle)),
+        .p3 = p3,
+    }));
 }
 
 fn pointsApproxEqual(a: Vec2, b: Vec2) bool {
@@ -228,19 +269,22 @@ pub fn offsetCurvePoint(curve: CurveSegment, t: f32, offset: f32) Vec2 {
     };
 }
 
-/// Build a quadratic that approximates the offset of `curve` between
-/// the three sample points already computed at t=0, 0.5, 1.0. Callers
-/// that already have the unit tangents thread them in via
-/// `appendOffsetCurveApprox` to avoid recomputing on the hot path.
-fn fitOffsetQuadFromPoints(p0: Vec2, pm: Vec2, p2: Vec2) CurveSegment {
-    const control = Vec2.new(
-        pm.x * 2.0 - (p0.x + p2.x) * 0.5,
-        pm.y * 2.0 - (p0.y + p2.y) * 0.5,
-    );
-    return CurveSegment.fromQuad(.{ .p0 = p0, .p1 = control, .p2 = p2 });
+/// Tangent-constrained cubic fit of an offset span. Handles are bounded by the
+/// local chord instead of using the exact offset-derivative magnitude: inner
+/// offsets can pass through a cusp where that magnitude reverses and produces
+/// a remote Bézier loop. Adaptive subdivision supplies positional accuracy;
+/// the shared endpoint tangent directions keep adjacent spans G1-continuous.
+fn fitOffsetCubic(p0: Vec2, p3: Vec2, tangent0: Vec2, tangent1: Vec2) CurveSegment {
+    const handle = Vec2.length(Vec2.sub(p3, p0)) / 3.0;
+    return CurveSegment.fromCubic(.{
+        .p0 = p0,
+        .p1 = Vec2.add(p0, Vec2.scale(tangent0, handle)),
+        .p2 = Vec2.sub(p3, Vec2.scale(tangent1, handle)),
+        .p3 = p3,
+    });
 }
 
-/// Recursive offset-quad approximation, specialised on the curve kind
+/// Recursive offset-cubic approximation, specialised on the curve kind
 /// at comptime. The runtime switches inside `curve.evaluate`,
 /// `curve.derivative`, `curve.flatness`, `curve.split` resolve to a
 /// single branch each, which the compiler then inlines into the
@@ -255,6 +299,7 @@ fn appendOffsetCurveApproxKind(
     curve: CurveSegment,
     offset: f32,
     depth: u8,
+    tolerance: f32,
     tangent0: Vec2,
     tangent1: Vec2,
 ) !void {
@@ -268,24 +313,22 @@ fn appendOffsetCurveApproxKind(
 
     const tangent_mid = curveUnitTangentKind(kind, curve, 0.5);
     const p0 = offsetPointAtKind(kind, curve, 0.0, tangent0, offset);
-    const pm = offsetPointAtKind(kind, curve, 0.5, tangent_mid, offset);
-    const p2 = offsetPointAtKind(kind, curve, 1.0, tangent1, offset);
-    const fitted_quad = fitOffsetQuadFromPoints(p0, pm, p2);
+    const p3 = offsetPointAtKind(kind, curve, 1.0, tangent1, offset);
+    const fitted_cubic = fitOffsetCubic(p0, p3, tangent0, tangent1);
 
     var accept = depth == 0;
     if (!accept) {
-        const approx = fitted_quad.asQuad();
         var max_error: f32 = 0.0;
-        inline for ([_]f32{ 0.25, 0.75 }) |t| {
+        inline for ([_]f32{ 0.125, 0.25, 0.375, 0.5, 0.625, 0.75, 0.875 }) |t| {
             const expected = offsetCurvePointKind(kind, curve, t, offset);
-            const actual = approx.evaluate(t);
+            const actual = fitted_cubic.evaluateKind(.cubic, t);
             max_error = @max(max_error, Vec2.length(Vec2.sub(expected, actual)));
         }
-        accept = max_error <= kPathStrokeOffsetTolerance;
+        accept = max_error <= tolerance;
     }
 
     if (accept) {
-        // The fitted quad's p0 was computed from `curve`'s t=0 tangent
+        // The fitted cubic's p0 was computed from `curve`'s t=0 tangent
         // independently of any previous offset segment. For consecutive
         // offset segments — whether across an input-curve join, across
         // the join inserted by `appendStrokeJoinForSide`, or across a
@@ -293,17 +336,19 @@ fn appendOffsetCurveApproxKind(
         // ~1 ULP. Force the fitted quad to start where the path
         // currently is so the contour-continuity contract holds bit-
         // exactly through f16 quantization.
-        var fitted = fitted_quad;
+        var fitted = fitted_cubic;
         const contour = path.requireContour() orelse return error.PathMissingMoveTo;
+        const start_delta = Vec2.sub(contour.current_point, fitted.p0);
         fitted.p0 = contour.current_point;
+        fitted.p1 = Vec2.add(fitted.p1, start_delta);
         path.band_curve_count += 1;
-        try path.appendSegmentKind(.quadratic, fitted);
+        try path.appendSegmentKind(.cubic, fitted);
         return;
     }
 
     const halves = curve.splitKind(kind, 0.5);
-    try appendOffsetCurveApproxKind(kind, path, halves[0], offset, depth - 1, tangent0, tangent_mid);
-    try appendOffsetCurveApproxKind(kind, path, halves[1], offset, depth - 1, tangent_mid, tangent1);
+    try appendOffsetCurveApproxKind(kind, path, halves[0], offset, depth - 1, tolerance, tangent0, tangent_mid);
+    try appendOffsetCurveApproxKind(kind, path, halves[1], offset, depth - 1, tolerance, tangent_mid, tangent1);
 }
 
 pub fn appendOffsetCurveApprox(
@@ -311,11 +356,12 @@ pub fn appendOffsetCurveApprox(
     curve: CurveSegment,
     offset: f32,
     depth: u8,
+    tolerance: f32,
 ) !void {
     const t0 = curveUnitTangent(curve, 0.0);
     const t1 = curveUnitTangent(curve, 1.0);
     switch (curve.kind) {
-        inline else => |k| try appendOffsetCurveApproxKind(k, path, curve, offset, depth, t0, t1),
+        inline else => |k| try appendOffsetCurveApproxKind(k, path, curve, offset, depth, tolerance, t0, t1),
     }
 }
 
@@ -359,43 +405,58 @@ pub const Path = struct {
         return self.curves.items.len == 0;
     }
 
+    fn clone(self: *const Path, allocator: std.mem.Allocator) !Path {
+        var copy = Path.init(allocator);
+        errdefer copy.deinit();
+        try copy.curves.appendSlice(allocator, self.curves.items);
+        try copy.contours.appendSlice(allocator, self.contours.items);
+        copy.bbox = self.bbox;
+        copy.band_curve_count = self.band_curve_count;
+        return copy;
+    }
+
     /// Normalize arbitrary source-space geometry into a small design space
     /// near the origin before it is quantized into the f16 curve format.
     /// `PreparedPath.design_to_source` carries the inverse placement, and its
     /// paint/stroke helpers keep the whole shape in the same coordinate frame.
     pub fn prepare(self: *const Path, allocator: std.mem.Allocator) !PreparedPath {
+        var source = try self.clone(allocator);
+        errdefer source.deinit();
         var design = Path.init(allocator);
         errdefer design.deinit();
 
         const bb = self.bounds() orelse return .{
+            .source = source,
             .design = design,
             .design_to_source = .identity,
             .source_to_design = .identity,
-            .source_scale = 1,
         };
         const width = bb.max.x - bb.min.x;
         const height = bb.max.y - bb.min.y;
         const extent = @max(width, height);
         if (!std.math.isFinite(extent) or extent <= 1.0 / 65536.0) return .{
+            .source = source,
             .design = design,
             .design_to_source = .identity,
             .source_to_design = .identity,
-            .source_scale = 1,
         };
 
-        const inv_extent = PREPARED_PATH_EXTENT / extent;
-        const source_per_design = extent / PREPARED_PATH_EXTENT;
+        const min_axis_extent = extent * std.math.floatEps(f32);
+        const scale_x = (2.0 * PREPARED_PATH_RADIUS) / (if (width > min_axis_extent) width else extent);
+        const scale_y = (2.0 * PREPARED_PATH_RADIUS) / (if (height > min_axis_extent) height else extent);
+        const center_x = bb.min.x + width * 0.5;
+        const center_y = bb.min.y + height * 0.5;
         const source_to_design = Transform2D{
-            .xx = inv_extent,
-            .yy = inv_extent,
-            .tx = -bb.min.x * inv_extent,
-            .ty = -bb.min.y * inv_extent,
+            .xx = scale_x,
+            .yy = scale_y,
+            .tx = -center_x * scale_x,
+            .ty = -center_y * scale_y,
         };
         const design_to_source = Transform2D{
-            .xx = source_per_design,
-            .yy = source_per_design,
-            .tx = bb.min.x,
-            .ty = bb.min.y,
+            .xx = 1.0 / scale_x,
+            .yy = 1.0 / scale_y,
+            .tx = center_x,
+            .ty = center_y,
         };
 
         for (self.contours.items) |contour| {
@@ -408,10 +469,10 @@ pub const Path = struct {
         }
 
         return .{
+            .source = source,
             .design = design,
             .design_to_source = design_to_source,
             .source_to_design = source_to_design,
-            .source_scale = source_per_design,
         };
     }
 
@@ -658,7 +719,16 @@ pub const Path = struct {
         self: *const Path,
         allocator: std.mem.Allocator,
         stroke: StrokeStyle,
-    ) !?struct { curves: []CurveSegment, bbox: BBox, logical_curve_count: usize } {
+    ) !?StrokedCurves {
+        return self.cloneStrokedCurvesWithTolerance(allocator, stroke, kPathStrokeOffsetTolerance);
+    }
+
+    fn cloneStrokedCurvesWithTolerance(
+        self: *const Path,
+        allocator: std.mem.Allocator,
+        stroke: StrokeStyle,
+        tolerance: f32,
+    ) !?StrokedCurves {
         if (stroke.width <= 1e-4 or self.contours.items.len == 0) return null;
 
         var outline = Path.init(allocator);
@@ -666,9 +736,9 @@ pub const Path = struct {
 
         for (self.contours.items) |contour| {
             if (contour.closed) {
-                try path_stroke.buildClosedStrokeContours(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+                try path_stroke.buildClosedStrokeContours(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke, tolerance);
             } else {
-                try path_stroke.buildOpenStrokeContour(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke);
+                try path_stroke.buildOpenStrokeContour(&outline, self.curves.items[contour.curve_start..contour.curve_end], stroke, tolerance);
             }
         }
 
@@ -696,17 +766,18 @@ fn transformCurve(curve: CurveSegment, transform: Transform2D) CurveSegment {
     return out;
 }
 
-/// A path expressed in Snail's precision-safe design space. Geometry is kept
-/// near the origin with a uniform scale so aspect ratios, circular strokes,
-/// and conic weights are preserved. Compose `design_to_source` into the
-/// shape's local transform when emitting the packed curves.
+/// A path expressed in Snail's precision-safe design space. Each non-degenerate
+/// bbox axis spans `[-1,1]`; `design_to_source` restores the original aspect
+/// ratio when the shape is drawn. Strokes are outlined in source space before
+/// this normalization, so the independent axis scales cannot distort them.
 pub const PreparedPath = struct {
+    source: Path,
     design: Path,
     design_to_source: Transform2D,
     source_to_design: Transform2D,
-    source_scale: f32,
 
     pub fn deinit(self: *PreparedPath) void {
+        self.source.deinit();
         self.design.deinit();
         self.* = undefined;
     }
@@ -725,20 +796,25 @@ pub const PreparedPath = struct {
         scratch: std.mem.Allocator,
         source_stroke: StrokeStyle,
     ) !@import("atlas/curves.zig").GlyphCurves {
-        return @import("paths.zig").strokeToCurves(allocator, scratch, &self.design, self.strokeForDesign(source_stroke));
+        const paths = @import("paths.zig");
+        const max_design_scale = @max(@abs(self.source_to_design.xx), @abs(self.source_to_design.yy));
+        const source_tolerance = kPreparedStrokeOffsetTolerance / @max(max_design_scale, std.math.floatEps(f32));
+        const result = (try self.source.cloneStrokedCurvesWithTolerance(scratch, source_stroke, source_tolerance)) orelse
+            return @import("atlas/curves.zig").GlyphCurves.empty(allocator);
+        defer scratch.free(result.curves);
+
+        var design_bbox: ?BBox = null;
+        for (result.curves) |*curve| {
+            curve.* = transformCurve(curve.*, self.source_to_design);
+            const curve_bbox = curve.boundingBox();
+            design_bbox = if (design_bbox) |bbox| bbox.merge(curve_bbox) else curve_bbox;
+        }
+        return paths.packCurves(allocator, scratch, result.curves, design_bbox orelse return error.EmptyPath, result.logical_curve_count);
     }
 
     /// Re-express source-space paint parameters in the prepared design space.
     pub fn paintForDesign(self: *const PreparedPath, source_paint: paint_mod.Paint) paint_mod.Paint {
         return paint_mod.mapToLocal(source_paint, self.design_to_source) orelse source_paint;
-    }
-
-    /// Normalize stroke width and paint together with the path geometry.
-    pub fn strokeForDesign(self: *const PreparedPath, source_stroke: StrokeStyle) StrokeStyle {
-        var stroke = source_stroke;
-        stroke.width /= self.source_scale;
-        stroke.paint = self.paintForDesign(source_stroke.paint);
-        return stroke;
     }
 
     /// Compose an existing source/world transform with the placement needed to
@@ -757,10 +833,10 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
     defer prepared.deinit();
 
     const design_bounds = prepared.design.bounds().?;
-    try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.x, 1e-6);
-    try std.testing.expectApproxEqAbs(@as(f32, 0), design_bounds.min.y, 1e-6);
-    try std.testing.expectApproxEqAbs(PREPARED_PATH_EXTENT, design_bounds.max.x, 1e-6);
-    try std.testing.expectApproxEqAbs(PREPARED_PATH_EXTENT * 0.5, design_bounds.max.y, 1e-6);
+    try std.testing.expectApproxEqAbs(-PREPARED_PATH_RADIUS, design_bounds.min.x, 1e-6);
+    try std.testing.expectApproxEqAbs(-PREPARED_PATH_RADIUS, design_bounds.min.y, 1e-6);
+    try std.testing.expectApproxEqAbs(PREPARED_PATH_RADIUS, design_bounds.max.x, 1e-6);
+    try std.testing.expectApproxEqAbs(PREPARED_PATH_RADIUS, design_bounds.max.y, 1e-6);
 
     const restored_min = prepared.design_to_source.applyPoint(design_bounds.min);
     const restored_max = prepared.design_to_source.applyPoint(design_bounds.max);
@@ -769,9 +845,73 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
     try std.testing.expectApproxEqAbs(@as(f32, 5200), restored_max.x, 1e-3);
     try std.testing.expectApproxEqAbs(@as(f32, -2900), restored_max.y, 1e-3);
 
-    const stroke = prepared.strokeForDesign(.{
+    var stroke_curves = try prepared.strokeCurves(std.testing.allocator, std.testing.allocator, .{
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
         .width = 10,
     });
-    try std.testing.expectApproxEqAbs(@as(f32, 3.2), stroke.width, 1e-6);
+    defer stroke_curves.deinit();
+    try std.testing.expectApproxEqAbs(@as(f32, -1.05), stroke_curves.bbox.min.x, 0.002);
+    try std.testing.expectApproxEqAbs(@as(f32, -1.1), stroke_curves.bbox.min.y, 0.002);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.05), stroke_curves.bbox.max.x, 0.002);
+    try std.testing.expectApproxEqAbs(@as(f32, 1.1), stroke_curves.bbox.max.y, 0.002);
+}
+
+test "cubic stroke outline keeps adaptive span joins tangent-continuous" {
+    var source = Path.init(std.testing.allocator);
+    defer source.deinit();
+    try source.moveTo(.{ .x = 0.08, .y = 0.7 });
+    try source.cubicTo(
+        .{ .x = 0.3, .y = -0.1 },
+        .{ .x = 0.7, .y = 1.1 },
+        .{ .x = 0.92, .y = 0.3 },
+    );
+
+    const outline = (try source.cloneStrokedCurvesWithTolerance(std.testing.allocator, .{
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+        .width = 0.08,
+        .cap = .round,
+        .join = .round,
+    }, 1.0 / 16384.0)).?;
+    defer std.testing.allocator.free(outline.curves);
+
+    // A fit handle must never escape the local swept region. The exact-
+    // derivative Hermite experiment produced a detached island far to the
+    // left when the inner offset crossed a curvature cusp.
+    try std.testing.expect(outline.bbox.min.x >= 0.03);
+    try std.testing.expect(outline.bbox.max.x <= 0.97);
+    try std.testing.expect(outline.bbox.min.y >= -0.15);
+    try std.testing.expect(outline.bbox.max.y <= 1.15);
+    const detached_probe = BBox{
+        .min = .{ .x = 0.035, .y = 0.27 },
+        .max = .{ .x = 0.125, .y = 0.33 },
+    };
+    for (outline.curves, 0..) |curve, i| {
+        if (!curve.boundingBox().intersects(detached_probe)) continue;
+        std.debug.print("unexpected stroke curve {d} ({s}) intersects detached-island probe\n", .{ i, @tagName(curve.kind) });
+        return error.DetachedStrokeGeometry;
+    }
+
+    var cubic_joins: usize = 0;
+    for (outline.curves[0 .. outline.curves.len - 1], outline.curves[1..]) |left, right| {
+        if (left.kind != .cubic or right.kind != .cubic) continue;
+        const left_tangent = Vec2.normalize(left.derivative(1.0));
+        const right_tangent = Vec2.normalize(right.derivative(0.0));
+        try std.testing.expect(Vec2.dot(left_tangent, right_tangent) > 0.9999);
+        try std.testing.expect(@abs(cross2(left_tangent, right_tangent)) < 0.001);
+        cubic_joins += 1;
+    }
+    try std.testing.expect(cubic_joins > 0);
+}
+
+test "semicircular stroke cap uses two tangent-continuous cubic arcs" {
+    var cap = Path.init(std.testing.allocator);
+    defer cap.deinit();
+    try cap.moveTo(.{ .x = 1, .y = 0 });
+    try appendAdaptiveArcCubic(&cap, .zero, .{ .x = 1, .y = 1 }, 0, std.math.pi);
+    try std.testing.expectEqual(@as(usize, 2), cap.curves.items.len);
+    try std.testing.expectEqual(bezier.CurveKind.cubic, cap.curves.items[0].kind);
+    try std.testing.expectEqual(bezier.CurveKind.cubic, cap.curves.items[1].kind);
+    const left_tangent = Vec2.normalize(cap.curves.items[0].derivative(1));
+    const right_tangent = Vec2.normalize(cap.curves.items[1].derivative(0));
+    try std.testing.expect(Vec2.dot(left_tangent, right_tangent) > 0.9999);
 }

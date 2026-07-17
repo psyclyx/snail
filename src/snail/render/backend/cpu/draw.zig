@@ -697,10 +697,10 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
         for (offsets) |ox| {
             for (offsets) |oy| {
                 const inv = (Transform2D{
-                    .xx = scale * prepared_path.source_scale,
+                    .xx = scale * prepared_path.design_to_source.xx,
                     .xy = 0,
                     .yx = 0,
-                    .yy = scale * prepared_path.source_scale,
+                    .yy = scale * prepared_path.design_to_source.yy,
                     .tx = ox,
                     .ty = oy,
                 }).inverse().?;
@@ -722,6 +722,88 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
                     }
                 }
             }
+        }
+    }
+    try testing.expect(worst < 0.01);
+}
+
+test "cubic stroke has no detached coverage island near its start cap" {
+    if (!build_options.enable_cpu) return error.SkipZigTest;
+    const allocator = testing.allocator;
+    const coverage = @import("coverage.zig");
+    const geometry = @import("geometry.zig");
+    const Vec2 = math.Vec2;
+
+    var path = @import("snail_core").files.path.Path.init(allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0.08, .y = 0.7 });
+    try path.cubicTo(
+        .{ .x = 0.3, .y = -0.1 },
+        .{ .x = 0.7, .y = 1.1 },
+        .{ .x = 0.92, .y = 0.3 },
+    );
+    var prepared = try path.prepare(allocator);
+    defer prepared.deinit();
+    var curves = try prepared.strokeCurves(allocator, allocator, .{
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+        .width = 0.08,
+        .cap = .round,
+        .join = .round,
+    });
+    defer curves.deinit();
+
+    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    const key = @import("snail_core").files.atlas_record_key.RecordKey{
+        .namespace = @import("snail_core").files.atlas_record_key.ns.path_stroke,
+        .a = 0,
+    };
+    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{
+        .key = key,
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas.deinit();
+
+    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    const page = &cache.prepared[0].?;
+    const layer = cache.snapshotFor(bindings[0].generation).?.path_layers[0];
+    const be = layer.band_entry;
+
+    const screen_scale: f32 = 300.0;
+    const inv = (Transform2D{
+        .xx = screen_scale * prepared.design_to_source.xx,
+        .yy = screen_scale * prepared.design_to_source.yy,
+    }).inverse().?;
+    const epp = geometry.glyphEdgePixelsPerPixel(inv);
+    const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
+
+    var worst: f32 = 0.0;
+    var sy: f32 = 0.25;
+    while (sy <= 0.45) : (sy += 0.0025) {
+        var sx: f32 = 0.04;
+        while (sx <= 0.11) : (sx += 0.0025) {
+            const design = prepared.source_to_design.applyPoint(.{ .x = sx, .y = sy });
+            worst = @max(worst, coverage.evalGlyphCoverageBandSpan(
+                page,
+                design.x,
+                design.y,
+                epp.x,
+                epp.y,
+                ppe.x,
+                ppe.y,
+                be,
+                layer.band_max_h,
+                layer.band_max_v,
+                layer.fill_rule,
+            ));
         }
     }
     try testing.expect(worst < 0.01);

@@ -430,9 +430,22 @@ inline fn accumulateGlyphCoverageSegment(
             if (isEndpointRootDelta(end_root_delta)) continue;
         }
         const point = if (segment.kind == .cubic and t == 1.0) segment.p3 else segment.evaluate(t);
-        const deriv = segment.derivative(t);
-        const derivative_axis = if (horizontal) deriv.y else -deriv.x;
-        if (@abs(derivative_axis) <= 1e-5) continue;
+        const derivative_axis = if (segment.kind == .cubic) blk: {
+            // Packed cubics are split into monotonic spans.  Their winding
+            // direction is therefore determined by the span endpoints, even
+            // when the crossing is a stationary inflection (or merely has a
+            // very small derivative after path normalization).  A fixed
+            // derivative epsilon is coordinate-scale dependent and used to
+            // drop these valid crossings.
+            break :blk if (horizontal)
+                segment.p3.y - segment.p0.y
+            else
+                segment.p0.x - segment.p3.x;
+        } else blk: {
+            const deriv = segment.derivative(t);
+            break :blk if (horizontal) deriv.y else -deriv.x;
+        };
+        if (segment.kind != .cubic and @abs(derivative_axis) <= 1e-5) continue;
         const distance = if (horizontal)
             (point.x - sample_rc.x) * ppe
         else
@@ -557,10 +570,6 @@ inline fn evaluatePreparedCubicAlong(curve: *const PreparedAxisCurve, cold: *con
     return ((cold.cubic_a_along * t + cold.cubic_b_along) * t + cold.cubic_c_along) * t + curve.p0_along;
 }
 
-inline fn derivativePreparedCubicRoot(cold: *const PreparedAxisCurveCold, t: f32) f32 {
-    return (3.0 * cold.cubic_a_root * t + 2.0 * cold.cubic_b_root) * t + cold.cubic_c_root;
-}
-
 fn preparedCurveCold(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) *const PreparedAxisCurveCold {
     if (curve.cold_index >= cold_curves.len) {
         @panic("prepared conic/cubic curve is missing cold coefficient data");
@@ -649,11 +658,14 @@ pub inline fn accumulatePreparedCurveCoverage(
         };
         const root_deriv = switch (curve.kind) {
             .conic => derivativePreparedConicRoot(cold, t),
-            .cubic => derivativePreparedCubicRoot(cold, t),
+            // Cubics are monotonic spans, so endpoint direction is the
+            // scale-invariant winding sign.  Do not reject a valid crossing
+            // because normalization made its local derivative tiny.
+            .cubic => cold.cubic_p3_root - curve.p0_root,
             .quadratic, .line => unreachable,
         };
         const derivative_axis = if (horizontal) root_deriv else -root_deriv;
-        if (@abs(derivative_axis) <= 1e-5) continue;
+        if (curve.kind != .cubic and @abs(derivative_axis) <= 1e-5) continue;
         const distance = (along - sample_along) * ppe;
         appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
     }
@@ -1116,8 +1128,7 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             const roots = solvePreparedCubicRoots(curve, cold, sample_root);
             for (roots.t[0..roots.count], 0..) |t, idx| {
                 if (idx >= 3) break;
-                const root_deriv = derivativePreparedCubicRoot(cold, t);
-                if (@abs(root_deriv) <= 1e-5) continue;
+                const root_deriv = cold.cubic_p3_root - curve.p0_root;
                 entry.along[idx] = evaluatePreparedCubicAlong(curve, cold, t);
                 entry.sign[idx] = if (root_deriv > 0.0) 1.0 else -1.0;
             }
@@ -1623,6 +1634,33 @@ pub fn evalGlyphCoverageSubpixelRowH(
 
 const subpixel_eval = @import("coverage/subpixel_eval.zig");
 pub const evalGlyphCoverageSubpixel = subpixel_eval.evalGlyphCoverageSubpixel;
+
+test "monotonic cubic winding is invariant under path normalization" {
+    // y(t) = (t - 0.5)^3 + epsilon * (t - 0.5).  It crosses y=0 at
+    // t=0.5 with a small but non-zero derivative.  Scaling the same curve
+    // into the canonical design frame must not change whether that crossing
+    // exists.
+    const epsilon: f32 = 1e-4;
+    const scales = [_]f32{ 1.0, 1.0 / 304.0 };
+
+    for (scales) |scale| {
+        const segment = CurveSegment.fromCubic(.{
+            .p0 = .{ .x = scale, .y = (-0.125 - 0.5 * epsilon) * scale },
+            .p1 = .{ .x = scale, .y = (0.125 - epsilon / 6.0) * scale },
+            .p2 = .{ .x = scale, .y = (-0.125 + epsilon / 6.0) * scale },
+            .p3 = .{ .x = scale, .y = (0.125 + 0.5 * epsilon) * scale },
+        });
+        var pair = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+        _ = accumulateGlyphCoverageSegment(
+            &pair,
+            segment,
+            .zero,
+            1.0 / scale,
+            true,
+        );
+        try std.testing.expectApproxEqAbs(@as(f32, 1.0), pair.cov, 1e-6);
+    }
+}
 
 test "hinted segment decodes absolute layer-info control points" {
     // Snapshot layer-info slab holds absolute hinted positions directly;

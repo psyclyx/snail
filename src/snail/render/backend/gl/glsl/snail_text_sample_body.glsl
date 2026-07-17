@@ -99,9 +99,7 @@ vec4 snail_text_sample_premul_linear(vec2 scene_pos) {
         int atlas_layer = u_layer_base + layer_byte;
         ivec2 glyph_loc = ivec2(int(gz & 0xFFFFu), int(gz >> 16u));
         ivec2 band_max = ivec2(int((gw >> 16u) & 0xFFu), int(gw & 0xFFFFu));
-        vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-        vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-        vec2 epp = vec2(length(dx), length(dy));
+        vec2 epp = fwidth(rc);
         vec2 ppe = vec2(1.0 / max(epp.x, 1.0 / 65536.0),
                         1.0 / max(epp.y, 1.0 / 65536.0));
         float cov = evalGlyphCoverage(rc, epp, ppe, glyph_loc, band_max, record.banding, atlas_layer);

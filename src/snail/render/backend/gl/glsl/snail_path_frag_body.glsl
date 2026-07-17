@@ -33,11 +33,13 @@ struct SegmentData {
     vec3 weights;
 };
 
-bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, out float tOut) {
+bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDelta, out float tOut) {
     // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
     // monotonic along both sampling axes and can contribute at most one root.
     float f0 = d;
-    float f1 = ((a + b) + cVal) + d;
+    // Use the uploaded p3 directly. Reconstructing f(1) through a+b+c+d
+    // loses enough precision near shallow extrema to corrupt the bracket.
+    float f1 = endDelta;
     if ((f0 < -kCoordEps && f1 < -kCoordEps) || (f0 > kCoordEps && f1 > kCoordEps)) return false;
 
     float lo = 0.0;
@@ -395,7 +397,7 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
         t = 0.0;
     } else if (abs(endDelta) <= kCoordEps) {
         t = 1.0;
-    } else if (!solveMonotonicCubicRoot(rootA, rootB, rootC, startDelta, t)) {
+    } else if (!solveMonotonicCubicRoot(rootA, rootB, rootC, startDelta, endDelta, t)) {
         return;
     }
 
@@ -404,9 +406,11 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float alongC = -3.0 * p0Along + 3.0 * p1Along;
 
     float along = (t == 1.0) ? p3Along : ((alongA * t + alongB) * t + alongC) * t + p0Along;
-    float derivAxis = (3.0 * rootA * t + 2.0 * rootB) * t + rootC;
-    if (!horizontal) derivAxis = -derivAxis;
-    if (abs(derivAxis) <= kParamEps) return;
+    // Cubics are packed as monotonic spans.  Endpoint direction is the
+    // scale-invariant winding sign, including stationary inflections and
+    // near-tangent crossings whose derivative becomes tiny when a source path
+    // is normalized into its unit design frame.
+    float derivAxis = horizontal ? p3Root - p0Root : p0Root - p3Root;
 
     float dist = (along - sampleAlong) * ppe;
     appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
@@ -675,9 +679,7 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
 
 void snailPathFragment() {
     vec2 rc = v_texcoord;
-    vec2 dx = vec2(dFdx(rc.x), dFdy(rc.x));
-    vec2 dy = vec2(dFdx(rc.y), dFdy(rc.y));
-    vec2 epp = vec2(length(dx), length(dy));
+    vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
     int special_kind = v_glyph.w & 0xFF;
