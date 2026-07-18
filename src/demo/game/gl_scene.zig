@@ -136,7 +136,7 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
                 scene.material_model,
                 .{ scene_mod.material_scene_w, scene_mod.material_scene_h },
                 scene_mod.material_base_color,
-                scene.lightDir(),
+                scene.materialLightDir(),
                 scene_mod.material_relief,
                 scene_mod.material_roughness,
                 output_srgb,

@@ -104,4 +104,9 @@ test "catalog sources and filenames describe the same atomic fragments" {
         try std.testing.expect(std.mem.endsWith(u8, fileName(fragment), ".glsl"));
         try std.testing.expect(std.mem.indexOf(u8, source(fragment), "void main") == null);
     }
+    try std.testing.expect(std.mem.indexOf(
+        u8,
+        source(.text_sample_body),
+        "snail_text_sample_premul_linear_with_footprint",
+    ) != null);
 }

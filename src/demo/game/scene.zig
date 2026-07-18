@@ -1,7 +1,7 @@
 //! Backend-agnostic scene for the game demo.
 //!
 //! Owns the shared `Fonts` and the snail `PreparedPass`es for every element,
-//! plus the world transforms + orbit camera + light. The driver computes
+//! plus the world transforms + orbit camera. The driver computes
 //! `view_proj` from the camera each frame and renders:
 //!
 //!   1. the **material quad** — an opaque lit surface whose custom fragment
@@ -101,9 +101,6 @@ pub const Scene = struct {
     panel_plane: Plane,
 
     cam: OrbitCamera = .{},
-    /// Phase of the tangent-space light that rakes across the material surface.
-    light_phase: f32 = 0.7,
-
     // Last window size the HUD was laid out for, so we rebuild on resize.
     hud_w: u32 = 0,
     hud_h: u32 = 0,
@@ -197,16 +194,26 @@ pub const Scene = struct {
         return camDist2(cam, self.label_plane.pos) >= camDist2(cam, self.panel_plane.pos);
     }
 
-    /// Tangent-space light direction for the material surface; sweeps with
-    /// `light_phase` so the light rakes across the roughness + text relief.
-    pub fn lightDir(self: *const Scene) [3]f32 {
-        const a = self.light_phase;
-        var v = [3]f32{ @cos(a) * 0.85, @sin(a * 0.8) * 0.5 + 0.12, 0.6 };
-        const len = @sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
-        v[0] /= len;
-        v[1] /= len;
-        v[2] /= len;
-        return v;
+    /// A studio light fixed in view space, transformed into the material's
+    /// tangent frame. It has no independent animation: orbiting the scene is
+    /// the only thing that changes the light direction seen by the surface.
+    pub fn materialLightDir(self: *const Scene) [3]f32 {
+        const camera = self.cam.camera();
+        const view_to_world = snail.Mat4.multiply(common.rotateY(camera.yaw), common.rotateX(camera.pitch));
+        const world_light = common.transformVector(view_to_world, .{
+            .x = material_light_view_dir[0],
+            .y = material_light_view_dir[1],
+            .z = material_light_view_dir[2],
+        });
+
+        const x = normalizedModelAxis(self.material_model, 0);
+        const y = normalizedModelAxis(self.material_model, 1);
+        const z = normalizedModelAxis(self.material_model, 2);
+        return .{
+            dot(world_light, x),
+            dot(world_light, y),
+            dot(world_light, z),
+        };
     }
 };
 
@@ -217,10 +224,22 @@ fn camDist2(cam: Vec3, p: Vec3) f32 {
     return dx * dx + dy * dy + dz * dz;
 }
 
+fn normalizedModelAxis(model: snail.Mat4, column: usize) Vec3 {
+    const base = column * 4;
+    const axis = Vec3{ .x = model.data[base], .y = model.data[base + 1], .z = model.data[base + 2] };
+    const inv_len = 1.0 / @sqrt(dot(axis, axis));
+    return .{ .x = axis.x * inv_len, .y = axis.y * inv_len, .z = axis.z * inv_len };
+}
+
+fn dot(a: Vec3, b: Vec3) f32 {
+    return a.x * b.x + a.y * b.y + a.z * b.z;
+}
+
 // Material surface parameters (linear).
 pub const material_base_color = [4]f32{ 0.055, 0.065, 0.085, 1.0 };
-pub const material_relief: f32 = 1.7;
-pub const material_roughness: f32 = 1.1;
+pub const material_light_view_dir = [3]f32{ 0.38, 0.48, 0.79 };
+pub const material_relief: f32 = 0.65;
+pub const material_roughness: f32 = 0.018;
 
 // ── Content builders ──
 

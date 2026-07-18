@@ -217,7 +217,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
             }
         }
 
-        /// Draw the material quad. `light` is a precomputed lambert-ish scalar.
+        /// Draw the material quad under the demo's fixed tangent-space light.
         pub fn draw(
             self: *const Self,
             cache: *const Cache,
@@ -326,8 +326,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             \\
             \\void main() {
             \\    vec2 scene_pos = vec2(v_uv.x * u_scene_size.x, (1.0 - v_uv.y) * u_scene_size.y);
-            \\    vec2 texel = u_scene_size * 0.009;
-            \\    vec3 lin = snailGameMaterial(v_uv, scene_pos, texel, u_light_dir, u_base_color, u_relief, u_roughness);
+            \\    vec2 scene_dx = dFdx(scene_pos);
+            \\    vec2 scene_dy = dFdy(scene_pos);
+            \\    vec3 lin = snailGameMaterial(v_uv, scene_pos, scene_dx, scene_dy, u_light_dir, u_base_color, u_relief, u_roughness);
             \\    vec3 outc = (u_output_srgb == 1) ? encodeSrgb(lin) : lin;
             \\    frag_color = vec4(outc, 1.0);
             \\}

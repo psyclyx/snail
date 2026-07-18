@@ -310,7 +310,7 @@ pub const VkSceneRenderer = struct {
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.material_pipeline);
         var sets = [2]vk.VkDescriptorSet{ desc0, self.ssbo_set };
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.material_layout, 0, 2, &sets, 0, null);
-        const ld = scene.lightDir();
+        const ld = scene.materialLightDir();
         var push = MaterialPush{
             .mvp = snail.Mat4.multiply(view_proj, scene.material_model).data,
             .base_color = scene_mod.material_base_color,
