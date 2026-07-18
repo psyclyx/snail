@@ -8,7 +8,6 @@
 
 const std = @import("std");
 
-const build_options = @import("build_options");
 const snail = @import("snail");
 const math = @import("snail");
 const draw_records = @import("snail");
@@ -37,10 +36,7 @@ pub const DrawError = error{
     MalformedSegment,
 };
 
-const RendererPtr = if (build_options.enable_raster)
-    *@import("renderer.zig").Renderer
-else
-    *opaque {};
+const RendererPtr = *@import("renderer.zig").Renderer;
 
 /// Render `records` into `renderer`'s pixel buffer. `caches` provides the
 /// CPU-side prepared data for the pools referenced by `records.segments`.
@@ -59,7 +55,6 @@ pub fn draw(
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
 ) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
-    if (!build_options.enable_raster) return error.MalformedSegment;
     for (records.segments) |seg| {
         const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
         if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) {
@@ -120,7 +115,6 @@ fn findCache(
 const testing = std.testing;
 
 test "draw MissingBinding when no cache covers the binding's pool" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
 
     var pool_a = try @import("snail").PagePool.init(allocator, .{
@@ -154,7 +148,6 @@ test "draw MissingBinding when no cache covers the binding's pool" {
 }
 
 test "draw autohint fits per size without mutating atlas resources" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
     const atlas_mod = @import("snail");
@@ -280,7 +273,6 @@ test "draw autohint fits per size without mutating atlas resources" {
 }
 
 test "draw renders a small Picture into non-zero pixels" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -356,7 +348,6 @@ test "draw renders a small Picture into non-zero pixels" {
 }
 
 test "draw renders gradient-painted glyph through special-layer path" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -444,7 +435,6 @@ test "draw renders gradient-painted glyph through special-layer path" {
 }
 
 test "draw renders image-painted shape through special-layer path" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
 
     const W: u32 = 32;
@@ -546,7 +536,6 @@ test "draw renders image-painted shape through special-layer path" {
 }
 
 test "draw threaded matches single-threaded pixel-for-pixel" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -646,7 +635,6 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     // The old Cardano/quadratic cubic solver dropped that near-endpoint root in
     // a hair-thin column, collapsing V-coverage to 0 and painting a white line
     // down the shape on the CPU (the GPU's monotonic solver stayed correct).
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const coverage = @import("coverage.zig");
     const geometry = @import("geometry.zig");
@@ -729,7 +717,6 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
 }
 
 test "cubic stroke has no detached coverage island near its start cap" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const coverage = @import("coverage.zig");
     const geometry = @import("geometry.zig");
@@ -824,7 +811,6 @@ fn makeIdentityState(w: u32, h: u32) snail.DrawState {
 }
 
 test "draw scissor_rect clips writes to the rect" {
-    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
