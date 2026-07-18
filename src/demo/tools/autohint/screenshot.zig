@@ -5,9 +5,9 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const compare_mod = @import("autohint/compare.zig");
-const harness = @import("screenshot/harness.zig");
-const egl_offscreen = @import("platform/offscreen_gl.zig");
+const compare_mod = @import("../../autohint/compare.zig");
+const harness = @import("../../screenshot/harness.zig");
+const egl_offscreen = @import("../../platform/offscreen_gl.zig");
 
 const W: u32 = 896; // two grid columns of gridWidthPx (448) each
 const H: u32 = compare_mod.default_viewport_height;

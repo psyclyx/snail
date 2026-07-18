@@ -2,9 +2,9 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const demo_banner = @import("scene/banner/root.zig");
-const harness = @import("screenshot/harness.zig");
-const egl_offscreen = @import("platform/offscreen_gl.zig");
+const demo_banner = @import("../../scene/banner/root.zig");
+const harness = @import("../../screenshot/harness.zig");
+const egl_offscreen = @import("../../platform/offscreen_gl.zig");
 
 const W: u32 = 1280;
 const H: u32 = 720;

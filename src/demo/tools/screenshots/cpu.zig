@@ -5,8 +5,8 @@
 //! per-backend flow lives in `screenshot/harness.zig`.
 
 const std = @import("std");
-const demo_content = @import("scene/content.zig");
-const harness = @import("screenshot/harness.zig");
+const demo_content = @import("../../scene/content.zig");
+const harness = @import("../../screenshot/harness.zig");
 
 const W: u32 = 400;
 const H: u32 = 240;

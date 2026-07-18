@@ -10,11 +10,11 @@
 //!   - a HUD whose top line is the live renderer + perf readout.
 
 const std = @import("std");
-const wayland = @import("platform/wayland.zig");
-const driver_common = @import("driver/common.zig");
-const game_driver = @import("game/driver.zig");
-const passes = @import("game/passes.zig");
-const scene_mod = @import("game/scene.zig");
+const wayland = @import("../platform/wayland.zig");
+const driver_common = @import("../driver/common.zig");
+const game_driver = @import("../game/driver.zig");
+const passes = @import("../game/passes.zig");
+const scene_mod = @import("../game/scene.zig");
 
 const KEY_C = wayland.KEY_C;
 const KEY_R = wayland.KEY_R;
@@ -105,6 +105,6 @@ pub fn main() !void {
 }
 
 test {
-    _ = @import("game/scene.zig");
-    _ = @import("game/driver.zig");
+    _ = @import("../game/scene.zig");
+    _ = @import("../game/driver.zig");
 }

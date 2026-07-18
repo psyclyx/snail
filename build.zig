@@ -17,6 +17,30 @@ const ProjectOptions = struct {
     enable_harfbuzz: bool = true,
 };
 
+const DemoEntry = enum {
+    banner,
+    game,
+    autohint_compare,
+    autohint_character_diff,
+    autohint_diff,
+    autohint_proportional,
+    autohint_screenshot,
+    backend_compare,
+    composite_probe,
+    coverage_probe,
+    gamma_probe,
+    screenshot_cpu,
+    screenshot_gl,
+    screenshot_gles30,
+    screenshot_vulkan,
+    banner_screenshot_cpu,
+    banner_screenshot_gl,
+    banner_screenshot_gles30,
+    banner_screenshot_vulkan,
+    game_screenshot_gl,
+    game_screenshot_vulkan,
+};
+
 fn createBuildOptionsModule(b: *std.Build, options: ProjectOptions) *std.Build.Module {
     const opts = b.addOptions();
     opts.addOption(bool, "enable_gl33", options.enable_gl33);
@@ -32,6 +56,12 @@ fn createModuleOptionsModule(b: *std.Build, options: ModuleOptions) *std.Build.M
     const opts = b.addOptions();
     opts.addOption(bool, "enable_harfbuzz", options.enable_harfbuzz);
     return opts.createModule();
+}
+
+fn selectDemoEntry(b: *std.Build, mod: *std.Build.Module, entry: DemoEntry) void {
+    const opts = b.addOptions();
+    opts.addOption(DemoEntry, "value", entry);
+    mod.addImport("demo_entry", opts.createModule());
 }
 
 fn configureDemoModule(
@@ -392,7 +422,7 @@ fn addTestSteps(
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
     const autohint_compare_test_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint/compare.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -403,12 +433,13 @@ fn addTestSteps(
             .{ .name = "support", .module = modules.support },
         },
     });
+    selectDemoEntry(b, autohint_compare_test_module, .autohint_compare);
     const autohint_compare_tests = b.addTest(.{ .root_module = autohint_compare_test_module });
     const run_autohint_compare_tests = b.addRunArtifact(autohint_compare_tests);
     test_step.dependOn(&run_autohint_compare_tests.step);
 
     const character_diff_test_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_character_diff.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -419,6 +450,7 @@ fn addTestSteps(
             .{ .name = "support", .module = modules.support },
         },
     });
+    selectDemoEntry(b, character_diff_test_module, .autohint_character_diff);
     const character_diff_tests = b.addTest(.{ .root_module = character_diff_test_module });
     test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
 
@@ -448,7 +480,7 @@ fn addScreenshotSteps(
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -459,6 +491,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, screenshot_cpu_mod, .screenshot_cpu);
     const screenshot_cpu_exe = b.addExecutable(.{ .name = "snail-screenshot", .root_module = screenshot_cpu_mod });
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
@@ -466,7 +499,7 @@ fn addScreenshotSteps(
 
     // Composable autohint policy comparison — CPU backend.
     const autohint_shot_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_screenshot.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -477,6 +510,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, autohint_shot_mod, .autohint_screenshot);
     configureEglOffscreenModule(autohint_shot_mod, modules.options, config.options, embed_gl_mod);
     const autohint_shot_exe = b.addExecutable(.{ .name = "snail-autohint-screenshot", .root_module = autohint_shot_mod });
     const run_autohint_shot = b.addRunArtifact(autohint_shot_exe);
@@ -485,7 +519,7 @@ fn addScreenshotSteps(
 
     // Autohint xy policy vs TrueType agreement metric + overlay — CPU backend.
     const autohint_diff_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_diff.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -496,13 +530,14 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, autohint_diff_mod, .autohint_diff);
     const autohint_diff_exe = b.addExecutable(.{ .name = "snail-autohint-diff", .root_module = autohint_diff_mod });
     const run_autohint_diff = b.addRunArtifact(autohint_diff_exe);
     const autohint_diff_step = b.step("run-autohint-diff", "Render the autohint xy policy vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
     autohint_diff_step.dependOn(&run_autohint_diff.step);
 
     const character_diff_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_character_diff.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -513,6 +548,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, character_diff_mod, .autohint_character_diff);
     const character_diff_exe = b.addExecutable(.{ .name = "snail-autohint-character-diff", .root_module = character_diff_mod });
     const run_character_diff = b.addRunArtifact(character_diff_exe);
     const character_diff_step = b.step("run-autohint-character-diff", "Write per-character TT/autohint contact sheets and metrics under zig-out/autohint-character-diff");
@@ -520,7 +556,7 @@ fn addScreenshotSteps(
 
     // Proportional-face spot check — CPU backend.
     const prop_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_proportional.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -531,6 +567,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, prop_mod, .autohint_proportional);
     const prop_exe = b.addExecutable(.{ .name = "snail-autohint-prop", .root_module = prop_mod });
     const prop_step = b.step("run-autohint-prop", "Render the autohint policies on a proportional TT-hinted face → zig-out/autohint-prop.tga");
     prop_step.dependOn(&b.addRunArtifact(prop_exe).step);
@@ -560,7 +597,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/banner_screenshot.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -571,6 +608,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, banner_screenshot_mod, .banner_screenshot_cpu);
     const banner_screenshot_exe = b.addExecutable(.{ .name = "snail-banner-screenshot", .root_module = banner_screenshot_mod });
     const run_banner_screenshot = b.addRunArtifact(banner_screenshot_exe);
     const banner_screenshot_step = b.step("run-banner-screenshot", "Render the full banner scene through the CPU backend and write zig-out/banner-screenshot.tga");
@@ -578,7 +616,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — GL 3.3 offscreen.
     const banner_screenshot_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/banner_screenshot_gl.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -589,6 +627,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, banner_screenshot_gl_mod, .banner_screenshot_gl);
     configureEglOffscreenModule(banner_screenshot_gl_mod, modules.options, config.options, embed_gl_mod);
     const banner_screenshot_gl_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gl", .root_module = banner_screenshot_gl_mod });
     const run_banner_screenshot_gl = b.addRunArtifact(banner_screenshot_gl_exe);
@@ -597,7 +636,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — GLES 3.0 offscreen.
     const banner_screenshot_gles30_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/banner_screenshot_gles30.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -608,6 +647,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, banner_screenshot_gles30_mod, .banner_screenshot_gles30);
     configureEglOffscreenModule(banner_screenshot_gles30_mod, modules.options, config.options, embed_gl_mod);
     const banner_screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-gles30", .root_module = banner_screenshot_gles30_mod });
     const run_banner_screenshot_gles30 = b.addRunArtifact(banner_screenshot_gles30_exe);
@@ -618,7 +658,7 @@ fn addScreenshotSteps(
     if (config.options.enable_vulkan) {
         const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const banner_screenshot_vk_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/banner_screenshot_vulkan.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -631,6 +671,7 @@ fn addScreenshotSteps(
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
+        selectDemoEntry(b, banner_screenshot_vk_mod, .banner_screenshot_vulkan);
         const banner_screenshot_vk_exe = b.addExecutable(.{ .name = "snail-banner-screenshot-vulkan", .root_module = banner_screenshot_vk_mod });
         const run_banner_screenshot_vk = b.addRunArtifact(banner_screenshot_vk_exe);
         const banner_screenshot_vk_step = b.step("run-banner-screenshot-vulkan", "Render the full banner scene through Vulkan and write zig-out/banner-screenshot-vulkan.tga");
@@ -639,7 +680,7 @@ fn addScreenshotSteps(
 
     // GL screenshot.
     const screenshot_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot_gl.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -650,6 +691,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, screenshot_gl_mod, .screenshot_gl);
     configureEglOffscreenModule(screenshot_gl_mod, modules.options, config.options, embed_gl_mod);
     const screenshot_gl_exe = b.addExecutable(.{ .name = "snail-screenshot-gl", .root_module = screenshot_gl_mod });
     const run_screenshot_gl = b.addRunArtifact(screenshot_gl_exe);
@@ -660,7 +702,7 @@ fn addScreenshotSteps(
     if (config.options.enable_vulkan) {
         const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const game_shot_vk_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/game_screenshot_vulkan.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -673,6 +715,7 @@ fn addScreenshotSteps(
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
+        selectDemoEntry(b, game_shot_vk_mod, .game_screenshot_vulkan);
         addGameShaderSpirv(b, game_shot_vk_mod);
         const game_shot_vk_exe = b.addExecutable(.{ .name = "snail-game-screenshot-vulkan", .root_module = game_shot_vk_mod });
         const run_game_shot_vk = b.addRunArtifact(game_shot_vk_exe);
@@ -684,7 +727,7 @@ fn addScreenshotSteps(
     // headless verification harness. Writes zig-out/game-<backend>.tga.
     if (config.options.enable_gl33 or config.options.enable_gl44 or config.options.enable_gles30) {
         const game_shot_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/game_screenshot.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -695,6 +738,7 @@ fn addScreenshotSteps(
                 .{ .name = "support", .module = release_support_mod },
             },
         });
+        selectDemoEntry(b, game_shot_mod, .game_screenshot_gl);
         configureEglOffscreenModule(game_shot_mod, modules.options, config.options, embed_gl_mod);
         const game_shot_exe = b.addExecutable(.{ .name = "snail-game-screenshot", .root_module = game_shot_mod });
         const run_game_shot = b.addRunArtifact(game_shot_exe);
@@ -706,7 +750,7 @@ fn addScreenshotSteps(
     // panel through perspective and fails if any interior coverage hole appears.
     if (config.options.enable_gl44) {
         const comp_probe_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/composite_probe.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -717,6 +761,7 @@ fn addScreenshotSteps(
                 .{ .name = "support", .module = release_support_mod },
             },
         });
+        selectDemoEntry(b, comp_probe_mod, .composite_probe);
         configureEglOffscreenModule(comp_probe_mod, modules.options, config.options, embed_gl_mod);
         const comp_probe_exe = b.addExecutable(.{ .name = "snail-composite-probe", .root_module = comp_probe_mod });
         const run_comp_probe = b.addRunArtifact(comp_probe_exe);
@@ -728,7 +773,7 @@ fn addScreenshotSteps(
     // grazing-corner hole deterministically (both conic solvers, swept footprint).
     {
         const cov_probe_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/coverage_probe.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -738,6 +783,7 @@ fn addScreenshotSteps(
                 .{ .name = "support", .module = release_support_mod },
             },
         });
+        selectDemoEntry(b, cov_probe_mod, .coverage_probe);
         const cov_probe_exe = b.addExecutable(.{ .name = "snail-coverage-probe", .root_module = cov_probe_mod });
         const run_cov_probe = b.addRunArtifact(cov_probe_exe);
         const cov_probe_step = b.step("run-coverage-probe", "Sweep the conic coverage solver (deriv vs code) across grazing footprints and count holes");
@@ -746,7 +792,7 @@ fn addScreenshotSteps(
 
     // CPU-vs-GL pixel parity gate over the shared content scene.
     const backend_compare_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/backend_compare.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -757,6 +803,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, backend_compare_mod, .backend_compare);
     configureEglOffscreenModule(backend_compare_mod, modules.options, config.options, embed_gl_mod);
     const backend_compare_exe = b.addExecutable(.{ .name = "snail-backend-compare", .root_module = backend_compare_mod });
     const run_backend_compare = b.addRunArtifact(backend_compare_exe);
@@ -767,7 +814,7 @@ fn addScreenshotSteps(
     // solid scene, CPU vs GL33 vs GLES30, checked exactly against the analytic
     // encode. Immune to AA-edge differences that backend-compare tolerates.
     const gamma_probe_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/gamma_probe.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -778,6 +825,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, gamma_probe_mod, .gamma_probe);
     configureEglOffscreenModule(gamma_probe_mod, modules.options, config.options, embed_gl_mod);
     const gamma_probe_exe = b.addExecutable(.{ .name = "snail-gamma-probe", .root_module = gamma_probe_mod });
     const run_gamma_probe = b.addRunArtifact(gamma_probe_exe);
@@ -786,7 +834,7 @@ fn addScreenshotSteps(
 
     // GLES screenshot.
     const screenshot_gles30_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/screenshot_gles30.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -797,6 +845,7 @@ fn addScreenshotSteps(
             .{ .name = "support", .module = release_support_mod },
         },
     });
+    selectDemoEntry(b, screenshot_gles30_mod, .screenshot_gles30);
     configureEglOffscreenModule(screenshot_gles30_mod, modules.options, config.options, embed_gl_mod);
     const screenshot_gles30_exe = b.addExecutable(.{ .name = "snail-screenshot-gles30", .root_module = screenshot_gles30_mod });
     const run_screenshot_gles30 = b.addRunArtifact(screenshot_gles30_exe);
@@ -807,7 +856,7 @@ fn addScreenshotSteps(
     if (config.options.enable_vulkan) {
         const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const screenshot_vulkan_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/screenshot_vulkan.zig"),
+            .root_source_file = b.path("src/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -820,6 +869,7 @@ fn addScreenshotSteps(
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
             },
         });
+        selectDemoEntry(b, screenshot_vulkan_mod, .screenshot_vulkan);
         const screenshot_vulkan_exe = b.addExecutable(.{ .name = "snail-screenshot-vulkan", .root_module = screenshot_vulkan_mod });
         const run_screenshot_vulkan = b.addRunArtifact(screenshot_vulkan_exe);
         const screenshot_vulkan_step = b.step("run-screenshot-vulkan", "Render the demo through the Vulkan backend and write zig-out/demo-screenshot-vulkan.tga");
@@ -840,7 +890,7 @@ fn addInteractiveDemoStep(
     const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state);
     const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types);
     const demo_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/main.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = demo_optimize,
         .link_libc = true,
@@ -855,6 +905,7 @@ fn addInteractiveDemoStep(
             .{ .name = "vulkan_types", .module = modules.demo_vulkan_types },
         },
     });
+    selectDemoEntry(b, demo_mod, .banner);
     // Interactive demo wraps every backend's platform layer: Wayland +
     // EGL/OpenGL + Vulkan + libwayland-client. The platform sources live
     // alongside the demo and reference snail's public types only.
@@ -908,7 +959,7 @@ fn addGameDemoStep(
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
     const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.render_state);
     const game_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/game.zig"),
+        .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
         .optimize = game_optimize,
         .link_libc = true,
@@ -921,6 +972,7 @@ fn addGameDemoStep(
             .{ .name = "embed_gl", .module = game_embed_gl_mod },
         },
     });
+    selectDemoEntry(b, game_mod, .game);
     game_mod.linkSystemLibrary("wayland-client", .{});
     game_mod.addIncludePath(b.path("src/demo/platform"));
     game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });

@@ -20,9 +20,9 @@ const gl = @cImport({
     @cInclude("GL/gl.h");
     @cInclude("GL/glext.h");
 });
-const offscreen_gl = @import("platform/offscreen_gl.zig");
-const passes = @import("game/passes.zig");
-const common = @import("game/common.zig");
+const offscreen_gl = @import("../../platform/offscreen_gl.zig");
+const passes = @import("../../game/passes.zig");
+const common = @import("../../game/common.zig");
 const embed_gl = @import("embed_gl");
 
 const W: u32 = 1100;

@@ -9,11 +9,11 @@ const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
 const build_options = @import("build_options");
-const offscreen_gl = @import("platform/offscreen_gl.zig");
-const passes = @import("game/passes.zig");
-const scene_mod = @import("game/scene.zig");
-const gl_scene = @import("game/gl_scene.zig");
-const gl_material = @import("game/gl_material.zig");
+const offscreen_gl = @import("../../platform/offscreen_gl.zig");
+const passes = @import("../../game/passes.zig");
+const scene_mod = @import("../../game/scene.zig");
+const gl_scene = @import("../../game/gl_scene.zig");
+const gl_material = @import("../../game/gl_material.zig");
 const desktop_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GL/gl.h");

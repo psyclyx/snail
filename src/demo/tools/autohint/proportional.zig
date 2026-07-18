@@ -8,8 +8,8 @@
 const std = @import("std");
 const snail = @import("snail");
 const demo_support = @import("support");
-const compare_mod = @import("autohint/compare.zig");
-const harness = @import("screenshot/harness.zig");
+const compare_mod = @import("../../autohint/compare.zig");
+const harness = @import("../../screenshot/harness.zig");
 
 const W: u32 = 460;
 const H: u32 = compare_mod.default_viewport_height;

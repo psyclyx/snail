@@ -7,8 +7,8 @@
 const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
-const compare_mod = @import("autohint/compare.zig");
-const harness = @import("screenshot/harness.zig");
+const compare_mod = @import("../../autohint/compare.zig");
+const harness = @import("../../screenshot/harness.zig");
 const assets = @import("assets");
 
 pub const corpus = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^*()[]{}+=";

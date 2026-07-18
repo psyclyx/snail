@@ -6,12 +6,12 @@
 const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
-const harness = @import("screenshot/harness.zig");
+const harness = @import("../../screenshot/harness.zig");
 const embed_vulkan = @import("embed_vulkan");
 const vulkan_platform = @import("demo_platform_vulkan").offscreen;
-const passes = @import("game/passes.zig");
-const scene_mod = @import("game/scene.zig");
-const vk_scene = @import("game/vk_scene.zig");
+const passes = @import("../../game/passes.zig");
+const scene_mod = @import("../../game/scene.zig");
+const vk_scene = @import("../../game/vk_scene.zig");
 
 const vk = embed_vulkan.vk;
 const W: u32 = 1280;
