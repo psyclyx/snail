@@ -10,7 +10,7 @@ const render_abi = glsl.source(.render_abi);
 const vertex_body = glsl.source(.vertex_body);
 const coverage_common = glsl.source(.coverage_common);
 const color_common = glsl.source(.color_common);
-const text_coverage = glsl.source(.text_coverage_body);
+const text_coverage_body = glsl.source(.text_coverage_body);
 const text_main = glsl.source(.regular_text_body);
 const colr_body = glsl.source(.colr_body);
 const path_body = glsl.source(.path_body);
@@ -20,6 +20,7 @@ const autohint_main = glsl.source(.autohint_body);
 const subpixel_body = glsl.source(.text_subpixel_body);
 
 const vertex_entry = "\nvoid main() { snailVertex(); }\n";
+const text_coverage = render_abi ++ "\n" ++ coverage_common ++ "\n" ++ color_common ++ "\n" ++ text_coverage_body;
 const text_fragment_body = text_coverage ++ "\n" ++ text_main ++ "\nvoid main() { snailTextFragment(); }\n";
 const colr_fragment_body = render_abi ++ "\n" ++ coverage_common ++ "\n" ++ color_common ++ "\n" ++ colr_body ++ "\nvoid main() { snailColrFragment(); }\n";
 const path_fragment_body = render_abi ++ "\n" ++ coverage_common ++ "\n" ++ color_common ++ "\n" ++ path_body ++ "\nvoid main() { snailPathFragment(); }\n";
