@@ -181,7 +181,7 @@ fn usFrom(start: u64) f64 {
     return @as(f64, @floatFromInt(nowNs() - start)) / 1000.0;
 }
 
-fn drawState(width: u32, height: u32, subpixel_order: snail.SubpixelOrder) snail.DrawState {
+fn drawState(width: u32, height: u32, subpixel_order: @import("snail-raster").SubpixelOrder) @import("snail-raster").DrawState {
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{

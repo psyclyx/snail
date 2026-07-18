@@ -8,8 +8,9 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const render_state = @import("render-state");
 
-const PixelFormat = snail.PixelFormat;
+const PixelFormat = render_state.PixelFormat;
 
 fn quantU8(v: f32) u8 {
     return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 255.0));

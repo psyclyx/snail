@@ -71,7 +71,7 @@ const HintMode = enum {
     }
 };
 
-fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
+fn cycleSubpixelOrder(o: @import("snail-raster").SubpixelOrder) @import("snail-raster").SubpixelOrder {
     return switch (o) {
         .none => .rgb,
         .rgb => .bgr,
@@ -81,7 +81,7 @@ fn cycleSubpixelOrder(o: snail.SubpixelOrder) snail.SubpixelOrder {
     };
 }
 
-fn aaName(o: snail.SubpixelOrder) []const u8 {
+fn aaName(o: @import("snail-raster").SubpixelOrder) []const u8 {
     return switch (o) {
         .none => "grayscale",
         .rgb => "subpixel-RGB",
@@ -91,14 +91,14 @@ fn aaName(o: snail.SubpixelOrder) []const u8 {
     };
 }
 
-fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
+fn toSnailEncoding(encoding: presentation.ColorEncoding) @import("snail-raster").ColorEncoding {
     return switch (encoding) {
         .linear => .linear,
         .srgb => .srgb,
     };
 }
 
-fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
+fn displayTargetEncoding(info: presentation.Info) @import("snail-raster").TargetEncoding {
     return .{
         .attachment = toSnailEncoding(info.framebuffer_encoding),
         .stored_pixels = .srgb,
@@ -126,7 +126,7 @@ fn logPresentationInfo(info: presentation.Info) void {
 fn dumpReproFrame(
     frame_count: u32,
     backend: []const u8,
-    current_order: snail.SubpixelOrder,
+    current_order: @import("snail-raster").SubpixelOrder,
     hint_mode: HintMode,
     hint_active: bool,
     present: presentation.Info,
@@ -573,7 +573,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
     const sys_order = subpixel_detect.detect();
     const detected_order = window.currentSubpixelOrder(sys_order);
-    var current_order: snail.SubpixelOrder = .none;
+    var current_order: @import("snail-raster").SubpixelOrder = .none;
     std.debug.print(
         "snail: detected subpixel order: system={s} monitor={s} (starting in {s})\n",
         .{ @tagName(sys_order), @tagName(detected_order), @tagName(current_order) },
@@ -927,7 +927,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             dumpReproFrame(frame_count, active.backendName(), current_order, hint_mode, hint_active, present, pan_x, pan_y, zoom, angle);
         }
 
-        const draw_state = snail.DrawState{
+        const draw_state = @import("snail-raster").DrawState{
             .mvp = mvp,
             .surface = .{
                 .pixel_width = viewport_w,
@@ -973,7 +973,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
 
         // HUD MVP: projection only — no scene_transform, so the
         // overlay doesn't pan/zoom/rotate with the world.
-        const hud_draw_state = snail.DrawState{
+        const hud_draw_state = @import("snail-raster").DrawState{
             .mvp = projection,
             .surface = draw_state.surface,
             .raster = .{
@@ -987,7 +987,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         // (The logical HUD projection would map integer logical pens to
         // fractional device pixels on a fractional-scale display.)
         const compare_px_scale = viewport_h / h;
-        const compare_draw_state = snail.DrawState{
+        const compare_draw_state = @import("snail-raster").DrawState{
             .mvp = snail.Mat4.ortho(0, viewport_w, viewport_h, 0, -1, 1),
             .surface = draw_state.surface,
             // Grayscale text-AA gamma for the hinting view: boost partial

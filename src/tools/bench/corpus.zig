@@ -119,7 +119,7 @@ pub const scene_kinds = [_]SceneKind{
 };
 
 pub const RenderMode = struct {
-    aa: snail.SubpixelOrder,
+    aa: @import("snail-raster").SubpixelOrder,
 
     pub fn aaName(self: RenderMode) []const u8 {
         return subpixelOrderName(self.aa);
@@ -133,7 +133,7 @@ pub const render_modes = [_]RenderMode{
 
 pub const mode_scene_kinds = [_]SceneKind{ .text, .rich_text, .multi_script };
 
-pub fn subpixelOrderName(order: snail.SubpixelOrder) []const u8 {
+pub fn subpixelOrderName(order: @import("snail-raster").SubpixelOrder) []const u8 {
     return switch (order) {
         .none => "grayscale",
         .rgb => "subpixel rgb",
@@ -143,7 +143,7 @@ pub fn subpixelOrderName(order: snail.SubpixelOrder) []const u8 {
     };
 }
 
-pub fn effectiveAaLabel(order: snail.SubpixelOrder, supports_lcd: bool) []const u8 {
+pub fn effectiveAaLabel(order: @import("snail-raster").SubpixelOrder, supports_lcd: bool) []const u8 {
     if (order == .none) return "grayscale";
     if (supports_lcd) return subpixelOrderName(order);
     return "grayscale (LCD unavailable)";

@@ -11,6 +11,11 @@ test "external renderers need only the public snail api" {
         if (@hasDecl(snail.render, "paint_records")) @compileError("paint encoding is not a renderer contract");
         if (@hasDecl(snail.render, "upload")) @compileError("upload patching is owned by AtlasUploadPlanner");
         if (@hasDecl(snail.render, "subpixel")) @compileError("pipeline selection belongs to renderer implementations");
+        if (@hasDecl(snail, "DrawState")) @compileError("draw state belongs to renderer implementations");
+        if (@hasDecl(snail, "TargetSurface")) @compileError("target policy belongs to renderer implementations");
+        if (@hasDecl(snail, "SubpixelOrder")) @compileError("subpixel policy belongs to renderer implementations");
+        if (@hasDecl(snail, "Instance")) @compileError("renderer ABI belongs under snail.render.records");
+        if (@hasDecl(snail, "WORDS_PER_INSTANCE")) @compileError("renderer ABI belongs under snail.render.records");
 
         _ = snail.render.records.abi_version;
         _ = snail.render.records.WORDS_PER_INSTANCE;
@@ -22,6 +27,8 @@ test "external renderers need only the public snail api" {
         _ = snail.shader.glsl.shader_library.coverage_functions;
         _ = snail.shader.glsl.embeddable.GlShaderSources.fragment_body;
         _ = snail.shader.vulkan.embeddable.records_interface_include;
+        if (@hasDecl(snail.shader.vulkan.embeddable, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
+        if (@hasDecl(snail.shader.vulkan.embeddable, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
 
         _ = raster.Renderer;
         _ = raster.BackendCache;
@@ -30,6 +37,9 @@ test "external renderers need only the public snail api" {
         _ = raster.ResizeError;
         _ = raster.ThreadPool;
         _ = raster.DrawRecords;
+        _ = raster.DrawState;
+        _ = raster.TargetSurface;
+        _ = raster.SubpixelOrder;
     }
 
     var pool = try snail.PagePool.init(std.testing.allocator, .{

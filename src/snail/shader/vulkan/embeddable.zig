@@ -14,9 +14,9 @@
 //! material shader, author a `.frag` that:
 //!
 //!   1. `#version 450` + `#extension GL_GOOGLE_include_directive : require`.
-//!   2. Declares the caller-owned **atlas plane** in set 0:
-//!        layout(set=0, binding=0) uniform sampler2DArray  u_curve_tex;
-//!        layout(set=0, binding=1) uniform usampler2DArray u_band_tex;
+//!   2. Declares the caller-owned **atlas plane** at bindings of its choice:
+//!        layout(set=..., binding=...) uniform sampler2DArray  u_curve_tex;
+//!        layout(set=..., binding=...) uniform usampler2DArray u_band_tex;
 //!      and binds the descriptor set it populated from `AtlasUploadPlanner`.
 //!   3. Provides the coverage macros the math expects, e.g.
 //!        #define SNAIL_FILL_RULE 1            // font convention: non-zero
@@ -29,8 +29,8 @@
 //!        #include "snail_coverage_common.glsl"
 //!        #include "snail_color_common.glsl"
 //!        #include "snail_text_frag_body.glsl"   // evalGlyphCoverage
-//!   5. `#include` the **records plane** interface (from the vulkan_glsl dir) —
-//!      a caller-owned SSBO in set `RECORDS_SET`, binding `RECORDS_BINDING`:
+//!   5. Defines `SNAIL_RECORDS_SET` and `SNAIL_RECORDS_BINDING`, then
+//!      `#include`s the records-plane interface from the vulkan_glsl dir:
 //!        #include "snail_text_sample.interface.vulkan.glsl"
 //!      then the storage-agnostic sampler body:
 //!        #include "snail_text_sample_body.glsl"
@@ -39,18 +39,6 @@
 //!
 //! The caller uploads the emit words (`snail.emit.emit` output) into the set-1
 //! SSBO and pushes `u_snail_text_glyph_count = words.len / WORDS_PER_INSTANCE`.
-
-/// Conventional descriptor set for the caller-owned atlas textures.
-pub const ATLAS_SET: u32 = 0;
-pub const CURVE_BINDING: u32 = 0;
-pub const BAND_BINDING: u32 = 1;
-pub const LAYER_INFO_BINDING: u32 = 2;
-pub const IMAGE_BINDING: u32 = 3;
-
-/// Records plane (caller-owned) — the per-glyph emit words, as a read-only
-/// SSBO. Kept in a separate set so the atlas set stays reusable verbatim.
-pub const RECORDS_SET: u32 = 1;
-pub const RECORDS_BINDING: u32 = 0;
 
 /// Include-file names a caller `#include`s from Snail's source tree.
 pub const records_interface_include = "snail_text_sample.interface.vulkan.glsl";

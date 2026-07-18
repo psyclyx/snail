@@ -116,7 +116,7 @@ const Panel = struct {
     }
 
     fn draw(self: *Panel, allocator: std.mem.Allocator, renderer: *embed_gl.Gl44Renderer, mvp: snail.Mat4) !void {
-        const ds = snail.DrawState{
+        const ds = @import("snail-raster").DrawState{
             .surface = .{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = .linear },
             .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
             .mvp = mvp,

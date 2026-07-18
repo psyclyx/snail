@@ -21,7 +21,6 @@ const paint_records = @import("paint_records.zig");
 const autohint_format = @import("../format/autohint_record.zig");
 const autohint_warp = @import("../font/autohint/warp.zig");
 const paint_mod = @import("../paint.zig");
-const target_mod = @import("../target.zig");
 
 const Atlas = atlas_mod.Atlas;
 const Entry = atlas_mod.Entry;
@@ -324,7 +323,7 @@ pub const Builder = struct {
         mode: paint_mod.CompositeMode,
         base_paint: Paint,
         base_bands: GlyphBandEntry,
-        base_fill_rule: target_mod.FillRule,
+        base_fill_rule: paint_mod.FillRule,
         extra_layers: []const Layer,
         extra_placements: []const Placement,
         layer_count: u32,
@@ -379,7 +378,7 @@ pub const Builder = struct {
         layer_texel: u32,
         bands: GlyphBandEntry,
         paint: Paint,
-        fill_rule: target_mod.FillRule,
+        fill_rule: paint_mod.FillRule,
     ) std.mem.Allocator.Error!void {
         const band_tex_entry = bandToTexFormat(bands);
         const rule_bit: u16 = if (fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
@@ -390,7 +389,7 @@ pub const Builder = struct {
         });
     }
 
-    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: target_mod.FillRule) std.mem.Allocator.Error!void {
+    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: paint_mod.FillRule) std.mem.Allocator.Error!void {
         const texel_offset = self.layer_info_texels;
         const new_texels = texel_offset + paint_records.texels_per_record;
         const need_floats = @as(usize, new_texels) * 4;

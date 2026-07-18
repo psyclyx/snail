@@ -9,6 +9,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const render_state = @import("render-state");
 const bezier = @import("snail").render.atlas;
 const band_tex = @import("snail").render.atlas;
 const render_abi = @import("snail").render.records;
@@ -28,7 +29,7 @@ const GlyphBandEntry = band_tex.GlyphBandEntry;
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
-const SubpixelOrder = snail.SubpixelOrder;
+const SubpixelOrder = render_state.SubpixelOrder;
 const blend_mod = @import("blend.zig");
 const color_mod = @import("color.zig");
 const coverage_mod = @import("coverage.zig");
@@ -139,14 +140,14 @@ pub const Renderer = struct {
     subpixel_order: SubpixelOrder,
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
-    target_encoding: snail.TargetEncoding,
+    target_encoding: render_state.TargetEncoding,
     /// Byte layout of the caller's pixel buffer. Defaults to rgba8; the caller
     /// sets it (and a matching `stride` = width × bytesPerPixel) for other
     /// formats. The blend path comptime-specializes on it once per draw.
-    format: snail.PixelFormat = .rgba8_unorm,
+    format: render_state.PixelFormat = .rgba8_unorm,
     target_resolve: blend_mod.ResolveMode,
     linear_resolve_active: bool,
-    coverage_transfer: snail.CoverageTransfer,
+    coverage_transfer: render_state.CoverageTransfer,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
     // bands; defaults to the full image for single-threaded callers.
@@ -205,15 +206,15 @@ pub const Renderer = struct {
         row_clip_max: u32,
         col_clip_min: u32,
         col_clip_max: u32,
-        target_encoding: snail.TargetEncoding,
+        target_encoding: render_state.TargetEncoding,
         target_resolve: blend_mod.ResolveMode,
         linear_resolve_active: bool,
     };
 
-    pub fn beginLinearResolve(self: *Renderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
+    pub fn beginLinearResolve(self: *Renderer, surface: render_state.TargetSurface, resolve: render_state.LinearResolve) !LinearResolveRestore {
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
         if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
-        const rect = snail.resolveRect(surface, resolve);
+        const rect = render_state.resolveRect(surface, resolve);
         if (rect.w == 0 or rect.h == 0) return error.InvalidTargetSurface;
         const restore = LinearResolveRestore{
             .row_clip_min = self.row_clip_min,
@@ -246,7 +247,7 @@ pub const Renderer = struct {
         self.linear_resolve_active = restore.linear_resolve_active;
     }
 
-    fn seedLinearResolveBackdrop(self: *Renderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.LinearResolve.Backdrop) void {
+    fn seedLinearResolveBackdrop(self: *Renderer, encoding: render_state.TargetEncoding, rect: render_state.PixelRect, backdrop: render_state.LinearResolve.Backdrop) void {
         switch (backdrop) {
             .target, .dont_care => return,
             .transparent => self.fillResolveRect(rect, .{ 0, 0, 0, 0 }),
@@ -254,7 +255,7 @@ pub const Renderer = struct {
         }
     }
 
-    fn fillResolveRect(self: *Renderer, rect: snail.PixelRect, color: [4]u8) void {
+    fn fillResolveRect(self: *Renderer, rect: render_state.PixelRect, color: [4]u8) void {
         if (rect.w == 0 or rect.h == 0) return;
         var row: u32 = @intCast(rect.y);
         const y1 = row + rect.h;
@@ -301,7 +302,7 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
+    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -361,8 +362,8 @@ pub const Renderer = struct {
         }
     };
 
-    fn intersectClip(self: *Renderer, rect: snail.PixelRect) void {
-        const cur = snail.PixelRect{
+    fn intersectClip(self: *Renderer, rect: render_state.PixelRect) void {
+        const cur = render_state.PixelRect{
             .x = @intCast(self.col_clip_min),
             .y = @intCast(self.row_clip_min),
             .w = self.col_clip_max - self.col_clip_min,

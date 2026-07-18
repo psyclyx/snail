@@ -156,7 +156,7 @@ pub const VkSceneRenderer = struct {
         var wlen: usize = 0;
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, self.material_b, &scene.material.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
-        self.glyph_count = @intCast(wlen / snail.WORDS_PER_INSTANCE);
+        self.glyph_count = @intCast(wlen / snail.render.records.WORDS_PER_INSTANCE);
         self.records = try embed_vulkan.HostBuffer.init(self.ctx, @max(wlen * @sizeOf(u32), 4), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         @memcpy(self.records.bytes()[0 .. wlen * @sizeOf(u32)], std.mem.sliceAsBytes(self.scratch[0..wlen]));
     }
@@ -296,7 +296,7 @@ pub const VkSceneRenderer = struct {
 
     /// Record the whole scene. `view_proj` must already include the Vulkan
     /// clip-space Z fix (see `scene.vulkan_z_fix`).
-    pub fn record(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, frame_index: u32, scene: *Scene, view_proj: snail.Mat4, surface: snail.TargetSurface) !void {
+    pub fn record(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, frame_index: u32, scene: *Scene, view_proj: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
         self.caller.beginFrame(frame_index);
         const desc0 = self.cache.descriptorSet();
         const w = surface.pixel_width;
@@ -343,12 +343,12 @@ pub const VkSceneRenderer = struct {
         try self.drawSnailPass(cmd, desc0, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
     }
 
-    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, desc0: vk.VkDescriptorSet, pass: *const PreparedPass, path_b: snail.Binding, text_b: snail.Binding, mvp: snail.Mat4, surface: snail.TargetSurface) !void {
+    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, desc0: vk.VkDescriptorSet, pass: *const PreparedPass, path_b: snail.Binding, text_b: snail.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
         var wlen: usize = 0;
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, path_b, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, text_b, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-        const ds = snail.DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
+        const ds = @import("snail-raster").DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
         self.caller.render(cmd, desc0, ds, self.scratch[0..wlen], self.segs[0..slen]);
     }
 };

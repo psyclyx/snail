@@ -1,6 +1,6 @@
 const std = @import("std");
 const snail = @import("snail");
-const SubpixelOrder = snail.SubpixelOrder;
+const SubpixelOrder = @import("snail-raster").SubpixelOrder;
 pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland.zig");
 const c = wayland.c;

@@ -191,7 +191,7 @@ pub fn main() !void {
         if (@abs(f - expected) > 0.02) failed = true;
     }
     // A8/R8 mask: the bands are opaque, so painted alpha = 1 → 255.
-    inline for (.{ snail.PixelFormat.a8_unorm, snail.PixelFormat.r8_unorm }) |fmt| {
+    inline for (.{ @import("snail-raster").PixelFormat.a8_unorm, @import("snail-raster").PixelFormat.r8_unorm }) |fmt| {
         const p = try harness.renderCpuToPixelsFmt(allocator, s, W, H, fmt, .{});
         defer allocator.free(p);
         const v: i32 = p[px_index];

@@ -9,10 +9,11 @@ const draw_records_mod = @import("snail").render.records;
 const shaders = @import("embed_gl_shaders.zig").Gles30;
 const vertex = @import("snail").render.records;
 const snail_mod = @import("snail");
-const SubpixelOrder = @import("snail").SubpixelOrder;
-const LinearResolve = snail_mod.LinearResolve;
-const DrawState = snail_mod.DrawState;
-const TargetSurface = snail_mod.TargetSurface;
+const render_state = @import("render-state");
+const SubpixelOrder = @import("render-state").SubpixelOrder;
+const LinearResolve = render_state.LinearResolve;
+const DrawState = render_state.DrawState;
+const TargetSurface = render_state.TargetSurface;
 
 const TextRenderMode = enum { grayscale };
 

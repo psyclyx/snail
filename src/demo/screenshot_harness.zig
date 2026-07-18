@@ -61,13 +61,13 @@ pub fn flipRowsInPlace(allocator: std.mem.Allocator, pixels: []u8, width: u32, h
 
 /// Standard ortho draw state for the screenshot harness: grayscale AA,
 /// sRGB surface, ortho MVP matching the pixel rect.
-pub fn drawState(width: u32, height: u32) snail.DrawState {
+pub fn drawState(width: u32, height: u32) @import("snail-raster").DrawState {
     return drawStateExp(width, height, 1.0);
 }
 
 /// `drawState` with an explicit coverage-transfer exponent (the demo's
 /// hinting-comparison view uses 0.55; screenshots default to 1.0).
-pub fn drawStateExp(width: u32, height: u32, exponent: f32) snail.DrawState {
+pub fn drawStateExp(width: u32, height: u32, exponent: f32) @import("snail-raster").DrawState {
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{
@@ -126,7 +126,7 @@ pub fn renderCpuToPixelsFmt(
     scene: Scene,
     width: u32,
     height: u32,
-    format: snail.PixelFormat,
+    format: @import("snail-raster").PixelFormat,
     opts: CpuOptions,
 ) ![]u8 {
     const stride: u32 = width * format.bytesPerPixel();
@@ -366,7 +366,7 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
-    const ds = snail.DrawState{
+    const ds = @import("snail-raster").DrawState{
         .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .linear, .format = .r8_unorm },
         .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),

@@ -11,10 +11,11 @@ const draw_records_mod = @import("snail").render.records;
 const shaders = @import("embed_gl_shaders.zig").Gl330;
 const vertex = @import("snail").render.records;
 const snail_mod = @import("snail");
-const SubpixelOrder = @import("snail").SubpixelOrder;
-const LinearResolve = snail_mod.LinearResolve;
-const DrawState = snail_mod.DrawState;
-const TargetSurface = snail_mod.TargetSurface;
+const render_state = @import("render-state");
+const SubpixelOrder = @import("render-state").SubpixelOrder;
+const LinearResolve = render_state.LinearResolve;
+const DrawState = render_state.DrawState;
+const TargetSurface = render_state.TargetSurface;
 
 const ShapeKind = draw_records_mod.ShapeKind;
 const TextRenderMode = enum { grayscale, subpixel_dual_source };
@@ -277,7 +278,7 @@ fn TextStateFor(comptime backend: Backend) type {
             }
         };
 
-        fn applyScissor(rect: snail_mod.PixelRect, surface_height: f32) ScissorRestore {
+        fn applyScissor(rect: render_state.PixelRect, surface_height: f32) ScissorRestore {
             var prev_box: [4]gl.GLint = .{ 0, 0, 0, 0 };
             gl.glGetIntegerv(gl.GL_SCISSOR_BOX, &prev_box[0]);
             const was_enabled = gl.glIsEnabled(gl.GL_SCISSOR_TEST) == gl.GL_TRUE;

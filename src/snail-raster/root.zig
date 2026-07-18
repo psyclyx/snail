@@ -5,6 +5,19 @@
 
 const renderer = @import("renderer.zig");
 const backend_cache = @import("backend_cache.zig");
+const target = @import("render-state");
+
+pub const SubpixelOrder = target.SubpixelOrder;
+pub const ColorEncoding = target.ColorEncoding;
+pub const TargetEncoding = target.TargetEncoding;
+pub const PixelFormat = target.PixelFormat;
+pub const PixelRect = target.PixelRect;
+pub const LinearResolve = target.LinearResolve;
+pub const CoverageTransfer = target.CoverageTransfer;
+pub const TargetSurface = target.TargetSurface;
+pub const RasterOptions = target.RasterOptions;
+pub const DrawState = target.DrawState;
+pub const resolveRect = target.resolveRect;
 
 pub const Renderer = renderer.Renderer;
 pub const InstanceProfileEntry = renderer.InstanceProfileEntry;

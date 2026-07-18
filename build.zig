@@ -80,6 +80,7 @@ fn createDemoVulkanPlatformModule(
     optimize: std.builtin.OptimizeMode,
     build_options_mod: *std.Build.Module,
     snail_mod: *std.Build.Module,
+    render_state_mod: *std.Build.Module,
     vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
@@ -90,6 +91,7 @@ fn createDemoVulkanPlatformModule(
         .imports = &.{
             .{ .name = "build_options", .module = build_options_mod },
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "vulkan_types", .module = vulkan_types_mod },
         },
     });
@@ -105,6 +107,7 @@ fn createEmbedVulkanModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
+    render_state_mod: *std.Build.Module,
     vk_shaders: *std.Build.Module,
     vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
@@ -115,6 +118,7 @@ fn createEmbedVulkanModule(
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "vulkan_shaders", .module = vk_shaders },
             .{ .name = "vulkan_types", .module = vulkan_types_mod },
         },
@@ -146,6 +150,7 @@ fn createEmbedGlModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
+    render_state_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
         .root_source_file = b.path("src/demo/embed_gl.zig"),
@@ -154,6 +159,7 @@ fn createEmbedGlModule(
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
+            .{ .name = "render-state", .module = render_state_mod },
         },
     });
     const shader_dir = "src/snail/shader/gl/glsl/";
@@ -228,6 +234,7 @@ fn createRasterModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
+    render_state_mod: *std.Build.Module,
     assets_mod: ?*std.Build.Module,
     strip: ?bool,
     public_name: ?[]const u8,
@@ -241,8 +248,23 @@ fn createRasterModule(
     };
     const raster = if (public_name) |name| b.addModule(name, module_options) else b.createModule(module_options);
     raster.addImport("snail", snail_mod);
+    raster.addImport("render-state", render_state_mod);
     if (assets_mod) |assets| raster.addImport("assets", assets);
     return raster;
+}
+
+fn createRenderStateModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return b.createModule(.{
+        .root_source_file = b.path("src/render_state.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "snail", .module = snail_mod }},
+    });
 }
 
 fn createSnailModule(
@@ -283,11 +305,13 @@ pub fn rasterModule(
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
 ) *std.Build.Module {
+    const render_state_mod = createRenderStateModule(b, target, optimize, snail_mod);
     return createRasterModule(
         b,
         target,
         optimize,
         snail_mod,
+        render_state_mod,
         null,
         null,
         null,
@@ -338,6 +362,7 @@ const ProjectModules = struct {
     vk_shaders: *std.Build.Module,
     demo_vulkan_types: *std.Build.Module,
     snail: *std.Build.Module,
+    render_state: *std.Build.Module,
     raster: *std.Build.Module,
 };
 
@@ -349,7 +374,8 @@ fn addTestSteps(
     const test_step = b.step("test", "Run unit tests");
     const snail_tests = createSnailModuleFull(b, config.target, config.optimize, modules.options, config.options.enable_harfbuzz, null, modules.assets, null);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
-    const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, modules.assets, null, null);
+    const test_render_state = createRenderStateModule(b, config.target, config.optimize, snail_tests);
+    const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, test_render_state, modules.assets, null, null);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
     const public_api_tests = b.createModule(.{
@@ -401,7 +427,8 @@ fn addTestSteps(
     const vg_snail_tests = b.addTest(.{ .root_module = vg_snail });
     configureValgrindTest(vg_snail_tests);
     test_valgrind_step.dependOn(&b.addRunArtifact(vg_snail_tests).step);
-    const vg_raster = createRasterModule(b, config.target, config.optimize, vg_snail, modules.assets, true, null);
+    const vg_render_state = createRenderStateModule(b, config.target, config.optimize, vg_snail);
+    const vg_raster = createRasterModule(b, config.target, config.optimize, vg_snail, vg_render_state, modules.assets, true, null);
     const vg_raster_tests = b.addTest(.{ .root_module = vg_raster });
     configureValgrindTest(vg_raster_tests);
     test_valgrind_step.dependOn(&b.addRunArtifact(vg_raster_tests).step);
@@ -413,10 +440,11 @@ fn addScreenshotSteps(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.options.enable_harfbuzz);
-    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, null, null, null);
+    const release_render_state_mod = createRenderStateModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
-    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
-    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
@@ -588,7 +616,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — Vulkan offscreen.
     if (config.options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const banner_screenshot_vk_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/banner_screenshot_vulkan.zig"),
             .target = config.target,
@@ -630,7 +658,7 @@ fn addScreenshotSteps(
 
     // Offscreen Vulkan game-scene screenshot (depth-tested) → zig-out/game-vulkan.tga.
     if (config.options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const game_shot_vk_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/game_screenshot_vulkan.zig"),
             .target = config.target,
@@ -777,7 +805,7 @@ fn addScreenshotSteps(
 
     // Vulkan screenshot.
     if (config.options.enable_vulkan) {
-        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
+        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         const screenshot_vulkan_mod = b.createModule(.{
             .root_source_file = b.path("src/demo/screenshot_vulkan.zig"),
             .target = config.target,
@@ -809,8 +837,8 @@ fn addInteractiveDemoStep(
     // shape/emit path that a Debug build is visibly slower; explicit
     // override (e.g. `-Doptimize=Debug` for debugging) still wins.
     const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
-    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail);
-    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types);
+    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state);
+    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types);
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/main.zig"),
         .target = config.target,
@@ -878,7 +906,7 @@ fn addGameDemoStep(
     if (!(config.options.enable_gl33 or config.options.enable_gl44 or config.options.enable_gles30)) return;
 
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
-    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail);
+    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.render_state);
     const game_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/game.zig"),
         .target = config.target,
@@ -905,7 +933,7 @@ fn addGameDemoStep(
         // vk_scene uses the reference caller renderer; the windowed Vulkan
         // platform is a relative file compiled into game_mod (its own vk cImport
         // via linkSystemLibrary). game/game_shaders.zig gets the material SPIR-V.
-        game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types));
+        game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types));
         game_mod.addImport("vulkan_types", modules.demo_vulkan_types);
         addGameShaderSpirv(b, game_mod);
         game_mod.linkSystemLibrary("vulkan", .{});
@@ -929,7 +957,8 @@ pub fn build(b: *std.Build) void {
     const options_mod = createBuildOptionsModule(b, config.options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config, options_mod);
-    const raster_mod = createRasterModule(b, config.target, config.optimize, snail_mod, null, null, "snail-raster");
+    const render_state_mod = createRenderStateModule(b, config.target, config.optimize, snail_mod);
+    const raster_mod = createRasterModule(b, config.target, config.optimize, snail_mod, render_state_mod, null, null, "snail-raster");
     const support_mod = createSupportModule(b, config.target, config.optimize, snail_mod, assets_mod);
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.options.enable_vulkan);
     const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
@@ -941,6 +970,7 @@ pub fn build(b: *std.Build) void {
         .vk_shaders = vk_shaders_mod,
         .demo_vulkan_types = demo_vulkan_types_mod,
         .snail = snail_mod,
+        .render_state = render_state_mod,
         .raster = raster_mod,
     };
 
@@ -957,9 +987,10 @@ fn addBenchStep(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.options.enable_harfbuzz);
-    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, null, null, null);
+    const release_render_state_mod = createRenderStateModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
-    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod);
 
     const offscreen_gl_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
@@ -980,9 +1011,9 @@ fn addBenchStep(
     }) catch @panic("OOM");
 
     if (config.options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, modules.demo_vulkan_types);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
         bench_imports.append(b.allocator, .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod }) catch @panic("OOM");
-        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
+        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types);
         bench_imports.append(b.allocator, .{ .name = "embed_vulkan", .module = embed_vulkan_mod }) catch @panic("OOM");
     }
 

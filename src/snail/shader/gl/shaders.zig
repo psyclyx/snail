@@ -4,7 +4,6 @@
 //! points they own. Complete reference shaders live under `src/demo`.
 
 const gl330_vert_interface = @embedFile("glsl/snail_vert.interface.glsl");
-const gl330_frag_interface = @embedFile("glsl/snail_frag.interface.glsl");
 const gl330_text_subpixel_interface = @embedFile("glsl/snail_text_subpixel.interface.glsl");
 const gl330_text_coverage_interface = @embedFile("glsl/snail_text_coverage.interface.glsl");
 const gl330_text_sample_interface = @embedFile("glsl/snail_text_sample.interface.glsl");
@@ -20,44 +19,6 @@ const shared_text_coverage_fragment_body =
     shared_color_common ++
     "\n" ++
     @embedFile("glsl/snail_text_frag_body.glsl");
-const shared_colr_fragment_body =
-    shared_render_abi ++
-    "\n" ++
-    shared_coverage_common ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    @embedFile("glsl/snail_colr_frag_body.glsl");
-const shared_path_fragment_body =
-    shared_render_abi ++
-    "\n" ++
-    shared_coverage_common ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    @embedFile("glsl/snail_path_frag_body.glsl");
-const shared_hinted_text_fragment_body =
-    shared_render_abi ++
-    "\n" ++
-    shared_coverage_common ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    @embedFile("glsl/snail_hinted_text_frag_body.glsl");
-const shared_autohint_fragment_body =
-    shared_text_coverage_fragment_body ++
-    "\n" ++
-    @embedFile("glsl/snail_autohint_warp.glsl") ++
-    "\n" ++
-    @embedFile("glsl/snail_autohint_main.glsl");
-const shared_text_subpixel_body =
-    shared_render_abi ++
-    "\n" ++
-    shared_coverage_common ++
-    "\n" ++
-    shared_color_common ++
-    "\n" ++
-    @embedFile("glsl/snail_text_subpixel_body.glsl");
 const shared_text_sample_body = @embedFile("glsl/snail_text_sample_body.glsl");
 
 pub const text_vertex_interface = gl330_vert_interface;

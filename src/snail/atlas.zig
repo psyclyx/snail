@@ -90,7 +90,7 @@ pub const Entry = struct {
     /// (a path author either intends non-zero or even-odd; fonts are
     /// always non-zero). Carried into the paint record so the shader
     /// picks it up per-fragment — there is no per-frame fill rule.
-    fill_rule: @import("target.zig").FillRule = .non_zero,
+    fill_rule: @import("paint.zig").FillRule = .non_zero,
     extra_layers: []const Layer = &.{},
     composite_mode: CompositeMode = .source_over,
     /// When set, the atlas writes one immutable autohint feature record and
@@ -110,7 +110,7 @@ pub const Entry = struct {
 pub const Layer = struct {
     curves: GlyphCurves,
     paint: Paint,
-    fill_rule: @import("target.zig").FillRule = .non_zero,
+    fill_rule: @import("paint.zig").FillRule = .non_zero,
 };
 
 pub const CompositeMode = paint_mod.CompositeMode;

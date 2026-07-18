@@ -94,14 +94,14 @@ pub fn label(kind: Kind) [:0]const u8 {
     };
 }
 
-fn toSnailEncoding(encoding: presentation.ColorEncoding) snail.ColorEncoding {
+fn toSnailEncoding(encoding: presentation.ColorEncoding) @import("snail-raster").ColorEncoding {
     return switch (encoding) {
         .linear => .linear,
         .srgb => .srgb,
     };
 }
 
-fn displayTargetEncoding(info: presentation.Info) snail.TargetEncoding {
+fn displayTargetEncoding(info: presentation.Info) @import("snail-raster").TargetEncoding {
     return .{ .attachment = toSnailEncoding(info.framebuffer_encoding), .stored_pixels = .srgb };
 }
 
@@ -229,7 +229,7 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
             gl.glClearColor(srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0);
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
-            const surface = snail.TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = target_encoding };
+            const surface = @import("snail-raster").TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = target_encoding };
             try self.sr.draw(scene, logical[0], logical[1], view_proj, surface);
             gl_platform.swapBuffers();
         }
@@ -274,7 +274,7 @@ const VulkanGameDriver = if (game_vulkan) struct {
         const platform_cmd = vulkan_platform.beginFrame(clear) orelse return;
         const cmd: vk_scene.vk.VkCommandBuffer = @ptrCast(platform_cmd);
         const view_proj = snail.Mat4.multiply(scene_mod.vulkan_z_fix, scene.viewProj(fb_w / fb_h));
-        const surface = snail.TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = snail.TargetEncoding.srgb };
+        const surface = @import("snail-raster").TargetSurface{ .pixel_width = fb_w, .pixel_height = fb_h, .encoding = @import("snail-raster").TargetEncoding.srgb };
         try self.sr.record(cmd, vulkan_platform.currentFrameIndex(), scene, view_proj, surface);
         vulkan_platform.endFrame();
     }

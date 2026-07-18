@@ -176,7 +176,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         //
         // GL backends expose the underlying texture names (GLuint) so
         // a caller running their own shader pipeline can bind them
-        // alongside `decodeInstance` + `bindingTexels`. Returns 0
+        // alongside the public record and shader contracts. Returns 0
         // before `upload`/`uploadDelta` has populated the cache.
 
         pub fn curveTexHandle(self: *const Self) gl.GLuint {

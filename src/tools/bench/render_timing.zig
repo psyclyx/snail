@@ -65,7 +65,7 @@ pub fn clearGlFrame() void {
 
 pub fn timeCpuDraw(
     renderer: *raster.Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const raster.BackendCache,
     pixels: []u8,
@@ -89,7 +89,7 @@ pub fn timeCpuDraw(
 pub fn timeGl33Draw(
     allocator: std.mem.Allocator,
     renderer: *embed_gl.Gl33Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
@@ -131,7 +131,7 @@ pub const Gl33Breakdown = struct {
 pub fn timeGl33DrawGpu(
     allocator: std.mem.Allocator,
     renderer: *embed_gl.Gl33Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
@@ -176,7 +176,7 @@ pub fn timeGl33DrawGpu(
 pub fn timeGl33DrawBreakdown(
     allocator: std.mem.Allocator,
     renderer: *embed_gl.Gl33Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const embed_gl.Gl33BackendCache,
     warmup_frames: usize,
@@ -224,7 +224,7 @@ pub fn timeGl33DrawBreakdown(
 pub fn timeGl44Draw(
     allocator: std.mem.Allocator,
     renderer: *embed_gl.Gl44Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const embed_gl.Gl44BackendCache,
     warmup_frames: usize,
@@ -250,7 +250,7 @@ pub fn timeGl44Draw(
 pub fn timeGles30Draw(
     allocator: std.mem.Allocator,
     renderer: *embed_gl.Gles30Renderer,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     caches: []const *const embed_gl.Gles30BackendCache,
     warmup_frames: usize,
@@ -278,7 +278,7 @@ pub fn timeGles30Draw(
 pub fn timeVulkanDraw(
     caller: *embed_vulkan.Renderer,
     desc_set: embed_vulkan.vk.VkDescriptorSet,
-    state: snail.DrawState,
+    state: @import("snail-raster").DrawState,
     records: DrawRecords,
     warmup_frames: usize,
     frames: usize,

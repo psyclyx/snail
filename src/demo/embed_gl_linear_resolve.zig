@@ -15,12 +15,13 @@
 
 const std = @import("std");
 const snail_mod = @import("snail");
+const render_state = @import("render-state");
 const gl_common = @import("embed_gl_common.zig");
 
-const LinearResolve = snail_mod.LinearResolve;
+const LinearResolve = render_state.LinearResolve;
 const IntermediateFormat = LinearResolve.Format;
-const PixelRect = snail_mod.PixelRect;
-const TargetSurface = snail_mod.TargetSurface;
+const PixelRect = render_state.PixelRect;
+const TargetSurface = render_state.TargetSurface;
 const LinearResolveRestore = gl_common.LinearResolveRestore;
 const LinearResolvePass = gl_common.LinearResolvePass;
 const linearPremultipliedBackdropColor = gl_common.linearPremultipliedBackdropColor;

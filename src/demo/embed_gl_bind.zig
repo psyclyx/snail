@@ -13,18 +13,18 @@
 //! texture handles; `.from(handles)` then `bindProgram` + `bindDrawState`.
 
 const snail = @import("snail");
+const render_state = @import("render-state");
 
-const embeddable = snail.shader.glsl.embeddable;
 const gl_bindings = @import("embed_gl_bindings.zig");
 const gles30_bindings = @import("embed_gles30_bindings.zig");
 
-const Variant = embeddable.Variant;
+const Variant = enum { gl33, gl44 };
 const FillRule = snail.FillRule;
 
 pub const DrawState = struct {
-    subpixel_order: snail.SubpixelOrder = .none,
+    subpixel_order: render_state.SubpixelOrder = .none,
     output_srgb: bool = false,
-    coverage_transfer: snail.CoverageTransfer = .identity,
+    coverage_transfer: render_state.CoverageTransfer = .identity,
     layer_base: u32 = 0,
 };
 

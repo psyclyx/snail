@@ -8,7 +8,6 @@
 const math = @import("math.zig");
 const text_mod = @import("text.zig");
 const image_mod = @import("image.zig");
-const target = @import("target.zig");
 const paint_mod = @import("paint.zig");
 const record_key_mod = @import("atlas/record_key.zig");
 
@@ -20,7 +19,8 @@ pub const Mat4 = math.Mat4;
 pub const Vec2 = math.Vec2;
 pub const BBox = math.BBox;
 pub const Transform2D = math.Transform2D;
-pub const Rect = target.Rect;
+pub const Rect = math.Rect;
+pub const mvpToScenePixel = math.mvpToScenePixel;
 
 // ── Text shaping ──
 
@@ -71,24 +71,9 @@ pub const StrokeJoin = paint_mod.StrokeJoin;
 pub const StrokePlacement = paint_mod.StrokePlacement;
 pub const StrokeStyle = paint_mod.StrokeStyle;
 pub const mapPaintToLocal = paint_mod.mapToLocal;
+pub const FillRule = paint_mod.FillRule;
 
 pub const Image = image_mod.Image;
-
-// ── Target / draw state ──
-
-pub const FillRule = target.FillRule;
-pub const SubpixelOrder = target.SubpixelOrder;
-pub const ColorEncoding = target.ColorEncoding;
-pub const TargetEncoding = target.TargetEncoding;
-pub const PixelFormat = target.PixelFormat;
-pub const PixelRect = target.PixelRect;
-pub const LinearResolve = target.LinearResolve;
-pub const CoverageTransfer = target.CoverageTransfer;
-pub const mvpToScenePixel = target.mvpToScenePixel;
-pub const TargetSurface = target.TargetSurface;
-pub const RasterOptions = target.RasterOptions;
-pub const DrawState = target.DrawState;
-pub const resolveRect = target.resolveRect;
 
 // ── Record keys / atlas ──
 
@@ -122,21 +107,6 @@ pub const Shape = shape_mod.Shape;
 pub const DrawSegment = @import("draw/records.zig").DrawSegment;
 pub const Binding = @import("draw/records.zig").Binding;
 pub const emit = @import("draw/emit.zig");
-
-// ── GPU byte-layout ABI (custom-shader primitives) ──
-//
-// Symbolic decoders + texel-coord resolvers so callers can drive their
-// own shader pipeline off the same byte layout as `snail-raster` and the
-// reference GPU callers. The complete renderer-facing contract is grouped
-// under `snail.render` below.
-
-const vertex_mod = @import("format/vertex.zig");
-pub const Instance = vertex_mod.Instance;
-pub const DecodedInstance = vertex_mod.DecodedInstance;
-pub const decodeInstance = vertex_mod.decodeInstance;
-pub const BindingTexels = vertex_mod.BindingTexels;
-pub const bindingTexels = vertex_mod.bindingTexels;
-pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
 
 pub const autohint = struct {
     pub const policy = @import("font/autohint/policy.zig");
@@ -176,7 +146,6 @@ test {
     _ = font;
     _ = text_mod;
     _ = image_mod;
-    _ = target;
     _ = paint_mod;
     _ = record_key_mod;
     _ = @import("atlas/curves.zig");

@@ -2,6 +2,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const render_state = @import("render-state");
 const color_mod = @import("color.zig");
 const coverage_mod = @import("coverage.zig");
 
@@ -24,14 +25,14 @@ const subpixelBlendCoverage = coverage_mod.subpixelBlendCoverage;
 
 pub const ResolveMode = union(enum) {
     direct: void,
-    linear: snail.LinearResolve,
+    linear: render_state.LinearResolve,
 };
 
 pub const Target = struct {
     pixels: [*]u8,
     stride: u32,
     height: u32,
-    target_encoding: snail.TargetEncoding,
+    target_encoding: render_state.TargetEncoding,
     target_resolve: ResolveMode,
 
     inline fn readDstChannel(self: Target, byte: u8) f32 {
@@ -106,7 +107,7 @@ pub const Target = struct {
 };
 
 const pixel_pack = @import("pixel_pack.zig");
-const PixelFormat = snail.PixelFormat;
+const PixelFormat = render_state.PixelFormat;
 
 /// Byte offset of pixel (row, col) for `fmt`.
 inline fn pixelOffset(comptime fmt: PixelFormat, target: Target, row: u32, col: u32) usize {
@@ -187,7 +188,7 @@ pub inline fn opaqueBytesForTarget(comptime fmt: PixelFormat, target: Target, co
     return buf;
 }
 
-pub fn colorBytesForEncoding(encoding: snail.TargetEncoding, color_srgb: [4]f32) [4]u8 {
+pub fn colorBytesForEncoding(encoding: render_state.TargetEncoding, color_srgb: [4]f32) [4]u8 {
     const alpha = clamp01(color_srgb[3]);
     const linear = srgbColorToLinear(color_srgb);
     const premul = [3]f32{
@@ -278,7 +279,7 @@ pub inline fn blendSubpixelPixel(comptime fmt: PixelFormat, target: Target, row:
 
 const testing = std.testing;
 
-fn blendProbe(encoding: snail.TargetEncoding, resolve: ResolveMode, bg: [4]u8, src: [4]f32) [4]u8 {
+fn blendProbe(encoding: render_state.TargetEncoding, resolve: ResolveMode, bg: [4]u8, src: [4]f32) [4]u8 {
     var px = bg;
     const target = Target{
         .pixels = &px,

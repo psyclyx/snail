@@ -169,8 +169,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
             var slen: usize = 0;
             _ = try snail.emit.emit(words, &segs, &wlen, &slen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
 
-            if (wlen % snail.WORDS_PER_INSTANCE != 0) return error.InvalidEmitRecordLength;
-            self.glyph_count = @intCast(wlen / snail.WORDS_PER_INSTANCE);
+            if (wlen % snail.render.records.WORDS_PER_INSTANCE != 0) return error.InvalidEmitRecordLength;
+            self.glyph_count = @intCast(wlen / snail.render.records.WORDS_PER_INSTANCE);
 
             switch (variant) {
                 .gl33, .gl44 => {

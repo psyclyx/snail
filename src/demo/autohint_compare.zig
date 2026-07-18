@@ -548,7 +548,7 @@ test "empty outlines remain shared unhinted no-op shapes" {
     try testing.expect(shape.key.eql(base_key));
     try testing.expectEqual(@as(?snail.autohint.AutohintPolicy, null), shape.autohint_policy);
 
-    var words: [snail.WORDS_PER_INSTANCE]u32 = undefined;
+    var words: [snail.render.records.WORDS_PER_INSTANCE]u32 = undefined;
     var segments: [1]snail.DrawSegment = undefined;
     var word_len: usize = 0;
     var segment_len: usize = 0;

@@ -9,18 +9,6 @@ const WORDS_PER_INSTANCE: usize = @import("../../format/vertex.zig").WORDS_PER_I
 const gl_shaders = @import("shaders.zig");
 const gles30_shaders = gl_shaders;
 
-/// Which GL dialect a caller targets. `supportsDsa` is a convenience for
-/// caller-owned cache/binding code.
-pub const Variant = enum {
-    gl33,
-    gl44,
-    gles30,
-
-    pub fn supportsDsa(self: Variant) bool {
-        return self == .gl44;
-    }
-};
-
 // ── Shader sources ──
 
 const text_color_funcs =

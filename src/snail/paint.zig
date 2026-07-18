@@ -6,6 +6,11 @@ const Image = image_mod.Image;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
 
+pub const FillRule = enum(c_int) {
+    non_zero = 0,
+    even_odd = 1,
+};
+
 pub const Extend = enum(u8) {
     clamp = 0,
     repeat = 1,
@@ -124,9 +129,9 @@ pub const FillStyle = struct {
     paint: Paint,
     /// Winding rule for this fill. Property of the geometry author's
     /// intent (not the frame's rasterization), so it lives here instead
-    /// of on `RasterOptions`. Defaults to non-zero, the convention used
+    /// of on per-frame raster state. Defaults to non-zero, the convention used
     /// by fonts and the majority of user-authored paths.
-    fill_rule: @import("target.zig").FillRule = .non_zero,
+    fill_rule: FillRule = .non_zero,
 };
 
 pub const StrokeCap = enum {

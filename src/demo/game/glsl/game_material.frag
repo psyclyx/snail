@@ -38,7 +38,9 @@ layout(push_constant) uniform PC {
 #include "snail_coverage_common.glsl"
 #include "snail_color_common.glsl"
 #include "snail_text_frag_body.glsl"                 // evalGlyphCoverage
-#include "snail_text_sample.interface.vulkan.glsl"   // records SSBO (set 1) + accessor
+#define SNAIL_RECORDS_SET 1
+#define SNAIL_RECORDS_BINDING 0
+#include "snail_text_sample.interface.vulkan.glsl"
 #include "snail_text_sample_body.glsl"               // snail_text_sample_premul_linear
 #include "game_material_body.glsl"                    // snailGameMaterial (rough lit surface)
 

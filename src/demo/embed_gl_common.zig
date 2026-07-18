@@ -9,7 +9,7 @@
 //! callsites byte-identical so a fix in one lands in both.
 
 const std = @import("std");
-const PixelRect = @import("snail").PixelRect;
+const PixelRect = @import("render-state").PixelRect;
 
 /// Saved framebuffer / viewport state captured at `beginLinearResolve`
 /// and re-applied at `endLinearResolve`. Uses bare C types for the gl

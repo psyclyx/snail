@@ -26,7 +26,7 @@ const demo_support = @import("support");
 pub const Pass = struct {
     atlases: []const *const snail.Atlas,
     pictures: []const *const demo_support.Picture,
-    draw_state: snail.DrawState,
+    draw_state: @import("snail-raster").DrawState,
     dirty: bool,
     /// CPU-backend hint: when true, fan tile work across the driver's
     /// thread pool; when false, rasterize on the calling thread. GPU
@@ -176,7 +176,7 @@ pub fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
-pub fn clearColorForShader(color_srgb: [4]f32, encoding: snail.TargetEncoding) [4]f32 {
+pub fn clearColorForShader(color_srgb: [4]f32, encoding: @import("snail-raster").TargetEncoding) [4]f32 {
     return switch (encoding.shaderOutputEncoding()) {
         .linear => .{ srgbToLinear(color_srgb[0]), srgbToLinear(color_srgb[1]), srgbToLinear(color_srgb[2]), color_srgb[3] },
         .srgb => color_srgb,

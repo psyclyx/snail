@@ -3,12 +3,12 @@ const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const paint_mod = @import("paint.zig");
 const path_stroke = @import("path_stroke.zig");
-const target_mod = @import("target.zig");
+const math_mod = @import("math.zig");
 const vec = @import("math/vec.zig");
 
 const BBox = bezier.BBox;
 const CurveSegment = bezier.CurveSegment;
-const Rect = target_mod.Rect;
+const Rect = math_mod.Rect;
 const StrokeStyle = paint_mod.StrokeStyle;
 const Vec2 = vec.Vec2;
 const Transform2D = vec.Transform2D;

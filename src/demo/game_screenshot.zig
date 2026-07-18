@@ -105,7 +105,7 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
     const view_proj = scene.viewProj(@as(f32, @floatFromInt(W)) / @as(f32, @floatFromInt(H)));
-    const surface = snail.TargetSurface{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = snail.TargetEncoding.srgb };
+    const surface = @import("snail-raster").TargetSurface{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = @import("snail-raster").TargetEncoding.srgb };
     try sr.draw(&scene, W, H, view_proj, surface);
 
     const px = try support.screenshot.captureFramebuffer(allocator, W, H);

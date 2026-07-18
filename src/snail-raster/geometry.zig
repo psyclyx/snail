@@ -2,10 +2,11 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const render_state = @import("render-state");
 
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
-const SubpixelOrder = snail.SubpixelOrder;
+const SubpixelOrder = render_state.SubpixelOrder;
 
 pub fn inverseTransform(transform: Transform2D) ?Transform2D {
     const det = transform.xx * transform.yy - transform.xy * transform.yx;

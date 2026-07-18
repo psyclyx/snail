@@ -20,7 +20,7 @@ const math = @import("math/vec.zig");
 
 const Transform2D = math.Transform2D;
 const Vec2 = math.Vec2;
-const Rect = @import("target.zig").Rect;
+const Rect = @import("math.zig").Rect;
 
 /// Rounding rule for scalar pixel-grid snaps. Used by `snapToStep`.
 pub const Rule = enum {

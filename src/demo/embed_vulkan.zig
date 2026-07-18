@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const render_state = @import("render-state");
 
 pub const contract = @import("embed_vulkan_contract.zig");
 pub const vk = contract.vk;
@@ -119,7 +120,7 @@ pub const Renderer = struct {
         self: *Renderer,
         cmd: vk.VkCommandBuffer,
         desc_set: vk.VkDescriptorSet,
-        draw_state: snail.DrawState,
+        draw_state: render_state.DrawState,
         words: []const u32,
         segments: []const snail.DrawSegment,
     ) void {
@@ -147,7 +148,7 @@ pub const Renderer = struct {
 
         for (segments) |seg| {
             const seg_words = words[seg.words_offset..][0..seg.words_len];
-            std.debug.assert(seg_words.len == @as(usize, seg.shape_count) * snail.WORDS_PER_INSTANCE);
+            std.debug.assert(seg_words.len == @as(usize, seg.shape_count) * snail.render.records.WORDS_PER_INSTANCE);
             var runs = contract.glyphRuns(seg_words);
             while (runs.next()) |run| {
                 const mode: contract.TextRenderMode = if (run.kind == .regular)
@@ -160,7 +161,7 @@ pub const Renderer = struct {
                 var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
                 vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
-                const abs_word = seg.words_offset + run.glyph_start * snail.WORDS_PER_INSTANCE;
+                const abs_word = seg.words_offset + run.glyph_start * snail.render.records.WORDS_PER_INSTANCE;
                 var buf = self.vbo.buffer;
                 const offset: vk.VkDeviceSize = @intCast(base + abs_word * @sizeOf(u32));
                 vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);

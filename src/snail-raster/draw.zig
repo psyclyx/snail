@@ -9,6 +9,7 @@
 const std = @import("std");
 
 const snail = @import("snail");
+const render_state = @import("render-state");
 const math = @import("snail");
 const draw_records = snail.render.records;
 const backend_cache_mod = @import("backend_cache.zig");
@@ -45,7 +46,7 @@ const RendererPtr = *@import("renderer.zig").Renderer;
 /// the caller decides per draw rather than configuring the renderer once.
 pub fn draw(
     renderer: RendererPtr,
-    state: snail.DrawState,
+    state: render_state.DrawState,
     records: DrawRecords,
     caches: []const *const BackendCache,
     thread_pool: ?*ThreadPool,
@@ -790,7 +791,7 @@ test "cubic stroke has no detached coverage island near its start cap" {
     try testing.expect(worst < 0.01);
 }
 
-fn makeIdentityState(w: u32, h: u32) snail.DrawState {
+fn makeIdentityState(w: u32, h: u32) render_state.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);
     return .{
