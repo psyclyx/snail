@@ -128,7 +128,7 @@ pub const Path = @import("path.zig").Path;
 pub const PreparedPath = @import("path.zig").PreparedPath;
 pub const snap = @import("snap.zig");
 
-/// Stable byte-layout and policy contract for caller-owned renderers.
+/// Stable byte-layout contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
 /// Entry-point-free shader fragments and resource contracts. Callers compose

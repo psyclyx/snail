@@ -500,6 +500,48 @@ test "emit coalesces adjacent same-binding calls" {
     try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE), segs[0].words_len);
 }
 
+test "emit splits contiguous shapes into exact semantic segments" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var regular_curves = try makeTinyCurves(testing.allocator);
+    defer regular_curves.deinit();
+    var path_curves = try makeTinyCurves(testing.allocator);
+    defer path_curves.deinit();
+    const regular_key = record_key_mod.unhintedGlyph(0, 1);
+    const path_key = record_key_mod.RecordKey{ .namespace = record_key_mod.ns.path_fill, .a = 1 };
+    var atlas = try Atlas.from(testing.allocator, pool, &.{
+        .{ .key = regular_key, .curves = regular_curves },
+        .{ .key = path_key, .curves = path_curves, .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
+    });
+    defer atlas.deinit();
+
+    const shapes = [_]Shape{
+        .{ .key = regular_key },
+        .{ .key = path_key },
+        .{ .key = regular_key },
+    };
+    var words: [3 * WORDS_PER_INSTANCE]u32 = undefined;
+    var segments: [3]DrawSegment = undefined;
+    var word_len: usize = 0;
+    var segment_len: usize = 0;
+    const result = try emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+
+    try testing.expectEqual(@as(u32, 3), result.segment_count);
+    try testing.expectEqual(@as(usize, 3), segment_len);
+    try testing.expectEqual(draw_records.ShapeKind.regular, segments[0].kind);
+    try testing.expectEqual(draw_records.ShapeKind.path, segments[1].kind);
+    try testing.expectEqual(draw_records.ShapeKind.regular, segments[2].kind);
+    for (segments) |segment| {
+        try testing.expectEqual(@as(u32, 1), segment.shape_count);
+        try testing.expectEqual(@as(u32, WORDS_PER_INSTANCE), segment.words_len);
+    }
+}
+
 test "emit produces separate segments for different bindings" {
     var pool_a = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
@@ -538,4 +580,5 @@ test "emit produces separate segments for different bindings" {
 test "wordBudget bounds match actual emit output" {
     const shape_count: usize = 3;
     try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(shape_count));
+    try testing.expectEqual(shape_count, segmentBudget(shape_count));
 }
