@@ -392,7 +392,7 @@ fn addTestSteps(
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
     const autohint_compare_test_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/autohint_compare.zig"),
+        .root_source_file = b.path("src/demo/autohint/compare.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,

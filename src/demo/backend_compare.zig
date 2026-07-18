@@ -11,8 +11,8 @@
 //! past the tolerances below, failing the build.
 
 const std = @import("std");
-const demo_content = @import("content.zig");
-const harness = @import("screenshot_harness.zig");
+const demo_content = @import("scene/content.zig");
+const harness = @import("screenshot/harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
 const W: u32 = 400;

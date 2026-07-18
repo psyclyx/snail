@@ -2,11 +2,11 @@
 //!
 //! Builds the shared content (see `content.zig`) and renders it
 //! through `raster.draw` into `zig-out/demo-screenshot.tga`. The
-//! per-backend flow lives in `screenshot_harness.zig`.
+//! per-backend flow lives in `screenshot/harness.zig`.
 
 const std = @import("std");
-const demo_content = @import("content.zig");
-const harness = @import("screenshot_harness.zig");
+const demo_content = @import("scene/content.zig");
+const harness = @import("screenshot/harness.zig");
 
 const W: u32 = 400;
 const H: u32 = 240;

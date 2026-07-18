@@ -17,8 +17,8 @@
 const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
-const compare_mod = @import("autohint_compare.zig");
-const harness = @import("screenshot_harness.zig");
+const compare_mod = @import("autohint/compare.zig");
+const harness = @import("screenshot/harness.zig");
 
 // One cell per size: wide enough for the whole sample at the largest em,
 // tall enough for caps + descenders. Baseline is a fixed fraction down so

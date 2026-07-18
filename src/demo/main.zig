@@ -2,7 +2,7 @@
 //!
 //! Opens a Wayland window and renders the shared banner content
 //! (rounded-rect card + wordmark + tagline + vector snail + multi-script
-//! row) via the new snail API. Backed by `renderer_driver.zig`, which
+//! row) via the new snail API. Backed by `driver/renderer.zig`, which
 //! wraps each backend's `Renderer` + `BackendCache` cache + emit/draw
 //! shim. Keys cycle backend (C), AA mode (B), and hinting (H); arrows
 //! pan; Z/X zoom; R toggles rotate; L dumps a brief repro frame; Esc
@@ -14,11 +14,11 @@ const raster = @import("snail-raster");
 const demo_support = @import("support");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
-const renderer_driver = @import("renderer_driver.zig");
-const driver_common = @import("driver_common.zig");
-const demo_banner = @import("banner.zig");
-const hud_mod = @import("hud.zig");
-const autohint_compare = @import("autohint_compare.zig");
+const renderer_driver = @import("driver/renderer.zig");
+const driver_common = @import("driver/common.zig");
+const demo_banner = @import("scene/banner/root.zig");
+const hud_mod = @import("scene/hud.zig");
+const autohint_compare = @import("autohint/compare.zig");
 const subpixel_detect = @import("platform/subpixel.zig");
 const wayland = @import("platform/wayland.zig");
 const presentation = @import("platform/presentation.zig");

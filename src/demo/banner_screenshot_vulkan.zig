@@ -3,8 +3,8 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const demo_banner = @import("banner.zig");
-const harness = @import("screenshot_harness.zig");
+const demo_banner = @import("scene/banner/root.zig");
+const harness = @import("screenshot/harness.zig");
 const embed_vulkan = @import("embed_vulkan");
 const vulkan_demo_platform = @import("demo_platform_vulkan");
 const vulkan_platform = vulkan_demo_platform.offscreen;

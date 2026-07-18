@@ -1,9 +1,9 @@
 //! GLES3 counterpart to `screenshot.zig`. The per-backend flow lives in
-//! `screenshot_harness.zig`; this file owns the EGL/FBO setup.
+//! `screenshot/harness.zig`; this file owns the EGL/FBO setup.
 
 const std = @import("std");
-const demo_content = @import("content.zig");
-const harness = @import("screenshot_harness.zig");
+const demo_content = @import("scene/content.zig");
+const harness = @import("screenshot/harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
 const W: u32 = 400;

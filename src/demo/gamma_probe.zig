@@ -14,7 +14,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const demo_support = @import("support");
-const harness = @import("screenshot_harness.zig");
+const harness = @import("screenshot/harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
 const W: u32 = 96;

@@ -1,4 +1,4 @@
-//! Cross-backend driver for the game demo. Like `renderer_driver.zig` (the 2D
+//! Cross-backend driver for the game demo. Like `driver/renderer.zig` (the 2D
 //! demo), a tagged union lets `game.zig` cycle backends with `C`, but this one
 //! drives a 3D scene: it renders the custom-material coverage quad, the
 //! depth-tested occluded label, the translucent world panel, and the HUD — all
@@ -12,16 +12,16 @@
 const std = @import("std");
 const snail = @import("snail");
 const build_options = @import("build_options");
-const wayland = @import("platform/wayland.zig");
-const presentation = @import("platform/presentation.zig");
-const scene_mod = @import("game/scene.zig");
-const gl_material = @import("game/gl_material.zig");
-const gl_scene = @import("game/gl_scene.zig");
+const wayland = @import("../platform/wayland.zig");
+const presentation = @import("../platform/presentation.zig");
+const scene_mod = @import("scene.zig");
+const gl_material = @import("gl_material.zig");
+const gl_scene = @import("gl_scene.zig");
 
 const Scene = scene_mod.Scene;
 
 const any_gl = build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30;
-const gl_platform = if (any_gl) @import("platform/gl.zig") else struct {};
+const gl_platform = if (any_gl) @import("../platform/gl.zig") else struct {};
 const desktop_gl = if (build_options.enable_gl33 or build_options.enable_gl44) @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GL/gl.h");
@@ -34,8 +34,8 @@ const gles_gl = if (build_options.enable_gles30) @cImport({
 }) else struct {};
 
 const game_vulkan = build_options.enable_vulkan;
-const vulkan_platform = if (game_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
-const vk_scene = if (game_vulkan) @import("game/vk_scene.zig") else struct {};
+const vulkan_platform = if (game_vulkan) @import("../platform/vulkan/windowed.zig") else struct {};
+const vk_scene = if (game_vulkan) @import("vk_scene.zig") else struct {};
 const embed_vulkan = if (game_vulkan) @import("embed_vulkan") else struct {};
 
 /// Default-framebuffer depth bits the scene's depth testing needs.

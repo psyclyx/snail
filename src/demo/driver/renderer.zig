@@ -15,15 +15,15 @@ const snail = @import("snail");
 const raster = @import("snail-raster");
 const embed_gl = @import("embed_gl");
 const build_options = @import("build_options");
-const presentation = @import("platform/presentation.zig");
-const wayland = @import("platform/wayland.zig");
-const demo_banner = @import("banner.zig");
-const driver_common = @import("driver_common.zig");
+const presentation = @import("../platform/presentation.zig");
+const wayland = @import("../platform/wayland.zig");
+const demo_banner = @import("../scene/banner/root.zig");
+const driver_common = @import("common.zig");
 
-const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
-const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
+const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("../platform/gl.zig") else struct {};
+const vulkan_platform = if (build_options.enable_vulkan) @import("../platform/vulkan/windowed.zig") else struct {};
 const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
-const cpu_platform = if (build_options.enable_raster) @import("platform/cpu.zig") else struct {};
+const cpu_platform = if (build_options.enable_raster) @import("../platform/cpu.zig") else struct {};
 const gl = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("support").gl else struct {};
 
 pub const Kind = enum {
@@ -499,7 +499,7 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         // the slot we just reused. These are MAX_FRAMES_IN_FLIGHT
         // frames behind real time but reflect actual GPU rasterization
         // cost, not CPU command-record time.
-        var gpu_pass_us: [@import("platform/vulkan/windowed.zig").MAX_TIMED_PASSES]f64 = undefined;
+        var gpu_pass_us: [@import("../platform/vulkan/windowed.zig").MAX_TIMED_PASSES]f64 = undefined;
         vulkan_platform.lastGpuPassUs(&gpu_pass_us);
         for (0..@min(passes.len, gpu_pass_us.len)) |i| {
             self.last_timings.pass_us[i] = gpu_pass_us[i];

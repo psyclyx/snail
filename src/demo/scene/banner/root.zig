@@ -20,15 +20,15 @@
 const std = @import("std");
 const snail = @import("snail");
 const demo_support = @import("support");
-const banner_snail = @import("banner_snail.zig");
+const banner_snail = @import("snail.zig");
 const assets_data = @import("assets");
-const layout_mod = @import("banner/layout.zig");
+const layout_mod = @import("layout.zig");
 
 const Allocator = std.mem.Allocator;
 
 pub const addVectorSnail = banner_snail.addVectorSnail;
 
-// Layout + palette + sizing constants live in banner/layout.zig.
+// Layout + palette + sizing constants live in the sibling layout module.
 pub const Layout = layout_mod.Layout;
 pub const buildLayout = layout_mod.buildLayout;
 pub const clearColor = layout_mod.clearColor;

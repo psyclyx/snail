@@ -1,5 +1,5 @@
-//! Backend-agnostic driver plumbing shared by the 2D `renderer_driver.zig`
-//! (the interactive banner demo) and the 3D `game_driver.zig` (the game demo).
+//! Backend-agnostic driver plumbing shared by the 2D `driver/renderer.zig`
+//! (the interactive banner demo) and the 3D `game/driver.zig` (the game demo).
 //!
 //! These pieces know nothing about a specific backend: a `Pass` is a set of
 //! snail (atlas, picture) pairs sharing one `DrawState`; `emitPasses` turns them

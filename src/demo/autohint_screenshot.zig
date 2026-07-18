@@ -5,8 +5,8 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const compare_mod = @import("autohint_compare.zig");
-const harness = @import("screenshot_harness.zig");
+const compare_mod = @import("autohint/compare.zig");
+const harness = @import("screenshot/harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
 const W: u32 = 896; // two grid columns of gridWidthPx (448) each

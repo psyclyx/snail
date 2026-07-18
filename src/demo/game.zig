@@ -11,8 +11,8 @@
 
 const std = @import("std");
 const wayland = @import("platform/wayland.zig");
-const driver_common = @import("driver_common.zig");
-const game_driver = @import("game_driver.zig");
+const driver_common = @import("driver/common.zig");
+const game_driver = @import("game/driver.zig");
 const passes = @import("game/passes.zig");
 const scene_mod = @import("game/scene.zig");
 
@@ -106,5 +106,5 @@ pub fn main() !void {
 
 test {
     _ = @import("game/scene.zig");
-    _ = @import("game_driver.zig");
+    _ = @import("game/driver.zig");
 }

@@ -14,7 +14,7 @@ const std = @import("std");
 const snail = @import("snail");
 const demo_support = @import("support");
 const assets_data = @import("assets");
-const banner_snail = @import("banner_snail.zig");
+const banner_snail = @import("banner/snail.zig");
 
 const Allocator = std.mem.Allocator;
 
