@@ -10,16 +10,13 @@ const std = @import("std");
 
 const snail = @import("snail");
 const math = @import("snail");
-const draw_records = @import("snail");
+const draw_records = snail.render.draw_records;
 const backend_cache_mod = @import("backend_cache.zig");
 const resources_mod = @import("resources.zig");
 const vertex = @import("snail").render.vertex;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
-pub const DrawRecords = struct {
-    words: []const u32,
-    segments: []const draw_records.DrawSegment,
-};
+pub const DrawRecords = draw_records.DrawRecords;
 
 pub const BackendCache = backend_cache_mod.BackendCache;
 pub const Binding = draw_records.Binding;
@@ -103,13 +100,9 @@ fn findCache(
 // ---------------------------------------------------------------------------
 // Tests
 //
-// The emit() level already locks down byte-for-byte parity with the existing
-// `generateGlyphVerticesTransformedTinted` vertex helper. the backend cache reuses
-// the existing `PreparedAtlasPage.initFromView` builder verbatim. That makes
-// the CPU rasterizer's inner sampling loop identical for old and new paths
-// given the same source data. The remaining responsibility of these tests
-// is to verify the new draw entry walks segments, validates bindings, and
-// renders some non-empty pixels through `drawBatch`.
+// The emit() tests lock down the draw-record layout; these tests verify that
+// the raster entry walks segments, validates bindings, and produces pixels
+// through `drawBatch`.
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;

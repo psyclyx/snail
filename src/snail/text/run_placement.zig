@@ -53,7 +53,7 @@ pub const PlaceRunAllocError = PlaceRunError || std.mem.Allocator.Error;
 
 /// Which glyph-record namespace + local scale a run places into. The three
 /// hinting paths differ only in these two things plus how the atlas is
-/// populated (the caller's / facade's job); placement hides both.
+/// populated (the caller's job); placement hides both.
 pub const HintMode = union(enum) {
     /// ppem-independent base curves. Scale = em. Supports COLR fanout.
     unhinted,

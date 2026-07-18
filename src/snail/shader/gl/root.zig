@@ -9,9 +9,8 @@
 //! and linear-resolve pass are the caller's — see the reference caller under
 //! `src/demo/embed_gl*.zig`.
 
-// The GL embeddable coverage surface: gl-typed programs + texture-binding
-// backends (over caller-supplied `TextureHandles`) + `Variant`. The facade
-// `coverage` aggregation and callers reach programs/backends through here.
+// Renderer-independent GL/GLES variants, resource contracts, and source
+// fragments. Callers reach every shader-facing symbol through this namespace.
 pub const embeddable = @import("embeddable.zig");
 
 // No complete stages or entry points: callers own their shaders.

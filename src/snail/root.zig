@@ -126,9 +126,9 @@ pub const emit = @import("draw/emit.zig");
 // ── GPU byte-layout ABI (custom-shader primitives) ──
 //
 // Symbolic decoders + texel-coord resolvers so callers can drive their
-// own shader pipeline off the same byte layout the built-in renderers
-// consume. The higher-level, per-backend integration surface lives in
-// `snail.coverage` (facade); these raw primitives sit one layer beneath.
+// own shader pipeline off the same byte layout as `snail-raster` and the
+// reference GPU callers. The complete renderer-facing contract is grouped
+// under `snail.render` below.
 
 const vertex_mod = @import("format/vertex.zig");
 pub const Instance = vertex_mod.Instance;
