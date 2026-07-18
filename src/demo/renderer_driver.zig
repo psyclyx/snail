@@ -13,7 +13,6 @@ const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("snail");
 const embed_gl = @import("embed_gl");
-const snail_helpers = @import("snail-helpers");
 const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
 const wayland = @import("platform/wayland.zig");

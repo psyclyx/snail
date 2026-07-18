@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const assets = @import("assets");
 
 // ── Fonts ──
@@ -247,11 +247,11 @@ pub const PassBuilder = struct {
         stroke: snail.StrokeStyle,
         radius: f32,
     ) !void {
-        var p = try snail_helpers.unitRoundedRectPathFor(self.allocator, rect, radius);
+        var p = try demo_support.unitRoundedRectPathFor(self.allocator, rect, radius);
         defer p.deinit();
-        const to_paint = snail_helpers.placeRectUniform(rect);
+        const to_paint = demo_support.placeRectUniform(rect);
         var unit_stroke = stroke;
-        unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
+        unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
         unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
         const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
         try self.addPathFillAndInsideStroke(&p, local_fill, unit_stroke, to_paint);
@@ -267,9 +267,9 @@ pub const PassBuilder = struct {
         fill: snail.Paint,
         radius: f32,
     ) !void {
-        var p = try snail_helpers.unitRoundedRectPathFor(self.allocator, rect, radius);
+        var p = try demo_support.unitRoundedRectPathFor(self.allocator, rect, radius);
         defer p.deinit();
-        const to_paint = snail_helpers.placeRectUniform(rect);
+        const to_paint = demo_support.placeRectUniform(rect);
         const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
         var prepared = try p.prepare(self.allocator);
         defer prepared.deinit();
@@ -369,7 +369,7 @@ pub const PassBuilder = struct {
         color: [4]f32,
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
-        var picture = try snail_helpers.placeRun(self.allocator, shaped, &self.fonts.faces, .{
+        var picture = try demo_support.placeRun(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
             .color = color,
@@ -447,9 +447,9 @@ pub const PassBuilder = struct {
         errdefer path_atlas.deinit();
         var text_atlas = try snail.Atlas.from(self.allocator, pool, self.text_entries.items);
         errdefer text_atlas.deinit();
-        var path_picture = try snail_helpers.Picture.from(self.allocator, self.path_shapes.items);
+        var path_picture = try demo_support.Picture.from(self.allocator, self.path_shapes.items);
         errdefer path_picture.deinit();
-        var text_picture = try snail_helpers.Picture.from(self.allocator, self.text_shapes.items);
+        var text_picture = try demo_support.Picture.from(self.allocator, self.text_shapes.items);
         errdefer text_picture.deinit();
 
         // Ownership of the curve / extra-layer storage moves to PreparedPass.
@@ -481,8 +481,8 @@ pub const PreparedPass = struct {
     allocator: std.mem.Allocator,
     path_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    path_picture: snail_helpers.Picture,
-    text_picture: snail_helpers.Picture,
+    path_picture: demo_support.Picture,
+    text_picture: demo_support.Picture,
     path_curves_owned: []snail.GlyphCurves,
     text_curves_owned: []snail.GlyphCurves,
     extra_layer_storage: [][]snail.AtlasLayer,

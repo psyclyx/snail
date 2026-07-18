@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const harness = @import("screenshot_harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
 
@@ -30,8 +30,8 @@ const GammaScene = struct {
     pool: *snail.PagePool,
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas, // empty; the harness draws two atlases
-    paths_picture: snail_helpers.Picture,
-    text_picture: snail_helpers.Picture, // empty
+    paths_picture: demo_support.Picture,
+    text_picture: demo_support.Picture, // empty
     curves: []snail.GlyphCurves,
     allocator: std.mem.Allocator,
 
@@ -64,7 +64,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
     const band_w = @as(f32, @floatFromInt(W)) / bands.len;
 
     for (bands, 0..) |v, i| {
-        var p = try snail_helpers.unitRectPath(allocator);
+        var p = try demo_support.unitRectPath(allocator);
         defer p.deinit();
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
@@ -74,7 +74,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = .{ v, v, v, 1 } } };
         shapes[i] = .{
             .key = key,
-            .local_transform = prepared.placedBy(snail_helpers.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) })),
+            .local_transform = prepared.placedBy(demo_support.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) })),
             .local_color = .{ 1, 1, 1, 1 },
         };
     }
@@ -83,8 +83,8 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
     errdefer paths_atlas.deinit();
     var text_atlas = try snail.Atlas.from(allocator, pool, &.{});
     errdefer text_atlas.deinit();
-    const paths_picture = try snail_helpers.Picture.from(allocator, &shapes);
-    const text_picture = try snail_helpers.Picture.from(allocator, &.{});
+    const paths_picture = try demo_support.Picture.from(allocator, &shapes);
+    const text_picture = try demo_support.Picture.from(allocator, &.{});
 
     return .{
         .pool = pool,

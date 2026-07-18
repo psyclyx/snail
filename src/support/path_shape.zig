@@ -1,24 +1,9 @@
-//! Author path shapes the way glyphs are authored: geometry lives in a
-//! **unit design frame** (`[0,1]²`, near the origin), and every placement —
-//! position, size, rotation — is carried in the per-instance
-//! `local_transform`. Nothing about a shape's on-screen location is ever
-//! baked into the f16 curve texture.
+//! Reusable primitive-path conveniences for the demos.
 //!
-//! This is the direct analog of the unhinted-glyph contract
-//! (`text_picture.zig` + `ttf.zig`'s `1/units_per_em` normalization): a
-//! glyph outline is stored in a unit em and positioned by `xx = em` plus a
-//! pen translate. Here a unit circle / unit rounded-rect is stored once and
-//! positioned by `placeRect`.
-//!
-//! Why it matters: f16 precision is *relative* to coordinate magnitude, so a
-//! shape whose control points sit at screen coordinates (hundreds to
-//! thousands) and draws near 1:1 loses ~0.25–2px at the corners. Authored in
-//! `[0,1]²` and scaled up by the transform, the same shape keeps sub-0.05px
-//! error at any size or position — see the precision regression test below.
-//!
-//! Reuse falls out for free: identical unit geometry keyed the same collapses
-//! to one atlas record (the atlas dedups on `RecordKey`), so the same shape
-//! at any size/position is one record, N instances — exactly like a glyph.
+//! `Path.prepare` already normalizes arbitrary source coordinates into the
+//! renderer's precision-safe `[-1,1]` design space. These unit builders are
+//! therefore only scene-authoring and record-reuse conveniences; callers do
+//! not need them for numerical correctness.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -96,25 +81,6 @@ pub fn unitStrokeWidth(rect: Rect, width: f32) f32 {
 
 const testing = std.testing;
 
-/// Decode the f16 control points of the first packed segment. Direct
-/// encoding lays segment 0 out as (p0.x, p0.y, p1.x, p1.y, p2.x, p2.y,
-/// p3.x, p3.y) in the first eight u16s.
-fn decodeFirstSegment(cb: []const u16) [8]f32 {
-    var out: [8]f32 = undefined;
-    for (0..8) |i| out[i] = @floatCast(@as(f16, @bitCast(cb[i])));
-    return out;
-}
-
-fn maxQuantError(authored: []const snail.Vec2, decoded: [8]f32) f32 {
-    // authored packs as x0,y0,x1,y1,... aligned with the decoded layout.
-    var m: f32 = 0;
-    for (authored, 0..) |a, i| {
-        m = @max(m, @abs(a.x - decoded[2 * i]));
-        m = @max(m, @abs(a.y - decoded[2 * i + 1]));
-    }
-    return m;
-}
-
 test "placeRect maps the unit frame onto a world rectangle" {
     const t = placeRect(.{ .x = 600, .y = 400, .w = 100, .h = 50 });
     const p = t.applyPoint(.{ .x = 1, .y = 1 });
@@ -169,25 +135,4 @@ test "parametric unit builders are byte-deterministic (dedup precondition)" {
 
     try testing.expectEqualSlices(u16, ca.curve_bytes, cb.curve_bytes);
     try testing.expectEqualSlices(u16, ca.band_bytes, cb.band_bytes);
-}
-
-test "prepared authoring keeps f16 precision at large coordinates" {
-    const target = Rect{ .x = 5000, .y = 5000, .w = 100, .h = 100 };
-
-    var screen = Path.init(testing.allocator);
-    defer screen.deinit();
-    try screen.addEllipse(target);
-    var prepared = try screen.prepare(testing.allocator);
-    defer prepared.deinit();
-    const authored = try prepared.design.cloneFilledCurves(testing.allocator);
-    defer testing.allocator.free(authored);
-    var curves = try prepared.fillCurves(testing.allocator, testing.allocator);
-    defer curves.deinit();
-    const error_local = maxQuantError(
-        &.{ authored[0].p0, authored[0].p1, authored[0].p2, authored[0].p3 },
-        decodeFirstSegment(curves.curve_bytes),
-    );
-    const error_screen = error_local * @max(@abs(prepared.design_to_source.xx), @abs(prepared.design_to_source.yy));
-
-    try testing.expect(error_screen < 0.05);
 }

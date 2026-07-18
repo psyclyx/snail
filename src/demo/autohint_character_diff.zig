@@ -6,7 +6,6 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
 const support = @import("support");
 const compare_mod = @import("autohint_compare.zig");
 const harness = @import("screenshot_harness.zig");
@@ -145,12 +144,12 @@ fn renderCharacter(
     pool: *snail.PagePool,
     atlas: *const snail.Atlas,
     empty_atlas: *const snail.Atlas,
-    empty_pic: *const helpers.Picture,
+    empty_pic: *const support.Picture,
     shaped: *const snail.ShapedText,
     em: f32,
-    mode: @FieldType(helpers.RunPlacement, "mode"),
+    mode: @FieldType(snail.RunPlacement, "mode"),
 ) ![]u8 {
-    var pic = try helpers.placeRun(frame, shaped, null, .{
+    var pic = try support.placeRun(frame, shaped, null, .{
         .baseline = .{ .x = left, .y = baseline },
         .em = em,
         .color = ink_color,
@@ -268,7 +267,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, font_desc: anyty
     try compare.ensureAll(scratch.allocator(), all, tags, 1.0);
     var empty_atlas = snail.Atlas.empty(allocator);
     defer empty_atlas.deinit();
-    var empty_pic = try helpers.Picture.from(allocator, &.{});
+    var empty_pic = try support.Picture.from(allocator, &.{});
     defer empty_pic.deinit();
 
     const pixels = @as(usize, cell_w) * cell_h;

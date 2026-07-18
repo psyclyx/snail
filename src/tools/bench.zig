@@ -12,7 +12,7 @@ const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
 const embed_gl = @import("embed_gl");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
 const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
@@ -211,7 +211,7 @@ const FontSet = struct {
     /// `init` return-by-value. `hinted_cache.asAdvanceProvider()` is
     /// the right thing to hand to `ShapeOptions.advance_provider`.
     hint_vm: ?*snail.HintVm,
-    hinted_cache: ?snail_helpers.HintedGlyphCache,
+    hinted_cache: ?snail.HintedGlyphCache,
     has_hinter: bool,
 
     fn init(allocator: std.mem.Allocator) !FontSet {
@@ -245,8 +245,8 @@ const FontSet = struct {
             };
             break :blk vm_ptr;
         };
-        const hinted_cache: ?snail_helpers.HintedGlyphCache = if (hint_vm) |vm_ptr|
-            snail_helpers.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
+        const hinted_cache: ?snail.HintedGlyphCache = if (hint_vm) |vm_ptr|
+            snail.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
         else
             null;
 
@@ -336,8 +336,8 @@ const SceneBuild = struct {
         return snail.Atlas.from(self.allocator, self.pool, self.entries.items);
     }
 
-    fn freezePicture(self: *SceneBuild) !snail_helpers.Picture {
-        return snail_helpers.Picture.from(self.allocator, self.shapes.items);
+    fn freezePicture(self: *SceneBuild) !demo_support.Picture {
+        return demo_support.Picture.from(self.allocator, self.shapes.items);
     }
 };
 
@@ -554,7 +554,7 @@ const SceneBundle = struct {
     pool: *snail.PagePool,
     build: SceneBuild,
     atlas: snail.Atlas,
-    picture: snail_helpers.Picture,
+    picture: demo_support.Picture,
 
     fn deinit(self: *SceneBundle) void {
         self.picture.deinit();
@@ -683,7 +683,7 @@ fn addShapedLine(
         defer shaped.deinit();
         const ok = ensureHintedRunCurves(build, fonts, &shaped, ppem_26_6) catch false;
         if (ok) {
-            var pic = try snail_helpers.placeRun(allocator, &shaped, null, .{
+            var pic = try demo_support.placeRun(allocator, &shaped, null, .{
                 .baseline = .{ .x = line.x, .y = line.y },
                 .em = line.size,
                 .color = line.color,
@@ -707,7 +707,7 @@ fn addShapedLineUnhinted(
     var shaped = try snail.shape(allocator, &fonts.faces, line.text, .{ .style = line.style });
     defer shaped.deinit();
     try ensureUnhintedRunCurves(build, fonts, &shaped);
-    var pic = try snail_helpers.placeRun(allocator, &shaped, &fonts.faces, .{
+    var pic = try demo_support.placeRun(allocator, &shaped, &fonts.faces, .{
         .baseline = .{ .x = line.x, .y = line.y },
         .em = line.size,
         .color = line.color,
@@ -799,7 +799,7 @@ fn addRichRun(
     switch (paint) {
         .solid => |color| {
             try ensureUnhintedRunCurves(build, fonts, &shaped);
-            var pic = try snail_helpers.placeRun(allocator, &shaped, &fonts.faces, .{
+            var pic = try demo_support.placeRun(allocator, &shaped, &fonts.faces, .{
                 .baseline = .{ .x = x, .y = y },
                 .em = em,
                 .color = color,
@@ -919,7 +919,7 @@ fn timeHinterExecute(allocator: std.mem.Allocator, font: *const snail.Font, ppem
     // VM execute: the size is prepared once (fpgm + prep), and the timed loop
     // measures only per-glyph TT bytecode execution — no fpgm/prep, no curve
     // build. The output advance is uncached at this layer
-    // (helpers.HintedGlyphCache would memoize); each call re-runs the VM.
+    // (snail.HintedGlyphCache would memoize); each call re-runs the VM.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
@@ -971,7 +971,7 @@ fn timeHinterParagraphCold(allocator: std.mem.Allocator, font: *const snail.Font
     for (0..PREP_RUNS) |_| {
         var h = snail.HintVm.init(allocator, font) catch return 0;
         defer h.deinit();
-        var cache = snail_helpers.HintedGlyphCache.init(allocator, &h, 0);
+        var cache = snail.HintedGlyphCache.init(allocator, &h, 0);
         defer cache.deinit();
         var scratch_arena = std.heap.ArenaAllocator.init(allocator);
         defer scratch_arena.deinit();
@@ -984,13 +984,13 @@ fn timeHinterParagraphCold(allocator: std.mem.Allocator, font: *const snail.Font
 }
 
 fn timeHinterParagraphWarm(allocator: std.mem.Allocator, font: *const snail.Font, ppem_26_6: u32) !f64 {
-    // Warm: HintVm + helpers.HintedGlyphCache shared across iterations.
+    // Warm: HintVm + snail.HintedGlyphCache shared across iterations.
     // The first pass populates the cache; subsequent passes hit it for
     // every (ppem, glyph_id) → bytes lookup, exercising the recommended
     // production path.
     var h = snail.HintVm.init(allocator, font) catch return 0;
     defer h.deinit();
-    var cache = snail_helpers.HintedGlyphCache.init(allocator, &h, 0);
+    var cache = snail.HintedGlyphCache.init(allocator, &h, 0);
     defer cache.deinit();
     const ppem = snail.HintPpem.uniform(ppem_26_6);
     var scratch_arena = std.heap.ArenaAllocator.init(allocator);
@@ -1019,7 +1019,7 @@ fn hintParagraph(h: *snail.HintVm, font: *const snail.Font, allocator: std.mem.A
     }
 }
 
-fn cacheParagraph(cache: *snail_helpers.HintedGlyphCache, font: *const snail.Font, allocator: std.mem.Allocator, scratch_arena: *std.heap.ArenaAllocator, ppem: snail.HintPpem) !void {
+fn cacheParagraph(cache: *snail.HintedGlyphCache, font: *const snail.Font, allocator: std.mem.Allocator, scratch_arena: *std.heap.ArenaAllocator, ppem: snail.HintPpem) !void {
     for (PARAGRAPH) |ch| {
         const gid = font.glyphIndex(ch) catch continue;
         const curves = cache.getOrInsertCurves(allocator, scratch_arena.allocator(), gid, ppem) catch continue;
@@ -1154,7 +1154,7 @@ fn buildPicturesForPreparedLines(
     var shape_count: usize = 0;
     for (prepared.items.items) |*it| {
         if (it.hinted) {
-            var pic = try snail_helpers.placeRun(allocator, &it.shaped, null, .{
+            var pic = try demo_support.placeRun(allocator, &it.shaped, null, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .color = it.line.color,
@@ -1163,7 +1163,7 @@ fn buildPicturesForPreparedLines(
             shape_count += pic.shapes.len;
             pic.deinit();
         } else {
-            var pic = try snail_helpers.placeRun(allocator, &it.shaped, &prepared.fonts.faces, .{
+            var pic = try demo_support.placeRun(allocator, &it.shaped, &prepared.fonts.faces, .{
                 .baseline = .{ .x = it.line.x, .y = it.line.y },
                 .em = it.line.size,
                 .color = it.line.color,
@@ -1226,7 +1226,7 @@ fn timeRecordEmit(
     allocator: std.mem.Allocator,
     binding: snail.Binding,
     atlas: *const snail.Atlas,
-    picture: *const snail_helpers.Picture,
+    picture: *const demo_support.Picture,
 ) !struct { us: f64, words: usize, segments: usize } {
     const word_cap = snail.emit.wordBudget(picture.shapes.len);
     const words = try allocator.alloc(u32, word_cap);
@@ -1273,7 +1273,7 @@ fn emitScene(
     allocator: std.mem.Allocator,
     binding: snail.Binding,
     atlas: *const snail.Atlas,
-    picture: *const snail_helpers.Picture,
+    picture: *const demo_support.Picture,
 ) !EmittedRecords {
     const word_cap = snail.emit.wordBudget(picture.shapes.len);
     const words = try allocator.alloc(u32, word_cap);

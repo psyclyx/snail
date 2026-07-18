@@ -51,7 +51,7 @@ pub const ShapeOptions = struct {
     /// pixel positions exactly).
     ///
     /// A typical caller wires this to
-    /// `helpers.HintedGlyphCache.asAdvanceProvider()` so HB lookups hit
+    /// `snail.HintedGlyphCache.asAdvanceProvider()` so HB lookups hit
     /// the cache, falling back to the underlying `HintVm` on miss.
     advance_provider: ?AdvanceProvider = null,
     /// Ppem to shape at. Two roles, both shape-time:

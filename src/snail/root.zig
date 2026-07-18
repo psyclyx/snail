@@ -34,6 +34,16 @@ pub const ShapeOptions = core.ShapeOptions;
 pub const AdvanceProvider = core.AdvanceProvider;
 pub const MissingGlyphReplacement = core.MissingGlyphReplacement;
 pub const isRenderableTextCodepoint = core.isRenderableTextCodepoint;
+pub const HintMode = core.HintMode;
+pub const RunSnap = core.RunSnap;
+pub const RunPlacement = core.RunPlacement;
+pub const PlaceRunError = core.PlaceRunError;
+pub const PlaceRunAllocError = core.PlaceRunAllocError;
+pub const placedRunShapeCount = core.placedRunShapeCount;
+pub const placeRun = core.placeRun;
+pub const placeRunAlloc = core.placeRunAlloc;
+pub const HintedGlyphCache = core.HintedGlyphCache;
+pub const UnhintedGlyphCache = core.UnhintedGlyphCache;
 pub const Font = core.Font;
 pub const tt = core.tt;
 

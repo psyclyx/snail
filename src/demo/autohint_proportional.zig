@@ -7,7 +7,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const compare_mod = @import("autohint_compare.zig");
 const harness = @import("screenshot_harness.zig");
 
@@ -40,7 +40,7 @@ pub fn main() !void {
 
     var empty_atlas = snail.Atlas.empty(allocator);
     defer empty_atlas.deinit();
-    var empty_pic = try helpers.Picture.from(allocator, &.{});
+    var empty_pic = try demo_support.Picture.from(allocator, &.{});
     defer empty_pic.deinit();
 
     const scene = harness.Scene{

@@ -11,13 +11,16 @@
 //! callback walks this cache instead of re-running the VM per glyph.
 
 const std = @import("std");
-const snail = @import("snail");
+const text = @import("../text.zig");
+const font = @import("../font.zig");
+const hint_vm = @import("../font/hint_vm.zig");
+const curves_mod = @import("../atlas/curves.zig");
 
 const Allocator = std.mem.Allocator;
-const HintVm = snail.HintVm;
-const HintPpem = snail.HintPpem;
-const HintError = snail.HintError;
-const GlyphCurves = snail.GlyphCurves;
+const HintVm = hint_vm.HintVm;
+const HintPpem = hint_vm.HintPpem;
+const HintError = hint_vm.HintError;
+const GlyphCurves = curves_mod.GlyphCurves;
 
 const Key = struct {
     ppem_x_26_6: u32,
@@ -175,7 +178,7 @@ pub const HintedGlyphCache = struct {
     ///
     /// The returned provider borrows `self`; both must outlive any
     /// shape call passed `opts.advance_provider = provider`.
-    pub fn asAdvanceProvider(self: *HintedGlyphCache) snail.AdvanceProvider {
+    pub fn asAdvanceProvider(self: *HintedGlyphCache) text.AdvanceProvider {
         return .{
             .context = @ptrCast(self),
             .covers = advanceProviderCovers,
@@ -215,16 +218,16 @@ const testing = std.testing;
 const assets = @import("assets");
 
 test "HintedGlyphCache memoizes curves across repeated lookups" {
-    var font = try snail.Font.init(assets.noto_sans_regular);
+    var test_font = try font.Font.init(assets.noto_sans_regular);
 
-    var vm = try HintVm.init(testing.allocator, &font);
+    var vm = try HintVm.init(testing.allocator, &test_font);
     defer vm.deinit();
 
     var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
     const ppem = HintPpem.uniform(13 * 64);
-    const gid = try font.glyphIndex('A');
+    const gid = try test_font.glyphIndex('A');
 
     const first = try cache.getOrInsertCurves(testing.allocator, testing.allocator, gid, ppem);
     const second = try cache.getOrInsertCurves(testing.allocator, testing.allocator, gid, ppem);
@@ -236,16 +239,16 @@ test "HintedGlyphCache memoizes curves across repeated lookups" {
 }
 
 test "HintedGlyphCache.advance caches hinted advance" {
-    var font = try snail.Font.init(assets.noto_sans_regular);
+    var test_font = try font.Font.init(assets.noto_sans_regular);
 
-    var vm = try HintVm.init(testing.allocator, &font);
+    var vm = try HintVm.init(testing.allocator, &test_font);
     defer vm.deinit();
 
     var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
     const ppem = HintPpem.uniform(13 * 64);
-    const gid = try font.glyphIndex('A');
+    const gid = try test_font.glyphIndex('A');
 
     const first = try cache.advance(gid, ppem);
     const second = try cache.advance(gid, ppem);

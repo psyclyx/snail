@@ -1,4 +1,4 @@
-//! Memoization of `snail.shape()` output keyed by the inputs that
+//! Demo-local memoization of `snail.shape()` output keyed by the inputs that
 //! determine its bytes.
 //!
 //! `snail.shape(faces, text, opts)` is deterministic in

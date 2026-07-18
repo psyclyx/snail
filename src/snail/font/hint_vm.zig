@@ -8,7 +8,7 @@
 //! `hintGlyph` is a function of `(prepared, glyph_id)` — a glyph program's
 //! rare CVT/storage write is copy-on-write-scoped to the call, so `prepared`
 //! is never mutated. That makes the output safe to memoize and lets the caller
-//! own the `Prepared`-per-ppem cache (see `helpers.HintedGlyphCache`). The VM
+//! own the `Prepared`-per-ppem cache (see `snail.HintedGlyphCache`). The VM
 //! itself holds no per-ppem state — only reusable per-font scratch and a
 //! ppem-independent parsed-outline cache, both created lazily. This is the
 //! deliberate absence of the "one justified exception" cache: hinting stays
@@ -174,7 +174,7 @@ pub const HintVm = struct {
 
     /// Run fpgm/prep at `ppem` and return the immutable per-ppem state. The
     /// caller owns it — cache it and `deinit` it. Expensive (thousands of
-    /// cycles); amortize by caching per ppem (see `helpers.HintedGlyphCache`).
+    /// cycles); amortize by caching per ppem (see `snail.HintedGlyphCache`).
     pub fn prepare(self: *HintVm, ppem: HintPpem) HintError!Prepared {
         try self.ensureScratch();
         return self.machine.?.prepare(self.allocator, .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 }, .{});

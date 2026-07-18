@@ -19,7 +19,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const banner_snail = @import("banner_snail.zig");
 const assets_data = @import("assets");
 const layout_mod = @import("banner/layout.zig");
@@ -78,11 +78,11 @@ pub const Content = struct {
     pool: *snail.PagePool,
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    paths_picture: snail_helpers.Picture,
+    paths_picture: demo_support.Picture,
     /// Unhinted-only text shapes. Hinted runs are stored on `hinted_runs`
     /// and rebuilt per frame via `composeTextPicture` so their baseline
     /// snap tracks the current `world_to_pixel`.
-    text_picture: snail_helpers.Picture,
+    text_picture: demo_support.Picture,
     hinted_runs: []HintedRunDescriptor,
     layout: Layout,
     decoration_rects: []snail.Rect,
@@ -112,10 +112,10 @@ pub const Content = struct {
         self: *const Content,
         arena: std.mem.Allocator,
         world_to_pixel: ?snail.Transform2D,
-    ) !snail_helpers.Picture {
+    ) !demo_support.Picture {
         var total_hinted: usize = 0;
         for (self.hinted_runs) |run| total_hinted += run.glyphs.len;
-        if (total_hinted == 0) return snail_helpers.Picture.from(arena, self.text_picture.shapes);
+        if (total_hinted == 0) return demo_support.Picture.from(arena, self.text_picture.shapes);
 
         const buf = try arena.alloc(snail.Shape, self.text_picture.shapes.len + total_hinted);
         @memcpy(buf[0..self.text_picture.shapes.len], self.text_picture.shapes);
@@ -130,7 +130,7 @@ pub const Content = struct {
                 // the baseline) — grid-fit stems smear otherwise for every
                 // glyph after the first. Rounds the position, so kerning
                 // survives. This is `RunSnap.origins`; the whole run could use
-                // `helpers.placeRun` if it weren't merged into one buffer here.
+                // `demo_support.placeRun` if it weren't merged into one buffer here.
                 const world = snail.Vec2{
                     .x = baseline.x + run.placement.size * g.x_offset,
                     .y = baseline.y + run.placement.size * g.y_offset,
@@ -152,7 +152,7 @@ pub const Content = struct {
             }
         }
 
-        return snail_helpers.Picture.fromOwnedSlice(arena, buf);
+        return demo_support.Picture.fromOwnedSlice(arena, buf);
     }
 };
 
@@ -174,7 +174,7 @@ pub const Assets = struct {
     /// `snail.shape` for hinted runs; the same VM produces curves for
     /// the render path via `tryEmitHintedRun`.
     hint_vm: ?*snail.HintVm,
-    hinted_cache: ?snail_helpers.HintedGlyphCache,
+    hinted_cache: ?snail.HintedGlyphCache,
     /// Whether face 0 has hinting available. `false` means the regular
     /// font lacked `fpgm`/`prep`/`cvt` and shape() falls through to
     /// em-space.
@@ -237,8 +237,8 @@ pub const Assets = struct {
             };
             break :blk vm_ptr;
         };
-        const hinted_cache: ?snail_helpers.HintedGlyphCache = if (hint_vm) |vm_ptr|
-            snail_helpers.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
+        const hinted_cache: ?snail.HintedGlyphCache = if (hint_vm) |vm_ptr|
+            snail.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
         else
             null;
 
@@ -358,9 +358,9 @@ pub fn build(
     errdefer text_atlas.deinit();
 
     // ── Combine pictures ──
-    var paths_picture = try snail_helpers.Picture.from(allocator, builder.path_shapes.items);
+    var paths_picture = try demo_support.Picture.from(allocator, builder.path_shapes.items);
     errdefer paths_picture.deinit();
-    var text_picture = try snail_helpers.Picture.from(allocator, builder.text_shapes.items);
+    var text_picture = try demo_support.Picture.from(allocator, builder.text_shapes.items);
     errdefer text_picture.deinit();
 
     const decoration_rects = try builder.takeDecorationRects();
@@ -563,7 +563,7 @@ const BannerBuilder = struct {
 
         // Shapes are authored in the unit design frame [0,1]² and placed
         // with `placeRect`, so screen position never enters the f16 curve
-        // texture (see snail-helpers/path_shape.zig). Stroke widths and
+        // texture. Stroke widths and
         // corner radii are expressed as fractions of the frame — they scale
         // with the shape, exactly as glyph stems scale with the em.
         const usw = stroke_w / sz; // unit-frame stroke width
@@ -573,35 +573,35 @@ const BannerBuilder = struct {
 
         // Rect
         {
-            var p = try snail_helpers.unitRectPath(sb.allocator);
+            var p = try demo_support.unitRectPath(sb.allocator);
             defer p.deinit();
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.22, 0.50, 0.88, 1.0 } }, .{
                 .paint = .{ .solid = .{ 0.15, 0.38, 0.72, 1.0 } },
                 .width = usw,
                 .join = .miter,
                 .placement = .inside,
-            }, snail_helpers.placeRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz }));
+            }, demo_support.placeRect(.{ .x = x0, .y = shapes_y, .w = sz, .h = sz }));
         }
 
         // Rounded rect
         const rrx = x0 + sz + gap;
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, 12 * s / sz);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, 12 * s / sz);
             defer p.deinit();
             try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.92, 0.82, 0.48, 1.0 } }, .{
                 .paint = .{ .solid = .{ 0.78, 0.62, 0.22, 1.0 } },
                 .width = usw,
                 .join = .round,
                 .placement = .inside,
-            }, snail_helpers.placeRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }));
+            }, demo_support.placeRect(.{ .x = rrx, .y = shapes_y, .w = sz, .h = sz }));
         }
 
         // Ellipse (fill + separate inside stroke, mirroring addEllipse)
         const elx = x0 + (sz + gap) * 2;
         {
-            var p = try snail_helpers.unitEllipsePath(sb.allocator);
+            var p = try demo_support.unitEllipsePath(sb.allocator);
             defer p.deinit();
-            const el_place = snail_helpers.placeRect(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz });
+            const el_place = demo_support.placeRect(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz });
             try sb.addFilledPath(&p, .{ .solid = .{ 0.85, 0.52, 0.35, 1.0 } }, el_place);
             try sb.addStrokedPath(&p, .{
                 .paint = .{ .solid = .{ 0.72, 0.38, 0.22, 1.0 } },
@@ -632,7 +632,7 @@ const BannerBuilder = struct {
                 .width = usw,
                 .join = .round,
                 .placement = .inside,
-            }, snail_helpers.placeRect(.{ .x = plx, .y = shapes_y, .w = sz, .h = sz }));
+            }, demo_support.placeRect(.{ .x = plx, .y = shapes_y, .w = sz, .h = sz }));
         }
 
         // ── Row 2: Fills ──
@@ -643,60 +643,60 @@ const BannerBuilder = struct {
 
         // Solid fill
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, snail_helpers.placeRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }));
+            try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, demo_support.placeRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Linear gradient
         const lgx = x0 + sz + gap;
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
             try sb.addFilledPath(&p, .{ .linear_gradient = .{
                 .start = .{ .x = 0, .y = 0 },
                 .end = .{ .x = 1, .y = 1 },
                 .start_color = .{ 0.25, 0.55, 0.95, 1.0 },
                 .end_color = .{ 0.85, 0.30, 0.55, 1.0 },
-            } }, snail_helpers.placeRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }));
+            } }, demo_support.placeRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Radial gradient
         const rgx = x0 + (sz + gap) * 2;
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
             try sb.addFilledPath(&p, .{ .radial_gradient = .{
                 .center = .{ .x = 0.45, .y = 0.4 },
                 .radius = 0.55,
                 .inner_color = .{ 0.98, 0.90, 0.55, 1.0 },
                 .outer_color = .{ 0.88, 0.42, 0.18, 1.0 },
-            } }, snail_helpers.placeRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }));
+            } }, demo_support.placeRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Image fill. The image tiled with world period `sz`; in unit space
         // one tile spans the whole shape, so the uv transform is identity.
         const imx = x0 + (sz + gap) * 3;
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
             try sb.addFilledPath(&p, .{ .image = .{
                 .image = paint_image,
                 .uv_transform = .{ .xx = 1.0, .yy = 1.0, .tx = 0.0, .ty = 0.0 },
                 .filter = .nearest,
-            } }, snail_helpers.placeRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }));
+            } }, demo_support.placeRect(.{ .x = imx, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Conic gradient — sweep two colors around the shape center.
         const cgx = x0 + (sz + gap) * 4;
         {
-            var p = try snail_helpers.unitRoundedRectPath(sb.allocator, fill_r);
+            var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
             try sb.addFilledPath(&p, .{ .conic_gradient = .{
                 .center = .{ .x = 0.5, .y = 0.5 },
                 .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
                 .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
-            } }, snail_helpers.placeRect(.{ .x = cgx, .y = fills_y, .w = sz, .h = sz }));
+            } }, demo_support.placeRect(.{ .x = cgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Stroke-only path (in shapes row, last cell), authored in the unit frame.
@@ -715,7 +715,7 @@ const BannerBuilder = struct {
                 .width = uedge, // 4*s/sz in unit terms
                 .cap = .round,
                 .join = .round,
-            }, snail_helpers.placeRect(.{ .x = stx, .y = shapes_y, .w = sz, .h = sz }));
+            }, demo_support.placeRect(.{ .x = stx, .y = shapes_y, .w = sz, .h = sz }));
         }
     }
 
@@ -1176,7 +1176,7 @@ const BannerBuilder = struct {
     ) !void {
         try self.ensureUnhintedGlyphCurves(shaped);
 
-        var picture = try snail_helpers.placeRun(self.allocator, shaped, &self.assets.faces, .{
+        var picture = try demo_support.placeRun(self.allocator, shaped, &self.assets.faces, .{
             .baseline = .{ .x = placement.x, .y = placement.y },
             .em = placement.size,
             .color = color,
@@ -1325,11 +1325,11 @@ fn addRoundedCard(
     // a uniform transform, so its rounded corners stay crisp regardless of
     // where the card sits on screen. Fill/stroke here are solid, so no paint
     // remapping is needed. The stroke width moves into unit-frame units.
-    var p = try snail_helpers.unitRoundedRectPathFor(builder.allocator, rect, radius);
+    var p = try demo_support.unitRoundedRectPathFor(builder.allocator, rect, radius);
     defer p.deinit();
     var unit_stroke = stroke;
-    unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
-    try builder.addPathFillAndStroke(&p, fill, unit_stroke, snail_helpers.placeRectUniform(rect));
+    unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
+    try builder.addPathFillAndStroke(&p, fill, unit_stroke, demo_support.placeRectUniform(rect));
 }
 
 fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {

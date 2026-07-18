@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 
 const Allocator = std.mem.Allocator;
 
@@ -93,9 +93,9 @@ pub const Builder = struct {
         paint: snail.Paint,
         transform: snail.Transform2D,
     ) !void {
-        var path = try snail_helpers.unitEllipsePath(self.allocator);
+        var path = try demo_support.unitEllipsePath(self.allocator);
         defer path.deinit();
-        const to_paint = snail_helpers.placeRect(rect);
+        const to_paint = demo_support.placeRect(rect);
         const local_paint = snail.mapPaintToLocal(paint, to_paint) orelse paint;
         try self.addFilledPath(&path, local_paint, snail.Transform2D.multiply(transform, to_paint));
     }
@@ -107,13 +107,13 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        var path = try snail_helpers.unitEllipsePath(self.allocator);
+        var path = try demo_support.unitEllipsePath(self.allocator);
         defer path.deinit();
-        const to_paint = snail_helpers.placeRect(rect);
+        const to_paint = demo_support.placeRect(rect);
         const place = snail.Transform2D.multiply(transform, to_paint);
         try self.addFilledPath(&path, snail.mapPaintToLocal(fill, to_paint) orelse fill, place);
         var unit_stroke = stroke;
-        unit_stroke.width = snail_helpers.unitStrokeWidth(rect, stroke.width);
+        unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
         unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
         try self.addStrokedPath(&path, unit_stroke, place);
     }

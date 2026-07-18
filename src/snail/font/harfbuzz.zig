@@ -31,7 +31,7 @@ pub fn makeTag(tag: [4]u8) u32 {
 
 /// What backs the `glyph_h_advance` font_func. `shape(faces, ...)`
 /// attaches a closure that typically routes into a
-/// `helpers.HintedGlyphCache`.
+/// `snail.HintedGlyphCache`.
 const AdvanceSource = union(enum) {
     none,
     provider: struct { provider: AdvanceProvider, font_id: u32 },

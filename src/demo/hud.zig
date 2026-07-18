@@ -27,12 +27,12 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
+const demo_support = @import("support");
 
 const Allocator = std.mem.Allocator;
 
-const ShapedRunCache = helpers.ShapedRunCache;
-const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
+const ShapedRunCache = demo_support.ShapedRunCache;
+const UnhintedGlyphCache = snail.UnhintedGlyphCache;
 
 /// Live state the HUD reads each frame. Strings the caller already
 /// has (backend name, AA label, hint label) come through by slice;
@@ -127,7 +127,7 @@ pub const Overlay = struct {
         state: State,
         viewport_w: f32,
         viewport_h: f32,
-    ) !helpers.Picture {
+    ) !demo_support.Picture {
         const fps_text = std.fmt.bufPrint(&self.fps_buf, "FPS: {d:.0}", .{state.fps}) catch "FPS: ?";
 
         // Lines render in this order, top to bottom. Empty entries are
@@ -162,7 +162,7 @@ pub const Overlay = struct {
         // placeRun call allocates a small Shape buffer in
         // `frame_alloc`; the concat allocates one final buffer; the
         // per-line pictures get freed before return.
-        var line_pictures: [lines.len]helpers.Picture = undefined;
+        var line_pictures: [lines.len]demo_support.Picture = undefined;
         var line_count: usize = 0;
         defer for (line_pictures[0..line_count]) |*p| p.deinit();
 
@@ -183,7 +183,7 @@ pub const Overlay = struct {
             // take their place — no stale gap above it.
             const baseline_y = top_edge + @as(f32, @floatFromInt(line_count)) * line_h;
 
-            line_pictures[line_count] = try helpers.placeRun(frame_alloc, shaped, self.faces, .{
+            line_pictures[line_count] = try demo_support.placeRun(frame_alloc, shaped, self.faces, .{
                 .baseline = .{ .x = baseline_x, .y = baseline_y },
                 .em = em,
                 .color = hud_color,
@@ -192,9 +192,9 @@ pub const Overlay = struct {
         }
 
         // One concat over all non-empty lines.
-        var refs: [lines.len]*const helpers.Picture = undefined;
+        var refs: [lines.len]*const demo_support.Picture = undefined;
         for (line_pictures[0..line_count], 0..) |*p, i| refs[i] = p;
-        return helpers.Picture.concat(frame_alloc, refs[0..line_count]);
+        return demo_support.Picture.concat(frame_alloc, refs[0..line_count]);
     }
 
     /// Walk `shaped`'s glyphs and add any missing keys to `self.atlas`.

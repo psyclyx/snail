@@ -13,7 +13,6 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
 const support = @import("support");
 const gl = support.gl;
 
@@ -21,8 +20,8 @@ pub const Scene = struct {
     pool: *snail.PagePool,
     paths_atlas: *const snail.Atlas,
     text_atlas: *const snail.Atlas,
-    paths_picture: *const snail_helpers.Picture,
-    text_picture: *const snail_helpers.Picture,
+    paths_picture: *const support.Picture,
+    text_picture: *const support.Picture,
 };
 
 /// Shared off-white background (sRGB).

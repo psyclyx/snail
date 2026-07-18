@@ -171,12 +171,18 @@ fn createSupportModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+    assets_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("src/support/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "snail", .module = snail_mod },
+            .{ .name = "assets", .module = assets_mod },
+        },
     });
 }
 
@@ -364,32 +370,6 @@ fn addSnailModule(
     return buildSnailGraph(b, config.target, config.optimize, options_mod, config.core_options, "snail");
 }
 
-fn addSnailHelpersModule(
-    b: *std.Build,
-    config: BuildConfig,
-    snail_mod: *std.Build.Module,
-) *std.Build.Module {
-    return b.addModule("snail-helpers", .{
-        .root_source_file = b.path("src/snail-helpers/root.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .imports = &.{.{ .name = "snail", .module = snail_mod }},
-    });
-}
-
-fn createReleaseHelpersModule(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    snail_mod: *std.Build.Module,
-) *std.Build.Module {
-    return b.createModule(.{
-        .root_source_file = b.path("src/snail-helpers/root.zig"),
-        .target = target,
-        .optimize = .ReleaseFast,
-        .imports = &.{.{ .name = "snail", .module = snail_mod }},
-    });
-}
-
 const ProjectModules = struct {
     assets: *std.Build.Module,
     support: *std.Build.Module,
@@ -397,7 +377,6 @@ const ProjectModules = struct {
     vk_shaders: *std.Build.Module,
     demo_vulkan_types: *std.Build.Module,
     snail: *std.Build.Module,
-    snail_helpers: *std.Build.Module,
 };
 
 fn addTestSteps(
@@ -413,19 +392,7 @@ fn addTestSteps(
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
 
-    const helpers_test_module = b.createModule(.{
-        .root_source_file = b.path("src/snail-helpers/root.zig"),
-        .target = config.target,
-        .optimize = config.optimize,
-        .link_libc = true,
-        .imports = &.{
-            .{ .name = "snail", .module = modules.snail },
-            .{ .name = "assets", .module = modules.assets },
-        },
-    });
-    const helpers_unit_tests = b.addTest(.{ .root_module = helpers_test_module });
-    const run_helpers_unit_tests = b.addRunArtifact(helpers_unit_tests);
-    test_step.dependOn(&run_helpers_unit_tests.step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
     const autohint_compare_test_module = b.createModule(.{
         .root_source_file = b.path("src/demo/autohint_compare.zig"),
@@ -435,7 +402,7 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
-            .{ .name = "snail-helpers", .module = modules.snail_helpers },
+            .{ .name = "support", .module = modules.support },
         },
     });
     const autohint_compare_tests = b.addTest(.{ .root_module = autohint_compare_test_module });
@@ -450,8 +417,7 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
-            .{ .name = "snail-helpers", .module = modules.snail_helpers },
-            .{ .name = "support", .module = createSupportModule(b, config.target, config.optimize) },
+            .{ .name = "support", .module = modules.support },
         },
     });
     const character_diff_tests = b.addTest(.{ .root_module = character_diff_test_module });
@@ -472,8 +438,7 @@ fn addScreenshotSteps(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
-    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
-    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
+    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
     const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
@@ -486,7 +451,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -504,7 +468,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -523,7 +486,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -540,7 +502,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -558,7 +519,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -590,7 +550,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -608,7 +567,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -627,7 +585,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -648,7 +605,6 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -669,7 +625,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -690,7 +645,6 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -714,7 +668,6 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
             },
         });
@@ -736,7 +689,6 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
             },
         });
@@ -757,7 +709,7 @@ fn addScreenshotSteps(
             .link_libc = true,
             .imports = &.{
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
+                .{ .name = "support", .module = release_support_mod },
             },
         });
         const cov_probe_exe = b.addExecutable(.{ .name = "snail-coverage-probe", .root_module = cov_probe_mod });
@@ -775,7 +727,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -796,7 +747,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -815,7 +765,6 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
-            .{ .name = "snail-helpers", .module = release_helpers_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -836,7 +785,6 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
-                .{ .name = "snail-helpers", .module = release_helpers_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -869,7 +817,6 @@ fn addInteractiveDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
-            .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
             .{ .name = "embed_gl", .module = demo_embed_gl_mod },
@@ -937,7 +884,6 @@ fn addGameDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
-            .{ .name = "snail-helpers", .module = modules.snail_helpers },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
             .{ .name = "embed_gl", .module = game_embed_gl_mod },
@@ -978,12 +924,11 @@ pub fn build(b: *std.Build) void {
     b.addNamedLazyPath("snail_glsl_vulkan", b.path("src/snail/render/backend/vulkan_glsl"));
     const options_mod = createBuildOptionsModule(b, config.core_options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
-    const support_mod = createSupportModule(b, config.target, config.optimize);
+    const snail_mod = addSnailModule(b, config, options_mod);
+    const support_mod = createSupportModule(b, config.target, config.optimize, snail_mod, assets_mod);
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.core_options.enable_vulkan);
     const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
 
-    const snail_mod = addSnailModule(b, config, options_mod);
-    const snail_helpers_mod = addSnailHelpersModule(b, config, snail_mod);
     const modules = ProjectModules{
         .assets = assets_mod,
         .support = support_mod,
@@ -991,7 +936,6 @@ pub fn build(b: *std.Build) void {
         .vk_shaders = vk_shaders_mod,
         .demo_vulkan_types = demo_vulkan_types_mod,
         .snail = snail_mod,
-        .snail_helpers = snail_helpers_mod,
     };
 
     addTestSteps(b, config, modules);
@@ -1007,8 +951,7 @@ fn addBenchStep(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
-    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast);
-    const release_helpers_mod = createReleaseHelpersModule(b, config.target, release_snail_mod);
+    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
     const offscreen_gl_mod = b.createModule(.{
@@ -1023,7 +966,6 @@ fn addBenchStep(
     bench_imports.appendSlice(b.allocator, &.{
         .{ .name = "assets", .module = modules.assets },
         .{ .name = "snail", .module = release_snail_mod },
-        .{ .name = "snail-helpers", .module = release_helpers_mod },
         .{ .name = "support", .module = release_support_mod },
         .{ .name = "build_options", .module = modules.options },
         .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },

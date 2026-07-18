@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("renderer_driver.zig");
@@ -1023,22 +1023,22 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         var compare_picture = if (compare_on)
             try compare.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, 0)
         else
-            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+            try demo_support.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture.deinit();
         var compare_picture_noto = if (compare_on)
             try compare_noto.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w)
         else
-            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+            try demo_support.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture_noto.deinit();
         var compare_picture_prop = if (compare_on)
             try compare_prop.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w * 2)
         else
-            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+            try demo_support.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture_prop.deinit();
         var compare_picture_serif = if (compare_on)
             try compare_serif.buildGridAt(compare_arena.allocator(), compare_scratch.allocator(), compare_px_scale, grid_w * 3)
         else
-            try snail_helpers.Picture.from(compare_arena.allocator(), &.{});
+            try demo_support.Picture.from(compare_arena.allocator(), &.{});
         defer compare_picture_serif.deinit();
         const compare_dirty = compare.atlas.recordCount() != compare_before or
             compare_noto.atlas.recordCount() != compare_noto_before or
@@ -1046,11 +1046,11 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             compare_serif.atlas.recordCount() != compare_serif_before;
 
         const content_atlases = [_]*const snail.Atlas{ &cached.content.paths_atlas, &cached.content.text_atlas };
-        const content_pictures = [_]*const snail_helpers.Picture{ &cached.content.paths_picture, &frame_text_picture };
+        const content_pictures = [_]*const demo_support.Picture{ &cached.content.paths_picture, &frame_text_picture };
         const hud_atlases = [_]*const snail.Atlas{&hud.atlas};
-        const hud_pictures = [_]*const snail_helpers.Picture{&hud_picture};
+        const hud_pictures = [_]*const demo_support.Picture{&hud_picture};
         const compare_atlases = [_]*const snail.Atlas{ &compare.atlas, &compare_noto.atlas, &compare_prop.atlas, &compare_serif.atlas };
-        const compare_pictures = [_]*const snail_helpers.Picture{ &compare_picture, &compare_picture_noto, &compare_picture_prop, &compare_picture_serif };
+        const compare_pictures = [_]*const demo_support.Picture{ &compare_picture, &compare_picture_noto, &compare_picture_prop, &compare_picture_serif };
 
         var passes_buf: [3]renderer_driver.Pass = undefined;
         var pass_count: usize = 0;

@@ -16,7 +16,6 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
 const support = @import("support");
 const compare_mod = @import("autohint_compare.zig");
 const harness = @import("screenshot_harness.zig");
@@ -54,15 +53,15 @@ fn renderMode(
     pool: *snail.PagePool,
     atlas: *const snail.Atlas,
     empty_atlas: *const snail.Atlas,
-    empty_pic: *const helpers.Picture,
+    empty_pic: *const support.Picture,
     shaped: *const snail.ShapedText,
     em: f32,
     x_off: f32,
     y_off: f32,
-    mode: @FieldType(helpers.RunPlacement, "mode"),
-    snap: helpers.RunSnap,
+    mode: @FieldType(snail.RunPlacement, "mode"),
+    snap: snail.RunSnap,
 ) ![]u8 {
-    var pic = try helpers.placeRun(frame, shaped, null, .{
+    var pic = try support.placeRun(frame, shaped, null, .{
         .baseline = .{ .x = left + x_off, .y = baseline + y_off },
         .em = em,
         .color = ink_color,
@@ -129,7 +128,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     defer frame.deinit();
 
     // Monospace snaps uniform columns; a proportional face snaps per-glyph origins.
-    const snap: helpers.RunSnap = if (compare.proportional) .origins else .columns;
+    const snap: snail.RunSnap = if (compare.proportional) .origins else .columns;
 
     // Populate the atlas with every unhinted base, autohint analysis and TT-baked
     // glyph the grid references, at all grid ppems.
@@ -139,7 +138,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
 
     var empty_atlas = snail.Atlas.empty(allocator);
     defer empty_atlas.deinit();
-    var empty_pic = try helpers.Picture.from(allocator, &.{});
+    var empty_pic = try support.Picture.from(allocator, &.{});
     defer empty_pic.deinit();
 
     const n = compare_mod.grid_ppems.len;

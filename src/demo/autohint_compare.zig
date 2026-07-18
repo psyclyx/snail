@@ -9,12 +9,12 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const assets = @import("assets");
 
 const Allocator = std.mem.Allocator;
-const ShapedRunCache = helpers.ShapedRunCache;
-const UnhintedGlyphCache = helpers.UnhintedGlyphCache;
+const ShapedRunCache = demo_support.ShapedRunCache;
+const UnhintedGlyphCache = snail.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
 const testing = std.testing;
 
@@ -135,8 +135,8 @@ pub const xy_policy: snail.autohint.AutohintPolicy = .{
 
 const Row = struct {
     tag: []const u8,
-    mode: @FieldType(helpers.RunPlacement, "mode"),
-    snap: helpers.RunSnap,
+    mode: @FieldType(snail.RunPlacement, "mode"),
+    snap: snail.RunSnap,
 };
 
 const rows = [_]Row{
@@ -233,7 +233,7 @@ pub const Compare = struct {
     /// in). Returns the picture; `self.atlas` is extended with everything it
     /// references. Draw the resulting pass with an `ortho(0, fb_w, fb_h, 0)`
     /// projection so device coordinates map 1:1 to framebuffer pixels.
-    pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32) !helpers.Picture {
+    pub fn buildGrid(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32) !demo_support.Picture {
         return self.buildGridAt(frame_alloc, scratch, px_scale, 0);
     }
 
@@ -246,7 +246,7 @@ pub const Compare = struct {
         return 448 * px_scale;
     }
 
-    pub fn buildGridAt(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32, x0: f32) !helpers.Picture {
+    pub fn buildGridAt(self: *Compare, frame_alloc: Allocator, scratch: Allocator, px_scale: f32, x0: f32) !demo_support.Picture {
         const shaped = try self.shape_cache.shape(&self.faces, sample_text, .{});
 
         // Tag glyphs render unhinted at a fixed size; sample glyphs render per
@@ -256,15 +256,15 @@ pub const Compare = struct {
         const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
-        var refs: std.ArrayList(*const helpers.Picture) = .empty;
+        var refs: std.ArrayList(*const demo_support.Picture) = .empty;
         const left_tag: f32 = x0 + 8 * px_scale;
         const left_sample: f32 = x0 + 52 * px_scale;
         const tag_em: f32 = 12 * px_scale;
 
         // Column header: which font this grid is.
         const head_shaped = try self.shape_cache.shape(&self.faces, self.label, .{});
-        const head = try frame_alloc.create(helpers.Picture);
-        head.* = try helpers.placeRun(frame_alloc, head_shaped, &self.faces, .{
+        const head = try frame_alloc.create(demo_support.Picture);
+        head.* = try demo_support.placeRun(frame_alloc, head_shaped, &self.faces, .{
             .baseline = .{ .x = left_tag, .y = 14 * px_scale },
             .em = tag_em,
             .color = tag_color,
@@ -279,8 +279,8 @@ pub const Compare = struct {
             // Section header: the ppem size this block is rendered at.
             const size_str = try std.fmt.allocPrint(frame_alloc, "{d}px", .{@as(u32, @intFromFloat(ppem))});
             const size_shaped = try self.shape_cache.shape(&self.faces, size_str, .{});
-            const size_lbl = try frame_alloc.create(helpers.Picture);
-            size_lbl.* = try helpers.placeRun(frame_alloc, size_shaped, &self.faces, .{
+            const size_lbl = try frame_alloc.create(demo_support.Picture);
+            size_lbl.* = try demo_support.placeRun(frame_alloc, size_shaped, &self.faces, .{
                 .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
                 .em = tag_em,
                 .color = tag_color,
@@ -292,22 +292,22 @@ pub const Compare = struct {
                 const baseline = @round(y) + em;
                 // Row tag (fixed-size, unhinted).
                 const tag_shaped = try self.shape_cache.shape(&self.faces, row_desc.tag, .{});
-                const tag = try frame_alloc.create(helpers.Picture);
-                tag.* = try helpers.placeRun(frame_alloc, tag_shaped, &self.faces, .{
+                const tag = try frame_alloc.create(demo_support.Picture);
+                tag.* = try demo_support.placeRun(frame_alloc, tag_shaped, &self.faces, .{
                     .baseline = .{ .x = left_tag, .y = @round(y) + tag_em },
                     .em = tag_em,
                     .color = tag_color,
                 });
                 try refs.append(frame_alloc, tag);
                 // The sample in this mode.
-                const row = try frame_alloc.create(helpers.Picture);
+                const row = try frame_alloc.create(demo_support.Picture);
                 row.* = try self.renderRow(frame_alloc, shaped, row_desc, ppem_26_6, em, left_sample, baseline);
                 try refs.append(frame_alloc, row);
                 y += em * row_leading + row_gap * px_scale;
             }
             y += ppem_gap * px_scale;
         }
-        return helpers.Picture.concat(frame_alloc, refs.items);
+        return demo_support.Picture.concat(frame_alloc, refs.items);
     }
 
     fn renderRow(
@@ -319,21 +319,21 @@ pub const Compare = struct {
         em: f32,
         left: f32,
         baseline: f32,
-    ) !helpers.Picture {
+    ) !demo_support.Picture {
         // Grid layout is already in device pixels (see buildGrid), so the
         // world→device transform is identity and column snapping rounds to
         // integer device pens. The y-only row keeps natural x positioning.
-        const mode: @FieldType(helpers.RunPlacement, "mode") = switch (row_desc.mode) {
+        const mode: @FieldType(snail.RunPlacement, "mode") = switch (row_desc.mode) {
             .truetype => .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
             else => row_desc.mode,
         };
         // Column snapping is a monospace convenience; a proportional face must
         // round each glyph's own origin instead of forcing a uniform advance.
-        const snap: helpers.RunSnap = if (self.proportional and row_desc.snap == .columns)
+        const snap: snail.RunSnap = if (self.proportional and row_desc.snap == .columns)
             .origins
         else
             row_desc.snap;
-        const picture = try helpers.placeRun(frame_alloc, shaped, null, .{
+        const picture = try demo_support.placeRun(frame_alloc, shaped, null, .{
             .baseline = .{ .x = left, .y = baseline },
             .em = em,
             .color = text_color,

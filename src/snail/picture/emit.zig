@@ -7,8 +7,8 @@
 //! their segments (`draw_records.mergeIfAdjacent`).
 //!
 //! These functions operate on a raw `[]const Shape` directly; whatever
-//! container the caller uses to organize their scene (a `snail-helpers.Picture`,
-//! an arena-bumped buffer, a borrowed slice from a custom scene-graph) feeds
+//! container the caller uses to organize their scene (an owned slice, an
+//! arena-bumped buffer, a borrowed slice from a custom scene-graph) feeds
 //! its shapes through unchanged.
 
 const std = @import("std");

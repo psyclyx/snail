@@ -10,11 +10,12 @@
 //! per font.
 
 const std = @import("std");
-const snail = @import("snail");
+const font_mod = @import("../font.zig");
+const curves_mod = @import("../atlas/curves.zig");
 
 const Allocator = std.mem.Allocator;
-const Font = snail.Font;
-const GlyphCurves = snail.GlyphCurves;
+const Font = font_mod.Font;
+const GlyphCurves = curves_mod.GlyphCurves;
 
 pub const UnhintedGlyphCache = struct {
     allocator: Allocator,

@@ -12,7 +12,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 const assets_data = @import("assets");
 const banner_snail = @import("banner_snail.zig");
 
@@ -23,8 +23,8 @@ pub const Content = struct {
     pool: *snail.PagePool,
     paths_atlas: snail.Atlas,
     text_atlas: snail.Atlas,
-    paths_picture: snail_helpers.Picture,
-    text_picture: snail_helpers.Picture,
+    paths_picture: demo_support.Picture,
+    text_picture: demo_support.Picture,
 
     pub fn deinit(self: *Content) void {
         self.text_picture.deinit();
@@ -160,9 +160,9 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Card fill (white rounded rect), authored in a unit frame and placed
     // uniformly so its corners stay crisp at the card's large screen offset.
-    const card_place = snail_helpers.placeRectUniform(card_rect);
+    const card_place = demo_support.placeRectUniform(card_rect);
     {
-        var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
+        var p = try demo_support.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
@@ -178,13 +178,13 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     }
     // Card stroke.
     {
-        var p = try snail_helpers.unitRoundedRectPathFor(allocator, card_rect, 12.0);
+        var p = try demo_support.unitRoundedRectPathFor(allocator, card_rect, 12.0);
         defer p.deinit();
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         const stroke = snail.StrokeStyle{
             .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
-            .width = snail_helpers.unitStrokeWidth(card_rect, 1.5),
+            .width = demo_support.unitStrokeWidth(card_rect, 1.5),
         };
         try path_curves_owned.append(allocator, try prepared.strokeCurves(allocator, allocator, stroke));
         const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = next_path_id };
@@ -200,7 +200,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     // the shared scene so the CPU/GL backend-compare covers it.
     {
         const rect = snail.Rect{ .x = 18, .y = @as(f32, @floatFromInt(height)) - 46, .w = 32, .h = 32 };
-        var p = try snail_helpers.unitEllipsePath(allocator);
+        var p = try demo_support.unitEllipsePath(allocator);
         defer p.deinit();
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
@@ -217,7 +217,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
             .paint = prepared.paintForDesign(paint),
         });
-        try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(snail_helpers.placeRect(rect)), .local_color = .{ 1, 1, 1, 1 } });
+        try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(demo_support.placeRect(rect)), .local_color = .{ 1, 1, 1, 1 } });
     }
     // Vector snail.
     {
@@ -287,7 +287,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
     errdefer paths_atlas.deinit();
-    var paths_picture = try snail_helpers.Picture.from(allocator, path_shapes.items);
+    var paths_picture = try demo_support.Picture.from(allocator, path_shapes.items);
     errdefer paths_picture.deinit();
 
     // When hinting is requested, push hinted-glyph entries for the tagline
@@ -321,14 +321,14 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     // Tagline + multi-script sample row.
     var tagline_pic = if (hinted_tagline_active)
-        try snail_helpers.placeRun(allocator, &shaped_tagline, null, .{
+        try demo_support.placeRun(allocator, &shaped_tagline, null, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
             .color = tagline_color,
             .mode = .{ .truetype = .{ .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)) } },
         })
     else
-        try snail_helpers.placeRun(allocator, &shaped_tagline, &faces, .{
+        try demo_support.placeRun(allocator, &shaped_tagline, &faces, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = tagline_em,
             .color = tagline_color,
@@ -339,7 +339,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     const sample_em: f32 = 16.0;
     const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
     const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
-    var sample_pics: std.ArrayList(snail_helpers.Picture) = .empty;
+    var sample_pics: std.ArrayList(demo_support.Picture) = .empty;
     defer {
         for (sample_pics.items) |*p| p.deinit();
         sample_pics.deinit(allocator);
@@ -348,7 +348,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var sx = left_pad;
     for (shaped_samples[0..shaped_count], 0..) |shaped, sample_idx| {
         if (sample_idx != 0) {
-            try sample_pics.append(allocator, try snail_helpers.placeRun(allocator, &shaped_sep, &faces, .{
+            try sample_pics.append(allocator, try demo_support.placeRun(allocator, &shaped_sep, &faces, .{
                 .baseline = .{ .x = sx, .y = sample_baseline },
                 .em = sample_em,
                 .color = sep_color,
@@ -356,7 +356,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             }));
             sx += shaped_sep.advanceX() * sample_em;
         }
-        try sample_pics.append(allocator, try snail_helpers.placeRun(allocator, &shaped, &faces, .{
+        try sample_pics.append(allocator, try demo_support.placeRun(allocator, &shaped, &faces, .{
             .baseline = .{ .x = sx, .y = sample_baseline },
             .em = sample_em,
             .color = sample_color,
@@ -365,12 +365,12 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         sx += shaped.advanceX() * sample_em;
     }
 
-    var combine_inputs: std.ArrayList(*const snail_helpers.Picture) = .empty;
+    var combine_inputs: std.ArrayList(*const demo_support.Picture) = .empty;
     defer combine_inputs.deinit(allocator);
     try combine_inputs.append(allocator, &tagline_pic);
     for (sample_pics.items) |*p| try combine_inputs.append(allocator, p);
 
-    var text_picture = try snail_helpers.Picture.concat(allocator, combine_inputs.items);
+    var text_picture = try demo_support.Picture.concat(allocator, combine_inputs.items);
     errdefer text_picture.deinit();
 
     return .{

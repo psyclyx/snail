@@ -10,7 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 
 // ── Pass ───────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,7 @@ const snail_helpers = @import("snail-helpers");
 /// last upload; the driver releases and re-issues that pass's bindings.
 pub const Pass = struct {
     atlases: []const *const snail.Atlas,
-    pictures: []const *const snail_helpers.Picture,
+    pictures: []const *const demo_support.Picture,
     draw_state: snail.DrawState,
     dirty: bool,
     /// CPU-backend hint: when true, fan tile work across the driver's

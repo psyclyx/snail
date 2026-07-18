@@ -9,7 +9,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const snail_helpers = @import("snail-helpers");
+const demo_support = @import("support");
 
 const kParamEps: f32 = 1e-5;
 const kCoordEps: f32 = 1.0 / 65536.0;
@@ -242,7 +242,7 @@ fn evalCoverage(segs: []const Seg, rc: [2]f32, epp: [2]f32, method: Method) f32 
 }
 
 fn loadSegs(allocator: std.mem.Allocator, rect: snail.Rect, radius: f32, out: *std.ArrayList(Seg)) !void {
-    var p = try snail_helpers.unitRoundedRectPathFor(allocator, rect, radius);
+    var p = try demo_support.unitRoundedRectPathFor(allocator, rect, radius);
     defer p.deinit();
     const raw = try p.cloneFilledCurves(allocator);
     defer allocator.free(raw);

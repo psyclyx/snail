@@ -9,7 +9,7 @@
 //!   picture builders required.
 //! - No hinter slots, no `attachHinter`. Hinted advances are routed at
 //!   shape time via `ShapeOptions.advance_provider` (typically backed
-//!   by `helpers.HintedGlyphCache`).
+//!   by `snail.HintedGlyphCache`).
 //!
 //! Per-face HB and OpenType shapers are still parsed once at `build`
 //! time and reused across `shape()` calls — that's the "owns" part of
@@ -427,7 +427,7 @@ fn shapeWithHarfbuzz(
     const shaped = if (use_provider)
         // Provider ppem comes from the provider itself — but HB needs a
         // numeric ppem to set scale. The provider closure gets called
-        // with this ppem; helpers.HintedGlyphCache typically encodes the
+        // with this ppem; snail.HintedGlyphCache typically encodes the
         // active ppem in its context. We forward opts.target_ppem if
         // present, else the default em scale (units_per_em as 1:1).
         hbs.shapeTextWithProvider(text, hb_features, opts.target_ppem orelse defaultEmPpem(fc))
@@ -678,7 +678,7 @@ fn buildFontIdMap(allocator: Allocator, specs: []const Face) !FontIdMap {
 ///
 /// `opts.advance_provider`, if set, routes HarfBuzz's `glyph_h_advance`
 /// font_func through the provider — typically a
-/// `helpers.HintedGlyphCache` closure — for hinted advances.
+/// `snail.HintedGlyphCache` closure — for hinted advances.
 /// `opts.target_ppem` selects the ppem the provider is asked about and
 /// the HB scale to set on the sub-font; the returned `ShapedText` is
 /// em-space, so callers multiply by `font_size_px` downstream as

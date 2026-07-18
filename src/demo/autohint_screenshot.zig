@@ -5,7 +5,6 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const helpers = @import("snail-helpers");
 const compare_mod = @import("autohint_compare.zig");
 const harness = @import("screenshot_harness.zig");
 const egl_offscreen = @import("platform/offscreen_gl.zig");
