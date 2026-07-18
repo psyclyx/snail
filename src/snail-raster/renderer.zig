@@ -1,4 +1,4 @@
-//! CPU rasterizer for snail glyph data.
+//! Software rasterizer for snail glyph data.
 //! Evaluates the same Bezier curve/band data the GPU shaders use, but per-pixel
 //! into a caller-owned RGBA8888 memory buffer.  Intended for headless rendering
 //! and bootstrap frames (before EGL/Vulkan is available).
@@ -8,15 +8,15 @@
 //! float-op orderings between CPU code and the SPIR-V/GLSL pipeline.
 
 const std = @import("std");
-const snail = @import("snail_core");
-const bezier = @import("snail_core").files.math_bezier;
-const band_tex = @import("snail_core").files.format_band_texture;
-const render_abi = @import("snail_core").files.format_abi;
-const text_hint_format = @import("snail_core").files.format_text_hint;
-const autohint_record = @import("snail_core").files.format_autohint_record;
-const autohint_warp = @import("snail_core").files.font_autohint_warp;
-const autohint_policy = @import("snail_core").files.font_autohint_policy;
-const vertex = @import("snail_core").files.format_vertex;
+const snail = @import("snail").core;
+const bezier = @import("snail").core.files.math_bezier;
+const band_tex = @import("snail").core.files.format_band_texture;
+const render_abi = @import("snail").core.files.format_abi;
+const text_hint_format = @import("snail").core.files.format_text_hint;
+const autohint_record = @import("snail").core.files.format_autohint_record;
+const autohint_warp = @import("snail").core.files.font_autohint_warp;
+const autohint_policy = @import("snail").core.files.font_autohint_policy;
+const vertex = @import("snail").core.files.format_vertex;
 
 /// Caller-owned transient fitted knots for one glyph draw.
 pub const AutohintWarp = struct {
@@ -28,50 +28,50 @@ const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const FillRule = snail.FillRule;
 const SubpixelOrder = snail.SubpixelOrder;
-const cpu_blend = @import("blend.zig");
-const cpu_color = @import("color.zig");
-const cpu_coverage = @import("coverage.zig");
-const cpu_geometry = @import("geometry.zig");
-const cpu_path_paint = @import("path_paint.zig");
-const cpu_resources = @import("resources.zig");
-const cpu_texture = @import("texture.zig");
+const blend_mod = @import("blend.zig");
+const color_mod = @import("color.zig");
+const coverage_mod = @import("coverage.zig");
+const geometry_mod = @import("geometry.zig");
+const path_paint_mod = @import("path_paint.zig");
+const resources_mod = @import("resources.zig");
+const texture_mod = @import("texture.zig");
 
-const SubpixelCoverage = cpu_coverage.SubpixelCoverage;
-const SubpixelCoveragePlan = cpu_coverage.SubpixelCoveragePlan;
-const HintedTextRecord = cpu_coverage.HintedTextRecord;
-const addColors = cpu_path_paint.addColors;
-const advanceLocalPixel = cpu_geometry.advanceLocalPixel;
-const compositeOver = cpu_path_paint.compositeOver;
-const compositeSubpixelOver = cpu_coverage.compositeSubpixelOver;
-const evalGlyphCoverage = cpu_coverage.evalGlyphCoverage;
-const evalGlyphCoverageBandSpan = cpu_coverage.evalGlyphCoverageBandSpan;
-const evalGlyphCoverageBandSpanRowH = cpu_coverage.evalGlyphCoverageBandSpanRowH;
-const evalGlyphCoverageRowH = cpu_coverage.evalGlyphCoverageRowH;
-const evalGlyphCoverageSaturatedRowH = cpu_coverage.evalGlyphCoverageSaturatedRowH;
-const evalGlyphCoverageSubpixel = cpu_coverage.evalGlyphCoverageSubpixel;
-const evalGlyphCoverageSubpixelRowH = cpu_coverage.evalGlyphCoverageSubpixelRowH;
-const evalHintedTextCoverageBandSpan = cpu_coverage.evalHintedTextCoverageBandSpan;
-const prepareRowHorizSpanState = cpu_coverage.prepareRowHorizSpanState;
-const prepareRowHorizState = cpu_coverage.prepareRowHorizState;
-const prepareSaturatedRowState = cpu_coverage.prepareSaturatedRowState;
-const RowHorizState = cpu_coverage.RowHorizState;
-const SaturatedRowState = cpu_coverage.SaturatedRowState;
-const expandBoundsForCoverageSupport = cpu_geometry.expandBoundsForCoverageSupport;
-const f16ToF32 = cpu_texture.f16ToF32;
-const fetchLayerInfoTexel = cpu_path_paint.fetchLayerInfoTexel;
-const glyphEdgePixelsPerPixel = cpu_geometry.glyphEdgePixelsPerPixel;
-const inverseTransform = cpu_geometry.inverseTransform;
-const LayerInfoEntry = cpu_path_paint.LayerInfoEntry;
-const max3 = cpu_color.max3;
-const multiplyLinearColor = cpu_color.multiplyLinearColor;
-const premultiplyCoverage = cpu_coverage.premultiplyCoverage;
-const premultiplySubpixelCoverage = cpu_coverage.premultiplySubpixelCoverage;
-const PreparedPathPaint = cpu_path_paint.PreparedPathPaint;
-const PreparedPathLayer = cpu_path_paint.PreparedPathLayer;
-const PreparedPathRecord = cpu_path_paint.PreparedPathRecord;
-const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
-const ScreenBounds = cpu_geometry.ScreenBounds;
-const srgbBytesToLinearColor = cpu_color.srgbBytesToLinearColor;
+const SubpixelCoverage = coverage_mod.SubpixelCoverage;
+const SubpixelCoveragePlan = coverage_mod.SubpixelCoveragePlan;
+const HintedTextRecord = coverage_mod.HintedTextRecord;
+const addColors = path_paint_mod.addColors;
+const advanceLocalPixel = geometry_mod.advanceLocalPixel;
+const compositeOver = path_paint_mod.compositeOver;
+const compositeSubpixelOver = coverage_mod.compositeSubpixelOver;
+const evalGlyphCoverage = coverage_mod.evalGlyphCoverage;
+const evalGlyphCoverageBandSpan = coverage_mod.evalGlyphCoverageBandSpan;
+const evalGlyphCoverageBandSpanRowH = coverage_mod.evalGlyphCoverageBandSpanRowH;
+const evalGlyphCoverageRowH = coverage_mod.evalGlyphCoverageRowH;
+const evalGlyphCoverageSaturatedRowH = coverage_mod.evalGlyphCoverageSaturatedRowH;
+const evalGlyphCoverageSubpixel = coverage_mod.evalGlyphCoverageSubpixel;
+const evalGlyphCoverageSubpixelRowH = coverage_mod.evalGlyphCoverageSubpixelRowH;
+const evalHintedTextCoverageBandSpan = coverage_mod.evalHintedTextCoverageBandSpan;
+const prepareRowHorizSpanState = coverage_mod.prepareRowHorizSpanState;
+const prepareRowHorizState = coverage_mod.prepareRowHorizState;
+const prepareSaturatedRowState = coverage_mod.prepareSaturatedRowState;
+const RowHorizState = coverage_mod.RowHorizState;
+const SaturatedRowState = coverage_mod.SaturatedRowState;
+const expandBoundsForCoverageSupport = geometry_mod.expandBoundsForCoverageSupport;
+const f16ToF32 = texture_mod.f16ToF32;
+const fetchLayerInfoTexel = path_paint_mod.fetchLayerInfoTexel;
+const glyphEdgePixelsPerPixel = geometry_mod.glyphEdgePixelsPerPixel;
+const inverseTransform = geometry_mod.inverseTransform;
+const LayerInfoEntry = path_paint_mod.LayerInfoEntry;
+const max3 = color_mod.max3;
+const multiplyLinearColor = color_mod.multiplyLinearColor;
+const premultiplyCoverage = coverage_mod.premultiplyCoverage;
+const premultiplySubpixelCoverage = coverage_mod.premultiplySubpixelCoverage;
+const PreparedPathPaint = path_paint_mod.PreparedPathPaint;
+const PreparedPathLayer = path_paint_mod.PreparedPathLayer;
+const PreparedPathRecord = path_paint_mod.PreparedPathRecord;
+const PreparedAtlasPage = resources_mod.PreparedAtlasPage;
+const ScreenBounds = geometry_mod.ScreenBounds;
+const srgbBytesToLinearColor = color_mod.srgbBytesToLinearColor;
 
 fn expandDeviceBounds(bounds: *ScreenBounds, pixels: f32) void {
     bounds.min.x -= pixels;
@@ -79,11 +79,11 @@ fn expandDeviceBounds(bounds: *ScreenBounds, pixels: f32) void {
     bounds.max.x += pixels;
     bounds.max.y += pixels;
 }
-const srgbColorToLinear = cpu_color.srgbColorToLinear;
-const subpixelBlendCoverage = cpu_coverage.subpixelBlendCoverage;
-const transformedGlyphBounds = cpu_geometry.transformedGlyphBounds;
+const srgbColorToLinear = color_mod.srgbColorToLinear;
+const subpixelBlendCoverage = coverage_mod.subpixelBlendCoverage;
+const transformedGlyphBounds = geometry_mod.transformedGlyphBounds;
 
-pub const PreparedResources = cpu_resources.PreparedResources;
+pub const PreparedResources = resources_mod.PreparedResources;
 
 // ── Per-instance profiling (diagnostic) ──
 //
@@ -130,7 +130,7 @@ fn monotonicNanos() u64 {
 /// be a no-op.
 const one_lsb_8bit: f32 = 1.0 / 255.0;
 
-pub const CpuRenderer = struct {
+pub const Renderer = struct {
     pixels: [*]u8, // RGBA8888 buffer, caller-owned
     width: u32,
     height: u32,
@@ -143,7 +143,7 @@ pub const CpuRenderer = struct {
     /// sets it (and a matching `stride` = width × bytesPerPixel) for other
     /// formats. The blend path comptime-specializes on it once per draw.
     format: snail.PixelFormat = .rgba8_unorm,
-    target_resolve: cpu_blend.ResolveMode,
+    target_resolve: blend_mod.ResolveMode,
     linear_resolve_active: bool,
     coverage_transfer: snail.CoverageTransfer,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
@@ -166,7 +166,7 @@ pub const CpuRenderer = struct {
     // evaluation.
     const MAX_COMPOSITE_LAYERS: usize = 8;
 
-    pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) CpuRenderer {
+    pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) Renderer {
         return .{
             .pixels = pixels,
             .width = width,
@@ -188,7 +188,7 @@ pub const CpuRenderer = struct {
     }
 
     /// Update the pixel buffer and dimensions without clearing atlas state.
-    pub fn reinitBuffer(self: *CpuRenderer, pixels: [*]u8, width: u32, height: u32, stride: u32) void {
+    pub fn reinitBuffer(self: *Renderer, pixels: [*]u8, width: u32, height: u32, stride: u32) void {
         self.pixels = pixels;
         self.width = width;
         self.height = height;
@@ -205,11 +205,11 @@ pub const CpuRenderer = struct {
         col_clip_min: u32,
         col_clip_max: u32,
         target_encoding: snail.TargetEncoding,
-        target_resolve: cpu_blend.ResolveMode,
+        target_resolve: blend_mod.ResolveMode,
         linear_resolve_active: bool,
     };
 
-    pub fn beginLinearResolve(self: *CpuRenderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
+    pub fn beginLinearResolve(self: *Renderer, surface: snail.TargetSurface, resolve: snail.LinearResolve) !LinearResolveRestore {
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
         if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
         const rect = snail.resolveRect(surface, resolve);
@@ -234,7 +234,7 @@ pub const CpuRenderer = struct {
         return restore;
     }
 
-    pub fn endLinearResolve(self: *CpuRenderer, restore: LinearResolveRestore) void {
+    pub fn endLinearResolve(self: *Renderer, restore: LinearResolveRestore) void {
         std.debug.assert(self.linear_resolve_active);
         self.row_clip_min = restore.row_clip_min;
         self.row_clip_max = restore.row_clip_max;
@@ -245,15 +245,15 @@ pub const CpuRenderer = struct {
         self.linear_resolve_active = restore.linear_resolve_active;
     }
 
-    fn seedLinearResolveBackdrop(self: *CpuRenderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.LinearResolve.Backdrop) void {
+    fn seedLinearResolveBackdrop(self: *Renderer, encoding: snail.TargetEncoding, rect: snail.PixelRect, backdrop: snail.LinearResolve.Backdrop) void {
         switch (backdrop) {
             .target, .dont_care => return,
             .transparent => self.fillResolveRect(rect, .{ 0, 0, 0, 0 }),
-            .clear => |color| self.fillResolveRect(rect, cpu_blend.colorBytesForEncoding(encoding, color)),
+            .clear => |color| self.fillResolveRect(rect, blend_mod.colorBytesForEncoding(encoding, color)),
         }
     }
 
-    fn fillResolveRect(self: *CpuRenderer, rect: snail.PixelRect, color: [4]u8) void {
+    fn fillResolveRect(self: *Renderer, rect: snail.PixelRect, color: [4]u8) void {
         if (rect.w == 0 or rect.h == 0) return;
         var row: u32 = @intCast(rect.y);
         const y1 = row + rect.h;
@@ -270,13 +270,13 @@ pub const CpuRenderer = struct {
         }
     }
 
-    inline fn applyCoverageTransfer(self: *const CpuRenderer, cov: f32) f32 {
+    inline fn applyCoverageTransfer(self: *const Renderer, cov: f32) f32 {
         const exponent = self.coverage_transfer.exponent;
         if (@abs(exponent - 1.0) <= 1.0e-6 or !std.math.isFinite(exponent)) return cov;
         return std.math.pow(f32, std.math.clamp(cov, 0.0, 1.0), @max(exponent, 1.0 / 65536.0));
     }
 
-    fn applySubpixelCoverageTransfer(self: *const CpuRenderer, cov: SubpixelCoverage) SubpixelCoverage {
+    fn applySubpixelCoverageTransfer(self: *const Renderer, cov: SubpixelCoverage) SubpixelCoverage {
         return .{
             .rgb = .{
                 self.applyCoverageTransfer(cov.rgb[0]),
@@ -287,7 +287,7 @@ pub const CpuRenderer = struct {
         };
     }
 
-    fn clear(self: *CpuRenderer, r: u8, g: u8, b: u8, a: u8) void {
+    fn clear(self: *Renderer, r: u8, g: u8, b: u8, a: u8) void {
         for (0..self.height) |row| {
             const row_start = row * self.stride;
             for (0..self.width) |col| {
@@ -300,7 +300,7 @@ pub const CpuRenderer = struct {
         }
     }
 
-    pub fn drawBatch(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*snail.ThreadPool) !void {
+    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*snail.ThreadPool) !void {
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -352,7 +352,7 @@ pub const CpuRenderer = struct {
         col_clip_min: u32,
         col_clip_max: u32,
 
-        fn restore(self: ClipSave, r: *CpuRenderer) void {
+        fn restore(self: ClipSave, r: *Renderer) void {
             r.row_clip_min = self.row_clip_min;
             r.row_clip_max = self.row_clip_max;
             r.col_clip_min = self.col_clip_min;
@@ -360,7 +360,7 @@ pub const CpuRenderer = struct {
         }
     };
 
-    fn intersectClip(self: *CpuRenderer, rect: snail.PixelRect) void {
+    fn intersectClip(self: *Renderer, rect: snail.PixelRect) void {
         const cur = snail.PixelRect{
             .x = @intCast(self.col_clip_min),
             .y = @intCast(self.row_clip_min),
@@ -382,13 +382,13 @@ pub const CpuRenderer = struct {
         self.row_clip_max = @intCast(sy1);
     }
 
-    pub fn beginDraw(_: *CpuRenderer) void {}
+    pub fn beginDraw(_: *Renderer) void {}
 
-    pub fn backendName(_: *const CpuRenderer) [:0]const u8 {
+    pub fn backendName(_: *const Renderer) [:0]const u8 {
         return "CPU";
     }
 
-    fn drawBatchInstances(self: *CpuRenderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
+    fn drawBatchInstances(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
         const WORDS = vertex.WORDS_PER_INSTANCE;
         const profile = if (profile_enabled) self.instance_profile else null;
         var i: usize = 0;
@@ -401,8 +401,8 @@ pub const CpuRenderer = struct {
                 const end_ns = monotonicNanos();
                 if (p.count < p.entries.len) {
                     const decoded = decodeBatchInstance(inst, scene_to_pixel);
-                    var bounds = cpu_geometry.transformedGlyphBounds(decoded.bbox, decoded.transform);
-                    cpu_geometry.expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
+                    var bounds = geometry_mod.transformedGlyphBounds(decoded.bbox, decoded.transform);
+                    geometry_mod.expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
                     const w_f = @max(0.0, bounds.max.x - bounds.min.x);
                     const h_f = @max(0.0, bounds.max.y - bounds.min.y);
                     p.entries[p.count] = .{
@@ -421,7 +421,7 @@ pub const CpuRenderer = struct {
     }
 
     const TileCtx = struct {
-        base: *const CpuRenderer,
+        base: *const Renderer,
         prepared: *const PreparedResources,
         vertices: []const u32,
         scene_to_pixel: Transform2D,
@@ -445,7 +445,7 @@ pub const CpuRenderer = struct {
     }
 
     fn drawBatchInstancesParallel(
-        self: *CpuRenderer,
+        self: *Renderer,
         pool: *snail.ThreadPool,
         prepared: *const PreparedResources,
         vertices: []const u32,
@@ -492,8 +492,8 @@ pub const CpuRenderer = struct {
         var i: usize = 0;
         while (i + WORDS <= vertices.len) : (i += WORDS) {
             const decoded = decodeBatchInstance(vertices[i..][0..WORDS], scene_to_pixel);
-            var bounds = cpu_geometry.transformedGlyphBounds(decoded.bbox, decoded.transform);
-            cpu_geometry.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
+            var bounds = geometry_mod.transformedGlyphBounds(decoded.bbox, decoded.transform);
+            geometry_mod.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
             if (decoded.isAutohint()) expandDeviceBounds(&bounds, 2.0);
             if (bounds.min.y < min_y) min_y = bounds.min.y;
             if (bounds.max.y > max_y) max_y = bounds.max.y;
@@ -554,7 +554,7 @@ pub const CpuRenderer = struct {
         };
     }
 
-    fn renderBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const decoded = decodeBatchInstance(inst, scene_to_pixel);
         if (decoded.isSpecialLayer()) {
             self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base);
@@ -563,7 +563,7 @@ pub const CpuRenderer = struct {
         }
     }
 
-    fn renderRegularBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderRegularBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const be = GlyphBandEntry{
@@ -582,7 +582,7 @@ pub const CpuRenderer = struct {
         self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), allow_subpixel);
     }
 
-    fn renderSpecialBatchInstance(self: *CpuRenderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
+    fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const layer_count = render_abi.specialGlyphWordLayerCount(gw);
@@ -612,7 +612,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderHintedTextBatchInstance(
-        self: *CpuRenderer,
+        self: *Renderer,
         prepared: *const PreparedResources,
         decoded: BatchInstance,
         atlas_layer: u32,
@@ -657,7 +657,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderAutohintBatchInstance(
-        self: *CpuRenderer,
+        self: *Renderer,
         prepared: *const PreparedResources,
         decoded: BatchInstance,
         atlas_layer: u32,
@@ -693,7 +693,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderColrBatchLayers(
-        self: *CpuRenderer,
+        self: *Renderer,
         prepared: *const PreparedResources,
         union_bbox: bezier.BBox,
         transform: Transform2D,
@@ -802,7 +802,7 @@ pub const CpuRenderer = struct {
         return null;
     }
 
-    fn pathRasterState(self: *const CpuRenderer, bbox: bezier.BBox, transform: Transform2D, allow_subpixel: bool) ?PathRasterState {
+    fn pathRasterState(self: *const Renderer, bbox: bezier.BBox, transform: Transform2D, allow_subpixel: bool) ?PathRasterState {
         const inverse = inverseTransform(transform) orelse return null;
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
@@ -832,7 +832,7 @@ pub const CpuRenderer = struct {
     }
 
     fn recordCompositeSubpixelLayer(
-        self: *CpuRenderer,
+        self: *Renderer,
         accum: *PathCompositeAccum,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
@@ -897,7 +897,7 @@ pub const CpuRenderer = struct {
     }
 
     fn scalarPathLayerCoverage(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         layer: PreparedPathLayer,
@@ -919,7 +919,7 @@ pub const CpuRenderer = struct {
     }
 
     fn recordCompositeScalarLayer(
-        self: *CpuRenderer,
+        self: *Renderer,
         accum: *PathCompositeAccum,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
@@ -1027,7 +1027,7 @@ pub const CpuRenderer = struct {
     }
 
     fn sampleCompositePathPixel(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         layers: []const PreparedPathLayer,
@@ -1056,7 +1056,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderPathBatchLayers(
-        self: *CpuRenderer,
+        self: *Renderer,
         prepared: *const PreparedResources,
         union_bbox: bezier.BBox,
         transform: Transform2D,
@@ -1076,7 +1076,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderScalarInsideStrokeCompositePathBatchLayers(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         tint: [4]f32,
@@ -1160,7 +1160,7 @@ pub const CpuRenderer = struct {
                 if (!(row_state_ready and fp_fill_contrib <= 4 and fp_stroke_contrib <= 8 and raster.x1 > raster.x0 + 8)) break :no_fp;
                 const ProbeFn = struct {
                     fn cov(
-                        s_self: *CpuRenderer,
+                        s_self: *Renderer,
                         p: *const PreparedAtlasPage,
                         loc: Vec2,
                         row_st: *const RowHorizState,
@@ -1371,7 +1371,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderCompositePathBatchLayers(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: *const PreparedAtlasPage,
         union_bbox: bezier.BBox,
         transform: Transform2D,
@@ -1455,7 +1455,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderSinglePathBatchLayer(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: *const PreparedAtlasPage,
         union_bbox: bezier.BBox,
         transform: Transform2D,
@@ -1644,7 +1644,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderTransformedGlyph(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: anytype,
         bbox: bezier.BBox,
         be: GlyphBandEntry,
@@ -1656,7 +1656,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderTransformedHintedGlyph(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: anytype,
         bbox: bezier.BBox,
         be: GlyphBandEntry,
@@ -1670,7 +1670,7 @@ pub const CpuRenderer = struct {
     /// Fit the immutable analysis once for this draw, then render the shared
     /// base glyph through caller-owned transient knots. Grayscale only.
     fn renderTransformedAutohintGlyph(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: anytype,
         bbox: bezier.BBox,
         be: GlyphBandEntry,
@@ -1695,7 +1695,7 @@ pub const CpuRenderer = struct {
     }
 
     fn renderTransformedGlyphMaybeHinted(
-        self: *CpuRenderer,
+        self: *Renderer,
         page: anytype,
         bbox: bezier.BBox,
         be: GlyphBandEntry,
@@ -1954,7 +1954,7 @@ pub const CpuRenderer = struct {
     /// collapses the loop to a u32 memset — same shape as the
     /// framebuffer clear, which runs at memory bandwidth.
     fn tryFillRowSolidOpaque(
-        self: *CpuRenderer,
+        self: *Renderer,
         row: u32,
         col_start: u32,
         col_end_excl: u32,
@@ -1971,7 +1971,7 @@ pub const CpuRenderer = struct {
                 // rgb10a2, whose packed pixel is one word). Others fall back to
                 // the per-pixel path.
                 if (comptime fmt.bytesPerPixel() != 4) return false;
-                const bytes = cpu_blend.opaqueBytesForTarget(fmt, self.blendTarget(), .{ linear[0], linear[1], linear[2] });
+                const bytes = blend_mod.opaqueBytesForTarget(fmt, self.blendTarget(), .{ linear[0], linear[1], linear[2] });
                 const word: u32 = @as(u32, bytes[0]) | (@as(u32, bytes[1]) << 8) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 24);
                 const offset = @as(usize, row) * self.stride + @as(usize, col_start) * 4;
                 const dst_u32: [*]u32 = @ptrCast(@alignCast(self.pixels + offset));
@@ -1981,7 +1981,7 @@ pub const CpuRenderer = struct {
         }
     }
 
-    inline fn blendTarget(self: *CpuRenderer) cpu_blend.Target {
+    inline fn blendTarget(self: *Renderer) blend_mod.Target {
         return .{
             .pixels = self.pixels,
             .stride = self.stride,
@@ -1994,24 +1994,24 @@ pub const CpuRenderer = struct {
     // The three pixel-write wrappers dispatch on the runtime format once here;
     // `inline else` gives each format a comptime-specialized (branch-free)
     // blend body. The format is constant per draw, so the branch predicts.
-    inline fn blendPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
+    inline fn blendPremultipliedPixel(self: *Renderer, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {
         switch (self.format) {
-            inline else => |fmt| cpu_blend.blendPremultipliedPixel(fmt, self.blendTarget(), row, col, src, apply_dither),
+            inline else => |fmt| blend_mod.blendPremultipliedPixel(fmt, self.blendTarget(), row, col, src, apply_dither),
         }
     }
 
-    inline fn blendSubpixelPremultipliedPixel(self: *CpuRenderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
+    inline fn blendSubpixelPremultipliedPixel(self: *Renderer, row: u32, col: u32, src: [4]f32, src_blend: [3]f32, apply_dither: bool) void {
         switch (self.format) {
-            inline else => |fmt| cpu_blend.blendSubpixelPremultipliedPixel(fmt, self.blendTarget(), row, col, src, src_blend, apply_dither),
+            inline else => |fmt| blend_mod.blendSubpixelPremultipliedPixel(fmt, self.blendTarget(), row, col, src, src_blend, apply_dither),
         }
     }
 
     /// Per-channel subpixel blend (equivalent to GPU dual-source blending).
     /// Each RGB channel has its own coverage, so the destination attenuation
     /// is per-channel: out.r = src.r * alpha_r + dst.r * (1 - alpha_r), etc.
-    inline fn blendSubpixelPixel(self: *CpuRenderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
+    inline fn blendSubpixelPixel(self: *Renderer, row: u32, col: u32, color: [4]f32, cov: [3]f32, alpha_cov: f32) void {
         switch (self.format) {
-            inline else => |fmt| cpu_blend.blendSubpixelPixel(fmt, self.blendTarget(), row, col, color, cov, alpha_cov),
+            inline else => |fmt| blend_mod.blendSubpixelPixel(fmt, self.blendTarget(), row, col, color, cov, alpha_cov),
         }
     }
 };

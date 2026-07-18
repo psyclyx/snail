@@ -1,6 +1,6 @@
 //! Vulkan persistent prepared-pages cache for snail.
 //!
-//! Mirrors `CpuBackendCache` and `GlBackendCache`:
+//! Mirrors `snail-raster.BackendCache` and `GlBackendCache`:
 //! caller-sized capacity, slot allocation via free-list, explicit
 //! `release(binding)`, no auto-grow.
 //!

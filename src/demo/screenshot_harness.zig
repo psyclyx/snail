@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const raster = @import("snail-raster");
 const support = @import("support");
 const gl = support.gl;
 
@@ -133,7 +134,7 @@ pub fn renderCpuToPixelsFmt(
     errdefer allocator.free(pixels);
     @memset(pixels, 0);
 
-    var cache = try snail.CpuBackendCache.init(allocator, scene.pool, .{
+    var cache = try raster.BackendCache.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,
@@ -148,9 +149,9 @@ pub fn renderCpuToPixelsFmt(
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
-    var renderer = snail.CpuRenderer.init(pixels.ptr, width, height, stride);
+    var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
     renderer.format = format;
-    try snail.drawCpu(
+    try raster.draw(
         &renderer,
         drawState(width, height),
         .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
@@ -175,7 +176,7 @@ pub fn renderCpuToPixels(
     errdefer allocator.free(pixels);
     fillBgRgba8(pixels);
 
-    var cache = try snail.CpuBackendCache.init(allocator, scene.pool, .{
+    var cache = try raster.BackendCache.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,
@@ -190,8 +191,8 @@ pub fn renderCpuToPixels(
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
-    var renderer = snail.CpuRenderer.init(pixels.ptr, width, height, stride);
-    try snail.drawCpu(
+    var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
+    try raster.draw(
         &renderer,
         drawStateExp(width, height, opts.coverage_exponent),
         .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },

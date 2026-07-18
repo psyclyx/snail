@@ -10,6 +10,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
+const raster = @import("snail-raster");
 const demo_support = @import("support");
 const build_options = @import("build_options");
 const assets_data = @import("assets");
@@ -415,7 +416,7 @@ const FrameSampleSums = struct {
 /// printed pixel_w × pixel_h is the post-transform screen bbox, which
 /// makes huge fills (background, cards) easy to identify by area
 /// without needing to know the picture's instance order.
-fn printInstanceProfileTopK(snap: *const snail.InstanceProfileBuf, k: usize) void {
+fn printInstanceProfileTopK(snap: *const raster.InstanceProfileBuf, k: usize) void {
     if (snap.count == 0) {
         std.debug.print(
             "[timing] no per-instance profile captured this window — switch to cpu_unthreaded backend (press C)\n",
@@ -433,7 +434,7 @@ fn printInstanceProfileTopK(snap: *const snail.InstanceProfileBuf, k: usize) voi
         while (j < entries.len) : (j += 1) {
             if (entries[j].us > entries[max_j].us) max_j = j;
         }
-        if (max_j != i) std.mem.swap(snail.InstanceProfileEntry, &entries[i], &entries[max_j]);
+        if (max_j != i) std.mem.swap(raster.InstanceProfileEntry, &entries[i], &entries[max_j]);
     }
     var total_us: f64 = 0;
     for (snap.entries[0..snap.count]) |e| total_us += e.us;
@@ -625,12 +626,12 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     // flush print has them. Sized for ~all banner instances plus
     // headroom — silently truncates beyond this.
     const profile_cap: usize = 8192;
-    const profile_entries = try allocator.alloc(snail.InstanceProfileEntry, profile_cap);
+    const profile_entries = try allocator.alloc(raster.InstanceProfileEntry, profile_cap);
     defer allocator.free(profile_entries);
-    var profile_live: snail.InstanceProfileBuf = .{ .entries = profile_entries };
-    const snap_entries = try allocator.alloc(snail.InstanceProfileEntry, profile_cap);
+    var profile_live: raster.InstanceProfileBuf = .{ .entries = profile_entries };
+    const snap_entries = try allocator.alloc(raster.InstanceProfileEntry, profile_cap);
     defer allocator.free(snap_entries);
-    var profile_snap: snail.InstanceProfileBuf = .{ .entries = snap_entries };
+    var profile_snap: raster.InstanceProfileBuf = .{ .entries = snap_entries };
     var profile_snap_render_us: f64 = 0;
 
     var angle: f32 = 0.0;

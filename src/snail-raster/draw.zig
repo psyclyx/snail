@@ -1,27 +1,27 @@
-//! CPU-backend draw entry for `DrawRecords`.
+//! Public draw entry for the software rasterizer.
 //!
 //! Walks segments, resolves each segment's `Binding.pool` to a
-//! `CpuBackendCache` cache (caller-supplied), validates the binding's
+//! `BackendCache` cache (caller-supplied), validates the binding's
 //! generation against the cache's last upload, then dispatches per-instance
-//! into the CPU rasterizer via `CpuRenderer.drawBatch`.
+//! into the CPU rasterizer via `Renderer.drawBatch`.
 //!
 
 const std = @import("std");
 
 const build_options = @import("build_options");
-const snail = @import("snail_core");
-const math = @import("snail_core").files.math_vec;
-const draw_records = @import("snail_core").files.picture_draw_records;
-const cpu_upload_mod = @import("backend_cache.zig");
-const cpu_resources = @import("resources.zig");
-const vertex = @import("snail_core").files.format_vertex;
+const snail = @import("snail").core;
+const math = @import("snail").core.files.math_vec;
+const draw_records = @import("snail").core.files.picture_draw_records;
+const backend_cache_mod = @import("backend_cache.zig");
+const resources_mod = @import("resources.zig");
+const vertex = @import("snail").core.files.format_vertex;
 
 pub const DrawRecords = struct {
     words: []const u32,
     segments: []const draw_records.DrawSegment,
 };
 
-pub const CpuBackendCache = cpu_upload_mod.CpuBackendCache;
+pub const BackendCache = backend_cache_mod.BackendCache;
 pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
@@ -36,8 +36,8 @@ pub const DrawError = error{
     MalformedSegment,
 };
 
-const CpuRendererPtr = if (build_options.enable_cpu)
-    *@import("renderer.zig").CpuRenderer
+const RendererPtr = if (build_options.enable_raster)
+    *@import("renderer.zig").Renderer
 else
     *opaque {};
 
@@ -49,24 +49,24 @@ else
 /// calling thread. Output is byte-identical either way. A pool wins on
 /// large batches and loses on small ones (dispatch overhead > work), so
 /// the caller decides per draw rather than configuring the renderer once.
-pub fn drawCpu(
-    renderer: CpuRendererPtr,
+pub fn draw(
+    renderer: RendererPtr,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const CpuBackendCache,
+    caches: []const *const BackendCache,
     thread_pool: ?*snail.ThreadPool,
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
 ) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
-    if (!build_options.enable_cpu) return error.MalformedSegment;
+    if (!build_options.enable_raster) return error.MalformedSegment;
     for (records.segments) |seg| {
         const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
         if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) {
             return error.StaleBinding;
         }
 
-        var layer_info_buf: [1]cpu_resources.LayerInfoEntry = undefined;
-        var layer_infos_slice: []cpu_resources.LayerInfoEntry = &.{};
+        var layer_info_buf: [1]resources_mod.LayerInfoEntry = undefined;
+        var layer_infos_slice: []resources_mod.LayerInfoEntry = &.{};
         var layer_info_count: usize = 0;
         if (cache.snapshotFor(seg.binding.generation)) |snap| {
             layer_info_buf[0] = .{
@@ -81,7 +81,7 @@ pub fn drawCpu(
             layer_infos_slice = layer_info_buf[0..1];
             layer_info_count = 1;
         }
-        var prepared = cpu_resources.PreparedResources{
+        var prepared = resources_mod.PreparedResources{
             .allocator = cache.allocator,
             .atlas_pages = cache.prepared,
             .layer_infos = layer_infos_slice,
@@ -95,9 +95,9 @@ pub fn drawCpu(
 }
 
 fn findCache(
-    caches: []const *const CpuBackendCache,
-    pool: *cpu_upload_mod.PagePool,
-) ?*const CpuBackendCache {
+    caches: []const *const BackendCache,
+    pool: *backend_cache_mod.PagePool,
+) ?*const BackendCache {
     for (caches) |c| {
         if (c.pool == pool) return c;
     }
@@ -108,7 +108,7 @@ fn findCache(
 // Tests
 //
 // The emit() level already locks down byte-for-byte parity with the existing
-// `generateGlyphVerticesTransformedTinted` vertex helper. `cpu_upload` reuses
+// `generateGlyphVerticesTransformedTinted` vertex helper. the backend cache reuses
 // the existing `PreparedAtlasPage.initFromView` builder verbatim. That makes
 // the CPU rasterizer's inner sampling loop identical for old and new paths
 // given the same source data. The remaining responsibility of these tests
@@ -118,28 +118,28 @@ fn findCache(
 
 const testing = std.testing;
 
-test "drawCpu MissingBinding when no cache covers the binding's pool" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw MissingBinding when no cache covers the binding's pool" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    var pool_a = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool_a = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });
     defer pool_a.deinit();
-    var pool_b = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool_b = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });
     defer pool_b.deinit();
 
-    var cache_a = try CpuBackendCache.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache_a = try BackendCache.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
-    var renderer = @import("renderer.zig").CpuRenderer.init(&pixels, 16, 16, 16 * 4);
+    var renderer = @import("renderer.zig").Renderer.init(&pixels, 16, 16, 16 * 4);
     const state = makeIdentityState(16, 16);
 
     const segments = [_]draw_records.DrawSegment{.{
@@ -149,17 +149,17 @@ test "drawCpu MissingBinding when no cache covers the binding's pool" {
         .shape_count = 0,
     }};
     const records = DrawRecords{ .words = &.{}, .segments = &segments };
-    try testing.expectError(error.MissingBinding, drawCpu(&renderer, state, records, &.{&cache_a}, null));
+    try testing.expectError(error.MissingBinding, draw(&renderer, state, records, &.{&cache_a}, null));
 }
 
-test "drawCpu autohint fits per size without mutating atlas resources" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw autohint fits per size without mutating atlas resources" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
-    const atlas_mod = @import("snail_core").files.atlas;
-    const record_key_mod = @import("snail_core").files.atlas_record_key;
-    const shape_mod = @import("snail_core").files.picture_shape;
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const atlas_mod = @import("snail").core.files.atlas;
+    const record_key_mod = @import("snail").core.files.atlas_record_key;
+    const shape_mod = @import("snail").core.files.picture_shape;
+    const emit_mod = @import("snail").core.files.picture_emit;
 
     const W: u32 = 48;
     const H: u32 = 40;
@@ -177,7 +177,7 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
     const glyph_features = try analyzer.analyzeGlyph(allocator, gid, &x_features, &y_features);
     try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -196,7 +196,7 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
     });
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -226,7 +226,7 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
             shape_key: atlas_mod.RecordKey,
             binding: Binding,
             atlas_ptr: *const atlas_mod.Atlas,
-            cache_ptr: *const CpuBackendCache,
+            cache_ptr: *const BackendCache,
         ) !void {
             @memset(pixels, 0);
             const shape = shape_mod.Shape{
@@ -239,8 +239,8 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
             var wlen: usize = 0;
             var slen: usize = 0;
             _ = try emit_mod.emit(&words, &segs, &wlen, &slen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
-            var renderer = @import("renderer.zig").CpuRenderer.init(pixels.ptr, W, H, STRIDE);
-            try drawCpu(&renderer, makeIdentityState(W, H), .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{cache_ptr}, null);
+            var renderer = @import("renderer.zig").Renderer.init(pixels.ptr, W, H, STRIDE);
+            try draw(&renderer, makeIdentityState(W, H), .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{cache_ptr}, null);
         }
     };
 
@@ -278,8 +278,8 @@ test "drawCpu autohint fits per size without mutating atlas resources" {
     try testing.expectEqualSlices(u16, band_copy, page.band.data[0..band_used]);
 }
 
-test "drawCpu renders a small Picture into non-zero pixels" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw renders a small Picture into non-zero pixels" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -294,20 +294,20 @@ test "drawCpu renders a small Picture into non-zero pixels" {
 
     const gid = try font.glyphIndex('A');
     const curves_a = try font.extractCurves(allocator, allocator, gid);
-    var owned: [1]@import("snail_core").files.atlas_curves.GlyphCurves = .{curves_a};
+    var owned: [1]@import("snail").core.files.atlas_curves.GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail_core").files.atlas_record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
+    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -317,7 +317,7 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     // shape's scale is just the requested px size.
     const px_size: f32 = 24.0;
     const scale: f32 = px_size;
-    const shape = @import("snail_core").files.picture_shape.Shape{
+    const shape = @import("snail").core.files.picture_shape.Shape{
         .key = key,
         .local_transform = .{
             .xx = scale,
@@ -329,9 +329,9 @@ test "drawCpu renders a small Picture into non-zero pixels" {
         },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail_core").files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const emit_mod = @import("snail").core.files.picture_emit;
     const word_need = emit_mod.wordBudget(shapes.len);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
@@ -340,10 +340,10 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
     const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
-    try drawCpu(&renderer, state, records, &.{&cache}, null);
+    try draw(&renderer, state, records, &.{&cache}, null);
 
     // Expect some non-zero pixel coverage from the glyph.
     var any_drawn = false;
@@ -354,8 +354,8 @@ test "drawCpu renders a small Picture into non-zero pixels" {
     try testing.expect(any_drawn);
 }
 
-test "drawCpu renders gradient-painted glyph through special-layer path" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw renders gradient-painted glyph through special-layer path" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -372,13 +372,13 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail_core").files.atlas_record_key.unhintedGlyph(0, gid);
+    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
 
     // Linear gradient running across the glyph's local-em width.
     const gradient = snail.LinearGradient{
@@ -387,7 +387,7 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
         .start_color = .{ 1, 0, 0, 1 },
         .end_color = .{ 0, 0, 1, 1 },
     };
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .linear_gradient = gradient },
@@ -396,21 +396,21 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
 
     try testing.expect(atlas.lookupPaintRecord(key) != null);
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
     const binding = bindings[0];
 
     const px_size: f32 = 32.0;
-    const shape = @import("snail_core").files.picture_shape.Shape{
+    const shape = @import("snail").core.files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail_core").files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const emit_mod = @import("snail").core.files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -418,9 +418,9 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
+    try draw(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
     // Scan every drawn pixel; expect both red-dominant (left of the
     // gradient) and blue-dominant (right) coverage somewhere in the
@@ -442,8 +442,8 @@ test "drawCpu renders gradient-painted glyph through special-layer path" {
     try testing.expect(has_blue);
 }
 
-test "drawCpu renders image-painted shape through special-layer path" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw renders image-painted shape through special-layer path" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
 
     const W: u32 = 32;
@@ -466,7 +466,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
     defer image.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -475,7 +475,7 @@ test "drawCpu renders image-painted shape through special-layer path" {
 
     // Square-ish path covering [0..1, 0..1] in local coords; the local
     // shape transform scales to pixel size.
-    var path = @import("snail_core").files.path.Path.init(allocator);
+    var path = @import("snail").core.files.path.Path.init(allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
     var prepared_path = try path.prepare(allocator);
@@ -483,11 +483,11 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var path_curves = try prepared_path.fillCurves(allocator, allocator);
     defer path_curves.deinit();
 
-    const key = @import("snail_core").files.atlas_record_key.RecordKey{
-        .namespace = @import("snail_core").files.atlas_record_key.ns.path_fill,
+    const key = @import("snail").core.files.atlas_record_key.RecordKey{
+        .namespace = @import("snail").core.files.atlas_record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = path_curves,
         .paint = .{ .image = .{
@@ -501,21 +501,21 @@ test "drawCpu renders image-painted shape through special-layer path" {
     try testing.expect(atlas.paint_image_records.?[0] != null);
     try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
     const binding = bindings[0];
 
     const px_size: f32 = 20.0;
-    const shape = @import("snail_core").files.picture_shape.Shape{
+    const shape = @import("snail").core.files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail_core").files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const emit_mod = @import("snail").core.files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -523,9 +523,9 @@ test "drawCpu renders image-painted shape through special-layer path" {
     var slen: usize = 0;
     _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = @import("renderer.zig").CpuRenderer.init(px.ptr, W, H, STRIDE);
+    var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try drawCpu(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
+    try draw(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
 
     var has_red: bool = false;
     var row: u32 = 0;
@@ -544,8 +544,8 @@ test "drawCpu renders image-painted shape through special-layer path" {
     try testing.expect(has_red);
 }
 
-test "drawCpu threaded matches single-threaded pixel-for-pixel" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw threaded matches single-threaded pixel-for-pixel" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -558,30 +558,30 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     var font = try snail.Font.init(font_data);
 
     const glyphs = "Hello, world!";
-    const Owned = @import("snail_core").files.atlas_curves.GlyphCurves;
+    const Owned = @import("snail").core.files.atlas_curves.GlyphCurves;
     var owned: std.ArrayList(Owned) = .empty;
     defer {
         for (owned.items) |*c| c.deinit();
         owned.deinit(allocator);
     }
-    var entries: std.ArrayList(@import("snail_core").files.atlas.Entry) = .empty;
+    var entries: std.ArrayList(@import("snail").core.files.atlas.Entry) = .empty;
     defer entries.deinit(allocator);
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
 
-    var shapes: std.ArrayList(@import("snail_core").files.picture_shape.Shape) = .empty;
+    var shapes: std.ArrayList(@import("snail").core.files.picture_shape.Shape) = .empty;
     defer shapes.deinit(allocator);
 
     const px_size: f32 = 18.0;
     var pen_x: f32 = 4;
     for (glyphs) |c| {
         const gid = try font.glyphIndex(c);
-        const key = @import("snail_core").files.atlas_record_key.unhintedGlyph(0, gid);
+        const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
         if (!containsEntryKey(entries.items, key)) {
             const curves = try font.extractCurves(allocator, allocator, gid);
             try owned.append(allocator, curves);
@@ -595,14 +595,14 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
         pen_x += px_size * 0.55;
     }
 
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, entries.items);
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, entries.items);
     defer atlas.deinit();
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const emit_mod = @import("snail").core.files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -615,8 +615,8 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     const px_serial = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_serial);
     @memset(px_serial, 0);
-    var renderer_serial = @import("renderer.zig").CpuRenderer.init(px_serial.ptr, W, H, STRIDE);
-    try drawCpu(&renderer_serial, state, records, &.{&cache}, null);
+    var renderer_serial = @import("renderer.zig").Renderer.init(px_serial.ptr, W, H, STRIDE);
+    try draw(&renderer_serial, state, records, &.{&cache}, null);
 
     const px_threaded = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_threaded);
@@ -626,13 +626,13 @@ test "drawCpu threaded matches single-threaded pixel-for-pixel" {
     try thread_pool.init(allocator, .{ .threads = 3 });
     defer thread_pool.deinit();
 
-    var renderer_threaded = @import("renderer.zig").CpuRenderer.init(px_threaded.ptr, W, H, STRIDE);
-    try drawCpu(&renderer_threaded, state, records, &.{&cache}, &thread_pool);
+    var renderer_threaded = @import("renderer.zig").Renderer.init(px_threaded.ptr, W, H, STRIDE);
+    try draw(&renderer_threaded, state, records, &.{&cache}, &thread_pool);
 
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("snail_core").files.atlas.Entry, key: @import("snail_core").files.atlas_record_key.RecordKey) bool {
+fn containsEntryKey(entries: []const @import("snail").core.files.atlas.Entry, key: @import("snail").core.files.atlas_record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -645,13 +645,13 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     // The old Cardano/quadratic cubic solver dropped that near-endpoint root in
     // a hair-thin column, collapsing V-coverage to 0 and painting a white line
     // down the shape on the CPU (the GPU's monotonic solver stayed correct).
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const coverage = @import("coverage.zig");
     const geometry = @import("geometry.zig");
     const Vec2 = math.Vec2;
 
-    var path = @import("snail_core").files.path.Path.init(allocator);
+    var path = @import("snail").core.files.path.Path.init(allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0.5, .y = 0 });
     try path.cubicTo(.{ .x = 0.95, .y = 0.2 }, .{ .x = 0.95, .y = 0.8 }, .{ .x = 0.5, .y = 1 });
@@ -662,24 +662,24 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     var curves = try prepared_path.fillCurves(allocator, allocator);
     defer curves.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail_core").files.atlas_record_key.RecordKey{
-        .namespace = @import("snail_core").files.atlas_record_key.ns.path_fill,
+    const key = @import("snail").core.files.atlas_record_key.RecordKey{
+        .namespace = @import("snail").core.files.atlas_record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
     }});
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -728,13 +728,13 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
 }
 
 test "cubic stroke has no detached coverage island near its start cap" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const coverage = @import("coverage.zig");
     const geometry = @import("geometry.zig");
     const Vec2 = math.Vec2;
 
-    var path = @import("snail_core").files.path.Path.init(allocator);
+    var path = @import("snail").core.files.path.Path.init(allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0.08, .y = 0.7 });
     try path.cubicTo(
@@ -752,24 +752,24 @@ test "cubic stroke has no detached coverage island near its start cap" {
     });
     defer curves.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail_core").files.atlas_record_key.RecordKey{
-        .namespace = @import("snail_core").files.atlas_record_key.ns.path_stroke,
+    const key = @import("snail").core.files.atlas_record_key.RecordKey{
+        .namespace = @import("snail").core.files.atlas_record_key.ns.path_stroke,
         .a = 0,
     };
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
     }});
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -822,8 +822,8 @@ fn makeIdentityState(w: u32, h: u32) snail.DrawState {
     };
 }
 
-test "drawCpu scissor_rect clips writes to the rect" {
-    if (!build_options.enable_cpu) return error.SkipZigTest;
+test "draw scissor_rect clips writes to the rect" {
+    if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 
@@ -836,30 +836,30 @@ test "drawCpu scissor_rect clips writes to the rect" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("snail_core").files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail_core").files.atlas_record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail_core").files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
+    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
     const px_size: f32 = 36.0;
-    const shape = @import("snail_core").files.picture_shape.Shape{
+    const shape = @import("snail").core.files.picture_shape.Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 8, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail_core").files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
 
-    const emit_mod = @import("snail_core").files.picture_emit;
+    const emit_mod = @import("snail").core.files.picture_emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -873,9 +873,9 @@ test "drawCpu scissor_rect clips writes to the rect" {
     const px_full = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_full);
     @memset(px_full, 0);
-    var ren_full = @import("renderer.zig").CpuRenderer.init(px_full.ptr, W, H, STRIDE);
+    var ren_full = @import("renderer.zig").Renderer.init(px_full.ptr, W, H, STRIDE);
     const state_full = makeIdentityState(W, H);
-    try drawCpu(&ren_full, state_full, records, &.{&cache}, null);
+    try draw(&ren_full, state_full, records, &.{&cache}, null);
 
     // Render again with a scissor that omits the left half of the
     // glyph. Every pixel inside the scissor should match the unclipped
@@ -883,10 +883,10 @@ test "drawCpu scissor_rect clips writes to the rect" {
     const px_clip = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_clip);
     @memset(px_clip, 0);
-    var ren_clip = @import("renderer.zig").CpuRenderer.init(px_clip.ptr, W, H, STRIDE);
+    var ren_clip = @import("renderer.zig").Renderer.init(px_clip.ptr, W, H, STRIDE);
     var state_clip = makeIdentityState(W, H);
     state_clip.scissor_rect = .{ .x = 24, .y = 0, .w = 24, .h = H };
-    try drawCpu(&ren_clip, state_clip, records, &.{&cache}, null);
+    try draw(&ren_clip, state_clip, records, &.{&cache}, null);
 
     var row: u32 = 0;
     while (row < H) : (row += 1) {

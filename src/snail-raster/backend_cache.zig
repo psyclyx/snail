@@ -1,4 +1,4 @@
-//! CPU-backend prepared-pages cache for snail.
+//! Prepared-pages cache for the software rasterizer.
 //!
 //! Holds resident CPU-side resources for one `PagePool` and exposes
 //! caller-controlled lifecycle primitives:
@@ -22,18 +22,18 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("snail_core").files.atlas;
-const draw_records = @import("snail_core").files.picture_draw_records;
-const page_mod = @import("snail_core").files.atlas_page;
-const page_pool_mod = @import("snail_core").files.atlas_page_pool;
-const curve_tex = @import("snail_core").files.format_curve_texture;
-const band_tex = @import("snail_core").files.format_band_texture;
-const paint_records = @import("snail_core").files.atlas_paint_records;
-const cpu_resources = @import("resources.zig");
-const cpu_path_paint = @import("path_paint.zig");
-const image_mod = @import("snail_core").files.image;
-const cache_base = @import("snail_core").files.backend_cache_base;
-const range_allocator = @import("snail_core").files.backend_range_allocator;
+const atlas_mod = @import("snail").core.files.atlas;
+const draw_records = @import("snail").core.files.picture_draw_records;
+const page_mod = @import("snail").core.files.atlas_page;
+const page_pool_mod = @import("snail").core.files.atlas_page_pool;
+const curve_tex = @import("snail").core.files.format_curve_texture;
+const band_tex = @import("snail").core.files.format_band_texture;
+const paint_records = @import("snail").core.files.atlas_paint_records;
+const resources_mod = @import("resources.zig");
+const path_paint_mod = @import("path_paint.zig");
+const image_mod = @import("snail").core.files.image;
+const cache_base = @import("snail").core.files.backend_cache_base;
+const range_allocator = @import("snail").core.files.backend_range_allocator;
 
 const RangeAllocator = range_allocator.RangeAllocator;
 const Range = range_allocator.Range;
@@ -42,7 +42,7 @@ pub const Atlas = atlas_mod.Atlas;
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
-pub const PreparedAtlasPage = cpu_resources.PreparedAtlasPage;
+pub const PreparedAtlasPage = resources_mod.PreparedAtlasPage;
 pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const Image = image_mod.Image;
 
@@ -54,7 +54,7 @@ pub const CacheOptions = cache_base.BaseCacheOptions;
 pub const UploadError = cache_base.BaseUploadError;
 pub const ResizeError = cache_base.BaseResizeError;
 
-pub const CpuBackendCache = struct {
+pub const BackendCache = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
     options: CacheOptions,
@@ -92,14 +92,14 @@ pub const CpuBackendCache = struct {
         image_layer_base: u32 = 0,
         image_count: u32 = 0,
         // Prepared records (offsets ABSOLUTE within layer_info_buf).
-        path_records: []cpu_path_paint.PreparedPathRecord = &.{},
-        path_layers: []cpu_path_paint.PreparedPathLayer = &.{},
+        path_records: []path_paint_mod.PreparedPathRecord = &.{},
+        path_layers: []path_paint_mod.PreparedPathLayer = &.{},
         // Image records owned per-binding (small slice; caller-owned
         // image pointers).
         paint_image_records: ?[]?PaintImageRecord = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !CpuBackendCache {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !BackendCache {
         const max_layers = pool.options.max_layers;
 
         const prepared = try allocator.alloc(?PreparedAtlasPage, max_layers);
@@ -153,7 +153,7 @@ pub const CpuBackendCache = struct {
         };
     }
 
-    pub fn deinit(self: *CpuBackendCache) void {
+    pub fn deinit(self: *BackendCache) void {
         for (self.prepared) |*slot| {
             if (slot.*) |*p| p.deinit(self.allocator);
         }
@@ -170,7 +170,7 @@ pub const CpuBackendCache = struct {
         self.* = undefined;
     }
 
-    fn freeBindingState(self: *CpuBackendCache, slot: *BindingSlot) void {
+    fn freeBindingState(self: *BackendCache, slot: *BindingSlot) void {
         if (slot.path_records.len > 0) self.allocator.free(slot.path_records);
         if (slot.path_layers.len > 0) self.allocator.free(slot.path_layers);
         if (slot.paint_image_records) |r| self.allocator.free(r);
@@ -181,7 +181,7 @@ pub const CpuBackendCache = struct {
 
     /// Reshape the cache. Errors if any binding is active — caller must
     /// release retired bindings first.
-    pub fn resize(self: *CpuBackendCache, options: CacheOptions) ResizeError!void {
+    pub fn resize(self: *BackendCache, options: CacheOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
         self.options = options;
 
@@ -211,7 +211,7 @@ pub const CpuBackendCache = struct {
     /// Upload one or more atlases into the cache and return one
     /// `Binding` per atlas. Errors if capacity is exceeded.
     pub fn upload(
-        self: *CpuBackendCache,
+        self: *BackendCache,
         scratch: std.mem.Allocator,
         atlases: []const *const Atlas,
         out_bindings: []Binding,
@@ -294,7 +294,7 @@ pub const CpuBackendCache = struct {
     /// which natively walks per-page watermarks under the hood, so
     /// pages whose contents haven't grown emit no copy traffic.
     pub fn uploadDelta(
-        self: *CpuBackendCache,
+        self: *BackendCache,
         scratch: std.mem.Allocator,
         prev_binding: Binding,
         atlas: *const Atlas,
@@ -324,7 +324,7 @@ pub const CpuBackendCache = struct {
 
     /// Release a binding's storage. Idempotent: releasing the same
     /// binding twice is a no-op after the first.
-    pub fn release(self: *CpuBackendCache, binding: Binding) void {
+    pub fn release(self: *BackendCache, binding: Binding) void {
         const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return;
@@ -349,7 +349,7 @@ pub const CpuBackendCache = struct {
     /// is where this slot sits in the global info_y space and is the value
     /// emit added to `Instance.info_y`. Path records' `texel_offset` is
     /// already slot-relative (matches `layer_info_data`).
-    pub fn snapshotFor(self: *const CpuBackendCache, generation: u32) ?Snapshot {
+    pub fn snapshotFor(self: *const BackendCache, generation: u32) ?Snapshot {
         const slot_index = self.findSlotByGeneration(generation) orelse return null;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return null;
@@ -371,12 +371,12 @@ pub const CpuBackendCache = struct {
         layer_info_width: u32,
         info_row_base: u32,
         info_height: u32,
-        path_records: []cpu_path_paint.PreparedPathRecord,
-        path_layers: []cpu_path_paint.PreparedPathLayer,
+        path_records: []path_paint_mod.PreparedPathRecord,
+        path_layers: []path_paint_mod.PreparedPathLayer,
         paint_image_records: ?[]const ?PaintImageRecord,
     };
 
-    pub fn page(self: *const CpuBackendCache, layer: u32) ?*const PreparedAtlasPage {
+    pub fn page(self: *const BackendCache, layer: u32) ?*const PreparedAtlasPage {
         if (layer >= self.prepared.len) return null;
         if (self.prepared[layer]) |*p| return p;
         return null;
@@ -384,21 +384,21 @@ pub const CpuBackendCache = struct {
 
     // ── Internal ──
 
-    fn findFreeBinding(self: *CpuBackendCache) ?u32 {
+    fn findFreeBinding(self: *BackendCache) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (!slot.active) return @intCast(i);
         }
         return null;
     }
 
-    fn findSlotByGeneration(self: *const CpuBackendCache, generation: u32) ?u32 {
+    fn findSlotByGeneration(self: *const BackendCache, generation: u32) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (slot.active and slot.generation == generation) return @intCast(i);
         }
         return null;
     }
 
-    fn writeBindingData(self: *CpuBackendCache, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
+    fn writeBindingData(self: *BackendCache, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
         // Push each page in the atlas into its layer (rebuild if stale).
         for (atlas.pages) |p| {
             const layer = p.layer_index;
@@ -449,7 +449,7 @@ pub const CpuBackendCache = struct {
                     const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
                     const uv_scale_x: f32 = 1.0;
                     const uv_scale_y: f32 = 1.0;
-                    @import("snail_core").files.format_upload_common.patchImagePaintRecord(
+                    @import("snail").core.files.format_upload_common.patchImagePaintRecord(
                         self.layer_info_buf,
                         INFO_WIDTH,
                         INFO_WIDTH,
@@ -476,7 +476,7 @@ pub const CpuBackendCache = struct {
             // LayerInfoEntry with its row_base to translate absolute
             // info_y back to local coords).
             const slot_data = self.layer_info_buf[dst_start..][0..dst_floats];
-            const prepared_records = try cpu_path_paint.preparePathLayerInfoRecords(
+            const prepared_records = try path_paint_mod.preparePathLayerInfoRecords(
                 self.allocator,
                 slot_data,
                 INFO_WIDTH,
@@ -544,7 +544,7 @@ test "cache init allocates fixed-capacity buffers" {
     });
     defer pool.deinit();
 
-    var cache = try CpuBackendCache.init(testing.allocator, pool, .{
+    var cache = try BackendCache.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 8,
         .max_images = 2,
@@ -557,8 +557,8 @@ test "cache init allocates fixed-capacity buffers" {
 }
 
 test "release returns range to free list and allows reuse" {
-    const record_key_mod = @import("snail_core").files.atlas_record_key;
-    const font_mod = @import("snail_core").font;
+    const record_key_mod = @import("snail").core.files.atlas_record_key;
+    const font_mod = @import("snail").core.font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -573,7 +573,7 @@ test "release returns range to free list and allows reuse" {
     });
     defer pool.deinit();
 
-    var cache = try CpuBackendCache.init(testing.allocator, pool, .{
+    var cache = try BackendCache.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 2,
         .max_images = 0,
@@ -624,8 +624,8 @@ test "release returns range to free list and allows reuse" {
 }
 
 test "uploadDelta errors for unknown pool" {
-    const record_key_mod = @import("snail_core").files.atlas_record_key;
-    const font_mod = @import("snail_core").font;
+    const record_key_mod = @import("snail").core.files.atlas_record_key;
+    const font_mod = @import("snail").core.font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -654,7 +654,7 @@ test "uploadDelta errors for unknown pool" {
     var atlas_b = try Atlas.from(testing.allocator, pool_b, &.{.{ .key = key, .curves = curves2 }});
     defer atlas_b.deinit();
 
-    var cache = try CpuBackendCache.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try BackendCache.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas_a}, &binding);
@@ -663,8 +663,8 @@ test "uploadDelta errors for unknown pool" {
 }
 
 test "uploadDelta errors for released binding" {
-    const record_key_mod = @import("snail_core").files.atlas_record_key;
-    const font_mod = @import("snail_core").font;
+    const record_key_mod = @import("snail").core.files.atlas_record_key;
+    const font_mod = @import("snail").core.font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -683,7 +683,7 @@ test "uploadDelta errors for released binding" {
     var atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try CpuBackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try BackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas}, &binding);
@@ -699,8 +699,8 @@ test "uploadDelta accepts a different atlas on the same pool" {
     // affected pages. This is correct, just less efficient than a
     // true extension would be. Lock that in so future "tighten the
     // contract" rewrites don't accidentally make it an error.
-    const record_key_mod = @import("snail_core").files.atlas_record_key;
-    const font_mod = @import("snail_core").font;
+    const record_key_mod = @import("snail").core.files.atlas_record_key;
+    const font_mod = @import("snail").core.font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -725,7 +725,7 @@ test "uploadDelta accepts a different atlas on the same pool" {
     var atlas_b = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_b, .curves = curves_b }});
     defer atlas_b.deinit();
 
-    var cache = try CpuBackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try BackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas_a}, &binding);

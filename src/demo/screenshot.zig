@@ -1,7 +1,7 @@
 //! New-API screenshot demo — CPU backend.
 //!
 //! Builds the shared content (see `content.zig`) and renders it
-//! through `snail.drawCpu` into `zig-out/demo-screenshot.tga`. The
+//! through `raster.draw` into `zig-out/demo-screenshot.tga`. The
 //! per-backend flow lives in `screenshot_harness.zig`.
 
 const std = @import("std");

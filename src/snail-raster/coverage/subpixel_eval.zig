@@ -1,4 +1,4 @@
-//! Seven-lane subpixel coverage evaluation for the CPU backend.
+//! Seven-lane subpixel coverage evaluation for the software rasterizer.
 //!
 //! `evalGlyphCoverageSubpixel` is the entry point — it samples a glyph
 //! at seven colocated subpixel positions arranged along the LCD-stripe
@@ -13,12 +13,12 @@
 //! `pub` re-exports.
 
 const std = @import("std");
-const snail = @import("snail_core");
+const snail = @import("snail").core;
 const coverage = @import("../coverage.zig");
 const subpixel = @import("subpixel.zig");
 const cubic = @import("cubic_solver.zig");
 const texture = @import("../texture.zig");
-const band_tex = @import("snail_core").files.format_band_texture;
+const band_tex = @import("snail").core.files.format_band_texture;
 
 const FillRule = snail.FillRule;
 const Vec2 = snail.Vec2;

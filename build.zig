@@ -10,7 +10,7 @@ pub const ModuleOptions = struct {
     enable_gl44: bool = true,
     enable_gles30: bool = true,
     enable_vulkan: bool = true,
-    enable_cpu: bool = true,
+    enable_raster: bool = true,
     enable_harfbuzz: bool = true,
 };
 
@@ -21,7 +21,7 @@ fn createBuildOptionsModule(b: *std.Build, options: ModuleOptions) *std.Build.Mo
     opts.addOption(bool, "enable_gl44", options.enable_gl44);
     opts.addOption(bool, "enable_gles30", options.enable_gles30);
     opts.addOption(bool, "enable_vulkan", options.enable_vulkan);
-    opts.addOption(bool, "enable_cpu", options.enable_cpu);
+    opts.addOption(bool, "enable_raster", options.enable_raster);
     opts.addOption(bool, "enable_harfbuzz", options.enable_harfbuzz);
     return opts.createModule();
 }
@@ -211,7 +211,8 @@ fn createCoreTestModule(
 /// Build the snail compiler-module graph and return the public `snail`
 /// facade. The graph is a DAG:
 ///
-///   snail_core ── snail_cpu / snail_gl / snail_vulkan ── snail (facade)
+///   snail_core ── snail_gl / snail_vulkan ── snail (facade)
+///                                         └─ snail-raster
 ///
 /// `snail_core` is backend-independent (links only harfbuzz for shaping).
 /// `snail_gl` and `snail_vulkan` are pure shader/resource contracts and link
@@ -220,7 +221,6 @@ fn createCoreTestModule(
 /// internal createModule.
 const SnailGraph = struct {
     core: *std.Build.Module,
-    cpu: *std.Build.Module,
     gl: *std.Build.Module,
     vulkan: *std.Build.Module,
     facade: *std.Build.Module,
@@ -256,9 +256,6 @@ fn buildSnailGraphFull(
     const core = mk(b, "src/snail/core.zig", target, optimize, strip, build_options_mod, assets_mod);
     if (options.enable_harfbuzz) core.linkSystemLibrary("harfbuzz", .{});
 
-    const cpu = mk(b, "src/snail/render/backend/cpu/root.zig", target, optimize, strip, build_options_mod, assets_mod);
-    cpu.addImport("snail_core", core);
-
     const gl = mk(b, "src/snail/render/backend/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
     gl.addImport("snail_core", core);
     // snail_gl links NO OpenGL: it is a pure-data shader/resource contract and
@@ -279,10 +276,33 @@ fn buildSnailGraphFull(
         if (assets_mod) |a| facade.addImport("assets", a);
     }
     facade.addImport("snail_core", core);
-    facade.addImport("snail_cpu", cpu);
     facade.addImport("snail_gl", gl);
     facade.addImport("snail_vulkan", vk);
-    return .{ .core = core, .cpu = cpu, .gl = gl, .vulkan = vk, .facade = facade };
+    return .{ .core = core, .gl = gl, .vulkan = vk, .facade = facade };
+}
+
+fn createRasterModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    build_options_mod: *std.Build.Module,
+    snail_mod: *std.Build.Module,
+    assets_mod: ?*std.Build.Module,
+    strip: ?bool,
+    public_name: ?[]const u8,
+) *std.Build.Module {
+    const module_options: std.Build.Module.CreateOptions = .{
+        .root_source_file = b.path("src/snail-raster/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+        .strip = strip,
+    };
+    const raster = if (public_name) |name| b.addModule(name, module_options) else b.createModule(module_options);
+    raster.addImport("build_options", build_options_mod);
+    raster.addImport("snail", snail_mod);
+    if (assets_mod) |assets| raster.addImport("assets", assets);
+    return raster;
 }
 
 fn buildSnailGraph(
@@ -306,8 +326,9 @@ fn createSnailModule(
     return buildSnailGraph(b, target, optimize, build_options_mod, options, null);
 }
 
-/// For use as a dependency: returns a module with only the core snail library.
-/// Defaults to GL 3.3 + GL 4.4 + GLES30 + Vulkan + CPU + HarfBuzz; use moduleWithOptions to trim backend support.
+/// For use as a dependency: returns the backend-neutral snail module plus its
+/// shader contracts. The software renderer is constructed separately with
+/// `rasterModule`.
 pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
     return moduleWithOptions(b, target, optimize, .{});
 }
@@ -327,6 +348,34 @@ pub fn moduleWithOptions(
     );
 }
 
+pub fn rasterModule(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+) *std.Build.Module {
+    return rasterModuleWithOptions(b, target, optimize, snail_mod, .{});
+}
+
+pub fn rasterModuleWithOptions(
+    b: *std.Build,
+    target: std.Build.ResolvedTarget,
+    optimize: std.builtin.OptimizeMode,
+    snail_mod: *std.Build.Module,
+    module_options: ModuleOptions,
+) *std.Build.Module {
+    return createRasterModule(
+        b,
+        target,
+        optimize,
+        createBuildOptionsModule(b, module_options),
+        snail_mod,
+        null,
+        null,
+        null,
+    );
+}
+
 const BuildConfig = struct {
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -338,7 +387,7 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
     const enable_gl33 = b.option(bool, "gl33", "Enable GL 3.3 backend") orelse true;
     const enable_gl44 = b.option(bool, "gl44", "Enable GL 4.4 backend") orelse true;
     const enable_gles30 = b.option(bool, "gles30", "Enable OpenGL ES 3.0 backend") orelse true;
-    const enable_cpu = b.option(bool, "cpu-renderer", "Enable CPU renderer backend") orelse true;
+    const enable_raster = b.option(bool, "raster", "Enable snail-raster software renderer") orelse true;
     const enable_vulkan = b.option(bool, "vulkan", "Enable Vulkan backend") orelse true;
     const enable_harfbuzz = b.option(bool, "harfbuzz", "Enable HarfBuzz text shaping") orelse true;
     const core_options = ModuleOptions{
@@ -347,11 +396,11 @@ fn parseBuildConfig(b: *std.Build) BuildConfig {
         .enable_gl44 = enable_gl44,
         .enable_gles30 = enable_gles30,
         .enable_vulkan = enable_vulkan,
-        .enable_cpu = enable_cpu,
+        .enable_raster = enable_raster,
         .enable_harfbuzz = enable_harfbuzz,
     };
 
-    if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_gles30 and !core_options.enable_vulkan and !core_options.enable_cpu) {
+    if (!core_options.enable_gl33 and !core_options.enable_gl44 and !core_options.enable_gles30 and !core_options.enable_vulkan and !core_options.enable_raster) {
         @panic("at least one renderer backend must be enabled");
     }
 
@@ -377,6 +426,7 @@ const ProjectModules = struct {
     vk_shaders: *std.Build.Module,
     demo_vulkan_types: *std.Build.Module,
     snail: *std.Build.Module,
+    raster: *std.Build.Module,
 };
 
 fn addTestSteps(
@@ -388,9 +438,11 @@ fn addTestSteps(
     // The snail library is a module graph (core + per-backend + facade);
     // each module's tests run in their own artifact.
     const test_graph = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, null, modules.assets, null);
-    inline for (.{ test_graph.core, test_graph.cpu, test_graph.gl, test_graph.vulkan, test_graph.facade }) |m| {
+    inline for (.{ test_graph.core, test_graph.gl, test_graph.vulkan, test_graph.facade }) |m| {
         test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
     }
+    const raster_tests = createRasterModule(b, config.target, config.optimize, modules.options, test_graph.facade, modules.assets, null, null);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
@@ -402,6 +454,7 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-raster", .module = modules.raster },
             .{ .name = "support", .module = modules.support },
         },
     });
@@ -417,6 +470,7 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-raster", .module = modules.raster },
             .{ .name = "support", .module = modules.support },
         },
     });
@@ -425,11 +479,15 @@ fn addTestSteps(
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
     const vg = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options, null, modules.assets, true);
-    inline for (.{ vg.core, vg.cpu, vg.gl, vg.vulkan, vg.facade }) |m| {
+    inline for (.{ vg.core, vg.gl, vg.vulkan, vg.facade }) |m| {
         const vt = b.addTest(.{ .root_module = m });
         configureValgrindTest(vt);
         test_valgrind_step.dependOn(&b.addRunArtifact(vt).step);
     }
+    const vg_raster = createRasterModule(b, config.target, config.optimize, modules.options, vg.facade, modules.assets, true, null);
+    const vg_raster_tests = b.addTest(.{ .root_module = vg_raster });
+    configureValgrindTest(vg_raster_tests);
+    test_valgrind_step.dependOn(&b.addRunArtifact(vg_raster_tests).step);
 }
 
 fn addScreenshotSteps(
@@ -438,6 +496,7 @@ fn addScreenshotSteps(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
+    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
     const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
@@ -451,6 +510,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -468,6 +528,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -486,6 +547,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -502,6 +564,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -519,6 +582,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -550,6 +614,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -567,6 +632,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -585,6 +651,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -605,6 +672,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -625,6 +693,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -645,6 +714,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -668,6 +738,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
             },
         });
@@ -689,6 +760,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
             },
         });
@@ -709,6 +781,7 @@ fn addScreenshotSteps(
             .link_libc = true,
             .imports = &.{
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
             },
         });
@@ -727,6 +800,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -747,6 +821,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -765,6 +840,7 @@ fn addScreenshotSteps(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
             .{ .name = "support", .module = release_support_mod },
         },
     });
@@ -785,6 +861,7 @@ fn addScreenshotSteps(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = release_snail_mod },
+                .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
                 .{ .name = "demo_platform_vulkan", .module = vk_platform_mod },
                 .{ .name = "embed_vulkan", .module = embed_vulkan_mod },
@@ -817,6 +894,7 @@ fn addInteractiveDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-raster", .module = modules.raster },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
             .{ .name = "embed_gl", .module = demo_embed_gl_mod },
@@ -884,6 +962,7 @@ fn addGameDemoStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-raster", .module = modules.raster },
             .{ .name = "support", .module = modules.support },
             .{ .name = "build_options", .module = modules.options },
             .{ .name = "embed_gl", .module = game_embed_gl_mod },
@@ -925,6 +1004,7 @@ pub fn build(b: *std.Build) void {
     const options_mod = createBuildOptionsModule(b, config.core_options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config, options_mod);
+    const raster_mod = createRasterModule(b, config.target, config.optimize, options_mod, snail_mod, null, null, "snail-raster");
     const support_mod = createSupportModule(b, config.target, config.optimize, snail_mod, assets_mod);
     const vk_shaders_mod = vulkan_shaders.createModule(b, config.core_options.enable_vulkan);
     const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
@@ -936,6 +1016,7 @@ pub fn build(b: *std.Build) void {
         .vk_shaders = vk_shaders_mod,
         .demo_vulkan_types = demo_vulkan_types_mod,
         .snail = snail_mod,
+        .raster = raster_mod,
     };
 
     addTestSteps(b, config, modules);
@@ -951,6 +1032,7 @@ fn addBenchStep(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.core_options);
+    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod);
 
@@ -966,6 +1048,7 @@ fn addBenchStep(
     bench_imports.appendSlice(b.allocator, &.{
         .{ .name = "assets", .module = modules.assets },
         .{ .name = "snail", .module = release_snail_mod },
+        .{ .name = "snail-raster", .module = release_raster_mod },
         .{ .name = "support", .module = release_support_mod },
         .{ .name = "build_options", .module = modules.options },
         .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },

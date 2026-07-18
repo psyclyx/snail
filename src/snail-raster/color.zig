@@ -1,3 +1,5 @@
+//! Color conversion primitives for the software rasterizer.
+
 const std = @import("std");
 
 // sRGB ↔ linear conversion. The 256-entry decode LUT is exact for u8 texels.

@@ -4,7 +4,7 @@
 , enableGL44 ? true
 , enableGLES30 ? true
 , enableVulkan ? true
-, enableCpu ? true
+, enableRaster ? true
 , enableHarfBuzz ? true
 , enableCApi ? true
 , cApiShared ? enableCApi
@@ -24,7 +24,7 @@ in
     (boolFlag "gl44" enableGL44)
     (boolFlag "gles30" enableGLES30)
     (boolFlag "vulkan" enableVulkan)
-    (boolFlag "cpu-renderer" enableCpu)
+    (boolFlag "raster" enableRaster)
     (boolFlag "harfbuzz" enableHarfBuzz)
     (boolFlag "c-api" enableCApi)
     (boolFlag "c-api-shared" cApiShared)

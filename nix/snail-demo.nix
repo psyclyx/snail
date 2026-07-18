@@ -16,7 +16,7 @@
 , enableGL44 ? true
 , enableGLES30 ? true
 , enableVulkan ? true
-, enableCpu ? true
+, enableRaster ? true
 , enableHarfBuzz ? true
 , optimize ? "fast"
 , cpu ? "baseline"
@@ -30,7 +30,7 @@ let
       enableGL44
       enableGLES30
       enableVulkan
-      enableCpu
+      enableRaster
       enableHarfBuzz
       optimize
       cpu;
@@ -39,7 +39,7 @@ let
     cApiStatic = false;
   };
 in
-assert enableGL33 || enableGL44 || enableGLES30 || enableVulkan || enableCpu;
+assert enableGL33 || enableGL44 || enableGLES30 || enableVulkan || enableRaster;
 stdenv.mkDerivation {
   inherit pname version src;
 

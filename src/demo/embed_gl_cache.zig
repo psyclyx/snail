@@ -1,6 +1,6 @@
 //! GL / GLES3 persistent prepared-pages cache for snail.
 //!
-//! Mirrors `CpuBackendCache`: caller-sized capacity, slot
+//! Mirrors `snail-raster.BackendCache`: caller-sized capacity, slot
 //! allocation via free-list, explicit `release(binding)`, no auto-grow.
 //!
 //! Per-cache resident state:

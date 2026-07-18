@@ -7,11 +7,12 @@
 //! `cpu` uses the default pool (one worker per logical core minus one),
 //! `cpu_less_threaded` runs with a single worker, and `cpu_unthreaded`
 //! has zero workers so dispatch runs every tile on the calling thread.
-//! All three share the same `CpuRenderer` + `CpuBackendCache` plumbing.
+//! All three share the same `snail-raster` renderer and cache plumbing.
 
 const std = @import("std");
 const builtin = @import("builtin");
 const snail = @import("snail");
+const raster = @import("snail-raster");
 const embed_gl = @import("embed_gl");
 const build_options = @import("build_options");
 const presentation = @import("platform/presentation.zig");
@@ -22,7 +23,7 @@ const driver_common = @import("driver_common.zig");
 const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("platform/gl.zig") else struct {};
 const vulkan_platform = if (build_options.enable_vulkan) @import("platform/vulkan/windowed.zig") else struct {};
 const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
-const cpu_platform = if (build_options.enable_cpu) @import("platform/cpu.zig") else struct {};
+const cpu_platform = if (build_options.enable_raster) @import("platform/cpu.zig") else struct {};
 const gl = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("support").gl else struct {};
 
 pub const Kind = enum {
@@ -40,7 +41,7 @@ pub fn defaultKind() Kind {
     if (comptime build_options.enable_gl44) return .gl44;
     if (comptime build_options.enable_gl33) return .gl33;
     if (comptime build_options.enable_gles30) return .gles30;
-    if (comptime build_options.enable_cpu) return .cpu;
+    if (comptime build_options.enable_raster) return .cpu;
     @compileError("at least one demo backend must be enabled");
 }
 
@@ -62,7 +63,7 @@ fn kindEnabled(k: Kind) bool {
         .gl44 => build_options.enable_gl44,
         .gl33 => build_options.enable_gl33,
         .gles30 => build_options.enable_gles30,
-        .cpu, .cpu_less_threaded, .cpu_unthreaded => build_options.enable_cpu,
+        .cpu, .cpu_less_threaded, .cpu_unthreaded => build_options.enable_raster,
     };
 }
 
@@ -136,9 +137,9 @@ pub const Driver = union(Kind) {
     gl44: if (build_options.enable_gl44) Gl44Driver else void,
     gl33: if (build_options.enable_gl33) Gl33Driver else void,
     gles30: if (build_options.enable_gles30) Gles30Driver else void,
-    cpu: if (build_options.enable_cpu) CpuDriver else void,
-    cpu_less_threaded: if (build_options.enable_cpu) CpuDriver else void,
-    cpu_unthreaded: if (build_options.enable_cpu) CpuDriver else void,
+    cpu: if (build_options.enable_raster) CpuDriver else void,
+    cpu_less_threaded: if (build_options.enable_raster) CpuDriver else void,
+    cpu_unthreaded: if (build_options.enable_raster) CpuDriver else void,
 
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, selected: Kind) !Driver {
         return switch (selected) {
@@ -158,15 +159,15 @@ pub const Driver = union(Kind) {
                 .{ .gles30 = try Gles30Driver.init(allocator, window) }
             else
                 unreachable,
-            .cpu => if (comptime build_options.enable_cpu)
+            .cpu => if (comptime build_options.enable_raster)
                 .{ .cpu = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu)) }
             else
                 unreachable,
-            .cpu_less_threaded => if (comptime build_options.enable_cpu)
+            .cpu_less_threaded => if (comptime build_options.enable_raster)
                 .{ .cpu_less_threaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_less_threaded)) }
             else
                 unreachable,
-            .cpu_unthreaded => if (comptime build_options.enable_cpu)
+            .cpu_unthreaded => if (comptime build_options.enable_raster)
                 .{ .cpu_unthreaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_unthreaded)) }
             else
                 unreachable,
@@ -179,7 +180,7 @@ pub const Driver = union(Kind) {
             .gl44 => |*d| if (comptime build_options.enable_gl44) d.deinit() else unreachable,
             .gl33 => |*d| if (comptime build_options.enable_gl33) d.deinit() else unreachable,
             .gles30 => |*d| if (comptime build_options.enable_gles30) d.deinit() else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) d.deinit() else unreachable,
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.deinit() else unreachable,
         }
     }
 
@@ -196,15 +197,15 @@ pub const Driver = union(Kind) {
             .gl44 => |*d| if (comptime build_options.enable_gl44) d.renderer_state.state.backendName() else unreachable,
             .gl33 => |*d| if (comptime build_options.enable_gl33) d.renderer_state.state.backendName() else unreachable,
             .gles30 => |*d| if (comptime build_options.enable_gles30) d.renderer_state.state.backendName() else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) d.renderer_state.backendName() else unreachable,
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.renderer_state.backendName() else unreachable,
         };
     }
 
     /// Wire the per-instance timing sink on the CPU renderer (no-op for GPU
     /// backends, which don't run the serial CPU instance loop).
-    pub fn setInstanceProfile(self: *Driver, profile: ?*snail.InstanceProfileBuf) void {
+    pub fn setInstanceProfile(self: *Driver, profile: ?*raster.InstanceProfileBuf) void {
         switch (self.*) {
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) {
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) {
                 d.renderer_state.instance_profile = profile;
             },
             else => {},
@@ -217,7 +218,7 @@ pub const Driver = union(Kind) {
             .gl44 => if (comptime build_options.enable_gl44) gl_platform.shouldClose() else true,
             .gl33 => if (comptime build_options.enable_gl33) gl_platform.shouldClose() else true,
             .gles30 => if (comptime build_options.enable_gles30) gl_platform.shouldClose() else true,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_cpu) cpu_platform.shouldClose() else true,
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_raster) cpu_platform.shouldClose() else true,
         };
     }
 
@@ -227,7 +228,7 @@ pub const Driver = union(Kind) {
             .gl44 => if (comptime build_options.enable_gl44) gl_platform.presentationInfo() else .{},
             .gl33 => if (comptime build_options.enable_gl33) gl_platform.presentationInfo() else .{},
             .gles30 => if (comptime build_options.enable_gles30) gl_platform.presentationInfo() else .{},
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_cpu) cpu_platform.presentationInfo() else .{},
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_raster) cpu_platform.presentationInfo() else .{},
         };
     }
 
@@ -250,7 +251,7 @@ pub const Driver = union(Kind) {
     /// haven't wired up.
     pub fn lastFrameTimings(self: *Driver) FrameTimings {
         return switch (self.*) {
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) d.last_timings else .{},
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.last_timings else .{},
             .vulkan => |*d| if (comptime build_options.enable_vulkan) d.last_timings else .{},
             .gl44 => |*d| if (comptime build_options.enable_gl44) d.last_timings else .{},
             .gl33 => |*d| if (comptime build_options.enable_gl33) d.last_timings else .{},
@@ -283,7 +284,7 @@ pub const Driver = union(Kind) {
             .gles30 => |*d| if (comptime build_options.enable_gles30) {
                 return d.renderFrame(allocator, passes, clear_srgb);
             } else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_cpu) {
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) {
                 return d.renderFrame(allocator, passes, clear_srgb);
             } else unreachable,
         }
@@ -718,11 +719,11 @@ fn glRender(
 
 // ── CPU ───────────────────────────────────────────────────────────────────
 
-const CpuDriver = if (build_options.enable_cpu) struct {
+const CpuDriver = if (build_options.enable_raster) struct {
     allocator: std.mem.Allocator,
-    renderer_state: snail.CpuRenderer,
+    renderer_state: raster.Renderer,
     pool: ?*snail.ThreadPool = null,
-    cache: ?snail.CpuBackendCache = null,
+    cache: ?raster.BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -736,7 +737,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         errdefer cpu_platform.deinit();
         const px = cpu_platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = cpu_platform.getBufferSize();
-        const renderer_state = snail.CpuRenderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+        const renderer_state = raster.Renderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
 
         const pool_ptr = try allocator.create(snail.ThreadPool);
         errdefer allocator.destroy(pool_ptr);
@@ -777,7 +778,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
 
         // Acquire the next shm buffer up front. The CPU renderer
         // rasterizes directly into the compositor's buffer (ABGR8888 in
-        // memory matches what CpuRenderer writes); `swapBuffers` then
+        // memory matches what raster.Renderer writes); `swapBuffers` then
         // just attaches it with no per-pixel copy. `beginFrame` blocks
         // dispatching Wayland events when both buffers are still busy.
         const fb_ptr = cpu_platform.beginFrame() orelse return false;
@@ -819,7 +820,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try snail.CpuBackendCache.init(self.allocator, pool, .{
+            self.cache = try raster.BackendCache.init(self.allocator, pool, .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -830,7 +831,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         }
 
         const sync_t0 = wayland.getTime();
-        try syncPassBindings(snail.CpuBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        try syncPassBindings(raster.BackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
         self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;
@@ -841,7 +842,7 @@ const CpuDriver = if (build_options.enable_cpu) struct {
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             const dispatch_pool: ?*snail.ThreadPool = if (pass.cpu_parallel) self.pool else null;
             const t0 = wayland.getTime();
-            try snail.drawCpu(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
+            try raster.draw(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
             self.last_timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
         }
 

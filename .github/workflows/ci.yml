@@ -56,7 +56,7 @@ jobs:
         run: |
           zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false
           zig build test -Dcpu=baseline -Dvulkan=false
-          zig build test -Dcpu=baseline -Dcpu-renderer=false
+          zig build test -Dcpu=baseline -Draster=false
 
       - name: Build release C API libraries
         run: zig build --release=fast -Dcpu=baseline
@@ -70,9 +70,9 @@ jobs:
         run: |
           zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false
           zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dcpu-renderer=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Dcpu-renderer=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false -Dcpu-renderer=false
+          zig build install-demo --release=fast -Dcpu=baseline -Draster=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Draster=false
+          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false -Draster=false
           zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Dvulkan=false
 
       - name: Backend pixel comparison

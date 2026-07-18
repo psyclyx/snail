@@ -1,5 +1,7 @@
+//! Screen-space geometry helpers for the software rasterizer.
+
 const std = @import("std");
-const snail = @import("snail_core");
+const snail = @import("snail").core;
 
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;

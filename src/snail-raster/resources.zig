@@ -1,3 +1,5 @@
+//! Prepared resource views consumed by the software rasterizer.
+
 const std = @import("std");
 const coverage = @import("coverage.zig");
 const path_paint = @import("path_paint.zig");
@@ -15,7 +17,7 @@ const readBandCurveRef = texture.readBandCurveRef;
 ///
 /// Built from the page's raw curve/band byte data so the inner sampling
 /// loop has direct, prepared arrays to walk. Lifecycle is the calling
-/// `CpuBackendCache`'s problem.
+/// `BackendCache`'s problem.
 pub const PreparedAtlasPage = struct {
     curve_data: []const u16,
     band_data: []const u16,
@@ -93,8 +95,8 @@ pub const PreparedAtlasPage = struct {
     }
 };
 
-/// Per-frame view the rasterizer reads from. `drawCpu` builds one of these
-/// for each segment from the segment's `CpuBackendCache` cache.
+/// Per-frame view the rasterizer reads from. `draw` builds one of these
+/// for each segment from the segment's `BackendCache` cache.
 pub const PreparedResources = struct {
     allocator: std.mem.Allocator,
     atlas_pages: []?PreparedAtlasPage = &.{},

@@ -1,5 +1,7 @@
+//! Subpixel coverage filtering for the software rasterizer.
+
 const std = @import("std");
-const snail = @import("snail_core");
+const snail = @import("snail").core;
 const color = @import("../color.zig");
 
 const SubpixelOrder = snail.SubpixelOrder;

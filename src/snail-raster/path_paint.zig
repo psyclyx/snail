@@ -1,9 +1,11 @@
+//! Path paint decoding and sampling for the software rasterizer.
+
 const std = @import("std");
-const snail = @import("snail_core");
+const snail = @import("snail").core;
 const color = @import("color.zig");
-const atlas_mod = @import("snail_core").files.atlas;
-const band_tex = @import("snail_core").files.format_band_texture;
-const render_abi = @import("snail_core").files.format_abi;
+const atlas_mod = @import("snail").core.files.atlas;
+const band_tex = @import("snail").core.files.format_band_texture;
+const render_abi = @import("snail").core.files.format_abi;
 
 const PaintImageRecord = atlas_mod.PaintImageRecord;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -545,7 +547,7 @@ test "conic gradient sweeps angle to t" {
 }
 
 test "paint record round-trips: Paint → encode → decode → sample" {
-    const paint_records = @import("snail_core").files.atlas_paint_records;
+    const paint_records = @import("snail").core.files.atlas_paint_records;
     const be = band_tex.GlyphBandEntry{
         .glyph_x = 0,
         .glyph_y = 0,

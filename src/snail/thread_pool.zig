@@ -1,4 +1,4 @@
-//! Minimal caller-owned thread pool used by `CpuRenderer` to fan tile work
+//! Minimal caller-owned thread pool used by `snail-raster.Renderer` to fan tile work
 //! across cores without allocating in the draw path. The allocator is touched
 //! exactly twice: once at `init` for the worker `[]std.Thread`, and once at
 //! `deinit` to free it. `dispatch` is heap-free.

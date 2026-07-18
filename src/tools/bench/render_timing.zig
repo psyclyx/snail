@@ -8,6 +8,7 @@
 const std = @import("std");
 const build_options = @import("build_options");
 const snail = @import("snail");
+const raster = @import("snail-raster");
 const embed_gl = @import("embed_gl");
 const gl = @import("support").gl;
 const vulkan_platform = if (build_options.enable_vulkan) @import("demo_platform_vulkan") else struct {};
@@ -63,10 +64,10 @@ pub fn clearGlFrame() void {
 }
 
 pub fn timeCpuDraw(
-    renderer: *snail.CpuRenderer,
+    renderer: *raster.Renderer,
     state: snail.DrawState,
     records: DrawRecords,
-    caches: []const *const snail.CpuBackendCache,
+    caches: []const *const raster.BackendCache,
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
@@ -74,13 +75,13 @@ pub fn timeCpuDraw(
 ) !f64 {
     for (0..warmup_frames) |_| {
         @memset(pixels, 0);
-        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
+        try raster.draw(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
     }
 
     const start = nowNs();
     for (0..frames) |_| {
         @memset(pixels, 0);
-        try snail.drawCpu(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
+        try raster.draw(renderer, state, .{ .words = records.words, .segments = records.segments }, caches, thread_pool);
     }
     return usFrom(start) / @as(f64, @floatFromInt(frames));
 }

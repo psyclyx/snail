@@ -49,7 +49,7 @@ var buf_height: u32 = 0;
 // wl_shm well-known format codes are 0/1; everything else uses the DRM
 // fourcc. DRM_FORMAT_ABGR8888 = fourcc('A','B','2','4') describes a
 // 32-bit word `A:B:G:R` MSB→LSB, which on little-endian memory is bytes
-// R, G, B, A — exactly the byte order CpuRenderer writes. Picking this
+// R, G, B, A — exactly the byte order snail-raster's Renderer writes. Picking this
 // format lets us render straight into the shm buffer with no per-pixel
 // swizzle on present (the previous WL_SHM_FORMAT_XRGB8888 = B,G,R,A in
 // memory needed a ~3 ms per-frame conversion loop on the main thread).
@@ -180,7 +180,7 @@ pub fn swapBuffers() void {
 }
 
 pub fn clear(r: f32, g: f32, b: f32, a: f32) void {
-    // CpuRenderer handles clearing internally; this is a no-op.
+    // The software Renderer handles clearing internally; this is a no-op.
     _ = r;
     _ = g;
     _ = b;

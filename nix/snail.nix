@@ -14,7 +14,7 @@
 , enableGL44 ? true
 , enableGLES30 ? true
 , enableVulkan ? true
-, enableCpu ? true
+, enableRaster ? true
 , enableHarfBuzz ? true
 , enableCApi ? true
 , cApiShared ? enableCApi
@@ -31,7 +31,7 @@ let
       enableGL44
       enableGLES30
       enableVulkan
-      enableCpu
+      enableRaster
       enableHarfBuzz
       enableCApi
       cApiShared

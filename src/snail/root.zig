@@ -1,12 +1,10 @@
 //! snail public API.
 //!
 //! Thin packaging shell over the compiler-module graph: it re-exports the
-//! backend-free `snail_core` API flat (Fonts/shaping/emit/…) and exposes each
-//! backend as a namespace (`snail.core`, `snail.gl`, `snail.vulkan`,
-//! `snail.cpu`). It holds no backend-specific code and no cross-backend
-//! aggregation — an app picks the backend namespace(s) it needs (a
-//! multi-backend app dispatches at its own level). The per-backend embeddable
-//! coverage surface lives under `snail.gl.embeddable` / `snail.vulkan`.
+//! backend-free `snail_core` API flat (Fonts/shaping/emit/…) and exposes the
+//! GL and Vulkan shader contracts as namespaces. The optional software
+//! renderer is a separate `snail-raster` module that depends on this module;
+//! `snail` never imports it.
 
 pub const core = @import("snail_core");
 
@@ -118,19 +116,10 @@ pub const PreparedPath = core.PreparedPath;
 pub const snap = core.snap;
 pub const ThreadPool = core.ThreadPool;
 
-// ── Renderer backends (each a separate compiler module, exposed as a
-//    namespace; the per-backend embeddable coverage surface lives under
-//    `gl.embeddable` / `vulkan.embeddable`) ──
+// ── Shader contracts ──
 
-pub const cpu = @import("snail_cpu");
 pub const gl = @import("snail_gl");
 pub const vulkan = @import("snail_vulkan");
-
-pub const CpuRenderer = cpu.CpuRenderer;
-pub const InstanceProfileEntry = cpu.InstanceProfileEntry;
-pub const InstanceProfileBuf = cpu.InstanceProfileBuf;
-pub const CpuBackendCache = cpu.CpuBackendCache;
-pub const drawCpu = cpu.drawCpu;
 
 // The all-in-one GL renderer + atlas cache are the caller's (embeddable-only);
 // the reference implementation lives in `src/demo/embed_gl*.zig`. snail exposes
@@ -138,7 +127,6 @@ pub const drawCpu = cpu.drawCpu;
 
 test {
     _ = core;
-    _ = cpu;
     _ = gl;
     _ = vulkan;
 }

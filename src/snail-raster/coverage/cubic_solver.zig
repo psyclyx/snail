@@ -1,4 +1,4 @@
-//! Bezier root-finding and polynomial helpers used by the CPU
+//! Bezier root-finding and polynomial helpers used by the software
 //! coverage evaluator.
 //!
 //! Functions here are pure (no PreparedAxisCurve / band-data
@@ -10,7 +10,7 @@
 //! through 2000 lines of evaluator state.
 
 const std = @import("std");
-const bezier = @import("snail_core").files.math_bezier;
+const bezier = @import("snail").core.files.math_bezier;
 const CurveSegment = bezier.CurveSegment;
 
 /// Up to three real roots from a polynomial solve, sorted ascending.

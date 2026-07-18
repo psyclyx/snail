@@ -11,6 +11,7 @@ const std = @import("std");
 const build_options = @import("build_options");
 const assets = @import("assets");
 const snail = @import("snail");
+const raster = @import("snail-raster");
 const embed_gl = @import("embed_gl");
 const demo_support = @import("support");
 const egl_offscreen = @import("demo_platform_offscreen_gl");
@@ -1392,7 +1393,7 @@ pub fn main() !void {
     var bundle_count: usize = 0;
     defer for (bundles[0..bundle_count]) |*b| b.deinit();
 
-    var cpu_cache_storage: ?snail.CpuBackendCache = null;
+    var cpu_cache_storage: ?raster.BackendCache = null;
     defer if (cpu_cache_storage) |*c| c.deinit();
     var cpu_bindings: [scene_kinds.len]snail.Binding = undefined;
 
@@ -1407,7 +1408,7 @@ pub fn main() !void {
         }
 
         // ── CPU prepared pages + per-scene emit ──
-        cpu_cache_storage = try snail.CpuBackendCache.init(allocator, pool, .{
+        cpu_cache_storage = try raster.BackendCache.init(allocator, pool, .{
             .max_bindings = 16,
             .layer_info_height = 256,
             .max_images = 8,
@@ -1444,14 +1445,14 @@ pub fn main() !void {
 
     const cpu_pixels = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels);
-    var cpu_renderer = snail.CpuRenderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
+    var cpu_renderer = raster.Renderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
 
     var cpu_pool: snail.ThreadPool = undefined;
     try cpu_pool.init(allocator, .{});
     defer cpu_pool.deinit();
     const cpu_pixels_threaded = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
     defer allocator.free(cpu_pixels_threaded);
-    var cpu_renderer_threaded = snail.CpuRenderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
+    var cpu_renderer_threaded = raster.Renderer.init(cpu_pixels_threaded.ptr, WIDTH, HEIGHT, WIDTH * 4);
 
     if (filter.run("cpu-draw")) {
         for (scene_kinds, 0..) |kind, i| {
@@ -1582,8 +1583,8 @@ fn printGl33BreakdownTable(rows: []const Gl33BreakdownRow) void {
 
 fn benchCpuModes(
     allocator: std.mem.Allocator,
-    renderer: *snail.CpuRenderer,
-    cache: *const snail.CpuBackendCache,
+    renderer: *raster.Renderer,
+    cache: *const raster.BackendCache,
     backend_name: []const u8,
     bundles: *const [scene_kinds.len]SceneBundle,
     bundle_count: usize,

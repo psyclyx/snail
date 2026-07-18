@@ -1,24 +1,26 @@
+//! Pixel blending and target encoding for the software rasterizer.
+
 const std = @import("std");
-const snail = @import("snail_core");
-const cpu_color = @import("color.zig");
-const cpu_coverage = @import("coverage.zig");
+const snail = @import("snail").core;
+const color_mod = @import("color.zig");
+const coverage_mod = @import("coverage.zig");
 
 test {
     _ = @import("pixel_pack.zig");
 }
 
-const clamp01 = cpu_color.clamp01;
-const interleavedGradientNoise = cpu_color.interleavedGradientNoise;
-const linearColorToSrgb = cpu_color.linearColorToSrgb;
-const linearToSrgb = cpu_color.linearToSrgb;
-const linearToSrgbApprox = cpu_color.linearToSrgbApprox;
-const linearToSrgbByte = cpu_color.linearToSrgbByte;
-const srgbColorToLinear = cpu_color.srgbColorToLinear;
-const srgbFloatToLinear = cpu_color.srgbFloatToLinear;
-const srgbToByte = cpu_color.srgbToByte;
-const srgbToLinear = cpu_color.srgbToLinear;
-const premultiplySubpixelCoverage = cpu_coverage.premultiplySubpixelCoverage;
-const subpixelBlendCoverage = cpu_coverage.subpixelBlendCoverage;
+const clamp01 = color_mod.clamp01;
+const interleavedGradientNoise = color_mod.interleavedGradientNoise;
+const linearColorToSrgb = color_mod.linearColorToSrgb;
+const linearToSrgb = color_mod.linearToSrgb;
+const linearToSrgbApprox = color_mod.linearToSrgbApprox;
+const linearToSrgbByte = color_mod.linearToSrgbByte;
+const srgbColorToLinear = color_mod.srgbColorToLinear;
+const srgbFloatToLinear = color_mod.srgbFloatToLinear;
+const srgbToByte = color_mod.srgbToByte;
+const srgbToLinear = color_mod.srgbToLinear;
+const premultiplySubpixelCoverage = coverage_mod.premultiplySubpixelCoverage;
+const subpixelBlendCoverage = coverage_mod.subpixelBlendCoverage;
 
 pub const ResolveMode = union(enum) {
     direct: void,

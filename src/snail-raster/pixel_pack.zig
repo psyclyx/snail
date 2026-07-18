@@ -1,4 +1,4 @@
-//! Comptime pixel pack/unpack for the CPU backend, specialized per
+//! Comptime pixel pack/unpack for the software rasterizer, specialized per
 //! `PixelFormat`. Pure bit-layout only: channel order, bit depth, and
 //! packing. sRGB encode and dither are the caller's job (`blend.zig` feeds an
 //! already-encoded, already-dithered value in), so these stay a clean
@@ -7,7 +7,7 @@
 //! a branch-free sequence.
 
 const std = @import("std");
-const snail = @import("snail_core");
+const snail = @import("snail").core;
 
 const PixelFormat = snail.PixelFormat;
 
