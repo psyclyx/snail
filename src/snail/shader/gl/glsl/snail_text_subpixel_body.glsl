@@ -142,15 +142,15 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 glyph_loc, ivec2 band
 
     float wsum = xwgt + ywgt;
     float blended = xcov * xwgt + ycov * ywgt;
-    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-                     min(applyFillRule(xcov), applyFillRule(ycov))), 0.0, 1.0);
+    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0), 0),
+                     min(applyFillRule(xcov, 0), applyFillRule(ycov, 0))), 0.0, 1.0);
 }
 
 float blendSubpixelSample(vec2 cw_s, vec2 cw_o) {
     float wsum = cw_s.y + cw_o.y;
     float blended = cw_s.x * cw_s.y + cw_o.x * cw_o.y;
-    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-                     min(applyFillRule(cw_s.x), applyFillRule(cw_o.x))), 0.0, 1.0);
+    return clamp(max(applyFillRule(blended / max(wsum, 1.0 / 65536.0), 0),
+                     min(applyFillRule(cw_s.x, 0), applyFillRule(cw_o.x, 0))), 0.0, 1.0);
 }
 
 vec4 filterSubpixelCoverage(float s_m3, float s_m2, float s_m1, float s_0, float s_p1, float s_p2, float s_p3, bool reverse_order) {

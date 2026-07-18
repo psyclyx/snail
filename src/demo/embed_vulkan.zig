@@ -19,7 +19,7 @@ pub const contract = @import("embed_vulkan_contract.zig");
 pub const vk = contract.vk;
 pub const VulkanContext = @import("vulkan_types").VulkanContext;
 
-// The caller-side atlas cache + resource layout used to live in snail_vulkan;
+// The caller-side atlas cache + resource layout used to live in Snail's Vulkan module;
 // they're generic GPU machinery, so they're demo (caller) code now. Re-export
 // them so consumers reach the whole embeddable surface via `embed_vulkan`.
 pub const VulkanBackendCache = @import("embed_vulkan_cache.zig").VulkanBackendCache;

@@ -1,4 +1,4 @@
-//! snail_gl module root — the OpenGL family (GL 3.3 / 4.4 / GLES 3.0).
+//! snail GLSL shader contract root — the OpenGL family (GL 3.3 / 4.4 / GLES 3.0).
 //!
 //! Font-necessary only: snail provides the embeddable pipeline `contract` +
 //! data contract (`embeddable`) and includable GLSL algorithm fragments

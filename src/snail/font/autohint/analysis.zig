@@ -154,17 +154,6 @@ pub const GlyphAnalysis = struct {
     }
 };
 
-/// Analyse a glyph's horizontal (y) features. Back-compat wrapper.
-pub fn analyzeGlyphY(
-    allocator: Allocator,
-    points: []const Point,
-    contours: []const ContourRange,
-    units_per_em: u16,
-    params: Params,
-) !GlyphAnalysis {
-    return analyzeGlyph(allocator, points, contours, units_per_em, params, .y);
-}
-
 /// Analyse a glyph's edges along `axis`. `allocator` owns the returned edges;
 /// a private arena holds all intermediate work and is freed here.
 pub fn analyzeGlyph(
@@ -451,7 +440,7 @@ fn analyzeChar(allocator: Allocator, program: *const Program, font: *const Font,
         .simple => |s| s,
         else => return error.NotSimpleGlyph,
     };
-    return analyzeGlyphY(allocator, simple.points, simple.contours, font.units_per_em, .default);
+    return analyzeGlyph(allocator, simple.points, simple.contours, font.units_per_em, .default, .y);
 }
 
 test "analytic endpoint extremum recovers an undersampled inner apex" {

@@ -1,6 +1,6 @@
 //! Embeddable custom-shader surface for the Vulkan backend.
 //!
-//! The GL family exposes injectable GLSL *strings* (`snail.gl.embeddable`)
+//! The GL family exposes injectable GLSL *strings* (`snail.shader.glsl.embeddable`)
 //! because a GL caller compiles at runtime. On Vulkan a caller compiles GLSL to
 //! SPIR-V at *build* time with `glslc`, so the injectable unit is a set of
 //! shipped `.glsl` files a caller `#include`s, plus the resource *contract* they

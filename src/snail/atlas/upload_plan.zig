@@ -15,7 +15,7 @@ const std = @import("std");
 const atlas_mod = @import("../atlas.zig");
 const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
-const draw_records = @import("../picture/draw_records.zig");
+const draw_records = @import("../draw/records.zig");
 const paint_records = @import("paint_records.zig");
 const upload_common = @import("../format/upload_common.zig");
 
@@ -107,7 +107,7 @@ pub fn sizes(pool: *const PagePool, opts: Options) Sizes {
 pub const Range = struct { base: u32, size: u32 };
 
 /// Fixed-capacity first-fit free-list over caller-provided backing — the
-/// allocator-free twin of `render/backend/range_allocator.zig` (identical
+/// allocator-free twin of `render/range_allocator.zig` (identical
 /// take/release semantics so bases match).
 const FreeList = struct {
     ranges: []Range,

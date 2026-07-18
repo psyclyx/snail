@@ -213,8 +213,8 @@ float evalHintedTextCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 band
     vec2 vert = evalAxis(rc, ppe.y, gLoc, bandMax.y + 1, vSpan, layer, false, ordered, record);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
-    float cov = max(applyFillRule(blended / max(wsum, kCoordEps)),
-                    min(applyFillRule(horiz.x), applyFillRule(vert.x)));
+    float cov = max(applyFillRule(blended / max(wsum, kCoordEps), 0),
+                    min(applyFillRule(horiz.x, 0), applyFillRule(vert.x, 0)));
     return applyCoverageTransfer(cov);
 }
 

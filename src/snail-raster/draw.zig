@@ -153,7 +153,7 @@ test "draw autohint fits per size without mutating atlas resources" {
     const atlas_mod = @import("snail");
     const record_key_mod = @import("snail").recordKey;
     const shape_mod = @import("snail");
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
 
     const W: u32 = 48;
     const H: u32 = 40;
@@ -216,7 +216,7 @@ test "draw autohint fits per size without mutating atlas resources" {
         fn atSize(
             pixels: []u8,
             px_size: f32,
-            policy: shape_mod.AutohintPolicy,
+            policy: snail.autohint.AutohintPolicy,
             shape_key: atlas_mod.RecordKey,
             binding: Binding,
             atlas_ptr: *const atlas_mod.Atlas,
@@ -324,7 +324,7 @@ test "draw renders a small Picture into non-zero pixels" {
     };
     const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
     const word_need = emit_mod.wordBudget(shapes.len);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
@@ -402,7 +402,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
     };
     const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -506,7 +506,7 @@ test "draw renders image-painted shape through special-layer path" {
     };
     const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -554,7 +554,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
         for (owned.items) |*c| c.deinit();
         owned.deinit(allocator);
     }
-    var entries: std.ArrayList(@import("snail").Entry) = .empty;
+    var entries: std.ArrayList(@import("snail").AtlasEntry) = .empty;
     defer entries.deinit(allocator);
 
     var pool = try @import("snail").PagePool.init(allocator, .{
@@ -592,7 +592,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -622,7 +622,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("snail").Entry, key: @import("snail").recordKey.RecordKey) bool {
+fn containsEntryKey(entries: []const @import("snail").AtlasEntry, key: @import("snail").recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -846,7 +846,7 @@ test "draw scissor_rect clips writes to the rect" {
     };
     const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail");
+    const emit_mod = @import("snail").emit;
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;

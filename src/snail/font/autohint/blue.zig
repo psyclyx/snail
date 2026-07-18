@@ -287,7 +287,7 @@ test "assign links H baseline and cap edges to blue zones" {
         else => return error.NotSimpleGlyph,
     };
 
-    var a = try analysis.analyzeGlyphY(testing.allocator, simple.points, simple.contours, font.units_per_em, .default);
+    var a = try analysis.analyzeGlyph(testing.allocator, simple.points, simple.contours, font.units_per_em, .default, .y);
     defer a.deinit();
     blues.assignEdges(a.edges, 1.0 / 24.0);
 

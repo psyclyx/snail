@@ -74,8 +74,6 @@ pub const RasterOptions = core.RasterOptions;
 pub const DrawState = core.DrawState;
 pub const resolveRect = core.resolveRect;
 
-pub const BackendKind = core.BackendKind;
-
 pub const recordKey = core.recordKey;
 pub const RecordKey = core.RecordKey;
 pub const ns = core.ns;
@@ -119,15 +117,12 @@ pub const render = core.render;
 
 // ── Shader contracts ──
 
-pub const gl = @import("snail_gl");
-pub const vulkan = @import("snail_vulkan");
-
-// The all-in-one GL renderer + atlas cache are the caller's (embeddable-only);
-// the reference implementation lives in `src/demo/embed_gl*.zig`. snail exposes
-// only the GL contract + shaders under `snail.gl`.
+pub const shader = struct {
+    pub const glsl = @import("snail_glsl");
+    pub const vulkan = @import("snail_vulkan_shader");
+};
 
 test {
     _ = core;
-    _ = gl;
-    _ = vulkan;
+    _ = shader;
 }

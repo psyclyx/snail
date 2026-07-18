@@ -111,8 +111,8 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, 
     vec2 vert = evalAxisCoverageBandSpan(rc, ppe.y, gLoc, bandMax.y + 1, vSpan, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
-    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-                    min(applyFillRule(horiz.x), applyFillRule(vert.x)));
+    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0), 0),
+                    min(applyFillRule(horiz.x, 0), applyFillRule(vert.x, 0)));
     return applyCoverageTransfer(cov);
 }
 

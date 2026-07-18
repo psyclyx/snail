@@ -1,7 +1,7 @@
 //! `Shape`: the small value type layered on top of
 //! `RecordKey` and `AtlasRecord`.
 //!
-//! A `Shape` is one element of a `Picture`: a record key plus a local
+//! A `Shape` is one emitted draw element: a record key plus a local
 //! transform and a local color. Paint is looked up via `shape.key` from
 //! the atlas.
 //!

@@ -6,7 +6,7 @@
 //! the atlas image-view handles. The caller's own pipeline binds the set and
 //! pushes a `contract.PushConstants`.
 //!
-//! Lives in the `snail_vulkan` module (not the facade) so all `vk`-typed code
+//! Lives in the caller-owned Vulkan reference module so all `vk`-typed code
 //! stays in the backend that owns it; the facade only re-exports this.
 
 const backend_cache = @import("embed_vulkan_cache.zig");

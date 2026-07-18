@@ -133,7 +133,7 @@ float evalGlyphCoverage(vec2 rc, vec2 epp, vec2 ppe, ivec2 gLoc, ivec2 bandMax, 
 
     float wsum = xwgt + ywgt;
     float blended = xcov * xwgt + ycov * ywgt;
-    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0)),
-                    min(applyFillRule(xcov), applyFillRule(ycov)));
+    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0), 0),
+                    min(applyFillRule(xcov, 0), applyFillRule(ycov, 0)));
     return applyCoverageTransfer(cov);
 }

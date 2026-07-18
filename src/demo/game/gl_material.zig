@@ -3,7 +3,7 @@
 //!
 //! This is the "custom shader" showcase: a caller-authored fragment shader that
 //! samples snail glyph coverage at arbitrary UVs via
-//! `snail.gl.embeddable.*ShaderSources` (`snail_text_sample_premul_linear`) and
+//! `snail.shader.glsl.embeddable.*ShaderSources` (`snail_text_sample_premul_linear`) and
 //! lights it over an opaque panel. The per-glyph emit words are uploaded once
 //! into the records storage the interface expects — a `GL_TEXTURE_BUFFER` on
 //! desktop GL, a 2D `GL_R32UI` texture on GLES 3.0 (no buffer textures there).
@@ -14,7 +14,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const embed_gl = @import("embed_gl");
-const embeddable = snail.gl.embeddable;
+const embeddable = snail.shader.glsl.embeddable;
 const common = @import("common.zig");
 const desktop_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");

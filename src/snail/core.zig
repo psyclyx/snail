@@ -7,14 +7,14 @@
 //! depend on it, never the reverse.
 //!
 //! `root.zig` re-exports this whole surface as the public `snail` API and adds
-//! the CPU renderer plus backend shader/include namespaces.
+//! backend shader/include namespaces. The CPU renderer is the separate,
+//! optional `snail-raster` module.
 
 const math = @import("math.zig");
 const text_mod = @import("text.zig");
 const image_mod = @import("image.zig");
 const target = @import("target.zig");
 const paint_mod = @import("paint.zig");
-const backend_kind = @import("backend_kind.zig");
 const record_key_mod = @import("atlas/record_key.zig");
 
 pub const font = @import("font.zig");
@@ -95,8 +95,6 @@ pub const RasterOptions = target.RasterOptions;
 pub const DrawState = target.DrawState;
 pub const resolveRect = target.resolveRect;
 
-pub const BackendKind = backend_kind.BackendKind;
-
 // ── Record keys / atlas ──
 
 pub const recordKey = record_key_mod;
@@ -123,12 +121,12 @@ pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 
-const shape_mod = @import("picture/shape.zig");
+const shape_mod = @import("draw/shape.zig");
 pub const Shape = shape_mod.Shape;
 
-pub const DrawSegment = @import("picture/draw_records.zig").DrawSegment;
-pub const Binding = @import("picture/draw_records.zig").Binding;
-pub const emit = @import("picture/emit.zig");
+pub const DrawSegment = @import("draw/records.zig").DrawSegment;
+pub const Binding = @import("draw/records.zig").Binding;
+pub const emit = @import("draw/emit.zig");
 
 // ── GPU byte-layout ABI (custom-shader primitives) ──
 //
@@ -186,7 +184,7 @@ test {
     _ = @import("atlas/upload_plan.zig");
     _ = atlas_mod;
     _ = @import("path.zig");
-    _ = @import("paths.zig");
+    _ = @import("path_pack.zig");
     _ = @import("font/hint_vm.zig");
     _ = @import("font/autohint/policy.zig");
     _ = @import("font/autohint/analysis.zig");
@@ -200,8 +198,8 @@ test {
     _ = @import("text/hinted_glyph_cache.zig");
     _ = @import("text/unhinted_glyph_cache.zig");
     _ = shape_mod;
-    _ = @import("picture/draw_records.zig");
-    _ = @import("picture/emit.zig");
+    _ = @import("draw/records.zig");
+    _ = @import("draw/emit.zig");
     _ = @import("snap.zig");
     _ = @import("util/hamt.zig");
 }

@@ -4,7 +4,7 @@
 //! The program locations, texture handles, and draw binding policy are all
 //! caller-owned values defined here; Snail only supplies shader algorithms and
 //! packed data contracts.
-//! GL calls — so `snail_gl` links no OpenGL, exactly like `snail_vulkan` links
+//! GL calls — so `snail.shader.glsl` links no OpenGL, exactly like the Vulkan contract links
 //! no Vulkan. The actual `glBindTexture`/`glUniform*` loop lives here, in caller
 //! code, because the caller owns the GL context. This is the GL analog of the
 //! Vulkan reference renderer binding its own descriptor set.
@@ -14,7 +14,7 @@
 
 const snail = @import("snail");
 
-const embeddable = snail.gl.embeddable;
+const embeddable = snail.shader.glsl.embeddable;
 const gl_bindings = @import("embed_gl_bindings.zig");
 const gles30_bindings = @import("embed_gles30_bindings.zig");
 

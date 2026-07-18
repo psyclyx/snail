@@ -17,7 +17,7 @@ const vertex = @import("../format/vertex.zig");
 const instance_emit = @import("../format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
 const autohint_policy = @import("../font/autohint/policy.zig");
-const draw_records = @import("draw_records.zig");
+const draw_records = @import("records.zig");
 const shape_mod = @import("shape.zig");
 
 const InstanceCursor = instance_emit.Cursor;
@@ -31,7 +31,7 @@ pub const Shape = shape_mod.Shape;
 const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 
 pub const EmitError = error{
-    /// Picture references a key not present in the atlas.
+    /// The shape slice references a key not present in the atlas.
     MissingRecord,
     /// A shape's composed transform had near-zero determinant.
     InvalidTransform,

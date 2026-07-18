@@ -70,7 +70,7 @@ pub inline fn solveQuadraticRoots(a: f32, b: f32, c_val: f32) CurveRoots {
 }
 
 fn solveCubicRootsBracketed(a: f32, b: f32, c_val: f32, d: f32, end_delta: f32) CurveRoots {
-    // `splitCubicsAtExtrema` (paths.zig) makes every uploaded cubic monotonic
+    // `splitCubicsAtExtrema` (path_pack.zig) makes every uploaded cubic monotonic
     // on both sampling axes, so along either axis a cubic piece contributes at
     // most one root in [0, 1]. Solve it the same way the GPU does
     // (`solveMonotonicCubicRoot` in snail_path_frag_body.glsl): a fixed 16-step

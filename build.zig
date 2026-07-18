@@ -139,7 +139,7 @@ fn createDemoVulkanTypesModule(
 /// Reference caller-owned GL all-in-one renderer + atlas cache + binding helper
 /// (embeddable-only; the GL analog of `createEmbedVulkanModule`). This module
 /// makes the live GL calls, so the *consuming exe* must link OpenGL/GLESv2
-/// (every GL consumer already does via `configureCoreModule`); snail_gl itself
+/// (every GL consumer already does via `configureCoreModule`); snail GLSL contract itself
 /// links no GL.
 fn createEmbedGlModule(
     b: *std.Build,
@@ -156,7 +156,7 @@ fn createEmbedGlModule(
             .{ .name = "snail", .module = snail_mod },
         },
     });
-    const shader_dir = "src/snail/render/backend/gl/glsl/";
+    const shader_dir = "src/snail/shader/gl/glsl/";
     inline for (.{
         .{ "snail_ref_vert_interface", "snail_vert.interface.glsl" },
         .{ "snail_ref_frag_interface", "snail_frag.interface.glsl" },
@@ -197,11 +197,11 @@ fn createSupportModule(
 /// Build the snail compiler-module graph and return the public `snail`
 /// facade. The graph is a DAG:
 ///
-///   snail_core ── snail_gl / snail_vulkan ── snail (facade)
-///                                         └─ snail-raster
+///   snail_core ── shader contracts ── snail (facade)
+///                              └─ snail-raster
 ///
 /// `snail_core` is backend-independent (links only harfbuzz for shaping).
-/// `snail_gl` and `snail_vulkan` are pure shader/resource contracts and link
+/// The GLSL and Vulkan modules are pure shader/resource contracts and link
 /// no graphics APIs; the caller-owned renderer chooses and links those.
 /// `public_name` addModule's the facade (for external dependents) vs. an
 /// internal createModule.
@@ -242,13 +242,13 @@ fn buildSnailGraphFull(
     const core = mk(b, "src/snail/core.zig", target, optimize, strip, build_options_mod, assets_mod);
     if (enable_harfbuzz) core.linkSystemLibrary("harfbuzz", .{});
 
-    const gl = mk(b, "src/snail/render/backend/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    const gl = mk(b, "src/snail/shader/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
     gl.addImport("snail_core", core);
-    // snail_gl links NO OpenGL: it is a pure-data shader/resource contract and
+    // snail GLSL contract links NO OpenGL: it is a pure-data shader/resource contract and
     // makes no live GL calls. GL linkage belongs to the context-owning caller,
-    // just as snail_vulkan links no Vulkan.
+    // just as snail Vulkan contract links no Vulkan.
 
-    const vk = mk(b, "src/snail/render/backend/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
+    const vk = mk(b, "src/snail/shader/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
 
     const facade = if (public_name) |name| b.addModule(name, .{
         .root_source_file = b.path("src/snail/root.zig"),
@@ -262,8 +262,8 @@ fn buildSnailGraphFull(
         if (assets_mod) |a| facade.addImport("assets", a);
     }
     facade.addImport("snail_core", core);
-    facade.addImport("snail_gl", gl);
-    facade.addImport("snail_vulkan", vk);
+    facade.addImport("snail_glsl", gl);
+    facade.addImport("snail_vulkan_shader", vk);
     return .{ .core = core, .gl = gl, .vulkan = vk, .facade = facade };
 }
 
@@ -898,8 +898,8 @@ fn addInteractiveDemoStep(
 /// imports for `game/game_shaders.zig`.
 fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
     const snail_includes = vulkan_shaders.IncludeDirs{
-        .shared = b.path("src/snail/render/backend/gl/glsl"),
-        .vulkan = b.path("src/snail/render/backend/vulkan_glsl"),
+        .shared = b.path("src/snail/shader/gl/glsl"),
+        .vulkan = b.path("src/snail/shader/vulkan/glsl"),
     };
     const game_glsl = [_]std.Build.LazyPath{b.path("src/demo/game/glsl")};
     const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
@@ -966,8 +966,8 @@ pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
     // Consumers use `dependency.namedLazyPath(...)` for glslc `-I` arguments;
     // the paths stay dependency-relative instead of assuming their build root.
-    b.addNamedLazyPath("snail_glsl_shared", b.path("src/snail/render/backend/gl/glsl"));
-    b.addNamedLazyPath("snail_glsl_vulkan", b.path("src/snail/render/backend/vulkan_glsl"));
+    b.addNamedLazyPath("snail_glsl_shared", b.path("src/snail/shader/gl/glsl"));
+    b.addNamedLazyPath("snail_glsl_vulkan", b.path("src/snail/shader/vulkan/glsl"));
     const options_mod = createBuildOptionsModule(b, config.core_options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config, options_mod);

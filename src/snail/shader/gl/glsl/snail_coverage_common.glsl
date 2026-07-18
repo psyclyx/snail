@@ -49,13 +49,6 @@ float applyFillRule(float winding, int fill_rule_mode) {
     return abs(winding);
 }
 
-// Backwards-compat overload: text / colr / hinted glyphs from fonts are
-// always non-zero winding. Callers that don't have a per-record rule
-// (i.e. anything that's not a path paint record) call this overload.
-float applyFillRule(float winding) {
-    return applyFillRule(winding, 0);
-}
-
 #ifndef SNAIL_COVERAGE_EXPONENT
 #define SNAIL_COVERAGE_EXPONENT 1.0
 #endif

@@ -1,9 +1,9 @@
 //! Complete GL/GLES shader stages used by the reference renderer. These entry
 //! points deliberately live with the demo: the library exports only the
-//! reusable, entry-point-free pieces in `snail.gl.shader_library` and
-//! `snail.gl.embeddable`.
+//! reusable, entry-point-free pieces in `snail.shader.glsl.shader_library` and
+//! `snail.shader.glsl.embeddable`.
 
-const library = @import("snail").gl.shader_library;
+const library = @import("snail").shader.glsl.shader_library;
 const vert_interface = @embedFile("snail_ref_vert_interface");
 const frag_interface = @embedFile("snail_ref_frag_interface");
 const text_interface = @embedFile("snail_ref_text_interface");

@@ -3,7 +3,7 @@
 //
 // The per-glyph emit words live in a read-only SSBO in a *caller-owned*
 // descriptor set (set 1 by convention — snail's atlas plane owns set 0, see
-// snail.vulkan.embeddable). An SSBO (rather than a uniform texel buffer) removes
+// snail.shader.vulkan.embeddable). An SSBO (rather than a uniform texel buffer) removes
 // the ~64K-texel capacity ceiling and needs no VkBufferView.
 //
 // The caller must also provide `int u_snail_text_glyph_count` — declare it as a

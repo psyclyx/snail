@@ -8,7 +8,7 @@
 /// Packed draw-record layout and symbolic decoders.
 pub const abi = @import("format/abi.zig");
 pub const vertex = @import("format/vertex.zig");
-pub const draw_records = @import("picture/draw_records.zig");
+pub const draw_records = @import("draw/records.zig");
 
 /// Atlas texture formats consumed by the coverage algorithms.
 pub const curve_texture = @import("format/curve_texture.zig");
@@ -22,11 +22,11 @@ pub const paint_records = @import("atlas/paint_records.zig");
 pub const upload = @import("format/upload_common.zig");
 
 /// Backend-neutral helpers which renderer implementations may reuse.
-pub const cache = @import("render/backend/cache.zig");
-pub const range_allocator = @import("render/backend/range_allocator.zig");
+pub const cache = @import("render/cache.zig");
+pub const range_allocator = @import("render/range_allocator.zig");
 pub const RangeAllocator = range_allocator.RangeAllocator;
 pub const Range = range_allocator.Range;
-pub const subpixel = @import("render/backend/subpixel_policy.zig");
+pub const subpixel = @import("render/subpixel_policy.zig");
 
 /// Analytic curve representation used by the CPU coverage implementation.
 pub const curve = @import("math/bezier.zig");

@@ -787,7 +787,7 @@ pub const PreparedPath = struct {
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
     ) !@import("atlas/curves.zig").GlyphCurves {
-        return @import("paths.zig").pathToCurves(allocator, scratch, &self.design);
+        return @import("path_pack.zig").pathToCurves(allocator, scratch, &self.design);
     }
 
     pub fn strokeCurves(
@@ -796,7 +796,7 @@ pub const PreparedPath = struct {
         scratch: std.mem.Allocator,
         source_stroke: StrokeStyle,
     ) !@import("atlas/curves.zig").GlyphCurves {
-        const paths = @import("paths.zig");
+        const paths = @import("path_pack.zig");
         const max_design_scale = @max(@abs(self.source_to_design.xx), @abs(self.source_to_design.yy));
         const source_tolerance = kPreparedStrokeOffsetTolerance / @max(max_design_scale, std.math.floatEps(f32));
         const result = (try self.source.cloneStrokedCurvesWithTolerance(scratch, source_stroke, source_tolerance)) orelse
