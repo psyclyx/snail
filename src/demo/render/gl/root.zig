@@ -3,7 +3,7 @@
 //! Relocated out of the snail library as part of the embeddable-only direction
 //! (snail is a font library, not a renderer): the caller owns the GL context,
 //! programs, VAO, cache, and draw loop. snail provides only the pipeline
-//! packed contracts + includable shader functions (`snail.shader.glsl.embeddable`) and
+//! packed contracts + includable shader functions (`snail.shader.glsl`) and
 //! the backend-agnostic atlas upload plan (`snail.AtlasUploadPlanner`).
 //!
 //! This module is the worked example integrators copy. It bundles:

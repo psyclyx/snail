@@ -66,8 +66,7 @@ fn compile(
 /// A consumer constructs these with `snail_dependency.path(...)`; accepting
 /// `LazyPath`s keeps the helper independent of the consumer's build root.
 pub const IncludeDirs = struct {
-    shared: std.Build.LazyPath,
-    vulkan: std.Build.LazyPath,
+    glsl: std.Build.LazyPath,
 };
 
 /// Compile a caller-authored GLSL shader to SPIR-V with snail's include dirs on
@@ -93,9 +92,7 @@ pub fn compileCallerShader(
         compile_step.addDirectoryArg(dir);
     }
     compile_step.addArg("-I");
-    compile_step.addDirectoryArg(snail_include_dirs.vulkan);
-    compile_step.addArg("-I");
-    compile_step.addDirectoryArg(snail_include_dirs.shared);
+    compile_step.addDirectoryArg(snail_include_dirs.glsl);
     compile_step.addFileArg(source);
     compile_step.addArg("-o");
     return compile_step.addOutputFileArg(output_name);
@@ -123,7 +120,7 @@ const shader_specs = [_]ShaderSpec{
         .generated_source_path = "vulkan-generated/snail.vert",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail.vert",
         .include_directive = "#include \"snail_vert_body.glsl\"",
-        .source_paths = &.{"../src/snail/shader/gl/glsl/snail_vert_body.glsl"},
+        .source_paths = &.{"../src/snail/shader/glsl/snail_vert_body.glsl"},
         .stage_arg = "-fshader-stage=vert",
         .output_name = "snail.vert.spv",
     },
@@ -135,11 +132,11 @@ const shader_specs = [_]ShaderSpec{
             "#include \"snail_text_frag_body.glsl\"\n" ++
             "#include \"snail_text_main.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_text_frag_body.glsl",
-            "../src/snail/shader/gl/glsl/snail_text_main.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_text_frag_body.glsl",
+            "../src/snail/shader/glsl/snail_text_main.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_text.frag.spv",
@@ -150,10 +147,10 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_colr.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_colr_frag_body.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_colr_frag_body.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_colr_frag_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_colr.frag.spv",
@@ -164,10 +161,10 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_path_frag_body.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_path_frag_body.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_path_frag_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_path.frag.spv",
@@ -178,10 +175,10 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_hinted_text.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_hinted_text_frag_body.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_hinted_text_frag_body.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_hinted_text_frag_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_hinted_text.frag.spv",
@@ -195,12 +192,12 @@ const shader_specs = [_]ShaderSpec{
             "#include \"snail_autohint_warp.glsl\"\n" ++
             "#include \"snail_autohint_main.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_text_frag_body.glsl",
-            "../src/snail/shader/gl/glsl/snail_autohint_warp.glsl",
-            "../src/snail/shader/gl/glsl/snail_autohint_main.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_text_frag_body.glsl",
+            "../src/snail/shader/glsl/snail_autohint_warp.glsl",
+            "../src/snail/shader/glsl/snail_autohint_main.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_autohint.frag.spv",
@@ -211,10 +208,10 @@ const shader_specs = [_]ShaderSpec{
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_text_subpixel.frag",
         .include_directive = fragment_common_includes ++ "#include \"snail_text_subpixel_body.glsl\"",
         .source_paths = &.{
-            "../src/snail/shader/gl/glsl/snail_render_abi.glsl",
-            "../src/snail/shader/gl/glsl/snail_coverage_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_color_common.glsl",
-            "../src/snail/shader/gl/glsl/snail_text_subpixel_body.glsl",
+            "../src/snail/shader/glsl/snail_render_abi.glsl",
+            "../src/snail/shader/glsl/snail_coverage_common.glsl",
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_text_subpixel_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_text_subpixel_dual.frag.spv",
@@ -232,7 +229,7 @@ pub fn createModule(b: *std.Build, enable_vulkan: bool) *std.Build.Module {
     const shader_dir = b.path("src/demo/render/vulkan/glsl");
     // The reference wrappers live with the demo; reusable color/coverage pieces
     // live in the library include directory and stay independently includable.
-    const shared_shader_dir = b.path("src/snail/shader/gl/glsl");
+    const shared_shader_dir = b.path("src/snail/shader/glsl");
     const generated_shaders = b.addWriteFiles();
 
     var spv_outputs: [shader_specs.len]std.Build.LazyPath = undefined;

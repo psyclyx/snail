@@ -1,24 +1,23 @@
 //! Complete GL/GLES shader stages used by the reference renderer. These entry
 //! points deliberately live with the demo: the library exports only the
-//! reusable, entry-point-free pieces in `snail.shader.glsl.shader_library` and
-//! `snail.shader.glsl.embeddable`.
+//! reusable, entry-point-free pieces in `snail.shader.glsl`.
 
-const library = @import("snail").shader.glsl.shader_library;
-const vert_interface = @embedFile("snail_ref_vert_interface");
-const frag_interface = @embedFile("snail_ref_frag_interface");
-const text_interface = @embedFile("snail_ref_text_interface");
-const render_abi = library.render_abi;
-const vertex_body = @embedFile("snail_ref_vert_body");
-const coverage_common = library.coverage_functions;
-const color_common = library.color_functions;
-const text_coverage = library.text_coverage_fragment_body;
-const text_main = @embedFile("snail_ref_text_main");
-const colr_body = @embedFile("snail_ref_colr_body");
-const path_body = @embedFile("snail_ref_path_body");
-const hinted_body = @embedFile("snail_ref_hinted_body");
-const autohint_warp = @embedFile("snail_ref_autohint_warp");
-const autohint_main = @embedFile("snail_ref_autohint_main");
-const subpixel_body = @embedFile("snail_ref_subpixel_body");
+const glsl = @import("snail").shader.glsl;
+const vert_interface = glsl.source(.vertex_interface);
+const frag_interface = glsl.source(.render_fragment_interface);
+const text_interface = glsl.source(.text_subpixel_interface);
+const render_abi = glsl.source(.render_abi);
+const vertex_body = glsl.source(.vertex_body);
+const coverage_common = glsl.source(.coverage_common);
+const color_common = glsl.source(.color_common);
+const text_coverage = glsl.source(.text_coverage_body);
+const text_main = glsl.source(.regular_text_body);
+const colr_body = glsl.source(.colr_body);
+const path_body = glsl.source(.path_body);
+const hinted_body = glsl.source(.hinted_text_body);
+const autohint_warp = glsl.source(.autohint_warp);
+const autohint_main = glsl.source(.autohint_body);
+const subpixel_body = glsl.source(.text_subpixel_body);
 
 const vertex_entry = "\nvoid main() { snailVertex(); }\n";
 const text_fragment_body = text_coverage ++ "\n" ++ text_main ++ "\nvoid main() { snailTextFragment(); }\n";

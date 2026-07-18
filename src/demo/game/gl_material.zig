@@ -3,7 +3,7 @@
 //!
 //! This is the "custom shader" showcase: a caller-authored fragment shader that
 //! samples snail glyph coverage at arbitrary UVs via
-//! `snail.shader.glsl.embeddable.*ShaderSources` (`snail_text_sample_premul_linear`) and
+//! `snail.shader.glsl` (`snail_text_sample_premul_linear`) and
 //! lights it over an opaque panel. The per-glyph emit words are uploaded once
 //! into the records storage the interface expects — a `GL_TEXTURE_BUFFER` on
 //! desktop GL, a 2D `GL_R32UI` texture on GLES 3.0 (no buffer textures there).
@@ -14,7 +14,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const embed_gl = @import("embed_gl");
-const embeddable = snail.shader.glsl.embeddable;
+const glsl = snail.shader.glsl;
 const common = @import("common.zig");
 const desktop_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
@@ -44,10 +44,6 @@ pub fn GlMaterial(comptime variant: Variant) type {
             .gl33, .gl44 => desktop_gl,
             .gles30 => gles_gl,
         };
-        const Sources = switch (variant) {
-            .gl33, .gl44 => embeddable.GlShaderSources,
-            .gles30 => embeddable.Gles30ShaderSources,
-        };
         pub const Cache = switch (variant) {
             .gl33 => embed_gl.Gl33BackendCache,
             .gl44 => embed_gl.Gl44BackendCache,
@@ -73,6 +69,23 @@ pub fn GlMaterial(comptime variant: Variant) type {
                 "precision highp usampler2DArray;\n" ++
                 "precision highp usampler2D;\n",
         };
+        const records_interface = switch (variant) {
+            .gl33, .gl44 => glsl.source(.text_sample_interface_gl),
+            .gles30 => glsl.source(.text_sample_interface_gles),
+        };
+        const records_width = glsl.gles_records_texture_width;
+        const record_stride = std.fmt.comptimePrint(
+            "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
+            .{snail.render.records.WORDS_PER_INSTANCE},
+        );
+        const coverage_resources =
+            \\uniform sampler2DArray u_curve_tex;
+            \\uniform usampler2DArray u_band_tex;
+            \\uniform int u_fill_rule;
+            \\uniform int u_layer_base;
+            \\#define SNAIL_FILL_RULE u_fill_rule
+            \\
+        ;
 
         program: gl.GLuint = 0,
         vao: gl.GLuint = 0,
@@ -186,7 +199,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
                 .gles30 => {
                     // 2D R32UI texture, row-major at the width the ES interface
                     // expects; pad the tail row with zeros.
-                    const w: usize = embeddable.gles30_records_tex_width;
+                    const w: usize = records_width;
                     const rows = (wlen + w - 1) / w;
                     const padded = try allocator.alloc(u32, rows * w);
                     defer allocator.free(padded);
@@ -286,10 +299,14 @@ pub fn GlMaterial(comptime variant: Variant) type {
         ;
 
         const fragment_src: [:0]const u8 = version_prefix ++
-            Sources.resource_interface ++ "\n" ++
-            Sources.coverage_functions ++ "\n" ++
-            Sources.sample_interface ++ "\n" ++
-            Sources.sample_functions ++ "\n" ++
+            coverage_resources ++ "\n" ++
+            glsl.source(.render_abi) ++ "\n" ++
+            glsl.source(.coverage_common) ++ "\n" ++
+            glsl.source(.color_common) ++ "\n" ++
+            glsl.source(.text_coverage_body) ++ "\n" ++
+            records_interface ++ "\n" ++
+            record_stride ++
+            glsl.source(.text_sample_body) ++ "\n" ++
             @embedFile("glsl/game_material_body.glsl") ++ "\n" ++
             \\in vec2 v_uv;
             \\uniform vec2 u_scene_size;

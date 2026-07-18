@@ -1,6 +1,6 @@
 // Custom Vulkan material shader for the game demo: samples snail glyph coverage
 // at arbitrary UVs (the "custom shader" showcase) and lights it over an opaque
-// panel. This is the worked example of `snail.vulkan.embeddable`: a caller-owned
+// panel. This is the worked example of Snail's GLSL fragment contract: a caller-owned
 // fragment shader that #includes snail's shipped coverage + sample sources and
 // binds snail's atlas plane (set 0) + a caller-owned records SSBO (set 1).
 #version 450

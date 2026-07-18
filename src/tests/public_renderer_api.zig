@@ -25,11 +25,11 @@ test "external renderers need only the public snail api" {
         _ = snail.render.records.WORDS_PER_INSTANCE;
         _ = snail.render.records.DrawRecords;
         _ = snail.render.records.ShapeKind;
-        _ = snail.shader.glsl.shader_library.coverage_functions;
-        _ = snail.shader.glsl.embeddable.GlShaderSources.fragment_body;
-        _ = snail.shader.vulkan.embeddable.records_interface_include;
-        if (@hasDecl(snail.shader.vulkan.embeddable, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
-        if (@hasDecl(snail.shader.vulkan.embeddable, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
+        _ = snail.shader.glsl.source(.coverage_common);
+        _ = snail.shader.glsl.fileName(.text_sample_interface_vulkan);
+        _ = snail.shader.glsl.dependencies.text_sample;
+        if (@hasDecl(snail.shader.glsl, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
+        if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
 
         _ = raster.Renderer;
         _ = raster.BackendCache;

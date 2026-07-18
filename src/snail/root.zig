@@ -133,8 +133,7 @@ pub const render = @import("render.zig");
 /// Entry-point-free shader fragments and resource contracts. Callers compose
 /// these into shaders owned by their rendering engine.
 pub const shader = struct {
-    pub const glsl = @import("shader/gl/root.zig");
-    pub const vulkan = @import("shader/vulkan/root.zig");
+    pub const glsl = @import("shader/glsl.zig");
 };
 
 test {

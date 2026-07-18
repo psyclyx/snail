@@ -23,31 +23,47 @@ const height = 360;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const glsl = snail.shader.glsl.embeddable.GlShaderSources;
+const glsl = snail.shader.glsl;
 const vertex_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.vertex_interface ++ "\n" ++
-    glsl.vertex_functions ++ "\n" ++
+    glsl.source(.vertex_interface) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.vertex_body) ++ "\n" ++
     "void main() { snailVertex(); }\n";
 const regular_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.render_fragment_interface ++ "\n" ++
-    glsl.regular_text_functions ++ "\n" ++
+    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.render_abi) ++ "\n" ++
+    glsl.source(.coverage_common) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.text_coverage_body) ++ "\n" ++
+    glsl.source(.regular_text_body) ++ "\n" ++
     "void main() { snailTextFragment(); }\n";
 const autohint_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.render_fragment_interface ++ "\n" ++
-    glsl.autohint_functions ++ "\n" ++
+    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.render_abi) ++ "\n" ++
+    glsl.source(.coverage_common) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.text_coverage_body) ++ "\n" ++
+    glsl.source(.autohint_warp) ++ "\n" ++
+    glsl.source(.autohint_body) ++ "\n" ++
     "void main() { snailAutohintFragment(); }\n";
 const truetype_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.render_fragment_interface ++ "\n" ++
-    glsl.hinted_text_functions ++ "\n" ++
+    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.render_abi) ++ "\n" ++
+    glsl.source(.coverage_common) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.hinted_text_body) ++ "\n" ++
     "void main() { snailHintedTextFragment(); }\n";
 const path_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.render_fragment_interface ++ "\n" ++
-    glsl.path_functions ++ "\n" ++
+    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.render_abi) ++ "\n" ++
+    glsl.source(.coverage_common) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.path_body) ++ "\n" ++
     "void main() { snailPathFragment(); }\n";
 
 const Programs = struct {

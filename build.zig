@@ -192,22 +192,6 @@ fn createEmbedGlModule(
             .{ .name = "render-state", .module = render_state_mod },
         },
     });
-    const shader_dir = "src/snail/shader/gl/glsl/";
-    inline for (.{
-        .{ "snail_ref_vert_interface", "snail_vert.interface.glsl" },
-        .{ "snail_ref_frag_interface", "snail_frag.interface.glsl" },
-        .{ "snail_ref_text_interface", "snail_text_subpixel.interface.glsl" },
-        .{ "snail_ref_vert_body", "snail_vert_body.glsl" },
-        .{ "snail_ref_text_main", "snail_text_main.glsl" },
-        .{ "snail_ref_colr_body", "snail_colr_frag_body.glsl" },
-        .{ "snail_ref_path_body", "snail_path_frag_body.glsl" },
-        .{ "snail_ref_hinted_body", "snail_hinted_text_frag_body.glsl" },
-        .{ "snail_ref_autohint_warp", "snail_autohint_warp.glsl" },
-        .{ "snail_ref_autohint_main", "snail_autohint_main.glsl" },
-        .{ "snail_ref_subpixel_body", "snail_text_subpixel_body.glsl" },
-    }) |entry| {
-        mod.addAnonymousImport(entry[0], .{ .root_source_file = b.path(shader_dir ++ entry[1]) });
-    }
     return mod;
 }
 
@@ -935,8 +919,7 @@ fn addInteractiveDemoStep(
 /// imports for `game/game_shaders.zig`.
 fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
     const snail_includes = vulkan_shaders.IncludeDirs{
-        .shared = b.path("src/snail/shader/gl/glsl"),
-        .vulkan = b.path("src/snail/shader/vulkan/glsl"),
+        .glsl = b.path("src/snail/shader/glsl"),
     };
     const game_glsl = [_]std.Build.LazyPath{b.path("src/demo/game/glsl")};
     const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
@@ -1027,8 +1010,7 @@ pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
     // Consumers use `dependency.namedLazyPath(...)` for glslc `-I` arguments;
     // the paths stay dependency-relative instead of assuming their build root.
-    b.addNamedLazyPath("snail_glsl_shared", b.path("src/snail/shader/gl/glsl"));
-    b.addNamedLazyPath("snail_glsl_vulkan", b.path("src/snail/shader/vulkan/glsl"));
+    b.addNamedLazyPath("snail_glsl", b.path("src/snail/shader/glsl"));
     const options_mod = createBuildOptionsModule(b, config.options);
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config, options_mod);
