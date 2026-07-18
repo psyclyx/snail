@@ -15,8 +15,8 @@
 const snail = @import("snail");
 const render_state = @import("render-state");
 
-const gl_bindings = @import("embed_gl_bindings.zig");
-const gles30_bindings = @import("embed_gles30_bindings.zig");
+const gl_bindings = @import("desktop/bindings.zig");
+const gles30_bindings = @import("gles30/bindings.zig");
 
 const Variant = enum { gl33, gl44 };
 const FillRule = snail.FillRule;

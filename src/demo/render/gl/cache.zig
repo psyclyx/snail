@@ -40,8 +40,8 @@ pub const Variant = enum {
 
 inline fn bindingsFor(comptime v: Variant) type {
     return switch (v) {
-        .gl33, .gl44 => @import("embed_gl_bindings.zig"),
-        .gles30 => @import("embed_gles30_bindings.zig"),
+        .gl33, .gl44 => @import("desktop/bindings.zig"),
+        .gles30 => @import("gles30/bindings.zig"),
     };
 }
 

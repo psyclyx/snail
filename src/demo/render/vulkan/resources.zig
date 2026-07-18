@@ -9,8 +9,8 @@
 //! Lives in the caller-owned Vulkan reference module so all `vk`-typed code
 //! stays in the backend that owns it; the facade only re-exports this.
 
-const backend_cache = @import("embed_vulkan_cache.zig");
-const resource_layout = @import("embed_vulkan_layout.zig");
+const backend_cache = @import("cache.zig");
+const resource_layout = @import("layout.zig");
 
 pub const vk = backend_cache.vk;
 pub const VulkanBackendCache = backend_cache.VulkanBackendCache;

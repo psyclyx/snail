@@ -4,7 +4,7 @@
 //! The atlas texel data + upload plan come from `snail.AtlasUploadPlanner`.
 //! GPU resource management — textures, samplers,
 //! descriptor sets, uploads — is the caller's (every GPU app has it); see the
-//! reference caller renderer + atlas cache under `src/demo/embed_vulkan*.zig`.
+//! reference caller renderer + atlas cache under `src/demo/render/vulkan/`.
 
 pub const embeddable = @import("embeddable.zig");
 

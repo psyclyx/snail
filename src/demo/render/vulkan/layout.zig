@@ -13,9 +13,9 @@
 
 const std = @import("std");
 
-const contract = @import("embed_vulkan_contract.zig");
+const contract = @import("contract.zig");
 const vulkan_types = @import("vulkan_types");
-const vulkan_device = @import("embed_vulkan_device.zig");
+const vulkan_device = @import("device.zig");
 
 pub const vk = vulkan_types.vk;
 pub const VulkanContext = vulkan_types.VulkanContext;

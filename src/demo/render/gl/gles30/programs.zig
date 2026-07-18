@@ -1,5 +1,5 @@
 const std = @import("std");
-const gl = @import("embed_gl_bindings.zig").gl;
+const gl = @import("bindings.zig").gl;
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
@@ -55,11 +55,10 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };
 
-    // Sampler bindings (texture units) and `u_layer_base` never change at
-    // runtime — units 0..3 stay mapped to curve/band/layer/image, and
-    // `u_layer_base` is always 0 in the new ABI (absolute layer is encoded
-    // per-instance). Setting these once at link time removes a half-dozen
-    // glUniform1i calls from every draw.
+    // Sampler bindings (units 0..3 → curve/band/layer/image) and
+    // `u_layer_base` never change at runtime, so set them once at link
+    // time to remove a half-dozen `glUniform1i` calls from every draw.
+    // Matches the GL 3.3/4.4 path in `gl/programs.zig`.
     var prev_program: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
     gl.glUseProgram(handle);
@@ -78,6 +77,7 @@ pub fn deleteProgramState(prog_state: *ProgramState) void {
 }
 
 pub fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !gl.GLuint {
+    _ = dual_source;
     const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
     defer gl.glDeleteShader(vs);
     const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;
@@ -86,10 +86,6 @@ pub fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, du
     const prog = gl.glCreateProgram();
     gl.glAttachShader(prog, vs);
     gl.glAttachShader(prog, fs);
-    if (dual_source) {
-        gl.glBindFragDataLocationIndexed(prog, 0, 0, "frag_color");
-        gl.glBindFragDataLocationIndexed(prog, 0, 1, "frag_blend");
-    }
     gl.glLinkProgram(prog);
 
     var ok: gl.GLint = 0;

@@ -7,7 +7,7 @@
 //!
 //! The all-in-one GL renderer, atlas cache, program compilation, ring buffer,
 //! and linear-resolve pass are the caller's — see the reference caller under
-//! `src/demo/embed_gl*.zig`.
+//! `src/demo/render/gl/`.
 
 // Renderer-independent GL/GLES variants, resource contracts, and source
 // fragments. Callers reach every shader-facing symbol through this namespace.

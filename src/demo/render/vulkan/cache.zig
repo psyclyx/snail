@@ -33,7 +33,7 @@ const page_pool_mod = @import("snail");
 const page_mod = @import("snail");
 const image_mod = @import("snail");
 const vk_types = @import("vulkan_types");
-const vk_device = @import("embed_vulkan_device.zig");
+const vk_device = @import("device.zig");
 const upload_plan = @import("snail").atlas_upload;
 
 pub const vk = vk_types.vk;

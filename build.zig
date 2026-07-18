@@ -100,7 +100,7 @@ fn createDemoVulkanPlatformModule(
 }
 
 /// The reusable reference caller renderer for the Vulkan embeddable path
-/// (`src/demo/embed_vulkan.zig`). Bound to a specific `snail` module so its vk
+/// (`src/demo/render/vulkan/root.zig`). Bound to a specific `snail` module so its vk
 /// types match the consumer's; created per consumer group (demo tools, bench).
 fn createEmbedVulkanModule(
     b: *std.Build,
@@ -112,7 +112,7 @@ fn createEmbedVulkanModule(
     vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
-        .root_source_file = b.path("src/demo/embed_vulkan.zig"),
+        .root_source_file = b.path("src/demo/render/vulkan/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -131,7 +131,7 @@ fn createDemoVulkanTypesModule(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/embed_vulkan_types.zig"),
+        .root_source_file = b.path("src/demo/render/vulkan/types.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -153,7 +153,7 @@ fn createEmbedGlModule(
     render_state_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/embed_gl.zig"),
+        .root_source_file = b.path("src/demo/render/gl/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,

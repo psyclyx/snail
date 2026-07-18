@@ -16,7 +16,7 @@
 const std = @import("std");
 const snail_mod = @import("snail");
 const render_state = @import("render-state");
-const gl_common = @import("embed_gl_common.zig");
+const gl_common = @import("common.zig");
 
 const LinearResolve = render_state.LinearResolve;
 const IntermediateFormat = LinearResolve.Format;

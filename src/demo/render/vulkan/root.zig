@@ -16,17 +16,17 @@ const std = @import("std");
 const snail = @import("snail");
 const render_state = @import("render-state");
 
-pub const contract = @import("embed_vulkan_contract.zig");
+pub const contract = @import("contract.zig");
 pub const vk = contract.vk;
 pub const VulkanContext = @import("vulkan_types").VulkanContext;
 
 // The caller-side atlas cache + resource layout used to live in Snail's Vulkan module;
 // they're generic GPU machinery, so they're demo (caller) code now. Re-export
 // them so consumers reach the whole embeddable surface via `embed_vulkan`.
-pub const VulkanBackendCache = @import("embed_vulkan_cache.zig").VulkanBackendCache;
-pub const CacheOptions = @import("embed_vulkan_cache.zig").CacheOptions;
-pub const VulkanResourceLayout = @import("embed_vulkan_layout.zig").VulkanResourceLayout;
-const embeddable = @import("embed_vulkan_embeddable.zig");
+pub const VulkanBackendCache = @import("cache.zig").VulkanBackendCache;
+pub const CacheOptions = @import("cache.zig").CacheOptions;
+pub const VulkanResourceLayout = @import("layout.zig").VulkanResourceLayout;
+const embeddable = @import("resources.zig");
 pub const cachePipelineShape = embeddable.cachePipelineShape;
 pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
 
