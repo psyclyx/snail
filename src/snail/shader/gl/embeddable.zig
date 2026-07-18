@@ -56,9 +56,15 @@ pub const GlShaderSources = struct {
     /// instance attributes (the same `vertex.Instance` layout the snail
     /// draw path uses).
     pub const vertex_interface = gl_shaders.text_vertex_interface;
+    /// Standard vertex implementation. Defines `snailVertex()` but no entry
+    /// point; call it (or wrap it) from the application's vertex `main()`.
+    pub const vertex_functions = gl_shaders.vertex_functions;
     /// Paste into a fragment shader that draws the prepared coverage
     /// geometry directly (per-fragment varyings from the vertex stage).
     pub const fragment_interface = gl_shaders.text_coverage_fragment_interface;
+    /// Full fragment interface used by paths and the two special text record
+    /// kinds. Applications can use one interface across all Snail programs.
+    pub const render_fragment_interface = gl_shaders.render_fragment_interface;
     /// Paste into a fragment shader that does NOT use snail varyings —
     /// just samples coverage from arbitrary positions (typically when
     /// snail text is "painted onto" some other geometry).
@@ -74,17 +80,29 @@ pub const GlShaderSources = struct {
     /// Full fragment body: coverage helpers + snail_text_coverage() +
     /// snail_text_color_*(). Paste after `fragment_interface`.
     pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
+    /// Each fragment defines a named Snail function and deliberately omits
+    /// `main()`, leaving stage ownership with the application.
+    pub const regular_text_functions = gl_shaders.regular_text_functions;
+    pub const path_functions = gl_shaders.path_functions;
+    pub const hinted_text_functions = gl_shaders.hinted_text_functions;
+    pub const autohint_functions = gl_shaders.autohint_functions;
 };
 
 /// GLSL source fragments for GLES 3.0.
 pub const Gles30ShaderSources = struct {
     pub const vertex_interface = gles30_shaders.text_vertex_interface;
+    pub const vertex_functions = gles30_shaders.vertex_functions;
     pub const fragment_interface = gles30_shaders.text_coverage_fragment_interface;
+    pub const render_fragment_interface = gles30_shaders.render_fragment_interface;
     pub const resource_interface = resource_interface_glsl;
     pub const coverage_functions = gles30_shaders.text_coverage_fragment_body;
     pub const sample_interface = gles30_shaders.gles30_text_sample_interface;
     pub const sample_functions = TEXT_WORDS_PER_GLYPH_PRELUDE ++ gles30_shaders.text_sample_body;
     pub const fragment_body = coverage_functions ++ "\n" ++ text_color_funcs;
+    pub const regular_text_functions = gles30_shaders.regular_text_functions;
+    pub const path_functions = gles30_shaders.path_functions;
+    pub const hinted_text_functions = gles30_shaders.hinted_text_functions;
+    pub const autohint_functions = gles30_shaders.autohint_functions;
 };
 
 /// Width (in texels) of the 2D `GL_R32UI` texture the GLES 3.0 records plane

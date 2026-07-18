@@ -1000,6 +1000,29 @@ fn addGameDemoStep(
     run_step.dependOn(&run_game.step);
 }
 
+fn addMinimalGlStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/app/minimal_gl.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+        },
+    });
+    mod.linkSystemLibrary("EGL", .{});
+    mod.linkSystemLibrary("OpenGL", .{});
+    const exe = b.addExecutable(.{ .name = "snail-minimal-gl", .root_module = mod });
+    const run = b.addRunArtifact(exe);
+    const step = b.step("run-minimal-gl", "Render the one-file public-API GL example to zig-out/minimal-gl.tga");
+    step.dependOn(&run.step);
+}
+
 pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
     // Consumers use `dependency.namedLazyPath(...)` for glslc `-I` arguments;
@@ -1030,6 +1053,7 @@ pub fn build(b: *std.Build) void {
     addScreenshotSteps(b, config, modules);
     addInteractiveDemoStep(b, config, modules);
     addGameDemoStep(b, config, modules);
+    addMinimalGlStep(b, config, modules);
     addBenchStep(b, config, modules);
 }
 
