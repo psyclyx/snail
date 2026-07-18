@@ -1,128 +1,209 @@
-//! snail public API.
+//! Snail: CPU-side vector preparation and embeddable shader contracts.
 //!
-//! Thin packaging shell over the compiler-module graph: it re-exports the
-//! backend-free `snail_core` API flat (Fonts/shaping/emit/…) and exposes the
-//! GL and Vulkan shader contracts as namespaces. The optional software
-//! renderer is a separate `snail-raster` module that depends on this module;
-//! `snail` never imports it.
+//! Font parsing, shaping, geometry, atlases, upload plans, emitted draw records,
+//! and entry-point-free shader fragments live here. Snail owns no GPU objects or
+//! command submission. The complete CPU renderer is the separate, optional
+//! `snail-raster` module and consumes only this public API.
 
-const core = @import("snail_core");
+const math = @import("math.zig");
+const text_mod = @import("text.zig");
+const image_mod = @import("image.zig");
+const target = @import("target.zig");
+const paint_mod = @import("paint.zig");
+const record_key_mod = @import("atlas/record_key.zig");
 
-// ── Core surface (re-exported from snail_core) ──
+pub const font = @import("font.zig");
 
-pub const font = core.font;
+// ── Math + geometry ──
 
-pub const Mat4 = core.Mat4;
-pub const Vec2 = core.Vec2;
-pub const BBox = core.BBox;
-pub const Transform2D = core.Transform2D;
-pub const Rect = core.Rect;
+pub const Mat4 = math.Mat4;
+pub const Vec2 = math.Vec2;
+pub const BBox = math.BBox;
+pub const Transform2D = math.Transform2D;
+pub const Rect = target.Rect;
 
-pub const ShapedText = core.ShapedText;
-pub const FaceIndex = core.FaceIndex;
-pub const Face = core.Face;
-pub const Faces = core.Faces;
-pub const shape = core.shape;
-pub const FontWeight = core.FontWeight;
-pub const FontStyle = core.FontStyle;
-pub const SyntheticStyle = core.SyntheticStyle;
-pub const SourceRange = core.SourceRange;
-pub const OpenTypeFeature = core.OpenTypeFeature;
-pub const ShapeOptions = core.ShapeOptions;
-pub const AdvanceProvider = core.AdvanceProvider;
-pub const MissingGlyphReplacement = core.MissingGlyphReplacement;
-pub const isRenderableTextCodepoint = core.isRenderableTextCodepoint;
-pub const HintMode = core.HintMode;
-pub const RunSnap = core.RunSnap;
-pub const RunPlacement = core.RunPlacement;
-pub const PlaceRunError = core.PlaceRunError;
-pub const PlaceRunAllocError = core.PlaceRunAllocError;
-pub const placedRunShapeCount = core.placedRunShapeCount;
-pub const placeRun = core.placeRun;
-pub const placeRunAlloc = core.placeRunAlloc;
-pub const HintedGlyphCache = core.HintedGlyphCache;
-pub const UnhintedGlyphCache = core.UnhintedGlyphCache;
-pub const Font = core.Font;
-pub const tt = core.tt;
+// ── Text shaping ──
 
-pub const PaintExtend = core.PaintExtend;
-pub const ImageFilter = core.ImageFilter;
-pub const LinearGradient = core.LinearGradient;
-pub const RadialGradient = core.RadialGradient;
-pub const ImagePaint = core.ImagePaint;
-pub const Paint = core.Paint;
-pub const FillStyle = core.FillStyle;
-pub const StrokeCap = core.StrokeCap;
-pub const StrokeJoin = core.StrokeJoin;
-pub const StrokePlacement = core.StrokePlacement;
-pub const StrokeStyle = core.StrokeStyle;
-pub const mapPaintToLocal = core.mapPaintToLocal;
+pub const ShapedText = text_mod.ShapedText;
+pub const FaceIndex = text_mod.FaceIndex;
 
-pub const Image = core.Image;
+const faces_mod = @import("text/faces.zig");
+pub const Face = faces_mod.Face;
+pub const Faces = faces_mod.Faces;
+pub const shape = faces_mod.shape;
+pub const FontWeight = text_mod.FontWeight;
+pub const FontStyle = text_mod.FontStyle;
+pub const SyntheticStyle = text_mod.SyntheticStyle;
+pub const SourceRange = text_mod.SourceRange;
+pub const OpenTypeFeature = text_mod.OpenTypeFeature;
+pub const ShapeOptions = text_mod.ShapeOptions;
+pub const AdvanceProvider = text_mod.AdvanceProvider;
+pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
+pub const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
 
-pub const FillRule = core.FillRule;
-pub const SubpixelOrder = core.SubpixelOrder;
-pub const ColorEncoding = core.ColorEncoding;
-pub const TargetEncoding = core.TargetEncoding;
-pub const PixelFormat = core.PixelFormat;
-pub const PixelRect = core.PixelRect;
-pub const LinearResolve = core.LinearResolve;
-pub const CoverageTransfer = core.CoverageTransfer;
-pub const mvpToScenePixel = core.mvpToScenePixel;
-pub const TargetSurface = core.TargetSurface;
-pub const RasterOptions = core.RasterOptions;
-pub const DrawState = core.DrawState;
-pub const resolveRect = core.resolveRect;
+const run_placement = @import("text/run_placement.zig");
+pub const HintMode = run_placement.HintMode;
+pub const RunSnap = run_placement.RunSnap;
+pub const RunPlacement = run_placement.RunPlacement;
+pub const PlaceRunError = run_placement.PlaceRunError;
+pub const PlaceRunAllocError = run_placement.PlaceRunAllocError;
+pub const placedRunShapeCount = run_placement.placedRunShapeCount;
+pub const placeRun = run_placement.placeRun;
+pub const placeRunAlloc = run_placement.placeRunAlloc;
 
-pub const recordKey = core.recordKey;
-pub const RecordKey = core.RecordKey;
-pub const ns = core.ns;
-pub const GlyphCurves = core.GlyphCurves;
-pub const PagePool = core.PagePool;
-pub const AtlasPage = core.AtlasPage;
-pub const Atlas = core.Atlas;
-pub const AtlasEntry = core.AtlasEntry;
-pub const AtlasInsertError = core.AtlasInsertError;
-pub const AutohintAnalysis = core.AutohintAnalysis;
-pub const CompositeMode = core.CompositeMode;
-pub const AtlasLayer = core.AtlasLayer;
-pub const PaintRecordInfo = core.PaintRecordInfo;
-pub const PaintImageRecord = core.PaintImageRecord;
-pub const AtlasRecord = core.AtlasRecord;
-pub const atlas_upload = core.atlas_upload;
-pub const AtlasUploadPlanner = core.AtlasUploadPlanner;
+pub const HintedGlyphCache = @import("text/hinted_glyph_cache.zig").HintedGlyphCache;
+pub const UnhintedGlyphCache = @import("text/unhinted_glyph_cache.zig").UnhintedGlyphCache;
 
-pub const Shape = core.Shape;
-pub const DrawSegment = core.DrawSegment;
-pub const Binding = core.Binding;
-pub const emit = core.emit;
+pub const Font = font.Font;
+pub const tt = font.tt;
 
-pub const Instance = core.Instance;
-pub const DecodedInstance = core.DecodedInstance;
-pub const decodeInstance = core.decodeInstance;
-pub const BindingTexels = core.BindingTexels;
-pub const bindingTexels = core.bindingTexels;
-pub const WORDS_PER_INSTANCE = core.WORDS_PER_INSTANCE;
+// ── Paint ──
 
-pub const autohint = core.autohint;
-pub const HintVm = core.HintVm;
-pub const HintPpem = core.HintPpem;
-pub const HintVmStats = core.HintVmStats;
-pub const HintError = core.HintError;
+pub const PaintExtend = paint_mod.Extend;
+pub const ImageFilter = paint_mod.ImageFilter;
+pub const LinearGradient = paint_mod.LinearGradient;
+pub const RadialGradient = paint_mod.RadialGradient;
+pub const ImagePaint = paint_mod.ImagePaint;
+pub const Paint = paint_mod.Paint;
+pub const FillStyle = paint_mod.FillStyle;
+pub const StrokeCap = paint_mod.StrokeCap;
+pub const StrokeJoin = paint_mod.StrokeJoin;
+pub const StrokePlacement = paint_mod.StrokePlacement;
+pub const StrokeStyle = paint_mod.StrokeStyle;
+pub const mapPaintToLocal = paint_mod.mapToLocal;
 
-pub const Path = core.Path;
-pub const PreparedPath = core.PreparedPath;
-pub const snap = core.snap;
-pub const render = core.render;
+pub const Image = image_mod.Image;
 
-// ── Shader contracts ──
+// ── Target / draw state ──
 
+pub const FillRule = target.FillRule;
+pub const SubpixelOrder = target.SubpixelOrder;
+pub const ColorEncoding = target.ColorEncoding;
+pub const TargetEncoding = target.TargetEncoding;
+pub const PixelFormat = target.PixelFormat;
+pub const PixelRect = target.PixelRect;
+pub const LinearResolve = target.LinearResolve;
+pub const CoverageTransfer = target.CoverageTransfer;
+pub const mvpToScenePixel = target.mvpToScenePixel;
+pub const TargetSurface = target.TargetSurface;
+pub const RasterOptions = target.RasterOptions;
+pub const DrawState = target.DrawState;
+pub const resolveRect = target.resolveRect;
+
+// ── Record keys / atlas ──
+
+pub const recordKey = record_key_mod;
+pub const RecordKey = record_key_mod.RecordKey;
+pub const ns = record_key_mod.ns;
+
+pub const GlyphCurves = @import("atlas/curves.zig").GlyphCurves;
+pub const PagePool = @import("atlas/page_pool.zig").PagePool;
+pub const AtlasPage = @import("atlas/page.zig").AtlasPage;
+
+const atlas_mod = @import("atlas.zig");
+pub const Atlas = atlas_mod.Atlas;
+/// Backend-neutral atlas upload descriptions and the optional fixed-capacity
+/// placement planner. The complete contract is public so callers never need
+/// to reach through the internal `files` namespace for its backing types.
+pub const atlas_upload = @import("atlas/upload_plan.zig");
+pub const AtlasUploadPlanner = atlas_upload.Planner;
+pub const AtlasEntry = atlas_mod.Entry;
+pub const AtlasInsertError = atlas_mod.InsertError;
+pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
+pub const CompositeMode = atlas_mod.CompositeMode;
+pub const AtlasLayer = atlas_mod.Layer;
+pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
+pub const PaintImageRecord = atlas_mod.PaintImageRecord;
+pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
+
+const shape_mod = @import("draw/shape.zig");
+pub const Shape = shape_mod.Shape;
+
+pub const DrawSegment = @import("draw/records.zig").DrawSegment;
+pub const Binding = @import("draw/records.zig").Binding;
+pub const emit = @import("draw/emit.zig");
+
+// ── GPU byte-layout ABI (custom-shader primitives) ──
+//
+// Symbolic decoders + texel-coord resolvers so callers can drive their
+// own shader pipeline off the same byte layout the built-in renderers
+// consume. The higher-level, per-backend integration surface lives in
+// `snail.coverage` (facade); these raw primitives sit one layer beneath.
+
+const vertex_mod = @import("format/vertex.zig");
+pub const Instance = vertex_mod.Instance;
+pub const DecodedInstance = vertex_mod.DecodedInstance;
+pub const decodeInstance = vertex_mod.decodeInstance;
+pub const BindingTexels = vertex_mod.BindingTexels;
+pub const bindingTexels = vertex_mod.bindingTexels;
+pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
+
+pub const autohint = struct {
+    pub const policy = @import("font/autohint/policy.zig");
+    pub const AutohintPolicy = policy.AutohintPolicy;
+    pub const Fade = policy.Fade;
+    pub const analysis = @import("font/autohint/analysis.zig");
+    pub const warp = @import("font/autohint/warp.zig");
+    pub const blue = @import("font/autohint/blue.zig");
+    pub const producer = @import("font/autohint/producer.zig");
+    pub const AutohintAnalyzer = producer.AutohintAnalyzer;
+    pub const GlyphFeatures = producer.GlyphFeatures;
+    pub const FontFeatures = producer.FontFeatures;
+    pub const FeatureEdge = analysis.FeatureEdge;
+};
+
+pub const HintVm = @import("font/hint_vm.zig").HintVm;
+pub const HintPpem = @import("font/hint_vm.zig").HintPpem;
+pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
+pub const HintError = @import("font/hint_vm.zig").HintError;
+
+pub const Path = @import("path.zig").Path;
+pub const PreparedPath = @import("path.zig").PreparedPath;
+pub const snap = @import("snap.zig");
+
+/// Stable byte-layout and policy contract for caller-owned renderers.
+pub const render = @import("render.zig");
+
+/// Entry-point-free shader fragments and resource contracts. Callers compose
+/// these into shaders owned by their rendering engine.
 pub const shader = struct {
-    pub const glsl = @import("snail_glsl");
-    pub const vulkan = @import("snail_vulkan_shader");
+    pub const glsl = @import("shader/gl/root.zig");
+    pub const vulkan = @import("shader/vulkan/root.zig");
 };
 
 test {
-    _ = core;
+    _ = math;
+    _ = font;
+    _ = text_mod;
+    _ = image_mod;
+    _ = target;
+    _ = paint_mod;
+    _ = record_key_mod;
+    _ = @import("atlas/curves.zig");
+    _ = @import("atlas/record.zig");
+    _ = @import("atlas/page.zig");
+    _ = @import("atlas/page_pool.zig");
+    _ = @import("atlas/upload_plan.zig");
+    _ = atlas_mod;
+    _ = @import("path.zig");
+    _ = @import("path_pack.zig");
+    _ = @import("font/hint_vm.zig");
+    _ = @import("font/autohint/policy.zig");
+    _ = @import("font/autohint/analysis.zig");
+    _ = @import("font/autohint/warp.zig");
+    _ = @import("font/autohint/blue.zig");
+    _ = @import("font/autohint/producer.zig");
+    _ = @import("format/autohint_record.zig");
+    _ = @import("format/abi.zig");
+    _ = @import("text/faces.zig");
+    _ = @import("text/run_placement.zig");
+    _ = @import("text/hinted_glyph_cache.zig");
+    _ = @import("text/unhinted_glyph_cache.zig");
+    _ = shape_mod;
+    _ = @import("draw/records.zig");
+    _ = @import("draw/emit.zig");
+    _ = @import("snap.zig");
+    _ = @import("util/hamt.zig");
+    _ = render;
     _ = shader;
 }

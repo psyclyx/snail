@@ -194,25 +194,10 @@ fn createSupportModule(
     });
 }
 
-/// Build the snail compiler-module graph and return the public `snail`
-/// facade. The graph is a DAG:
-///
-///   snail_core ── shader contracts ── snail (facade)
-///                              └─ snail-raster
-///
-/// `snail_core` is backend-independent (links only harfbuzz for shaping).
-/// The GLSL and Vulkan modules are pure shader/resource contracts and link
-/// no graphics APIs; the caller-owned renderer chooses and links those.
-/// `public_name` addModule's the facade (for external dependents) vs. an
-/// internal createModule.
-const SnailGraph = struct {
-    core: *std.Build.Module,
-    gl: *std.Build.Module,
-    vulkan: *std.Build.Module,
-    facade: *std.Build.Module,
-};
-
-fn buildSnailGraphFull(
+/// Construct the public `snail` module. Shader contracts are ordinary source
+/// namespaces within the module and link no graphics APIs; callers own and
+/// link their renderer. `public_name` publishes the module for dependents.
+fn createSnailModuleFull(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
@@ -223,48 +208,19 @@ fn buildSnailGraphFull(
     // artifacts, whose test blocks pull font assets and want strip control.
     assets_mod: ?*std.Build.Module,
     strip: ?bool,
-) SnailGraph {
-    const mk = struct {
-        fn m(bb: *std.Build, path: []const u8, t: std.Build.ResolvedTarget, o: std.builtin.OptimizeMode, s: ?bool, bo: *std.Build.Module, am: ?*std.Build.Module) *std.Build.Module {
-            const mod = bb.createModule(.{
-                .root_source_file = bb.path(path),
-                .target = t,
-                .optimize = o,
-                .link_libc = true,
-                .strip = s,
-            });
-            mod.addImport("build_options", bo);
-            if (am) |a| mod.addImport("assets", a);
-            return mod;
-        }
-    }.m;
-
-    const core = mk(b, "src/snail/core.zig", target, optimize, strip, build_options_mod, assets_mod);
-    if (enable_harfbuzz) core.linkSystemLibrary("harfbuzz", .{});
-
-    const gl = mk(b, "src/snail/shader/gl/root.zig", target, optimize, strip, build_options_mod, assets_mod);
-    gl.addImport("snail_core", core);
-    // snail GLSL contract links NO OpenGL: it is a pure-data shader/resource contract and
-    // makes no live GL calls. GL linkage belongs to the context-owning caller,
-    // just as snail Vulkan contract links no Vulkan.
-
-    const vk = mk(b, "src/snail/shader/vulkan/root.zig", target, optimize, strip, build_options_mod, assets_mod);
-
-    const facade = if (public_name) |name| b.addModule(name, .{
+) *std.Build.Module {
+    const options: std.Build.Module.CreateOptions = .{
         .root_source_file = b.path("src/snail/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .strip = strip,
-    }) else mk(b, "src/snail/root.zig", target, optimize, strip, build_options_mod, assets_mod);
-    if (public_name != null) {
-        facade.addImport("build_options", build_options_mod);
-        if (assets_mod) |a| facade.addImport("assets", a);
-    }
-    facade.addImport("snail_core", core);
-    facade.addImport("snail_glsl", gl);
-    facade.addImport("snail_vulkan_shader", vk);
-    return .{ .core = core, .gl = gl, .vulkan = vk, .facade = facade };
+    };
+    const mod = if (public_name) |name| b.addModule(name, options) else b.createModule(options);
+    mod.addImport("build_options", build_options_mod);
+    if (assets_mod) |assets| mod.addImport("assets", assets);
+    if (enable_harfbuzz) mod.linkSystemLibrary("harfbuzz", .{});
+    return mod;
 }
 
 fn createRasterModule(
@@ -289,17 +245,6 @@ fn createRasterModule(
     return raster;
 }
 
-fn buildSnailGraph(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    build_options_mod: *std.Build.Module,
-    enable_harfbuzz: bool,
-    public_name: ?[]const u8,
-) *std.Build.Module {
-    return buildSnailGraphFull(b, target, optimize, build_options_mod, enable_harfbuzz, public_name, null, null).facade;
-}
-
 fn createSnailModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -307,7 +252,7 @@ fn createSnailModule(
     build_options_mod: *std.Build.Module,
     enable_harfbuzz: bool,
 ) *std.Build.Module {
-    return buildSnailGraph(b, target, optimize, build_options_mod, enable_harfbuzz, null);
+    return createSnailModuleFull(b, target, optimize, build_options_mod, enable_harfbuzz, null, null, null);
 }
 
 /// For use as a dependency: returns the backend-neutral snail module plus its
@@ -383,7 +328,7 @@ fn addSnailModule(
     config: BuildConfig,
     options_mod: *std.Build.Module,
 ) *std.Build.Module {
-    return buildSnailGraph(b, config.target, config.optimize, options_mod, config.core_options.enable_harfbuzz, "snail");
+    return createSnailModuleFull(b, config.target, config.optimize, options_mod, config.core_options.enable_harfbuzz, "snail", null, null);
 }
 
 const ProjectModules = struct {
@@ -402,13 +347,9 @@ fn addTestSteps(
     modules: ProjectModules,
 ) void {
     const test_step = b.step("test", "Run unit tests");
-    // The snail library is a module graph (core + per-backend + facade);
-    // each module's tests run in their own artifact.
-    const test_graph = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options.enable_harfbuzz, null, modules.assets, null);
-    inline for (.{ test_graph.core, test_graph.gl, test_graph.vulkan, test_graph.facade }) |m| {
-        test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = m })).step);
-    }
-    const raster_tests = createRasterModule(b, config.target, config.optimize, test_graph.facade, modules.assets, null, null);
+    const snail_tests = createSnailModuleFull(b, config.target, config.optimize, modules.options, config.core_options.enable_harfbuzz, null, modules.assets, null);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
+    const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, modules.assets, null, null);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
@@ -445,13 +386,11 @@ fn addTestSteps(
     test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
-    const vg = buildSnailGraphFull(b, config.target, config.optimize, modules.options, config.core_options.enable_harfbuzz, null, modules.assets, true);
-    inline for (.{ vg.core, vg.gl, vg.vulkan, vg.facade }) |m| {
-        const vt = b.addTest(.{ .root_module = m });
-        configureValgrindTest(vt);
-        test_valgrind_step.dependOn(&b.addRunArtifact(vt).step);
-    }
-    const vg_raster = createRasterModule(b, config.target, config.optimize, vg.facade, modules.assets, true, null);
+    const vg_snail = createSnailModuleFull(b, config.target, config.optimize, modules.options, config.core_options.enable_harfbuzz, null, modules.assets, true);
+    const vg_snail_tests = b.addTest(.{ .root_module = vg_snail });
+    configureValgrindTest(vg_snail_tests);
+    test_valgrind_step.dependOn(&b.addRunArtifact(vg_snail_tests).step);
+    const vg_raster = createRasterModule(b, config.target, config.optimize, vg_snail, modules.assets, true, null);
     const vg_raster_tests = b.addTest(.{ .root_module = vg_raster });
     configureValgrindTest(vg_raster_tests);
     test_valgrind_step.dependOn(&b.addRunArtifact(vg_raster_tests).step);

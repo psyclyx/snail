@@ -2,9 +2,8 @@
 //!
 //! Font-necessary only: snail provides the embeddable pipeline `contract` +
 //! data contract (`embeddable`) and includable GLSL algorithm fragments
-//! (`shader_library`), over the backend-agnostic atlas
-//! upload plan in `snail_core` (`AtlasUploadPlanner`). GLES 3.0 shares this
-//! module (its own bindings/shaders variants). Depends on `snail_core`.
+//! (`shader_library`), over Snail's backend-agnostic `AtlasUploadPlanner`.
+//! GLES 3.0 shares this namespace with its own interface variants.
 //!
 //! The all-in-one GL renderer, atlas cache, program compilation, ring buffer,
 //! and linear-resolve pass are the caller's — see the reference caller under

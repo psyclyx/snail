@@ -4,9 +4,7 @@
 //! fragments. It creates no GL objects and makes no GL calls.
 
 const std = @import("std");
-const core = @import("snail_core");
-
-const WORDS_PER_INSTANCE: usize = core.WORDS_PER_INSTANCE;
+const WORDS_PER_INSTANCE: usize = @import("../../format/vertex.zig").WORDS_PER_INSTANCE;
 
 const gl_shaders = @import("shaders.zig");
 const gles30_shaders = gl_shaders;
