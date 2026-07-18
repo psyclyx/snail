@@ -27,18 +27,18 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("snail").core.files.atlas;
-const draw_records = @import("snail").core.files.picture_draw_records;
-const page_pool_mod = @import("snail").core.files.atlas_page_pool;
-const page_mod = @import("snail").core.files.atlas_page;
-const curve_tex = @import("snail").core.files.format_curve_texture;
-const band_tex = @import("snail").core.files.format_band_texture;
-const paint_records = @import("snail").core.files.atlas_paint_records;
-const upload_common = @import("snail").core.files.format_upload_common;
-const image_mod = @import("snail").core.files.image;
+const atlas_mod = @import("snail");
+const draw_records = @import("snail");
+const page_pool_mod = @import("snail");
+const page_mod = @import("snail");
+const curve_tex = @import("snail").render.curve_texture;
+const band_tex = @import("snail").render.band_texture;
+const paint_records = @import("snail").render.paint_records;
+const upload_common = @import("snail").render.upload;
+const image_mod = @import("snail");
 const vk_types = @import("vulkan_types");
 const vk_device = @import("embed_vulkan_device.zig");
-const cache_base = @import("snail").core.files.backend_cache_base;
+const cache_base = @import("snail").render.cache;
 const upload_plan = @import("snail").atlas_upload;
 
 pub const vk = vk_types.vk;

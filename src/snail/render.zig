@@ -8,6 +8,7 @@
 /// Packed draw-record layout and symbolic decoders.
 pub const abi = @import("format/abi.zig");
 pub const vertex = @import("format/vertex.zig");
+pub const draw_records = @import("picture/draw_records.zig");
 
 /// Atlas texture formats consumed by the coverage algorithms.
 pub const curve_texture = @import("format/curve_texture.zig");
@@ -33,6 +34,7 @@ pub const curve = @import("math/bezier.zig");
 test {
     _ = abi;
     _ = vertex;
+    _ = draw_records;
     _ = curve_texture;
     _ = band_texture;
     _ = text_hint;

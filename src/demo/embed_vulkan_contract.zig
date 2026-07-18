@@ -19,9 +19,9 @@
 //!      `vkCmdDrawIndexed(INDICES_PER_GLYPH, glyph_count, ...)`.
 
 const std = @import("std");
-const core = @import("snail").core;
-const vertex = core.files.format_vertex;
-const subpixel_policy = core.files.backend_subpixel_policy;
+const snail = @import("snail");
+const vertex = snail.render.vertex;
+const subpixel_policy = snail.render.subpixel;
 const vulkan_types = @import("vulkan_types");
 const vk_shaders = @import("vulkan_shaders");
 
@@ -57,11 +57,11 @@ pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
 /// `DrawState`. This is the single source of truth the all-in-one renderer and
 /// an embeddable caller both use, so their pushed constants are identical.
 /// `grayscale` selects the non-subpixel path (the text-coverage recipe today).
-pub fn textPushConstants(draw_state: core.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
+pub fn textPushConstants(draw_state: snail.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
     return .{
         .mvp = draw_state.mvp.data,
         .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
-        .subpixel_order = @intFromEnum(if (grayscale) core.SubpixelOrder.none else draw_state.raster.subpixel_order),
+        .subpixel_order = @intFromEnum(if (grayscale) snail.SubpixelOrder.none else draw_state.raster.subpixel_order),
         .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
         .layer_base = @intCast(local_layer_base),
         .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
@@ -232,7 +232,7 @@ pub fn textRenderMode(
     words: []const u32,
     glyph_start: usize,
     glyph_count: usize,
-    draw_state: core.DrawState,
+    draw_state: snail.DrawState,
     supports_dual_src: bool,
 ) TextRenderMode {
     return subpixel_policy.chooseTextRenderModeRange(

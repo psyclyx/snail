@@ -6,7 +6,7 @@
 //! renderer is a separate `snail-raster` module that depends on this module;
 //! `snail` never imports it.
 
-pub const core = @import("snail_core");
+const core = @import("snail_core");
 
 // ── Core surface (re-exported from snail_core) ──
 

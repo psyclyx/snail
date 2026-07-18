@@ -172,48 +172,6 @@ pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 /// Stable byte-layout and policy contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
-// ── Internal file namespaces ──
-//
-// The backend modules (`cpu`/`gl`/`vulkan`) consume core internals that
-// aren't part of the flat public surface above. Exposed here as named
-// namespaces so a backend reaches them via `@import("snail_core").<ns>`
-// rather than a deep relative path into another module.
-
-pub const files = struct {
-    pub const atlas = @import("atlas.zig");
-    pub const atlas_page = @import("atlas/page.zig");
-    pub const atlas_page_pool = @import("atlas/page_pool.zig");
-    pub const atlas_record_key = @import("atlas/record_key.zig");
-    pub const atlas_paint_records = @import("atlas/paint_records.zig");
-    pub const atlas_upload_plan = @import("atlas/upload_plan.zig");
-    pub const atlas_curves = @import("atlas/curves.zig");
-    pub const picture_shape = @import("picture/shape.zig");
-    pub const picture_emit = @import("picture/emit.zig");
-    pub const picture_draw_records = @import("picture/draw_records.zig");
-    pub const image = @import("image.zig");
-    pub const path = @import("path.zig");
-    pub const target = @import("target.zig");
-    pub const math_vec = @import("math/vec.zig");
-    pub const math_bezier = @import("math/bezier.zig");
-    pub const font_autohint_warp = @import("font/autohint/warp.zig");
-    pub const font_autohint_policy = @import("font/autohint/policy.zig");
-    pub const format_vertex = @import("format/vertex.zig");
-    pub const format_band_texture = @import("format/band_texture.zig");
-    pub const format_curve_texture = @import("format/curve_texture.zig");
-    pub const format_abi = @import("format/abi.zig");
-    pub const format_subpixel_order = @import("format/subpixel_order.zig");
-    pub const format_upload_common = @import("format/upload_common.zig");
-    pub const format_text_hint = @import("format/text_hint.zig");
-    pub const format_autohint_record = @import("format/autohint_record.zig");
-    pub const format_instance_emit = @import("format/instance_emit.zig");
-    pub const format_texture_layers = @import("format/texture_layers.zig");
-
-    // Backend-agnostic render/cache support shared by every backend module.
-    pub const backend_cache_base = @import("render/backend/cache.zig");
-    pub const backend_range_allocator = @import("render/backend/range_allocator.zig");
-    pub const backend_subpixel_policy = @import("render/backend/subpixel_policy.zig");
-};
-
 test {
     _ = math;
     _ = font;
@@ -247,5 +205,4 @@ test {
     _ = @import("picture/emit.zig");
     _ = @import("snap.zig");
     _ = @import("util/hamt.zig");
-    _ = files;
 }

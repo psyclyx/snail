@@ -19,7 +19,7 @@ const gl_bindings = @import("embed_gl_bindings.zig");
 const gles30_bindings = @import("embed_gles30_bindings.zig");
 
 const Variant = embeddable.Variant;
-const FillRule = snail.core.FillRule;
+const FillRule = snail.FillRule;
 
 pub const DrawState = struct {
     subpixel_order: snail.SubpixelOrder = .none,
