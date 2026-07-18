@@ -264,7 +264,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 const seg_words = records.words[seg.words_offset..][0..seg.words_len];
                 if (seg_words.len != @as(usize, seg.shape_count) * vertex.WORDS_PER_INSTANCE) return error.MalformedSegment;
                 _ = scratch;
-                try self.drawHeterogeneous(cache, draw_state, seg_words, seg.kind_mask);
+                try self.drawSegment(cache, draw_state, seg_words, seg.kind);
             }
         }
 
@@ -296,77 +296,32 @@ fn TextStateFor(comptime backend: Backend) type {
             self.cached_heterogeneous_vao_bound = true;
         }
 
-        fn drawHeterogeneous(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32, seg_kind_mask: u8) DrawError!void {
+        fn drawSegment(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32, kind: ShapeKind) DrawError!void {
             const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
             if (total_glyphs == 0) return;
             self.ensureHeterogeneousVaoBound();
 
             const allow_subpixel = true;
-
-            // emit tags every segment with a kind_mask bitset. When only
-            // one bit is set, every shape in the segment uses the same
-            // program — issue one dispatch and skip the per-instance
-            // run-kind walk. Multi-kind segments still go through the
-            // generic walk; segments with a missing/legacy zero mask
-            // also fall through for safety.
-            if (seg_kind_mask != 0 and @popCount(seg_kind_mask) == 1) {
-                const run_kind: ShapeKind = switch (seg_kind_mask) {
-                    draw_records_mod.KIND_BIT_REGULAR => .regular,
-                    draw_records_mod.KIND_BIT_COLR => .colr,
-                    draw_records_mod.KIND_BIT_PATH => .path,
-                    draw_records_mod.KIND_BIT_HINTED_TEXT => .hinted_text,
-                    draw_records_mod.KIND_BIT_AUTOHINT => .autohint,
-                    else => unreachable,
-                };
-                const run_mode: TextRenderMode = if (run_kind != .regular)
-                    .grayscale
-                else
-                    regularTextRenderMode(
-                        if (allow_subpixel) draw_state.raster.subpixel_order else .none,
-                        self.supports_dual_source_blend,
-                    );
-                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
-                const prog_state = switch (run_kind) {
-                    .regular => switch (run_mode) {
-                        .grayscale => &self.text_program,
-                        .subpixel_dual_source => &self.text_subpixel_dual_program,
-                    },
-                    .colr => self.ensureColrProgram(),
-                    .path => self.ensurePathProgram(),
-                    .hinted_text => self.ensureHintedTextProgram(),
-                    .autohint => self.ensureAutohintProgram(),
-                };
-                self.bindProgramState(cache, prog_state, draw_state, run_mode);
-                self.drawGlyphRange(vertices, 0, total_glyphs);
-                return;
-            }
-
-            var run_start: usize = 0;
-            while (run_start < total_glyphs) {
-                const run_kind = draw_records_mod.shapeKind(vertices, run_start);
-                const run_end = draw_records_mod.shapeRunEnd(vertices, run_start, run_kind);
-                const run_mode: TextRenderMode = if (run_kind != .regular)
-                    .grayscale
-                else
-                    regularTextRenderMode(
-                        if (allow_subpixel) draw_state.raster.subpixel_order else .none,
-                        self.supports_dual_source_blend,
-                    );
-                self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
-                const prog_state = switch (run_kind) {
-                    .regular => switch (run_mode) {
-                        .grayscale => &self.text_program,
-                        .subpixel_dual_source => &self.text_subpixel_dual_program,
-                    },
-                    .colr => self.ensureColrProgram(),
-                    .path => self.ensurePathProgram(),
-                    .hinted_text => self.ensureHintedTextProgram(),
-                    .autohint => self.ensureAutohintProgram(),
-                };
-                self.bindProgramState(cache, prog_state, draw_state, run_mode);
-                self.drawGlyphRange(vertices, run_start, run_end - run_start);
-                run_start = run_end;
-            }
+            const run_mode: TextRenderMode = if (kind != .regular)
+                .grayscale
+            else
+                regularTextRenderMode(
+                    if (allow_subpixel) draw_state.raster.subpixel_order else .none,
+                    self.supports_dual_source_blend,
+                );
+            self.setBlendMode(textBlendMode(kind != .regular, run_mode));
+            const prog_state = switch (kind) {
+                .regular => switch (run_mode) {
+                    .grayscale => &self.text_program,
+                    .subpixel_dual_source => &self.text_subpixel_dual_program,
+                },
+                .colr => self.ensureColrProgram(),
+                .path => self.ensurePathProgram(),
+                .hinted_text => self.ensureHintedTextProgram(),
+                .autohint => self.ensureAutohintProgram(),
+            };
+            self.bindProgramState(cache, prog_state, draw_state, run_mode);
+            self.drawGlyphRange(vertices, 0, total_glyphs);
         }
 
         /// Bind one GlBackendCache' texture set + uniforms. Texture-unit

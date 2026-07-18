@@ -1,10 +1,10 @@
 //! `emit`: write GPU-ready vertex bytes for a flat shape slice resolved
-//! against an `Atlas`, plus a `DrawSegment` describing how the renderer
-//! should bind and dispatch them.
+//! against an `Atlas`, plus homogeneous `DrawSegment`s describing the binding
+//! and semantic family of each contiguous instance run.
 //!
 //! `emit` walks shape lists and writes one 23-word `Instance` per shape into
-//! caller-provided buffers. Consecutive calls that share a binding/contiguity coalesce
-//! their segments (`draw_records.mergeIfAdjacent`).
+//! caller-provided buffers. Consecutive instances and calls that share a
+//! binding, semantic family, and word contiguity coalesce their segments.
 //!
 //! These functions operate on a raw `[]const Shape` directly; whatever
 //! container the caller uses to organize their scene (an owned slice, an
@@ -80,11 +80,11 @@ pub fn emit(
     const need_words = shapes.len * WORDS_PER_INSTANCE;
     if (words_buf.len - word_len.* < need_words) return error.BufferTooSmall;
 
-    const start_offset: u32 = @intCast(word_len.*);
     var cursor: usize = word_len.*;
     const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var emitted: u32 = 0;
-    var kind_mask: u8 = 0;
+    var working_seg_len = seg_len.*;
+    var segments_added: u32 = 0;
 
     for (shapes) |shape| {
         const rec = atlas.lookupRecord(shape.key) orelse {
@@ -113,7 +113,6 @@ pub fn emit(
 
         if (ah_info_opt) |ah_info| {
             // Warped instance over the shared base glyph.
-            kind_mask |= draw_records.KIND_BIT_AUTOHINT;
             try cur.appendAutohintTransformedTinted(
                 rec.bbox,
                 ah_info.info_x,
@@ -126,7 +125,6 @@ pub fn emit(
                 packed_policy,
             );
         } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
-            kind_mask |= draw_records.KIND_BIT_PATH;
             try cur.appendPathRecordTransformedTinted(
                 rec.bbox,
                 paint_info.info_x,
@@ -138,7 +136,6 @@ pub fn emit(
                 final_transform,
             );
         } else {
-            kind_mask |= draw_records.KIND_BIT_REGULAR;
             try cur.appendGlyphTransformedTinted(
                 rec.bbox,
                 .{
@@ -157,35 +154,37 @@ pub fn emit(
                 final_transform,
             );
         }
+
+        const instance_word_offset = cursor - WORDS_PER_INSTANCE;
+        const kind = draw_records.shapeKind(words_buf[0..cursor], instance_word_offset / WORDS_PER_INSTANCE);
+        const segment = DrawSegment{
+            .binding = binding,
+            .words_offset = @intCast(instance_word_offset),
+            .words_len = @intCast(WORDS_PER_INSTANCE),
+            .shape_count = 1,
+            .kind = kind,
+        };
+        if (!draw_records.mergeIfAdjacent(segs_buf, &working_seg_len, segment)) {
+            if (working_seg_len >= segs_buf.len) return error.BufferTooSmall;
+            segs_buf[working_seg_len] = segment;
+            working_seg_len += 1;
+            segments_added += 1;
+        }
         emitted += 1;
     }
 
     const wrote_words: u32 = @intCast(cursor - word_len.*);
     word_len.* = cursor;
+    seg_len.* = working_seg_len;
 
     if (emitted == 0) {
         return .{ .shape_count = 0, .word_count = 0, .segment_count = 0 };
     }
 
-    var seg_added: u32 = 0;
-    const seg = DrawSegment{
-        .binding = binding,
-        .words_offset = start_offset,
-        .words_len = wrote_words,
-        .shape_count = emitted,
-        .kind_mask = kind_mask,
-    };
-    if (!draw_records.mergeIfAdjacent(segs_buf, seg_len, seg)) {
-        if (seg_len.* >= segs_buf.len) return error.BufferTooSmall;
-        segs_buf[seg_len.*] = seg;
-        seg_len.* += 1;
-        seg_added = 1;
-    }
-
     return .{
         .shape_count = emitted,
         .word_count = wrote_words,
-        .segment_count = seg_added,
+        .segment_count = segments_added,
     };
 }
 
@@ -196,8 +195,7 @@ pub fn wordBudget(shape_count: usize) usize {
 
 /// Conservative upper bound on segments written for one emit call.
 pub fn segmentBudget(shape_count: usize) usize {
-    _ = shape_count;
-    return 1;
+    return shape_count;
 }
 
 // ---------------------------------------------------------------------------
@@ -329,7 +327,7 @@ test "autohint shapes share lookup data and emit distinct seven-word policies" {
     try testing.expectEqual(slab_ptr, atlas.layer_info_data.?.ptr);
     try testing.expectEqual(slab_len, atlas.layer_info_data.?.len);
 
-    try testing.expectEqual(draw_records.KIND_BIT_AUTOHINT, segs[0].kind_mask);
+    try testing.expectEqual(draw_records.ShapeKind.autohint, segs[0].kind);
 }
 
 test "emit enforces autohint policy presence and placement" {

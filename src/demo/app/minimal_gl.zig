@@ -356,19 +356,14 @@ pub fn main() !void {
     gpu.bind();
 
     const projection = snail.Mat4.ortho(0, width, height, 0, -1, 1);
-    var shape_index: usize = 0;
     const instance_words = words[0..word_len];
-    const shape_count = word_len / snail.render.records.WORDS_PER_INSTANCE;
-    while (shape_index < shape_count) {
-        const kind = snail.render.records.shapeKind(instance_words, shape_index);
-        const run_end = snail.render.records.shapeRunEnd(instance_words, shape_index, kind);
-        const run_words = instance_words[shape_index * snail.render.records.WORDS_PER_INSTANCE .. run_end * snail.render.records.WORDS_PER_INSTANCE];
-        const program = programs.forKind(kind);
+    for (segments[0..segment_len]) |segment| {
+        const run_words = instance_words[segment.words_offset..][0..segment.words_len];
+        const program = programs.forKind(segment.kind);
         bindProgram(program, projection);
         c.glBindBuffer(c.GL_ARRAY_BUFFER, geometry.vbo);
         c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @intCast(run_words.len * @sizeOf(u32)), run_words.ptr);
-        c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(run_end - shape_index));
-        shape_index = run_end;
+        c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(segment.shape_count));
     }
     c.glFinish();
     try writeTga(allocator, "zig-out/minimal-gl.tga");

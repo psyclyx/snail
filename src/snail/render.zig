@@ -13,7 +13,6 @@ const band_texture_mod = @import("format/band_texture.zig");
 const text_hint_mod = @import("format/text_hint.zig");
 const autohint_record_mod = @import("format/autohint_record.zig");
 const curve_mod = @import("math/bezier.zig");
-const std = @import("std");
 
 /// Emitted instance words, segment metadata, and symbolic record decoders.
 pub const records = struct {
@@ -27,11 +26,8 @@ pub const records = struct {
     pub const Binding = draw_mod.Binding;
     pub const DrawSegment = draw_mod.DrawSegment;
     pub const DrawRecords = draw_mod.DrawRecords;
-    pub const KIND_BIT_REGULAR = draw_mod.KIND_BIT_REGULAR;
-    pub const KIND_BIT_COLR = draw_mod.KIND_BIT_COLR;
-    pub const KIND_BIT_PATH = draw_mod.KIND_BIT_PATH;
-    pub const KIND_BIT_HINTED_TEXT = draw_mod.KIND_BIT_HINTED_TEXT;
-    pub const KIND_BIT_AUTOHINT = draw_mod.KIND_BIT_AUTOHINT;
+    pub const ShapeKind = draw_mod.ShapeKind;
+    pub const shapeKind = draw_mod.shapeKind;
 
     pub const SpecialLayerKind = abi_mod.SpecialLayerKind;
     pub const PaintRecordKind = abi_mod.PaintRecordKind;
@@ -49,39 +45,6 @@ pub const records = struct {
     pub const regularGlyphWordHBandCount = abi_mod.regularGlyphWordHBandCount;
     pub const regularGlyphWordVBandCount = abi_mod.regularGlyphWordVBandCount;
     pub const unpackBandCounts = abi_mod.unpackBandCounts;
-
-    /// Semantic shape family encoded by an emitted instance. This describes
-    /// the record; it does not prescribe a pipeline, shader, or blend mode.
-    pub const ShapeKind = enum {
-        regular,
-        colr,
-        path,
-        hinted_text,
-        autohint,
-    };
-
-    pub fn shapeKind(words: []const u32, shape_index: usize) ShapeKind {
-        std.debug.assert(words.len % WORDS_PER_INSTANCE == 0);
-        const packed_word = instanceAt(words, shape_index).glyph[1];
-        if (!glyphWordIsSpecial(packed_word)) return .regular;
-        return switch (specialGlyphWordKind(packed_word) orelse .colr) {
-            .colr => .colr,
-            .path => .path,
-            .hinted_text => .hinted_text,
-            .autohint => .autohint,
-        };
-    }
-
-    /// End of the maximal run beginning at `shape_start` with `kind`.
-    pub fn shapeRunEnd(words: []const u32, shape_start: usize, kind: ShapeKind) usize {
-        std.debug.assert(words.len % WORDS_PER_INSTANCE == 0);
-        const shape_count = words.len / WORDS_PER_INSTANCE;
-        std.debug.assert(shape_start < shape_count);
-
-        var end = shape_start + 1;
-        while (end < shape_count and shapeKind(words, end) == kind) : (end += 1) {}
-        return end;
-    }
 };
 
 /// Decoders for the immutable atlas bytes returned by `AtlasUploadPlanner`.

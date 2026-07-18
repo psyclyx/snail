@@ -149,31 +149,25 @@ pub const Gles30TextState = struct {
             const seg_words = records.words[seg.words_offset..][0..seg.words_len];
             if (seg_words.len != @as(usize, seg.shape_count) * vertex.WORDS_PER_INSTANCE) return error.MalformedSegment;
             _ = scratch;
-            try self.drawHeterogeneous(cache, draw_state, seg_words);
+            try self.drawSegment(cache, draw_state, seg_words, seg.kind);
         }
     }
 
-    fn drawHeterogeneous(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, vertices: []const u32) DrawError!void {
+    fn drawSegment(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, vertices: []const u32, kind: draw_records_mod.ShapeKind) DrawError!void {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
-        var run_start: usize = 0;
-        while (run_start < total_glyphs) {
-            const run_kind = draw_records_mod.shapeKind(vertices, run_start);
-            const run_end = draw_records_mod.shapeRunEnd(vertices, run_start, run_kind);
-            const run_mode: TextRenderMode = .grayscale;
-            setTextBlendMode(run_kind != .regular, run_mode);
-            const prog_state = switch (run_kind) {
-                .regular => &self.text_program,
-                .colr => self.ensureColrProgram(),
-                .path => self.ensurePathProgram(),
-                .hinted_text => self.ensureHintedTextProgram(),
-                .autohint => self.ensureAutohintProgram(),
-            };
-            self.bindProgramState(cache, prog_state, draw_state, run_mode);
-            self.drawGlyphRange(vertices, run_start, run_end - run_start);
-            run_start = run_end;
-        }
+        const run_mode: TextRenderMode = .grayscale;
+        setTextBlendMode(kind != .regular, run_mode);
+        const prog_state = switch (kind) {
+            .regular => &self.text_program,
+            .colr => self.ensureColrProgram(),
+            .path => self.ensurePathProgram(),
+            .hinted_text => self.ensureHintedTextProgram(),
+            .autohint => self.ensureAutohintProgram(),
+        };
+        self.bindProgramState(cache, prog_state, draw_state, run_mode);
+        self.drawGlyphRange(vertices, 0, total_glyphs);
     }
 
     fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {

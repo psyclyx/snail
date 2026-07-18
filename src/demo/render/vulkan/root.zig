@@ -149,24 +149,20 @@ pub const Renderer = struct {
         for (segments) |seg| {
             const seg_words = words[seg.words_offset..][0..seg.words_len];
             std.debug.assert(seg_words.len == @as(usize, seg.shape_count) * snail.render.records.WORDS_PER_INSTANCE);
-            var runs = contract.glyphRuns(seg_words);
-            while (runs.next()) |run| {
-                const mode: contract.TextRenderMode = if (run.kind == .regular)
-                    contract.textRenderMode(seg_words, run.glyph_start, run.glyph_count, draw_state, self.supports_dual_src)
-                else
-                    .grayscale;
-                const family = contract.familyForRun(run.kind, mode);
-                vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
+            const mode: contract.TextRenderMode = if (seg.kind == .regular)
+                contract.textRenderMode(draw_state, self.supports_dual_src)
+            else
+                .grayscale;
+            const family = contract.familyForKind(seg.kind, mode);
+            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
 
-                var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
-                vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
+            var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
+            vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
-                const abs_word = seg.words_offset + run.glyph_start * snail.render.records.WORDS_PER_INSTANCE;
-                var buf = self.vbo.buffer;
-                const offset: vk.VkDeviceSize = @intCast(base + abs_word * @sizeOf(u32));
-                vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
-                vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, @intCast(run.glyph_count), 0, 0, 0);
-            }
+            var buf = self.vbo.buffer;
+            const offset: vk.VkDeviceSize = @intCast(base + seg.words_offset * @sizeOf(u32));
+            vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
+            vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, seg.shape_count, 0, 0, 0);
         }
     }
 

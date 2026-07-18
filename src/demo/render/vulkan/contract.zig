@@ -156,7 +156,7 @@ pub fn blendAttachment(mode: Blend) vk.VkPipelineColorBlendAttachmentState {
 // ── Pipeline recipes ──
 
 /// A shape family the caller builds one pipeline for. `subpixel` is the LCD
-/// variant of regular text; the rest map 1:1 to `GlyphRunKind`.
+/// variant of regular text; the rest map 1:1 to `ShapeKind`.
 pub const Family = enum { text, colr, path, hinted_text, autohint, subpixel };
 
 /// The frag module + blend the caller's pipeline for `family` must use. Vertex
@@ -180,77 +180,28 @@ pub fn recipe(family: Family) PipelineRecipe {
     };
 }
 
-// ── Glyph-run dispatch ──
-
-/// The `emit` byte stream is a sequence of runs, each a maximal span of glyphs
-/// of one kind. A caller walks the runs and binds the matching family pipeline
-/// per run — exactly what the all-in-one renderer does internally.
-pub const GlyphRunKind = vertex.ShapeKind;
-
-pub const GlyphRun = struct {
-    kind: GlyphRunKind,
-    glyph_start: usize,
-    glyph_count: usize,
-};
-
-pub const GlyphRunIterator = struct {
-    words: []const u32,
-    total_glyphs: usize,
-    pos: usize = 0,
-
-    pub fn next(self: *GlyphRunIterator) ?GlyphRun {
-        if (self.pos >= self.total_glyphs) return null;
-        const kind = vertex.shapeKind(self.words, self.pos);
-        const end = vertex.shapeRunEnd(self.words, self.pos, kind);
-        defer self.pos = end;
-        return .{ .kind = kind, .glyph_start = self.pos, .glyph_count = end - self.pos };
-    }
-};
-
-/// Iterate the glyph runs in a segment's `emit` words.
-pub fn glyphRuns(words: []const u32) GlyphRunIterator {
-    return .{ .words = words, .total_glyphs = words.len / vertex.WORDS_PER_INSTANCE };
-}
-
-/// The family whose pipeline draws a run of `kind` in the grayscale
-/// (non-subpixel) configuration. Regular text maps to `.text`; opt into
-/// `.subpixel` separately when the device supports dual-source blend.
-pub fn familyForRunKind(kind: GlyphRunKind) Family {
-    return familyForRun(kind, .grayscale);
-}
-
 /// The subpixel decision for regular text: `grayscale` uses the `.text`
 /// pipeline, `subpixel_dual_source` uses `.subpixel` (dual-source blend).
 pub const TextRenderMode = enum { grayscale, subpixel_dual_source };
 
 /// Choose the render mode for a regular-text run, matching the all-in-one
 /// renderer. Returns `.grayscale` unless subpixel is requested (`draw_state`'s
-/// subpixel order), the run is axis-aligned enough, and `supports_dual_src` is
-/// true. The caller passes the result to `familyForRun` and to
+/// subpixel order) and `supports_dual_src` is true. The caller passes the
+/// result to `familyForKind` and to
 /// `textPushConstants`'s `grayscale` flag (`mode == .grayscale`).
 pub fn textRenderMode(
-    words: []const u32,
-    glyph_start: usize,
-    glyph_count: usize,
     draw_state: render_state.DrawState,
     supports_dual_src: bool,
 ) TextRenderMode {
-    const total_glyphs = words.len / vertex.WORDS_PER_INSTANCE;
-    if (words.len % vertex.WORDS_PER_INSTANCE != 0 or
-        glyph_start > total_glyphs or
-        glyph_count > total_glyphs - glyph_start)
-    {
-        return .grayscale;
-    }
     if (draw_state.raster.subpixel_order != .none and supports_dual_src) {
         return .subpixel_dual_source;
     }
     return .grayscale;
 }
 
-/// The family whose pipeline draws a run. Non-regular kinds map 1:1; regular
+/// The family whose pipeline draws a segment. Non-regular kinds map 1:1; regular
 /// text picks `.text` or `.subpixel` from `regular_mode` (see `textRenderMode`).
-pub fn familyForRun(kind: GlyphRunKind, regular_mode: TextRenderMode) Family {
+pub fn familyForKind(kind: vertex.ShapeKind, regular_mode: TextRenderMode) Family {
     return switch (kind) {
         .regular => switch (regular_mode) {
             .grayscale => .text,

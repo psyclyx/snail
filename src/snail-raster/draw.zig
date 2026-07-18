@@ -136,6 +136,7 @@ test "draw MissingBinding when no cache covers the binding's pool" {
         .words_offset = 0,
         .words_len = 0,
         .shape_count = 0,
+        .kind = .regular,
     }};
     const records = DrawRecords{ .words = &.{}, .segments = &segments };
     try testing.expectError(error.MissingBinding, draw(&renderer, state, records, &.{&cache_a}, null));

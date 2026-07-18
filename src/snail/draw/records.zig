@@ -6,8 +6,20 @@
 //!
 const std = @import("std");
 const page_pool_mod = @import("../atlas/page_pool.zig");
+const abi_mod = @import("../format/abi.zig");
+const vertex_mod = @import("../format/vertex.zig");
 
 pub const PagePool = page_pool_mod.PagePool;
+
+/// Semantic family of every instance in a `DrawSegment`. This describes the
+/// prepared record; callers decide which shader or pipeline consumes it.
+pub const ShapeKind = enum {
+    regular,
+    colr,
+    path,
+    hinted_text,
+    autohint,
+};
 
 /// Identifies which `PagePool` an atlas was uploaded against plus the
 /// cache-side slot identity (`generation`) and the offsets into the
@@ -37,21 +49,9 @@ pub const DrawSegment = struct {
     words_len: u32,
     /// Number of instances in this segment.
     shape_count: u32,
-    /// Bitmask of glyph kinds present in this segment. Bit positions
-    /// match `GlyphRunKind` (regular=0, colr=1, path=2, hinted_text=3).
-    /// A popcount of 1 means every shape in the segment uses the same
-    /// program — backends can skip the per-frame run-kind walk and
-    /// issue a single draw. mergeIfAdjacent unions the masks of the
-    /// segments it merges. `0` means "unknown" — emitted by paths that
-    /// haven't been updated; the backends fall back to walking.
-    kind_mask: u8 = 0,
+    /// Exact semantic family shared by every instance in this segment.
+    kind: ShapeKind,
 };
-
-pub const KIND_BIT_REGULAR: u8 = 1 << 0;
-pub const KIND_BIT_COLR: u8 = 1 << 1;
-pub const KIND_BIT_PATH: u8 = 1 << 2;
-pub const KIND_BIT_HINTED_TEXT: u8 = 1 << 3;
-pub const KIND_BIT_AUTOHINT: u8 = 1 << 4;
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -59,16 +59,32 @@ pub const DrawRecords = struct {
 };
 
 /// Try to merge `next` into the last segment of `segs` if the two are
-/// adjacent in `words` and share a binding. Returns true if merged.
+/// adjacent in `words` and share a binding and semantic family. Returns true
+/// if merged.
 pub fn mergeIfAdjacent(segs: []DrawSegment, len: *usize, next: DrawSegment) bool {
     if (len.* == 0) return false;
     const last = &segs[len.* - 1];
     if (!last.binding.eql(next.binding)) return false;
+    if (last.kind != next.kind) return false;
     if (last.words_offset + last.words_len != next.words_offset) return false;
     last.words_len += next.words_len;
     last.shape_count += next.shape_count;
-    last.kind_mask |= next.kind_mask;
     return true;
+}
+
+/// Decode the semantic family encoded in one packed instance. Emit uses this
+/// once while constructing homogeneous segments; it is also useful for ABI
+/// validation and diagnostics without imposing renderer dispatch policy.
+pub fn shapeKind(words: []const u32, shape_index: usize) ShapeKind {
+    std.debug.assert(words.len % vertex_mod.WORDS_PER_INSTANCE == 0);
+    const packed_word = vertex_mod.instanceAt(words, shape_index).glyph[1];
+    if (!abi_mod.glyphWordIsSpecial(packed_word)) return .regular;
+    return switch (abi_mod.specialGlyphWordKind(packed_word) orelse .colr) {
+        .colr => .colr,
+        .path => .path,
+        .hinted_text => .hinted_text,
+        .autohint => .autohint,
+    };
 }
 
 test "binding equality compares pool, generation, and offsets" {
@@ -89,7 +105,7 @@ test "binding equality compares pool, generation, and offsets" {
     try std.testing.expect(!b1.eql(b1_other_row));
 }
 
-test "mergeIfAdjacent merges contiguous heterogeneous segments" {
+test "mergeIfAdjacent merges only contiguous homogeneous segments" {
     var pool = try PagePool.init(std.testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 128,
@@ -106,6 +122,7 @@ test "mergeIfAdjacent merges contiguous heterogeneous segments" {
         .words_offset = 0,
         .words_len = 16,
         .shape_count = 1,
+        .kind = .regular,
     };
     len += 1;
 
@@ -114,9 +131,19 @@ test "mergeIfAdjacent merges contiguous heterogeneous segments" {
         .words_offset = 16,
         .words_len = 32,
         .shape_count = 2,
+        .kind = .regular,
     };
     try std.testing.expect(mergeIfAdjacent(buf[0..], &len, next));
     try std.testing.expectEqual(@as(usize, 1), len);
     try std.testing.expectEqual(@as(u32, 48), buf[0].words_len);
     try std.testing.expectEqual(@as(u32, 3), buf[0].shape_count);
+
+    const different_kind = DrawSegment{
+        .binding = binding,
+        .words_offset = 48,
+        .words_len = 16,
+        .shape_count = 1,
+        .kind = .path,
+    };
+    try std.testing.expect(!mergeIfAdjacent(buf[0..], &len, different_kind));
 }
