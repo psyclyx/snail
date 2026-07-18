@@ -25,6 +25,7 @@ test "external renderers need only the public snail api" {
         _ = snail.render.records.WORDS_PER_INSTANCE;
         _ = snail.render.records.DrawRecords;
         _ = snail.render.records.ShapeKind;
+        _ = snail.OwnedAtlasUploadPlanner;
         _ = snail.shader.glsl.source(.coverage_common);
         _ = snail.shader.glsl.fileName(.text_sample_interface_vulkan);
         _ = snail.shader.glsl.dependencies.text_sample;

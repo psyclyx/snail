@@ -90,6 +90,7 @@ pub const Atlas = atlas_mod.Atlas;
 /// to reach through the internal `files` namespace for its backing types.
 pub const atlas_upload = @import("atlas/upload_plan.zig");
 pub const AtlasUploadPlanner = atlas_upload.Planner;
+pub const OwnedAtlasUploadPlanner = atlas_upload.OwnedPlanner;
 pub const AtlasEntry = atlas_mod.Entry;
 pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;

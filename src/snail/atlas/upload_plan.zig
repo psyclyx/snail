@@ -407,6 +407,94 @@ pub const Planner = struct {
     }
 };
 
+/// Result of one owned-planner operation. `regions` remains valid until the
+/// next `plan` or `planDelta` call on the same `OwnedPlanner`.
+pub const PlannedUpload = struct {
+    binding: Binding,
+    regions: []const Region,
+};
+
+/// Allocator-backed convenience around `Planner`. It owns only the planner's
+/// backend-neutral bookkeeping, region output, and layer-info scratch; GPU
+/// resources and the application of each `Region` remain entirely caller-owned.
+pub const OwnedPlanner = struct {
+    allocator: std.mem.Allocator,
+    planner: Planner,
+    generation: []u16,
+    curve_words: []u32,
+    band_words: []u32,
+    bindings: []Slot,
+    info_free: []Range,
+    image_free: []Range,
+    regions: []Region,
+    layer_info_scratch: []f32,
+
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, opts: Options) (std.mem.Allocator.Error || InitError)!OwnedPlanner {
+        const required = sizes(pool, opts);
+        const generation = try allocator.alloc(u16, required.generation);
+        errdefer allocator.free(generation);
+        const curve_words = try allocator.alloc(u32, required.curve_words);
+        errdefer allocator.free(curve_words);
+        const band_words = try allocator.alloc(u32, required.band_words);
+        errdefer allocator.free(band_words);
+        const bindings = try allocator.alloc(Slot, required.bindings);
+        errdefer allocator.free(bindings);
+        const info_free = try allocator.alloc(Range, required.info_free);
+        errdefer allocator.free(info_free);
+        const image_free = try allocator.alloc(Range, required.image_free);
+        errdefer allocator.free(image_free);
+        const regions = try allocator.alloc(Region, required.regions);
+        errdefer allocator.free(regions);
+        const layer_info_scratch = try allocator.alloc(f32, required.layer_info_scratch);
+        errdefer allocator.free(layer_info_scratch);
+
+        return .{
+            .allocator = allocator,
+            .planner = try Planner.init(pool, opts, generation, curve_words, band_words, bindings, info_free, image_free),
+            .generation = generation,
+            .curve_words = curve_words,
+            .band_words = band_words,
+            .bindings = bindings,
+            .info_free = info_free,
+            .image_free = image_free,
+            .regions = regions,
+            .layer_info_scratch = layer_info_scratch,
+        };
+    }
+
+    pub fn deinit(self: *OwnedPlanner) void {
+        self.allocator.free(self.generation);
+        self.allocator.free(self.curve_words);
+        self.allocator.free(self.band_words);
+        self.allocator.free(self.bindings);
+        self.allocator.free(self.info_free);
+        self.allocator.free(self.image_free);
+        self.allocator.free(self.regions);
+        self.allocator.free(self.layer_info_scratch);
+        self.* = undefined;
+    }
+
+    pub fn plan(self: *OwnedPlanner, atlas: *const Atlas) Error!PlannedUpload {
+        var region_count: usize = 0;
+        const binding = try self.planner.plan(atlas, self.regions, &region_count, self.layer_info_scratch);
+        return .{ .binding = binding, .regions = self.regions[0..region_count] };
+    }
+
+    pub fn planDelta(self: *OwnedPlanner, previous: Binding, atlas: *const Atlas) Error!PlannedUpload {
+        var region_count: usize = 0;
+        const binding = try self.planner.planDelta(previous, atlas, self.regions, &region_count, self.layer_info_scratch);
+        return .{ .binding = binding, .regions = self.regions[0..region_count] };
+    }
+
+    pub fn release(self: *OwnedPlanner, binding: Binding) bool {
+        return self.planner.release(binding);
+    }
+
+    pub fn invalidateUploads(self: *OwnedPlanner) void {
+        self.planner.invalidateUploads();
+    }
+};
+
 fn emitRegion(out: []Region, out_len: *usize, r: Region) Error!void {
     if (out_len.* >= out.len) return error.RegionBufferFull;
     out[out_len.*] = r;
@@ -470,6 +558,31 @@ test "FreeList matches RangeAllocator take/release semantics" {
     try std.testing.expectEqual(@as(u32, 0), c.base);
     const d = fl.take(8).?;
     try std.testing.expectEqual(@as(u32, 8), d.base);
+}
+
+test "OwnedPlanner owns only backend-neutral planner storage" {
+    const allocator = std.testing.allocator;
+    var pool = try PagePool.init(allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = CURVE_TEX_WIDTH * 4,
+        .band_words_per_page = BAND_TEX_WIDTH * 2,
+    });
+    defer pool.deinit();
+
+    var planner = try OwnedPlanner.init(allocator, pool, .{
+        .max_bindings = 1,
+        .layer_info_height = 0,
+        .max_images = 0,
+        .max_image_width = 0,
+        .max_image_height = 0,
+    });
+    defer planner.deinit();
+
+    var atlas = Atlas.empty(allocator);
+    defer atlas.deinit();
+    const upload = try planner.plan(&atlas);
+    try std.testing.expectEqual(@as(usize, 0), upload.regions.len);
+    try std.testing.expect(planner.release(upload.binding));
 }
 
 test "Planner preflights atomically and is bound to one page pool" {

@@ -27,7 +27,6 @@ pub const records = struct {
     pub const DrawSegment = draw_mod.DrawSegment;
     pub const DrawRecords = draw_mod.DrawRecords;
     pub const ShapeKind = draw_mod.ShapeKind;
-    pub const shapeKind = draw_mod.shapeKind;
 
     pub const SpecialLayerKind = abi_mod.SpecialLayerKind;
     pub const PaintRecordKind = abi_mod.PaintRecordKind;

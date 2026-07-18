@@ -103,20 +103,11 @@ const Programs = struct {
 /// The complete caller-owned GPU side of a Snail atlas. Snail's planner says
 /// which bytes changed; this type decides what GL objects receive them.
 const GpuAtlas = struct {
-    allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     curve_tex: c.GLuint = 0,
     band_tex: c.GLuint = 0,
     layer_tex: c.GLuint = 0,
-    planner: snail.AtlasUploadPlanner,
-    generations: []u16,
-    curve_words: []u32,
-    band_words: []u32,
-    slots: []snail.atlas_upload.Slot,
-    info_free: []snail.atlas_upload.Range,
-    image_free: []snail.atlas_upload.Range,
-    regions: []snail.atlas_upload.Region,
-    info_scratch: []f32,
+    uploads: snail.OwnedAtlasUploadPlanner,
     binding: ?snail.render.records.Binding = null,
 
     const options = snail.atlas_upload.Options{
@@ -128,37 +119,11 @@ const GpuAtlas = struct {
     };
 
     fn init(allocator: std.mem.Allocator, pool: *snail.PagePool) !GpuAtlas {
-        const sizes = snail.atlas_upload.sizes(pool, options);
-        const generations = try allocator.alloc(u16, sizes.generation);
-        errdefer allocator.free(generations);
-        const curve_words = try allocator.alloc(u32, sizes.curve_words);
-        errdefer allocator.free(curve_words);
-        const band_words = try allocator.alloc(u32, sizes.band_words);
-        errdefer allocator.free(band_words);
-        const slots = try allocator.alloc(snail.atlas_upload.Slot, sizes.bindings);
-        errdefer allocator.free(slots);
-        const info_free = try allocator.alloc(snail.atlas_upload.Range, sizes.info_free);
-        errdefer allocator.free(info_free);
-        const image_free = try allocator.alloc(snail.atlas_upload.Range, sizes.image_free);
-        errdefer allocator.free(image_free);
-        const regions = try allocator.alloc(snail.atlas_upload.Region, sizes.regions);
-        errdefer allocator.free(regions);
-        const info_scratch = try allocator.alloc(f32, sizes.layer_info_scratch);
-        errdefer allocator.free(info_scratch);
-
         var self = GpuAtlas{
-            .allocator = allocator,
             .pool = pool,
-            .planner = try snail.AtlasUploadPlanner.init(pool, options, generations, curve_words, band_words, slots, info_free, image_free),
-            .generations = generations,
-            .curve_words = curve_words,
-            .band_words = band_words,
-            .slots = slots,
-            .info_free = info_free,
-            .image_free = image_free,
-            .regions = regions,
-            .info_scratch = info_scratch,
+            .uploads = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, options),
         };
+        errdefer self.uploads.deinit();
         self.createTextures();
         return self;
     }
@@ -167,14 +132,7 @@ const GpuAtlas = struct {
         c.glDeleteTextures(1, &self.curve_tex);
         c.glDeleteTextures(1, &self.band_tex);
         c.glDeleteTextures(1, &self.layer_tex);
-        self.allocator.free(self.generations);
-        self.allocator.free(self.curve_words);
-        self.allocator.free(self.band_words);
-        self.allocator.free(self.slots);
-        self.allocator.free(self.info_free);
-        self.allocator.free(self.image_free);
-        self.allocator.free(self.regions);
-        self.allocator.free(self.info_scratch);
+        self.uploads.deinit();
         self.* = undefined;
     }
 
@@ -207,20 +165,19 @@ const GpuAtlas = struct {
     /// old slot and plans a larger one; already-resident curve pages remain
     /// tracked and are not redundantly prepared.
     fn upload(self: *GpuAtlas, atlas: *const snail.Atlas) !void {
-        var region_count: usize = 0;
-        const next = if (self.binding) |old|
-            self.planner.planDelta(old, atlas, self.regions, &region_count, self.info_scratch) catch |err| switch (err) {
+        const planned = if (self.binding) |old|
+            self.uploads.planDelta(old, atlas) catch |err| switch (err) {
                 error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow => blk: {
-                    std.debug.assert(self.planner.release(old));
-                    break :blk try self.planner.plan(atlas, self.regions, &region_count, self.info_scratch);
+                    std.debug.assert(self.uploads.release(old));
+                    break :blk try self.uploads.plan(atlas);
                 },
                 else => return err,
             }
         else
-            try self.planner.plan(atlas, self.regions, &region_count, self.info_scratch);
+            try self.uploads.plan(atlas);
 
-        for (self.regions[0..region_count]) |region| self.apply(region);
-        self.binding = next;
+        for (planned.regions) |region| self.apply(region);
+        self.binding = planned.binding;
     }
 
     fn apply(self: *GpuAtlas, region: snail.atlas_upload.Region) void {
