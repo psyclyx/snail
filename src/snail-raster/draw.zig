@@ -10,10 +10,10 @@ const std = @import("std");
 
 const snail = @import("snail");
 const math = @import("snail");
-const draw_records = snail.render.draw_records;
+const draw_records = snail.render.records;
 const backend_cache_mod = @import("backend_cache.zig");
 const resources_mod = @import("resources.zig");
-const vertex = @import("snail").render.vertex;
+const vertex = @import("snail").render.records;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 pub const DrawRecords = draw_records.DrawRecords;

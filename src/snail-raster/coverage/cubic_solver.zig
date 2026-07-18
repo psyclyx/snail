@@ -10,7 +10,7 @@
 //! through 2000 lines of evaluator state.
 
 const std = @import("std");
-const bezier = @import("snail").render.curve;
+const bezier = @import("snail").render.atlas;
 const CurveSegment = bezier.CurveSegment;
 
 /// Up to three real roots from a polynomial solve, sorted ascending.

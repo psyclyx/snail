@@ -7,15 +7,22 @@ const ring_buffer_mod = @import("embed_gl_ring_buffer.zig");
 const RingBuffer = ring_buffer_mod.RingBuffer;
 const gl_common = @import("embed_gl_common.zig");
 const linear_resolve = @import("embed_gl_linear_resolve.zig");
-const draw_records_mod = @import("snail").render.draw_records;
+const draw_records_mod = @import("snail").render.records;
 const shaders = @import("embed_gl_shaders.zig").Gl330;
-const subpixel_policy = @import("snail").render.subpixel;
-const vertex = @import("snail").render.vertex;
+const vertex = @import("snail").render.records;
 const snail_mod = @import("snail");
 const SubpixelOrder = @import("snail").SubpixelOrder;
 const LinearResolve = snail_mod.LinearResolve;
 const DrawState = snail_mod.DrawState;
 const TargetSurface = snail_mod.TargetSurface;
+
+const ShapeKind = draw_records_mod.ShapeKind;
+const TextRenderMode = enum { grayscale, subpixel_dual_source };
+
+fn regularTextRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextRenderMode {
+    if (order != .none and supports_dual_source) return .subpixel_dual_source;
+    return .grayscale;
+}
 
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
@@ -302,7 +309,7 @@ fn TextStateFor(comptime backend: Backend) type {
             // generic walk; segments with a missing/legacy zero mask
             // also fall through for safety.
             if (seg_kind_mask != 0 and @popCount(seg_kind_mask) == 1) {
-                const run_kind: subpixel_policy.GlyphRunKind = switch (seg_kind_mask) {
+                const run_kind: ShapeKind = switch (seg_kind_mask) {
                     draw_records_mod.KIND_BIT_REGULAR => .regular,
                     draw_records_mod.KIND_BIT_COLR => .colr,
                     draw_records_mod.KIND_BIT_PATH => .path,
@@ -310,13 +317,11 @@ fn TextStateFor(comptime backend: Backend) type {
                     draw_records_mod.KIND_BIT_AUTOHINT => .autohint,
                     else => unreachable,
                 };
-                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                const run_mode: TextRenderMode = if (run_kind != .regular)
                     .grayscale
                 else
-                    subpixel_policy.chooseBaseTextRenderMode(
-                        draw_state.mvp,
-                        allow_subpixel,
-                        draw_state.raster.subpixel_order,
+                    regularTextRenderMode(
+                        if (allow_subpixel) draw_state.raster.subpixel_order else .none,
                         self.supports_dual_source_blend,
                     );
                 self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
@@ -337,18 +342,13 @@ fn TextStateFor(comptime backend: Backend) type {
 
             var run_start: usize = 0;
             while (run_start < total_glyphs) {
-                const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
-                const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
-                const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
+                const run_kind = draw_records_mod.shapeKind(vertices, run_start);
+                const run_end = draw_records_mod.shapeRunEnd(vertices, run_start, run_kind);
+                const run_mode: TextRenderMode = if (run_kind != .regular)
                     .grayscale
                 else
-                    subpixel_policy.chooseTextRenderModeRange(
-                        vertices,
-                        run_start,
-                        run_end - run_start,
-                        draw_state.mvp,
-                        allow_subpixel,
-                        draw_state.raster.subpixel_order,
+                    regularTextRenderMode(
+                        if (allow_subpixel) draw_state.raster.subpixel_order else .none,
                         self.supports_dual_source_blend,
                     );
                 self.setBlendMode(textBlendMode(run_kind != .regular, run_mode));
@@ -374,7 +374,7 @@ fn TextStateFor(comptime backend: Backend) type {
         /// per-call uniforms (mvp/viewport/subpixel_order/output_srgb/
         /// coverage_exponent) are shadow-cached per program so steady-
         /// state frames upload only what actually changed.
-        fn bindProgramState(self: *GlTextState, cache: *const GlBackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+        fn bindProgramState(self: *GlTextState, cache: *const GlBackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);
@@ -744,7 +744,7 @@ fn applyBlendMode(mode: BlendMode) void {
     }
 }
 
-fn textBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) BlendMode {
+fn textBlendMode(special: bool, render_mode: TextRenderMode) BlendMode {
     if (!special and render_mode == .subpixel_dual_source) return .dual_source;
     return .normal;
 }

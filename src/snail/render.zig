@@ -1,51 +1,119 @@
-//! Public contract for caller-owned renderers.
+//! Public data contract for caller-owned renderers.
 //!
-//! Snail prepares atlas data and draw records, but callers own GPU objects,
-//! shader entry points, command submission, and presentation.  This namespace
-//! exposes the byte layouts and backend-neutral policies needed to consume
-//! those records without reaching into Snail's source-file structure.
+//! Snail prepares atlas data and draw records; callers own GPU objects, shader
+//! entry points, command submission, and presentation. Only the symbols needed
+//! to consume those prepared bytes are exposed here. Encoding, cache allocation,
+//! and renderer implementation helpers remain private to their owners.
 
-/// Packed draw-record layout and symbolic decoders.
-pub const abi = @import("format/abi.zig");
-pub const vertex = @import("format/vertex.zig");
-pub const draw_records = @import("draw/records.zig");
+const abi_mod = @import("format/abi.zig");
+const vertex_mod = @import("format/vertex.zig");
+const draw_mod = @import("draw/records.zig");
+const curve_texture_mod = @import("format/curve_texture.zig");
+const band_texture_mod = @import("format/band_texture.zig");
+const text_hint_mod = @import("format/text_hint.zig");
+const autohint_record_mod = @import("format/autohint_record.zig");
+const curve_mod = @import("math/bezier.zig");
+const std = @import("std");
 
-/// Atlas texture formats consumed by the coverage algorithms.
-pub const curve_texture = @import("format/curve_texture.zig");
-pub const band_texture = @import("format/band_texture.zig");
-pub const text_hint = @import("format/text_hint.zig");
-pub const autohint_record = @import("format/autohint_record.zig");
-pub const texture_layers = @import("format/texture_layers.zig");
+/// Emitted instance words, segment metadata, and symbolic record decoders.
+pub const records = struct {
+    pub const abi_version = abi_mod.version;
 
-/// Layer-info paint records and image-view patching.
-pub const paint_records = @import("atlas/paint_records.zig");
-pub const upload = @import("format/upload_common.zig");
+    pub const Instance = vertex_mod.Instance;
+    pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
+    pub const BYTES_PER_INSTANCE = vertex_mod.BYTES_PER_INSTANCE;
+    pub const instanceAt = vertex_mod.instanceAt;
 
-/// Backend-neutral helpers which renderer implementations may reuse.
-pub const cache = @import("render/cache.zig");
-pub const range_allocator = @import("render/range_allocator.zig");
-pub const RangeAllocator = range_allocator.RangeAllocator;
-pub const Range = range_allocator.Range;
-pub const subpixel = @import("render/subpixel_policy.zig");
+    pub const Binding = draw_mod.Binding;
+    pub const DrawSegment = draw_mod.DrawSegment;
+    pub const DrawRecords = draw_mod.DrawRecords;
+    pub const KIND_BIT_REGULAR = draw_mod.KIND_BIT_REGULAR;
+    pub const KIND_BIT_COLR = draw_mod.KIND_BIT_COLR;
+    pub const KIND_BIT_PATH = draw_mod.KIND_BIT_PATH;
+    pub const KIND_BIT_HINTED_TEXT = draw_mod.KIND_BIT_HINTED_TEXT;
+    pub const KIND_BIT_AUTOHINT = draw_mod.KIND_BIT_AUTOHINT;
 
-/// Analytic curve representation used by the CPU coverage implementation.
-pub const curve = @import("math/bezier.zig");
+    pub const SpecialLayerKind = abi_mod.SpecialLayerKind;
+    pub const PaintRecordKind = abi_mod.PaintRecordKind;
+    pub const BandCounts = abi_mod.BandCounts;
+    pub const paint_texels_per_record = abi_mod.paint_texels_per_record;
+    pub const composite_mode_fill_stroke_inside = abi_mod.composite_mode_fill_stroke_inside;
+    pub const hint_record_flag_expanded_bands = abi_mod.hint_record_flag_expanded_bands;
+    pub const hint_record_flag_unordered_bands = abi_mod.hint_record_flag_unordered_bands;
+    pub const glyphLocationX = abi_mod.glyphLocationX;
+    pub const glyphLocationY = abi_mod.glyphLocationY;
+    pub const glyphWordAtlasLayer = abi_mod.glyphWordAtlasLayer;
+    pub const glyphWordIsSpecial = abi_mod.glyphWordIsSpecial;
+    pub const specialGlyphWordKind = abi_mod.specialGlyphWordKind;
+    pub const specialGlyphWordLayerCount = abi_mod.specialGlyphWordLayerCount;
+    pub const regularGlyphWordHBandCount = abi_mod.regularGlyphWordHBandCount;
+    pub const regularGlyphWordVBandCount = abi_mod.regularGlyphWordVBandCount;
+    pub const unpackBandCounts = abi_mod.unpackBandCounts;
+
+    /// Semantic shape family encoded by an emitted instance. This describes
+    /// the record; it does not prescribe a pipeline, shader, or blend mode.
+    pub const ShapeKind = enum {
+        regular,
+        colr,
+        path,
+        hinted_text,
+        autohint,
+    };
+
+    pub fn shapeKind(words: []const u32, shape_index: usize) ShapeKind {
+        std.debug.assert(words.len % WORDS_PER_INSTANCE == 0);
+        const packed_word = instanceAt(words, shape_index).glyph[1];
+        if (!glyphWordIsSpecial(packed_word)) return .regular;
+        return switch (specialGlyphWordKind(packed_word) orelse .colr) {
+            .colr => .colr,
+            .path => .path,
+            .hinted_text => .hinted_text,
+            .autohint => .autohint,
+        };
+    }
+
+    /// End of the maximal run beginning at `shape_start` with `kind`.
+    pub fn shapeRunEnd(words: []const u32, shape_start: usize, kind: ShapeKind) usize {
+        std.debug.assert(words.len % WORDS_PER_INSTANCE == 0);
+        const shape_count = words.len / WORDS_PER_INSTANCE;
+        std.debug.assert(shape_start < shape_count);
+
+        var end = shape_start + 1;
+        while (end < shape_count and shapeKind(words, end) == kind) : (end += 1) {}
+        return end;
+    }
+};
+
+/// Decoders for the immutable atlas bytes returned by `AtlasUploadPlanner`.
+/// GPU callers normally use the shipped shader functions; this surface lets a
+/// software renderer consume the exact same representation.
+pub const atlas = struct {
+    pub const CURVE_TEX_WIDTH = @import("atlas/upload_plan.zig").CURVE_TEX_WIDTH;
+    pub const BAND_TEX_WIDTH = @import("atlas/upload_plan.zig").BAND_TEX_WIDTH;
+    pub const INFO_WIDTH = @import("atlas/upload_plan.zig").INFO_WIDTH;
+
+    pub const CurveKind = curve_mod.CurveKind;
+    pub const CurveSegment = curve_mod.CurveSegment;
+    pub const GlyphBandEntry = band_texture_mod.GlyphBandEntry;
+
+    pub const CURVE_SEGMENT_TEXELS = curve_texture_mod.SEGMENT_TEXELS;
+    pub const PACKED_ANCHOR_CHUNK_EXTENT = curve_texture_mod.PACKED_ANCHOR_CHUNK_EXTENT;
+    pub const DIRECT_ENCODING_KIND_BIAS = curve_texture_mod.DIRECT_ENCODING_KIND_BIAS;
+    pub const decodePackedAnchor = curve_texture_mod.decodePackedAnchor;
+    pub const unpackBandPadding = text_hint_mod.unpackBandPadding;
+
+    pub const autohint = struct {
+        pub const header_floats = autohint_record_mod.header_floats;
+        pub const BandEntry = autohint_record_mod.BandEntry;
+        pub const readBandEntry = autohint_record_mod.readBandEntry;
+        pub const fontFeatures = autohint_record_mod.fontFeatures;
+        pub const glyphLeft = autohint_record_mod.glyphLeft;
+        pub const xFeatures = autohint_record_mod.xFeatures;
+        pub const yFeatures = autohint_record_mod.yFeatures;
+    };
+};
 
 test {
-    _ = abi;
-    _ = vertex;
-    _ = draw_records;
-    _ = curve_texture;
-    _ = band_texture;
-    _ = text_hint;
-    _ = autohint_record;
-    _ = texture_layers;
-    _ = paint_records;
-    _ = upload;
-    _ = cache;
-    _ = range_allocator;
-    _ = RangeAllocator;
-    _ = Range;
-    _ = subpixel;
-    _ = curve;
+    _ = records;
+    _ = atlas;
 }

@@ -26,14 +26,11 @@ const atlas_mod = @import("snail");
 const draw_records = @import("snail");
 const page_mod = @import("snail");
 const page_pool_mod = @import("snail");
-const curve_tex = @import("snail").render.curve_texture;
-const band_tex = @import("snail").render.band_texture;
-const paint_records = @import("snail").render.paint_records;
+const upload_plan = @import("snail").atlas_upload;
 const resources_mod = @import("resources.zig");
 const path_paint_mod = @import("path_paint.zig");
 const image_mod = @import("snail");
-const cache_base = @import("snail").render.cache;
-const range_allocator = @import("snail").render.range_allocator;
+const range_allocator = @import("range_allocator.zig");
 
 const RangeAllocator = range_allocator.RangeAllocator;
 const Range = range_allocator.Range;
@@ -46,13 +43,34 @@ pub const PreparedAtlasPage = resources_mod.PreparedAtlasPage;
 pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const Image = image_mod.Image;
 
-const CURVE_WORDS_PER_ROW: u32 = curve_tex.TEX_WIDTH * 4;
-const BAND_WORDS_PER_ROW: u32 = band_tex.TEX_WIDTH * 2;
-const INFO_WIDTH: u32 = paint_records.info_width;
+const CURVE_WORDS_PER_ROW: u32 = upload_plan.CURVE_TEX_WIDTH * 4;
+const BAND_WORDS_PER_ROW: u32 = upload_plan.BAND_TEX_WIDTH * 2;
+const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
-pub const CacheOptions = cache_base.BaseCacheOptions;
-pub const UploadError = cache_base.BaseUploadError;
-pub const ResizeError = cache_base.BaseResizeError;
+fn patchImagePaintRecord(data: []f32, row_base: u32, texel_offset: u32, layer: u32) void {
+    const texel_x = texel_offset % INFO_WIDTH;
+    const texel_y = row_base + texel_offset / INFO_WIDTH;
+    const record_base = (texel_y * INFO_WIDTH + texel_x) * 4;
+    data[record_base + 2 * 4 + 3] = @floatFromInt(layer);
+    data[record_base + 5 * 4 + 0] = 1.0;
+    data[record_base + 5 * 4 + 1] = 1.0;
+}
+
+pub const CacheOptions = struct {
+    max_bindings: u32 = 16,
+    layer_info_height: u32 = 64,
+    max_images: u32 = 16,
+};
+pub const UploadError = error{
+    NoFreeBinding,
+    NoFreeLayerInfoRows,
+    NoFreeImageLayers,
+    NoLayerInfoRoomToGrow,
+    UnknownPool,
+    UnknownBinding,
+    PageNotInPool,
+} || std.mem.Allocator.Error;
+pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
 
 pub const BackendCache = struct {
     allocator: std.mem.Allocator,
@@ -446,17 +464,7 @@ pub const BackendCache = struct {
                     }
                     // Absolute layer in cache's image storage.
                     const abs_layer = image_layer_base + gop.value_ptr.*;
-                    const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
-                    const uv_scale_x: f32 = 1.0;
-                    const uv_scale_y: f32 = 1.0;
-                    @import("snail").render.upload.patchImagePaintRecord(
-                        self.layer_info_buf,
-                        INFO_WIDTH,
-                        INFO_WIDTH,
-                        slot.info_row_base,
-                        rec.texel_offset,
-                        View{ .layer = abs_layer, .uv_scale = .{ .x = uv_scale_x, .y = uv_scale_y } },
-                    );
+                    patchImagePaintRecord(self.layer_info_buf, slot.info_row_base, rec.texel_offset, abs_layer);
                 }
             }
 
@@ -526,9 +534,9 @@ const PageView = struct {
         return .{
             .curve_data = p.curve.data,
             .band_data = p.band.data,
-            .curve_width = curve_tex.TEX_WIDTH,
+            .curve_width = upload_plan.CURVE_TEX_WIDTH,
             .curve_height = @intCast(curve_words / CURVE_WORDS_PER_ROW),
-            .band_width = band_tex.TEX_WIDTH,
+            .band_width = upload_plan.BAND_TEX_WIDTH,
             .band_height = @intCast(band_words / BAND_WORDS_PER_ROW),
         };
     }

@@ -6,14 +6,19 @@ test "external renderers need only the public snail api" {
     comptime {
         if (@hasDecl(snail, "core")) @compileError("snail.core must not be public");
         if (@hasDecl(snail, "files")) @compileError("snail.files must not be public");
+        if (@hasDecl(snail.render, "cache")) @compileError("cache policy belongs to renderer implementations");
+        if (@hasDecl(snail.render, "range_allocator")) @compileError("cache allocation belongs to renderer implementations");
+        if (@hasDecl(snail.render, "paint_records")) @compileError("paint encoding is not a renderer contract");
+        if (@hasDecl(snail.render, "upload")) @compileError("upload patching is owned by AtlasUploadPlanner");
+        if (@hasDecl(snail.render, "subpixel")) @compileError("pipeline selection belongs to renderer implementations");
 
-        _ = snail.render.abi.version;
-        _ = snail.render.vertex.WORDS_PER_INSTANCE;
-        _ = snail.render.curve_texture.TEX_WIDTH;
-        _ = snail.render.band_texture.TEX_WIDTH;
-        _ = snail.render.paint_records.info_width;
-        _ = snail.render.draw_records.DrawRecords;
-        _ = snail.render.subpixel.TextRenderMode;
+        _ = snail.render.records.abi_version;
+        _ = snail.render.records.WORDS_PER_INSTANCE;
+        _ = snail.render.atlas.CURVE_TEX_WIDTH;
+        _ = snail.render.atlas.BAND_TEX_WIDTH;
+        _ = snail.render.atlas.INFO_WIDTH;
+        _ = snail.render.records.DrawRecords;
+        _ = snail.render.records.ShapeKind;
         _ = snail.shader.glsl.shader_library.coverage_functions;
         _ = snail.shader.glsl.embeddable.GlShaderSources.fragment_body;
         _ = snail.shader.vulkan.embeddable.records_interface_include;

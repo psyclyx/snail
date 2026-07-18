@@ -31,14 +31,9 @@ const atlas_mod = @import("snail");
 const draw_records = @import("snail");
 const page_pool_mod = @import("snail");
 const page_mod = @import("snail");
-const curve_tex = @import("snail").render.curve_texture;
-const band_tex = @import("snail").render.band_texture;
-const paint_records = @import("snail").render.paint_records;
-const upload_common = @import("snail").render.upload;
 const image_mod = @import("snail");
 const vk_types = @import("vulkan_types");
 const vk_device = @import("embed_vulkan_device.zig");
-const cache_base = @import("snail").render.cache;
 const upload_plan = @import("snail").atlas_upload;
 
 pub const vk = vk_types.vk;
@@ -50,21 +45,31 @@ pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const Image = image_mod.Image;
 
-const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
-const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
+const CURVE_TEX_WIDTH: u32 = upload_plan.CURVE_TEX_WIDTH;
+const BAND_TEX_WIDTH: u32 = upload_plan.BAND_TEX_WIDTH;
 const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
-const INFO_WIDTH: u32 = paint_records.info_width;
+const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
-pub const CacheOptions = cache_base.GpuCacheOptions;
-pub const UploadError = cache_base.BaseUploadError || upload_plan.Error || error{
+pub const CacheOptions = struct {
+    max_bindings: u32 = 16,
+    layer_info_height: u32 = 64,
+    max_images: u32 = 16,
+    max_image_width: u32 = 1024,
+    max_image_height: u32 = 1024,
+};
+
+pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
     ImageTooLarge,
     MissingCommandBuffer,
     NoSuitableMemory,
     VulkanError,
     VulkanMapMemoryReturnedNull,
 };
-pub const ResizeError = cache_base.BaseResizeError || upload_plan.InitError || error{VulkanError};
+pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{
+    ActiveBindingsPreventResize,
+    VulkanError,
+};
 
 /// Minimal pipeline-shape adapter the cache talks to. The real
 /// `VulkanPipeline` satisfies this surface; tests can stub it.

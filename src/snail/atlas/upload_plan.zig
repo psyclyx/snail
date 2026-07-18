@@ -107,7 +107,7 @@ pub fn sizes(pool: *const PagePool, opts: Options) Sizes {
 pub const Range = struct { base: u32, size: u32 };
 
 /// Fixed-capacity first-fit free-list over caller-provided backing — the
-/// allocator-free twin of `render/range_allocator.zig` (identical
+/// allocator-free twin of `snail-raster`'s range allocator (identical
 /// take/release semantics so bases match).
 const FreeList = struct {
     ranges: []Range,

@@ -4,8 +4,8 @@ const std = @import("std");
 const snail = @import("snail");
 const color = @import("color.zig");
 const atlas_mod = @import("snail");
-const band_tex = @import("snail").render.band_texture;
-const render_abi = @import("snail").render.abi;
+const band_tex = @import("snail").render.atlas;
+const render_abi = @import("snail").render.records;
 
 const PaintImageRecord = atlas_mod.PaintImageRecord;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -544,39 +544,4 @@ test "conic gradient sweeps angle to t" {
     try testing.expectApproxEqAbs(@as(f32, 0.25), p.sample(Vec2.new(0, 1)).color[0], 1e-4); // π/2 → t .25
     try testing.expectApproxEqAbs(@as(f32, 0.5), p.sample(Vec2.new(-1, 0)).color[0], 1e-4); // π → t .5
     try testing.expectApproxEqAbs(@as(f32, 0.75), p.sample(Vec2.new(0, -1)).color[0], 1e-4); // -π/2 → t .75
-}
-
-test "paint record round-trips: Paint → encode → decode → sample" {
-    const paint_records = @import("snail").render.paint_records;
-    const be = band_tex.GlyphBandEntry{
-        .glyph_x = 0,
-        .glyph_y = 0,
-        .h_band_count = 1,
-        .v_band_count = 1,
-        .band_scale_x = 1,
-        .band_scale_y = 1,
-        .band_offset_x = 0,
-        .band_offset_y = 0,
-    };
-    const w = render_abi.paint_texels_per_record;
-    var buf: [render_abi.paint_texels_per_record * 4]f32 = [_]f32{0} ** (render_abi.paint_texels_per_record * 4);
-
-    // Solid stores linear; sRGB fixed points survive exactly.
-    paint_records.write(&buf, w, 0, be, snail.Paint{ .solid = .{ 1, 0, 0, 1 } }, 0);
-    const solid = preparePathPaintFromLayerInfoOffset(&buf, 0, null);
-    try testing.expectEqual(PreparedPathPaint.Kind.solid, solid.kind);
-    try testing.expectEqual([4]f32{ 1, 0, 0, 1 }, solid.sample(Vec2.new(0, 0)).color);
-
-    // Conic through the real texel layout: π → midpoint.
-    const conic = snail.Paint{ .conic_gradient = .{
-        .center = .{ .x = 0, .y = 0 },
-        .start_angle = 0,
-        .start_color = .{ 0, 0, 0, 1 },
-        .end_color = .{ 1, 1, 1, 1 },
-        .extend = .repeat,
-    } };
-    paint_records.write(&buf, w, 0, be, conic, 0);
-    const decoded = preparePathPaintFromLayerInfoOffset(&buf, 0, null);
-    try testing.expectEqual(PreparedPathPaint.Kind.conic_gradient, decoded.kind);
-    try testing.expectApproxEqAbs(@as(f32, 0.5), decoded.sample(Vec2.new(-1, 0)).color[0], 1e-4);
 }

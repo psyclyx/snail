@@ -6,11 +6,11 @@ const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const cubic = @import("coverage/cubic_solver.zig");
 const texture = @import("texture.zig");
-const band_tex = @import("snail").render.band_texture;
-const render_abi = @import("snail").render.abi;
+const band_tex = @import("snail").render.atlas;
+const render_abi = @import("snail").render.records;
 
-const bezier = @import("snail").render.curve;
-const curve_tex = @import("snail").render.curve_texture;
+const bezier = @import("snail").render.atlas;
+const curve_tex = @import("snail").render.atlas;
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -738,8 +738,8 @@ fn hintedCurveIndex(record: HintedTextRecord, curve_base: usize) ?u32 {
     const curve_texel = @as(u32, @intCast(curve_base / 4));
     if (curve_texel < record.base_curve_texel) return null;
     const delta = curve_texel - record.base_curve_texel;
-    if (delta % curve_tex.SEGMENT_TEXELS != 0) return null;
-    const index = delta / curve_tex.SEGMENT_TEXELS;
+    if (delta % curve_tex.CURVE_SEGMENT_TEXELS != 0) return null;
+    const index = delta / curve_tex.CURVE_SEGMENT_TEXELS;
     if (index >= record.curve_count) return null;
     return index;
 }

@@ -25,17 +25,8 @@ const atlas_mod = @import("snail");
 const draw_records = @import("snail");
 const page_pool_mod = @import("snail");
 const page_mod = @import("snail");
-const curve_tex = @import("snail").render.curve_texture;
-const band_tex = @import("snail").render.band_texture;
-const paint_records = @import("snail").render.paint_records;
-const upload_common = @import("snail").render.upload;
 const image_mod = @import("snail");
-const cache_base = @import("snail").render.cache;
 const upload_plan = @import("snail").atlas_upload;
-const range_allocator = @import("snail").render.range_allocator;
-
-const RangeAllocator = range_allocator.RangeAllocator;
-const Range = range_allocator.Range;
 
 pub const Variant = enum {
     gl33,
@@ -60,17 +51,24 @@ pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const Image = image_mod.Image;
 
-const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
-const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
+const CURVE_TEX_WIDTH: u32 = upload_plan.CURVE_TEX_WIDTH;
+const BAND_TEX_WIDTH: u32 = upload_plan.BAND_TEX_WIDTH;
 /// One row of the curve texture is `TEX_WIDTH * 4` u16 words (RGBA16F).
 const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 /// One row of the band texture is `TEX_WIDTH * 2` u16 words (RG16UI).
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
-const INFO_WIDTH: u32 = paint_records.info_width;
+const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
-pub const CacheOptions = cache_base.GpuCacheOptions;
-pub const UploadError = cache_base.BaseUploadError || upload_plan.Error || error{ImageTooLarge};
-pub const ResizeError = cache_base.BaseResizeError || upload_plan.InitError;
+pub const CacheOptions = struct {
+    max_bindings: u32 = 16,
+    layer_info_height: u32 = 64,
+    max_images: u32 = 16,
+    max_image_width: u32 = 1024,
+    max_image_height: u32 = 1024,
+};
+
+pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{ImageTooLarge};
+pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{ActiveBindingsPreventResize};
 
 pub fn GlBackendCacheFor(comptime variant: Variant) type {
     const gl = bindingsFor(variant).gl;
@@ -519,8 +517,4 @@ test "GlBackendCache init allocates fixed-capacity slots" {
     // now lives in `snail.AtlasUploadPlanner`, unit-tested in upload_plan.zig).
     try testing.expectEqual(@as(usize, 3), cache.plan_slots.len);
     try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
-}
-
-comptime {
-    _ = paint_records;
 }

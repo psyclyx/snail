@@ -18,7 +18,7 @@ const coverage = @import("../coverage.zig");
 const subpixel = @import("subpixel.zig");
 const cubic = @import("cubic_solver.zig");
 const texture = @import("../texture.zig");
-const band_tex = @import("snail").render.band_texture;
+const band_tex = @import("snail").render.atlas;
 
 const FillRule = snail.FillRule;
 const Vec2 = snail.Vec2;

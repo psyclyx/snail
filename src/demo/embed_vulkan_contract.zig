@@ -20,8 +20,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const vertex = snail.render.vertex;
-const subpixel_policy = snail.render.subpixel;
+const vertex = snail.render.records;
 const vulkan_types = @import("vulkan_types");
 const vk_shaders = @import("vulkan_shaders");
 
@@ -185,7 +184,7 @@ pub fn recipe(family: Family) PipelineRecipe {
 /// The `emit` byte stream is a sequence of runs, each a maximal span of glyphs
 /// of one kind. A caller walks the runs and binds the matching family pipeline
 /// per run — exactly what the all-in-one renderer does internally.
-pub const GlyphRunKind = subpixel_policy.GlyphRunKind;
+pub const GlyphRunKind = vertex.ShapeKind;
 
 pub const GlyphRun = struct {
     kind: GlyphRunKind,
@@ -200,8 +199,8 @@ pub const GlyphRunIterator = struct {
 
     pub fn next(self: *GlyphRunIterator) ?GlyphRun {
         if (self.pos >= self.total_glyphs) return null;
-        const kind = subpixel_policy.glyphRunKind(self.words, self.pos);
-        const end = subpixel_policy.glyphRunEnd(self.words, self.pos, kind);
+        const kind = vertex.shapeKind(self.words, self.pos);
+        const end = vertex.shapeRunEnd(self.words, self.pos, kind);
         defer self.pos = end;
         return .{ .kind = kind, .glyph_start = self.pos, .glyph_count = end - self.pos };
     }
@@ -221,7 +220,7 @@ pub fn familyForRunKind(kind: GlyphRunKind) Family {
 
 /// The subpixel decision for regular text: `grayscale` uses the `.text`
 /// pipeline, `subpixel_dual_source` uses `.subpixel` (dual-source blend).
-pub const TextRenderMode = subpixel_policy.TextRenderMode;
+pub const TextRenderMode = enum { grayscale, subpixel_dual_source };
 
 /// Choose the render mode for a regular-text run, matching the all-in-one
 /// renderer. Returns `.grayscale` unless subpixel is requested (`draw_state`'s
@@ -235,15 +234,17 @@ pub fn textRenderMode(
     draw_state: snail.DrawState,
     supports_dual_src: bool,
 ) TextRenderMode {
-    return subpixel_policy.chooseTextRenderModeRange(
-        words,
-        glyph_start,
-        glyph_count,
-        draw_state.mvp,
-        true, // allow_subpixel
-        draw_state.raster.subpixel_order,
-        supports_dual_src,
-    );
+    const total_glyphs = words.len / vertex.WORDS_PER_INSTANCE;
+    if (words.len % vertex.WORDS_PER_INSTANCE != 0 or
+        glyph_start > total_glyphs or
+        glyph_count > total_glyphs - glyph_start)
+    {
+        return .grayscale;
+    }
+    if (draw_state.raster.subpixel_order != .none and supports_dual_src) {
+        return .subpixel_dual_source;
+    }
+    return .grayscale;
 }
 
 /// The family whose pipeline draws a run. Non-regular kinds map 1:1; regular

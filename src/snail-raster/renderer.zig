@@ -9,14 +9,14 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const bezier = @import("snail").render.curve;
-const band_tex = @import("snail").render.band_texture;
-const render_abi = @import("snail").render.abi;
-const text_hint_format = @import("snail").render.text_hint;
-const autohint_record = @import("snail").render.autohint_record;
+const bezier = @import("snail").render.atlas;
+const band_tex = @import("snail").render.atlas;
+const render_abi = @import("snail").render.records;
+const text_hint_format = @import("snail").render.atlas;
+const autohint_record = @import("snail").render.atlas.autohint;
 const autohint_warp = @import("snail").autohint.warp;
 const autohint_policy = @import("snail").autohint.policy;
-const vertex = @import("snail").render.vertex;
+const vertex = @import("snail").render.records;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 /// Caller-owned transient fitted knots for one glyph draw.
@@ -508,7 +508,7 @@ pub const Renderer = struct {
     }
 
     const BatchInstance = struct {
-        bbox: bezier.BBox,
+        bbox: snail.BBox,
         transform: Transform2D,
         glyph: [2]u32,
         band: [4]f32,
@@ -696,7 +696,7 @@ pub const Renderer = struct {
     fn renderColrBatchLayers(
         self: *Renderer,
         prepared: *const PreparedResources,
-        union_bbox: bezier.BBox,
+        union_bbox: snail.BBox,
         transform: Transform2D,
         default_color: [4]f32,
         tint: [4]f32,
@@ -803,7 +803,7 @@ pub const Renderer = struct {
         return null;
     }
 
-    fn pathRasterState(self: *const Renderer, bbox: bezier.BBox, transform: Transform2D, allow_subpixel: bool) ?PathRasterState {
+    fn pathRasterState(self: *const Renderer, bbox: snail.BBox, transform: Transform2D, allow_subpixel: bool) ?PathRasterState {
         const inverse = inverseTransform(transform) orelse return null;
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
@@ -1059,7 +1059,7 @@ pub const Renderer = struct {
     fn renderPathBatchLayers(
         self: *Renderer,
         prepared: *const PreparedResources,
-        union_bbox: bezier.BBox,
+        union_bbox: snail.BBox,
         transform: Transform2D,
         tint: [4]f32,
         atlas_layer: u32,
@@ -1374,7 +1374,7 @@ pub const Renderer = struct {
     fn renderCompositePathBatchLayers(
         self: *Renderer,
         page: *const PreparedAtlasPage,
-        union_bbox: bezier.BBox,
+        union_bbox: snail.BBox,
         transform: Transform2D,
         tint: [4]f32,
         entry: *const LayerInfoEntry,
@@ -1458,7 +1458,7 @@ pub const Renderer = struct {
     fn renderSinglePathBatchLayer(
         self: *Renderer,
         page: *const PreparedAtlasPage,
-        union_bbox: bezier.BBox,
+        union_bbox: snail.BBox,
         transform: Transform2D,
         tint: [4]f32,
         entry: *const LayerInfoEntry,
@@ -1647,7 +1647,7 @@ pub const Renderer = struct {
     fn renderTransformedGlyph(
         self: *Renderer,
         page: anytype,
-        bbox: bezier.BBox,
+        bbox: snail.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
@@ -1659,7 +1659,7 @@ pub const Renderer = struct {
     fn renderTransformedHintedGlyph(
         self: *Renderer,
         page: anytype,
-        bbox: bezier.BBox,
+        bbox: snail.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
@@ -1673,7 +1673,7 @@ pub const Renderer = struct {
     fn renderTransformedAutohintGlyph(
         self: *Renderer,
         page: anytype,
-        bbox: bezier.BBox,
+        bbox: snail.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
@@ -1698,7 +1698,7 @@ pub const Renderer = struct {
     fn renderTransformedGlyphMaybeHinted(
         self: *Renderer,
         page: anytype,
-        bbox: bezier.BBox,
+        bbox: snail.BBox,
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,

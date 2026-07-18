@@ -5,15 +5,16 @@ const gl_programs = @import("embed_gles30_programs.zig");
 const gles30_upload = @import("embed_gl_cache.zig");
 const gl_common = @import("embed_gl_common.zig");
 const linear_resolve = @import("embed_gl_linear_resolve.zig");
-const draw_records_mod = @import("snail").render.draw_records;
+const draw_records_mod = @import("snail").render.records;
 const shaders = @import("embed_gl_shaders.zig").Gles30;
-const subpixel_policy = @import("snail").render.subpixel;
-const vertex = @import("snail").render.vertex;
+const vertex = @import("snail").render.records;
 const snail_mod = @import("snail");
 const SubpixelOrder = @import("snail").SubpixelOrder;
 const LinearResolve = snail_mod.LinearResolve;
 const DrawState = snail_mod.DrawState;
 const TargetSurface = snail_mod.TargetSurface;
+
+const TextRenderMode = enum { grayscale };
 
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
@@ -155,26 +156,11 @@ pub const Gles30TextState = struct {
         const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
         if (total_glyphs == 0) return;
 
-        // GLES3 has no dual-source blend → no LCD subpixel; force
-        // grayscale for regular runs.
-        const allow_subpixel = false;
-
         var run_start: usize = 0;
         while (run_start < total_glyphs) {
-            const run_kind = subpixel_policy.glyphRunKind(vertices, run_start);
-            const run_end = subpixel_policy.glyphRunEnd(vertices, run_start, run_kind);
-            const run_mode: subpixel_policy.TextRenderMode = if (run_kind != .regular)
-                .grayscale
-            else
-                subpixel_policy.chooseTextRenderModeRange(
-                    vertices,
-                    run_start,
-                    run_end - run_start,
-                    draw_state.mvp,
-                    allow_subpixel,
-                    draw_state.raster.subpixel_order,
-                    false,
-                );
+            const run_kind = draw_records_mod.shapeKind(vertices, run_start);
+            const run_end = draw_records_mod.shapeRunEnd(vertices, run_start, run_kind);
+            const run_mode: TextRenderMode = .grayscale;
             setTextBlendMode(run_kind != .regular, run_mode);
             const prog_state = switch (run_kind) {
                 .regular => &self.text_program,
@@ -189,7 +175,7 @@ pub const Gles30TextState = struct {
         }
     }
 
-    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: subpixel_policy.TextRenderMode) void {
+    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);
@@ -389,7 +375,7 @@ const linear_resolve_fragment_shader: [:0]const u8 =
     \\}
 ;
 
-fn setTextBlendMode(special: bool, render_mode: subpixel_policy.TextRenderMode) void {
+fn setTextBlendMode(special: bool, render_mode: TextRenderMode) void {
     _ = special;
     _ = render_mode;
     gl.glEnable(gl.GL_BLEND);
