@@ -1,5 +1,9 @@
 const std = @import("std");
 
+/// Increment whenever persisted draw records or atlas textures become
+/// incompatible with the shipped shader decoders.
+pub const version: u32 = 1;
+
 pub const special_layer_sentinel: u8 = 0xff;
 
 pub const SpecialLayerKind = enum(u8) {
@@ -116,6 +120,7 @@ pub fn paintRecordKindFromTag(tag: f32) ?PaintRecordKind {
 
 test "GLSL render ABI constants match Zig constants" {
     const glsl = @embedFile("../shader/gl/glsl/snail_render_abi.glsl");
+    try expectGlslConst(glsl, "SNAIL_RENDER_ABI_VERSION", version);
     try expectGlslConst(glsl, "SNAIL_SPECIAL_LAYER_SENTINEL", special_layer_sentinel);
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));

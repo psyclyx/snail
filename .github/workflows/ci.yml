@@ -57,6 +57,7 @@ jobs:
           zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false
           zig build test -Dcpu=baseline -Dvulkan=false
           zig build test -Dcpu=baseline -Draster=false
+          zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false -Dgles30=false -Dvulkan=false -Draster=false
 
       - name: Build release C API libraries
         run: zig build --release=fast -Dcpu=baseline
@@ -80,6 +81,14 @@ jobs:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
         run: zig build run-backend-compare -Dcpu=baseline
+
+      - name: Coverage regression probes
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          zig build run-composite-probe -Dcpu=baseline
+          zig build run-coverage-probe -Dcpu=baseline
 
   nix:
     name: Nix

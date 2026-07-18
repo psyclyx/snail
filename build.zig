@@ -352,6 +352,17 @@ fn addTestSteps(
     const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, modules.assets, null, null);
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
+    const public_api_tests = b.createModule(.{
+        .root_source_file = b.path("src/tests/public_renderer_api.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .imports = &.{
+            .{ .name = "snail", .module = snail_tests },
+            .{ .name = "snail-raster", .module = raster_tests },
+        },
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
+
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
     const autohint_compare_test_module = b.createModule(.{
@@ -497,13 +508,21 @@ fn addScreenshotSteps(
     prop_step.dependOn(&b.addRunArtifact(prop_exe).step);
 
     // RESEARCH PROBE: TT bytecode ppem-independence analysis (internal types).
+    const tt_probe_internal_mod = b.createModule(.{
+        .root_source_file = b.path("src/snail/tt_probe_internal.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{.{ .name = "assets", .module = modules.assets }},
+    });
     const tt_probe_mod = b.createModule(.{
-        .root_source_file = b.path("src/snail/tt_ppem_probe.zig"),
+        .root_source_file = b.path("src/tools/tt_ppem_probe.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail_tt_probe_internal", .module = tt_probe_internal_mod },
         },
     });
     const tt_probe_exe = b.addExecutable(.{ .name = "snail-tt-probe", .root_module = tt_probe_mod });

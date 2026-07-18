@@ -23,9 +23,10 @@
 //! Build/run:  zig build run-tt-probe
 
 const std = @import("std");
-const tt_hint = @import("font/truetype/hint.zig");
-const tt_vm = @import("font/truetype/vm.zig");
-const ttf = @import("font/ttf.zig");
+const tt_internal = @import("snail_tt_probe_internal");
+const tt_hint = tt_internal.hint;
+const tt_vm = tt_internal.vm;
+const ttf = tt_internal.ttf;
 const assets = @import("assets");
 
 const Program = tt_vm.Program;
