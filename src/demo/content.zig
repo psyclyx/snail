@@ -167,7 +167,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
-        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
+        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -187,7 +187,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .width = demo_support.unitStrokeWidth(card_rect, 1.5),
         };
         try path_curves_owned.append(allocator, try prepared.strokeCurves(allocator, allocator, stroke));
-        const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = next_path_id };
+        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -205,7 +205,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
-        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
+        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         const paint = snail.Paint{ .conic_gradient = .{
             .center = .{ .x = 0.5, .y = 0.5 },
@@ -271,7 +271,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
         _ = scratch_arena.reset(.retain_capacity);
         try path_curves_owned.append(allocator, curves);
-        const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = next_path_id };
+        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -383,7 +383,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     };
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

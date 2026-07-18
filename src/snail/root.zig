@@ -78,8 +78,6 @@ pub const Image = image_mod.Image;
 // ── Record keys / atlas ──
 
 pub const recordKey = record_key_mod;
-pub const RecordKey = record_key_mod.RecordKey;
-pub const ns = record_key_mod.ns;
 
 pub const GlyphCurves = @import("atlas/curves.zig").GlyphCurves;
 pub const PagePool = @import("atlas/page_pool.zig").PagePool;
@@ -104,8 +102,6 @@ pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 const shape_mod = @import("draw/shape.zig");
 pub const Shape = shape_mod.Shape;
 
-pub const DrawSegment = @import("draw/records.zig").DrawSegment;
-pub const Binding = @import("draw/records.zig").Binding;
 pub const emit = @import("draw/emit.zig");
 
 pub const autohint = struct {

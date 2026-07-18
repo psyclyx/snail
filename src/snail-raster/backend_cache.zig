@@ -23,7 +23,7 @@
 const std = @import("std");
 
 const atlas_mod = @import("snail");
-const draw_records = @import("snail");
+const draw_records = @import("snail").render.records;
 const page_mod = @import("snail");
 const page_pool_mod = @import("snail");
 const upload_plan = @import("snail").atlas_upload;

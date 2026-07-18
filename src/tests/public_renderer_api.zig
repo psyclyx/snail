@@ -16,12 +16,13 @@ test "external renderers need only the public snail api" {
         if (@hasDecl(snail, "SubpixelOrder")) @compileError("subpixel policy belongs to renderer implementations");
         if (@hasDecl(snail, "Instance")) @compileError("renderer ABI belongs under snail.render.records");
         if (@hasDecl(snail, "WORDS_PER_INSTANCE")) @compileError("renderer ABI belongs under snail.render.records");
+        if (@hasDecl(snail, "DrawSegment")) @compileError("draw records belong under snail.render.records");
+        if (@hasDecl(snail, "Binding")) @compileError("draw records belong under snail.render.records");
+        if (@hasDecl(snail, "RecordKey")) @compileError("record-key names belong under snail.recordKey");
+        if (@hasDecl(snail, "ns")) @compileError("record-key names belong under snail.recordKey");
 
         _ = snail.render.records.abi_version;
         _ = snail.render.records.WORDS_PER_INSTANCE;
-        _ = snail.render.atlas.CURVE_TEX_WIDTH;
-        _ = snail.render.atlas.BAND_TEX_WIDTH;
-        _ = snail.render.atlas.INFO_WIDTH;
         _ = snail.render.records.DrawRecords;
         _ = snail.render.records.ShapeKind;
         _ = snail.shader.glsl.shader_library.coverage_functions;

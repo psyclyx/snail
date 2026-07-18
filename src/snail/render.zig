@@ -88,10 +88,6 @@ pub const records = struct {
 /// GPU callers normally use the shipped shader functions; this surface lets a
 /// software renderer consume the exact same representation.
 pub const atlas = struct {
-    pub const CURVE_TEX_WIDTH = @import("atlas/upload_plan.zig").CURVE_TEX_WIDTH;
-    pub const BAND_TEX_WIDTH = @import("atlas/upload_plan.zig").BAND_TEX_WIDTH;
-    pub const INFO_WIDTH = @import("atlas/upload_plan.zig").INFO_WIDTH;
-
     pub const CurveKind = curve_mod.CurveKind;
     pub const CurveSegment = curve_mod.CurveSegment;
     pub const GlyphBandEntry = band_texture_mod.GlyphBandEntry;

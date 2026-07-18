@@ -17,7 +17,7 @@ const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
 const draw_records = @import("../draw/records.zig");
 const paint_records = @import("paint_records.zig");
-const upload_common = @import("../format/upload_common.zig");
+const upload_patch = @import("upload_patch.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
@@ -379,7 +379,7 @@ pub const Planner = struct {
                 }
                 const uv_x: f32 = @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(self.opts.max_image_width));
                 const uv_y: f32 = @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(self.opts.max_image_height));
-                upload_common.patchImagePaintRecord(info_dst, INFO_WIDTH, INFO_WIDTH, 0, rec.texel_offset, .{
+                upload_patch.patchImagePaintRecord(info_dst, INFO_WIDTH, INFO_WIDTH, 0, rec.texel_offset, .{
                     .layer = abs_layer,
                     .uv_scale = .{ .x = uv_x, .y = uv_y },
                 });

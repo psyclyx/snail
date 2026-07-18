@@ -71,12 +71,12 @@ pub fn main() !void {
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, harness.wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
 

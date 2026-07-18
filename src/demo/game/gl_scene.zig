@@ -28,7 +28,7 @@ const gles_gl = @cImport({
     @cInclude("GLES2/gl2ext.h");
 });
 
-pub const PassBindings = struct { path: snail.Binding, text: snail.Binding };
+pub const PassBindings = struct { path: snail.render.records.Binding, text: snail.render.records.Binding };
 
 pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
     return struct {
@@ -99,7 +99,7 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
         }
 
         fn uploadPass(allocator: std.mem.Allocator, cache: *Cache, pass: *const PreparedPass) !PassBindings {
-            var b: [2]snail.Binding = undefined;
+            var b: [2]snail.render.records.Binding = undefined;
             try cache.upload(allocator, &.{ &pass.path_atlas, &pass.text_atlas }, &b);
             return .{ .path = b[0], .text = b[1] };
         }

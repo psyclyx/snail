@@ -211,7 +211,7 @@ test "draw autohint fits per size without mutating atlas resources" {
             pixels: []u8,
             px_size: f32,
             policy: snail.autohint.AutohintPolicy,
-            shape_key: atlas_mod.RecordKey,
+            shape_key: atlas_mod.recordKey.RecordKey,
             binding: Binding,
             atlas_ptr: *const atlas_mod.Atlas,
             cache_ptr: *const BackendCache,

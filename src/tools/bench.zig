@@ -358,7 +358,7 @@ fn addFilledPath(
         return;
     }
     try self.owned_curves.append(self.allocator, curves);
-    const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
+    const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
     self.next_path_id += 1;
     try self.entries.append(self.allocator, .{
         .key = key,
@@ -387,7 +387,7 @@ fn addStrokedPath(
         return;
     }
     try self.owned_curves.append(self.allocator, curves);
-    const key = snail.RecordKey{ .namespace = snail.ns.path_stroke, .a = self.next_path_id };
+    const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = self.next_path_id };
     self.next_path_id += 1;
     try self.entries.append(self.allocator, .{
         .key = key,
@@ -445,7 +445,7 @@ fn ensureHintedRunCurves(
     return true;
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -825,7 +825,7 @@ fn addRichRun(
                 const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
                 const curves = try fonts.fonts[fid].extractCurves(allocator, allocator, g.glyph_id);
                 try build.owned_curves.append(allocator, curves);
-                const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = build.next_path_id };
+                const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = build.next_path_id };
                 build.next_path_id += 1;
                 try build.entries.append(allocator, .{
                     .key = key,
@@ -1225,14 +1225,14 @@ fn hintedTextWorkloadName(workload: TextWorkload) []const u8 {
 
 fn timeRecordEmit(
     allocator: std.mem.Allocator,
-    binding: snail.Binding,
+    binding: snail.render.records.Binding,
     atlas: *const snail.Atlas,
     picture: *const demo_support.Picture,
 ) !struct { us: f64, words: usize, segments: usize } {
     const word_cap = snail.emit.wordBudget(picture.shapes.len);
     const words = try allocator.alloc(u32, word_cap);
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, snail.emit.segmentBudget(picture.shapes.len));
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, snail.emit.segmentBudget(picture.shapes.len));
     defer allocator.free(segs);
 
     var wlen: usize = 0;
@@ -1258,7 +1258,7 @@ fn timeRecordEmit(
 const EmittedRecords = struct {
     allocator: std.mem.Allocator,
     words: []u32,
-    segments: []snail.DrawSegment,
+    segments: []snail.render.records.DrawSegment,
     word_len: usize,
     segment_len: usize,
     shapes: usize,
@@ -1272,7 +1272,7 @@ const EmittedRecords = struct {
 
 fn emitScene(
     allocator: std.mem.Allocator,
-    binding: snail.Binding,
+    binding: snail.render.records.Binding,
     atlas: *const snail.Atlas,
     picture: *const demo_support.Picture,
 ) !EmittedRecords {
@@ -1280,7 +1280,7 @@ fn emitScene(
     const words = try allocator.alloc(u32, word_cap);
     errdefer allocator.free(words);
     const seg_cap = @max(snail.emit.segmentBudget(picture.shapes.len), 1);
-    const segs = try allocator.alloc(snail.DrawSegment, seg_cap);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, seg_cap);
     errdefer allocator.free(segs);
     var wlen: usize = 0;
     var slen: usize = 0;
@@ -1395,7 +1395,7 @@ pub fn main() !void {
 
     var cpu_cache_storage: ?raster.BackendCache = null;
     defer if (cpu_cache_storage) |*c| c.deinit();
-    var cpu_bindings: [scene_kinds.len]snail.Binding = undefined;
+    var cpu_bindings: [scene_kinds.len]snail.render.records.Binding = undefined;
 
     var emitted: [scene_kinds.len]EmittedRecords = undefined;
     var emitted_count: usize = 0;
@@ -1588,7 +1588,7 @@ fn benchCpuModes(
     backend_name: []const u8,
     bundles: *const [scene_kinds.len]SceneBundle,
     bundle_count: usize,
-    bindings: []const snail.Binding,
+    bindings: []const snail.render.records.Binding,
     pixels: []u8,
     rows: *std.ArrayList(ModeRow),
     thread_pool: ?*raster.ThreadPool,
@@ -1658,7 +1658,7 @@ fn benchGl33(
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [scene_kinds.len]snail.Binding = undefined;
+    var bindings: [scene_kinds.len]snail.render.records.Binding = undefined;
     {
         var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
         for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;
@@ -1756,7 +1756,7 @@ fn benchGl44(
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [scene_kinds.len]snail.Binding = undefined;
+    var bindings: [scene_kinds.len]snail.render.records.Binding = undefined;
     {
         var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
         for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;
@@ -1841,7 +1841,7 @@ fn benchGles30(
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [scene_kinds.len]snail.Binding = undefined;
+    var bindings: [scene_kinds.len]snail.render.records.Binding = undefined;
     {
         var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
         for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;
@@ -1929,7 +1929,7 @@ fn benchVulkan(
         .max_image_height = 256,
     });
     defer cache.deinit();
-    var bindings: [scene_kinds.len]snail.Binding = undefined;
+    var bindings: [scene_kinds.len]snail.render.records.Binding = undefined;
     {
         var atlas_ptrs: [scene_kinds.len]*const snail.Atlas = undefined;
         for (bundles[0..bundle_count], 0..) |*b, i| atlas_ptrs[i] = &b.atlas;

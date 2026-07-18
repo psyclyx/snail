@@ -70,9 +70,9 @@ fn buildPanel(allocator: std.mem.Allocator, fonts: *passes.Fonts, mode: Mode) !p
 const Panel = struct {
     pass: passes.PreparedPass,
     cache: embed_gl.Gl44BackendCache,
-    binding: snail.Binding,
+    binding: snail.render.records.Binding,
     words: []u32,
-    segs: []snail.DrawSegment,
+    segs: []snail.render.records.DrawSegment,
     words_len: usize,
     segs_len: usize,
 
@@ -86,12 +86,12 @@ const Panel = struct {
             .max_images = 1,
         });
         errdefer cache.deinit();
-        var bindings: [1]snail.Binding = undefined;
+        var bindings: [1]snail.render.records.Binding = undefined;
         try cache.upload(allocator, &.{&pass.path_atlas}, &bindings);
 
         const words = try allocator.alloc(u32, snail.emit.wordBudget(pass.path_picture.shapes.len));
         errdefer allocator.free(words);
-        const segs = try allocator.alloc(snail.DrawSegment, 4);
+        const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
         errdefer allocator.free(segs);
         var wlen: usize = 0;
         var slen: usize = 0;

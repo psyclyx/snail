@@ -56,16 +56,16 @@ pub const VkSceneRenderer = struct {
     quad: embed_vulkan.HostBuffer,
     glyph_count: i32 = 0,
 
-    material_b: snail.Binding,
-    label_path_b: snail.Binding,
-    label_text_b: snail.Binding,
-    panel_path_b: snail.Binding,
-    panel_text_b: snail.Binding,
-    hud_path_b: snail.Binding,
-    hud_text_b: snail.Binding,
+    material_b: snail.render.records.Binding,
+    label_path_b: snail.render.records.Binding,
+    label_text_b: snail.render.records.Binding,
+    panel_path_b: snail.render.records.Binding,
+    panel_text_b: snail.render.records.Binding,
+    hud_path_b: snail.render.records.Binding,
+    hud_text_b: snail.render.records.Binding,
 
     scratch: []u32,
-    segs: [4]snail.DrawSegment = undefined,
+    segs: [4]snail.render.records.DrawSegment = undefined,
 
     pub fn init(allocator: std.mem.Allocator, ctx: embed_vulkan.VulkanContext, scene: *Scene, num_slots: u32) !VkSceneRenderer {
         var layout: embed_vulkan.VulkanResourceLayout = undefined;
@@ -75,7 +75,7 @@ pub const VkSceneRenderer = struct {
         errdefer vk.vkDestroyCommandPool(ctx.device, transfer_pool, null);
 
         // Upload every atlas the scene needs in one decoupled upload.
-        var bindings: [7]snail.Binding = undefined;
+        var bindings: [7]snail.render.records.Binding = undefined;
         var cache = try embed_vulkan.cacheWithDecoupledUpload(allocator, ctx, scene.fonts.pool, &layout, &.{
             &scene.material.text_atlas,
             &scene.label.path_atlas,
@@ -343,7 +343,7 @@ pub const VkSceneRenderer = struct {
         try self.drawSnailPass(cmd, desc0, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
     }
 
-    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, desc0: vk.VkDescriptorSet, pass: *const PreparedPass, path_b: snail.Binding, text_b: snail.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
+    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, desc0: vk.VkDescriptorSet, pass: *const PreparedPass, path_b: snail.render.records.Binding, text_b: snail.render.records.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
         var wlen: usize = 0;
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, path_b, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });

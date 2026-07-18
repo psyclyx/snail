@@ -442,14 +442,14 @@ pub const Compare = struct {
     }
 };
 
-fn autoKey(font_id: u32, glyph_id: u16) snail.RecordKey {
+fn autoKey(font_id: u32, glyph_id: u16) snail.recordKey.RecordKey {
     return snail.recordKey.autohintGlyph(font_id, glyph_id);
 }
 
 const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };
 const tag_color = [4]f32{ 0.45, 0.48, 0.55, 1.0 };
 
-fn hasKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
+fn hasKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -549,7 +549,7 @@ test "empty outlines remain shared unhinted no-op shapes" {
     try testing.expectEqual(@as(?snail.autohint.AutohintPolicy, null), shape.autohint_policy);
 
     var words: [snail.render.records.WORDS_PER_INSTANCE]u32 = undefined;
-    var segments: [1]snail.DrawSegment = undefined;
+    var segments: [1]snail.render.records.DrawSegment = undefined;
     var word_len: usize = 0;
     var segment_len: usize = 0;
     _ = try snail.emit.emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &compare.atlas, &.{shape}, .identity, .{ 1, 1, 1, 1 });

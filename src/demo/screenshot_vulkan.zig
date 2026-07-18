@@ -43,7 +43,7 @@ pub fn main() !void {
     var layout: embed_vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     var cache = try embed_vulkan.cacheWithDecoupledUpload(allocator, vk_ctx, scene.pool, &layout, &.{ scene.paths_atlas, scene.text_atlas }, &bindings, .{
         .max_bindings = 4,
         .layer_info_height = 64,
@@ -55,7 +55,7 @@ pub fn main() !void {
 
     const words = try allocator.alloc(u32, harness.wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
 

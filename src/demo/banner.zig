@@ -1216,7 +1216,7 @@ const BannerBuilder = struct {
             _ = self.scratch_arena.reset(.retain_capacity);
             try self.path_curves_owned.append(self.allocator, curves);
 
-            const key = snail.RecordKey{ .namespace = snail.ns.path_fill, .a = self.next_path_id };
+            const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
             self.next_path_id += 1;
             try self.painted_text_entries.append(self.allocator, .{
                 .key = key,
@@ -1332,7 +1332,7 @@ fn addRoundedCard(
     try builder.addPathFillAndStroke(&p, fill, unit_stroke, demo_support.placeRectUniform(rect));
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

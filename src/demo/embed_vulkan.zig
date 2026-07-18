@@ -122,7 +122,7 @@ pub const Renderer = struct {
         desc_set: vk.VkDescriptorSet,
         draw_state: render_state.DrawState,
         words: []const u32,
-        segments: []const snail.DrawSegment,
+        segments: []const snail.render.records.DrawSegment,
     ) void {
         const words_bytes = words.len * @sizeOf(u32);
         std.debug.assert(self.cursor + words_bytes <= self.slot_bytes);
@@ -192,7 +192,7 @@ pub fn cacheWithDecoupledUpload(
     page_pool: *snail.PagePool,
     layout: *const VulkanResourceLayout,
     atlases: []const *const snail.Atlas,
-    bindings: []snail.Binding,
+    bindings: []snail.render.records.Binding,
     cache_opts: CacheOptions,
 ) !VulkanBackendCache {
     const pool = try createTransferPool(ctx);

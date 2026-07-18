@@ -88,10 +88,10 @@ pub const EmitOut = struct { words_len: usize, segs_len: usize };
 /// be large enough — `wordBudget(scene)` for words, ≥4 entries for segs.
 pub fn emitScene(
     words: []u32,
-    segs: []snail.DrawSegment,
+    segs: []snail.render.records.DrawSegment,
     scene: Scene,
-    paths_binding: snail.Binding,
-    text_binding: snail.Binding,
+    paths_binding: snail.render.records.Binding,
+    text_binding: snail.render.records.Binding,
 ) !EmitOut {
     var wlen: usize = 0;
     var slen: usize = 0;
@@ -140,12 +140,12 @@ pub fn renderCpuToPixelsFmt(
         .max_images = opts.max_images,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -182,12 +182,12 @@ pub fn renderCpuToPixels(
         .max_images = opts.max_images,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -317,12 +317,12 @@ pub fn renderGlToPixels(
         .max_image_height = opts.max_image_height,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -353,12 +353,12 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
         .max_image_height = opts.max_image_height,
     });
     defer cache.deinit();
-    var bindings: [2]snail.Binding = undefined;
+    var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 

@@ -248,7 +248,7 @@ pub const Overlay = struct {
 /// background and the game demo's darker scenes alike.
 const hud_color = [4]f32{ 0.06, 0.07, 0.09, 0.85 };
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

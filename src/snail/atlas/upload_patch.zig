@@ -1,9 +1,5 @@
-//! Shared layer-info / paint-record patching for new-API prepared-page
-//! caches. Legacy atlas-slot decision logic lived here too; that surface
-//! was removed in the scorched-earth pass — only `patchImagePaintRecord`
-//! and its helpers remain, used by the GL/Vulkan/CPU `backend_cache`
-//! modules to write live image-layer indices into the layer-info texture
-//! when uploading paint records.
+//! Layer-info patching used by `AtlasUploadPlanner` when assigning live image
+//! array layers. Renderer caches consume the already-patched upload regions.
 
 fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {
     return (y * width + x) * 4;

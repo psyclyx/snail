@@ -157,14 +157,14 @@ pub fn GlMaterial(comptime variant: Variant) type {
             // Upload the material text atlas into the shared cache, emit its
             // words (encoding the absolute atlas layer), then mirror the words
             // into the records storage the shader samples.
-            var binding: [1]snail.Binding = undefined;
+            var binding: [1]snail.render.records.Binding = undefined;
             try cache.upload(allocator, &.{&material_pass.text_atlas}, &binding);
 
             const shapes = material_pass.text_picture.shapes;
             const word_budget = snail.emit.wordBudget(shapes.len);
             const words = try allocator.alloc(u32, word_budget);
             defer allocator.free(words);
-            var segs: [4]snail.DrawSegment = undefined;
+            var segs: [4]snail.render.records.DrawSegment = undefined;
             var wlen: usize = 0;
             var slen: usize = 0;
             _ = try snail.emit.emit(words, &segs, &wlen, &slen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });

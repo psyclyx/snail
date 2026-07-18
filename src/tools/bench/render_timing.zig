@@ -23,7 +23,7 @@ pub const Framebuffer = struct {
 
 pub const DrawRecords = struct {
     words: []const u32,
-    segments: []const snail.DrawSegment,
+    segments: []const snail.render.records.DrawSegment,
 };
 
 fn nowNs() u64 {

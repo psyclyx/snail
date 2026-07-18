@@ -57,7 +57,7 @@ pub const FrameTimings = struct {
 pub const ScratchBuf = struct {
     allocator: std.mem.Allocator,
     words: []u32 = &.{},
-    segs: []snail.DrawSegment = &.{},
+    segs: []snail.render.records.DrawSegment = &.{},
 
     pub fn init(allocator: std.mem.Allocator) ScratchBuf {
         return .{ .allocator = allocator };
@@ -75,7 +75,7 @@ pub const ScratchBuf = struct {
         }
         if (self.segs.len < seg_count) {
             if (self.segs.len > 0) self.allocator.free(self.segs);
-            self.segs = try self.allocator.alloc(snail.DrawSegment, seg_count);
+            self.segs = try self.allocator.alloc(snail.render.records.DrawSegment, seg_count);
         }
     }
 };
@@ -85,13 +85,13 @@ pub const ScratchBuf = struct {
 /// directly); `segs` is the pass's own sub-slice of segments.
 pub const PassRecords = struct {
     words: []const u32,
-    segs: []const snail.DrawSegment,
+    segs: []const snail.render.records.DrawSegment,
 };
 
 /// Driver-side per-pass binding state. Indexed by pass position; the caller
 /// passes the same pass count and order each frame so the indexes stay stable.
 pub const PassState = struct {
-    bindings: [MAX_BINDINGS_PER_PASS]snail.Binding = undefined,
+    bindings: [MAX_BINDINGS_PER_PASS]snail.render.records.Binding = undefined,
     count: u8 = 0,
     initialized: bool = false,
 };
