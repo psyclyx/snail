@@ -15,6 +15,7 @@ const draw_records = @import("snail");
 const backend_cache_mod = @import("backend_cache.zig");
 const resources_mod = @import("resources.zig");
 const vertex = @import("snail").render.vertex;
+const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -54,7 +55,7 @@ pub fn draw(
     state: snail.DrawState,
     records: DrawRecords,
     caches: []const *const BackendCache,
-    thread_pool: ?*snail.ThreadPool,
+    thread_pool: ?*ThreadPool,
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
 ) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
@@ -622,7 +623,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     defer allocator.free(px_threaded);
     @memset(px_threaded, 0);
 
-    var thread_pool: snail.ThreadPool = undefined;
+    var thread_pool: ThreadPool = undefined;
     try thread_pool.init(allocator, .{ .threads = 3 });
     defer thread_pool.deinit();
 

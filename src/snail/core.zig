@@ -167,7 +167,6 @@ pub const HintError = @import("font/hint_vm.zig").HintError;
 pub const Path = @import("path.zig").Path;
 pub const PreparedPath = @import("path.zig").PreparedPath;
 pub const snap = @import("snap.zig");
-pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 /// Stable byte-layout and policy contract for caller-owned renderers.
 pub const render = @import("render.zig");

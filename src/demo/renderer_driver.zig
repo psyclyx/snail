@@ -722,7 +722,7 @@ fn glRender(
 const CpuDriver = if (build_options.enable_raster) struct {
     allocator: std.mem.Allocator,
     renderer_state: raster.Renderer,
-    pool: ?*snail.ThreadPool = null,
+    pool: ?*raster.ThreadPool = null,
     cache: ?raster.BackendCache = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
@@ -739,7 +739,7 @@ const CpuDriver = if (build_options.enable_raster) struct {
         const bsz = cpu_platform.getBufferSize();
         const renderer_state = raster.Renderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
 
-        const pool_ptr = try allocator.create(snail.ThreadPool);
+        const pool_ptr = try allocator.create(raster.ThreadPool);
         errdefer allocator.destroy(pool_ptr);
         try pool_ptr.init(allocator, .{ .threads = thread_count });
         errdefer pool_ptr.deinit();
@@ -840,7 +840,7 @@ const CpuDriver = if (build_options.enable_raster) struct {
         self.last_timings.emit_us = (wayland.getTime() - emit_t0) * 1_000_000.0;
 
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
-            const dispatch_pool: ?*snail.ThreadPool = if (pass.cpu_parallel) self.pool else null;
+            const dispatch_pool: ?*raster.ThreadPool = if (pass.cpu_parallel) self.pool else null;
             const t0 = wayland.getTime();
             try raster.draw(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
             self.last_timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;

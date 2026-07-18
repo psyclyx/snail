@@ -17,6 +17,7 @@ const autohint_record = @import("snail").render.autohint_record;
 const autohint_warp = @import("snail").autohint.warp;
 const autohint_policy = @import("snail").autohint.policy;
 const vertex = @import("snail").render.vertex;
+const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 /// Caller-owned transient fitted knots for one glyph draw.
 pub const AutohintWarp = struct {
@@ -300,7 +301,7 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*snail.ThreadPool) !void {
+    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: snail.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -446,7 +447,7 @@ pub const Renderer = struct {
 
     fn drawBatchInstancesParallel(
         self: *Renderer,
-        pool: *snail.ThreadPool,
+        pool: *ThreadPool,
         prepared: *const PreparedResources,
         vertices: []const u32,
         scene_to_pixel: Transform2D,

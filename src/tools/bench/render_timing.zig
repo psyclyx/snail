@@ -71,7 +71,7 @@ pub fn timeCpuDraw(
     pixels: []u8,
     warmup_frames: usize,
     frames: usize,
-    thread_pool: ?*snail.ThreadPool,
+    thread_pool: ?*raster.ThreadPool,
 ) !f64 {
     for (0..warmup_frames) |_| {
         @memset(pixels, 0);

@@ -115,7 +115,6 @@ pub const HintError = core.HintError;
 pub const Path = core.Path;
 pub const PreparedPath = core.PreparedPath;
 pub const snap = core.snap;
-pub const ThreadPool = core.ThreadPool;
 pub const render = core.render;
 
 // ── Shader contracts ──

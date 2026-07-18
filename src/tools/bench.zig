@@ -1447,7 +1447,7 @@ pub fn main() !void {
     defer allocator.free(cpu_pixels);
     var cpu_renderer = raster.Renderer.init(cpu_pixels.ptr, WIDTH, HEIGHT, WIDTH * 4);
 
-    var cpu_pool: snail.ThreadPool = undefined;
+    var cpu_pool: raster.ThreadPool = undefined;
     try cpu_pool.init(allocator, .{});
     defer cpu_pool.deinit();
     const cpu_pixels_threaded = try allocator.alloc(u8, WIDTH * HEIGHT * 4);
@@ -1591,7 +1591,7 @@ fn benchCpuModes(
     bindings: []const snail.Binding,
     pixels: []u8,
     rows: *std.ArrayList(ModeRow),
-    thread_pool: ?*snail.ThreadPool,
+    thread_pool: ?*raster.ThreadPool,
 ) !void {
     _ = bundle_count;
     for (mode_scene_kinds) |scene_kind| {

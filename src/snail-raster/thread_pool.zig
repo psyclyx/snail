@@ -4,7 +4,8 @@
 //! `deinit` to free it. `dispatch` is heap-free.
 //!
 //! Sync primitives are built directly on Linux futex (`std.os.linux.futex_4arg`)
-//! to avoid pulling libc into snail's core: Zig 0.16 ships `Mutex` /
+//! to avoid pulling general-purpose task machinery into the rasterizer: Zig
+//! 0.16 ships `Mutex` /
 //! `Condition` only behind `std.Io`, which would re-introduce per-task
 //! allocations on the draw path. Linux-only — adding other platforms means
 //! adding the equivalent futex shims here.
@@ -20,7 +21,7 @@ const linux = std.os.linux;
 
 comptime {
     if (builtin.os.tag != .linux) {
-        @compileError("snail.ThreadPool currently only supports Linux (futex-based sync). " ++
+        @compileError("snail-raster.ThreadPool currently only supports Linux (futex-based sync). " ++
             "Other platforms can be added by porting the Mutex/Cond primitives in this file.");
     }
 }
