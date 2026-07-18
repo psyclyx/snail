@@ -89,6 +89,7 @@ pub const AutohintAnalysis = core.AutohintAnalysis;
 pub const CompositeMode = core.CompositeMode;
 pub const AtlasLayer = core.AtlasLayer;
 pub const PaintRecordInfo = core.PaintRecordInfo;
+pub const PaintImageRecord = core.PaintImageRecord;
 pub const AtlasRecord = core.AtlasRecord;
 pub const atlas_upload = core.atlas_upload;
 pub const AtlasUploadPlanner = core.AtlasUploadPlanner;
@@ -115,6 +116,7 @@ pub const Path = core.Path;
 pub const PreparedPath = core.PreparedPath;
 pub const snap = core.snap;
 pub const ThreadPool = core.ThreadPool;
+pub const render = core.render;
 
 // ── Shader contracts ──
 

@@ -120,6 +120,7 @@ pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
 pub const CompositeMode = atlas_mod.CompositeMode;
 pub const AtlasLayer = atlas_mod.Layer;
 pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
+pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 
 const shape_mod = @import("picture/shape.zig");
@@ -167,6 +168,9 @@ pub const Path = @import("path.zig").Path;
 pub const PreparedPath = @import("path.zig").PreparedPath;
 pub const snap = @import("snap.zig");
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
+
+/// Stable byte-layout and policy contract for caller-owned renderers.
+pub const render = @import("render.zig");
 
 // ── Internal file namespaces ──
 //

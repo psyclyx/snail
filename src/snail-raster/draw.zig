@@ -9,12 +9,12 @@
 const std = @import("std");
 
 const build_options = @import("build_options");
-const snail = @import("snail").core;
-const math = @import("snail").core.files.math_vec;
-const draw_records = @import("snail").core.files.picture_draw_records;
+const snail = @import("snail");
+const math = @import("snail");
+const draw_records = @import("snail");
 const backend_cache_mod = @import("backend_cache.zig");
 const resources_mod = @import("resources.zig");
-const vertex = @import("snail").core.files.format_vertex;
+const vertex = @import("snail").render.vertex;
 
 pub const DrawRecords = struct {
     words: []const u32,
@@ -122,13 +122,13 @@ test "draw MissingBinding when no cache covers the binding's pool" {
     if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
 
-    var pool_a = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool_a = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });
     defer pool_a.deinit();
-    var pool_b = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool_b = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
@@ -156,10 +156,10 @@ test "draw autohint fits per size without mutating atlas resources" {
     if (!build_options.enable_raster) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
-    const atlas_mod = @import("snail").core.files.atlas;
-    const record_key_mod = @import("snail").core.files.atlas_record_key;
-    const shape_mod = @import("snail").core.files.picture_shape;
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const atlas_mod = @import("snail");
+    const record_key_mod = @import("snail").recordKey;
+    const shape_mod = @import("snail");
+    const emit_mod = @import("snail");
 
     const W: u32 = 48;
     const H: u32 = 40;
@@ -177,7 +177,7 @@ test "draw autohint fits per size without mutating atlas resources" {
     const glyph_features = try analyzer.analyzeGlyph(allocator, gid, &x_features, &y_features);
     try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -294,17 +294,17 @@ test "draw renders a small Picture into non-zero pixels" {
 
     const gid = try font.glyphIndex('A');
     const curves_a = try font.extractCurves(allocator, allocator, gid);
-    var owned: [1]@import("snail").core.files.atlas_curves.GlyphCurves = .{curves_a};
+    var owned: [1]@import("snail").GlyphCurves = .{curves_a};
     defer for (&owned) |*c| c.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
+    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
     var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -317,7 +317,7 @@ test "draw renders a small Picture into non-zero pixels" {
     // shape's scale is just the requested px size.
     const px_size: f32 = 24.0;
     const scale: f32 = px_size;
-    const shape = @import("snail").core.files.picture_shape.Shape{
+    const shape = @import("snail").Shape{
         .key = key,
         .local_transform = .{
             .xx = scale,
@@ -329,9 +329,9 @@ test "draw renders a small Picture into non-zero pixels" {
         },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const emit_mod = @import("snail");
     const word_need = emit_mod.wordBudget(shapes.len);
     const words = try allocator.alloc(u32, word_need);
     defer allocator.free(words);
@@ -372,13 +372,13 @@ test "draw renders gradient-painted glyph through special-layer path" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
+    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
 
     // Linear gradient running across the glyph's local-em width.
     const gradient = snail.LinearGradient{
@@ -387,7 +387,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
         .start_color = .{ 1, 0, 0, 1 },
         .end_color = .{ 0, 0, 1, 1 },
     };
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .linear_gradient = gradient },
@@ -403,14 +403,14 @@ test "draw renders gradient-painted glyph through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 32.0;
-    const shape = @import("snail").core.files.picture_shape.Shape{
+    const shape = @import("snail").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 12, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const emit_mod = @import("snail");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -466,7 +466,7 @@ test "draw renders image-painted shape through special-layer path" {
     var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
     defer image.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
@@ -475,7 +475,7 @@ test "draw renders image-painted shape through special-layer path" {
 
     // Square-ish path covering [0..1, 0..1] in local coords; the local
     // shape transform scales to pixel size.
-    var path = @import("snail").core.files.path.Path.init(allocator);
+    var path = @import("snail").Path.init(allocator);
     defer path.deinit();
     try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
     var prepared_path = try path.prepare(allocator);
@@ -483,11 +483,11 @@ test "draw renders image-painted shape through special-layer path" {
     var path_curves = try prepared_path.fillCurves(allocator, allocator);
     defer path_curves.deinit();
 
-    const key = @import("snail").core.files.atlas_record_key.RecordKey{
-        .namespace = @import("snail").core.files.atlas_record_key.ns.path_fill,
+    const key = @import("snail").recordKey.RecordKey{
+        .namespace = @import("snail").recordKey.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = path_curves,
         .paint = .{ .image = .{
@@ -508,14 +508,14 @@ test "draw renders image-painted shape through special-layer path" {
     const binding = bindings[0];
 
     const px_size: f32 = 20.0;
-    const shape = @import("snail").core.files.picture_shape.Shape{
+    const shape = @import("snail").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const emit_mod = @import("snail");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -558,30 +558,30 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     var font = try snail.Font.init(font_data);
 
     const glyphs = "Hello, world!";
-    const Owned = @import("snail").core.files.atlas_curves.GlyphCurves;
+    const Owned = @import("snail").GlyphCurves;
     var owned: std.ArrayList(Owned) = .empty;
     defer {
         for (owned.items) |*c| c.deinit();
         owned.deinit(allocator);
     }
-    var entries: std.ArrayList(@import("snail").core.files.atlas.Entry) = .empty;
+    var entries: std.ArrayList(@import("snail").Entry) = .empty;
     defer entries.deinit(allocator);
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
 
-    var shapes: std.ArrayList(@import("snail").core.files.picture_shape.Shape) = .empty;
+    var shapes: std.ArrayList(@import("snail").Shape) = .empty;
     defer shapes.deinit(allocator);
 
     const px_size: f32 = 18.0;
     var pen_x: f32 = 4;
     for (glyphs) |c| {
         const gid = try font.glyphIndex(c);
-        const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
+        const key = @import("snail").recordKey.unhintedGlyph(0, gid);
         if (!containsEntryKey(entries.items, key)) {
             const curves = try font.extractCurves(allocator, allocator, gid);
             try owned.append(allocator, curves);
@@ -595,14 +595,14 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
         pen_x += px_size * 0.55;
     }
 
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, entries.items);
+    var atlas = try @import("snail").Atlas.from(allocator, pool, entries.items);
     defer atlas.deinit();
     var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const emit_mod = @import("snail");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;
@@ -632,7 +632,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("snail").core.files.atlas.Entry, key: @import("snail").core.files.atlas_record_key.RecordKey) bool {
+fn containsEntryKey(entries: []const @import("snail").Entry, key: @import("snail").recordKey.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -651,7 +651,7 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     const geometry = @import("geometry.zig");
     const Vec2 = math.Vec2;
 
-    var path = @import("snail").core.files.path.Path.init(allocator);
+    var path = @import("snail").Path.init(allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0.5, .y = 0 });
     try path.cubicTo(.{ .x = 0.95, .y = 0.2 }, .{ .x = 0.95, .y = 0.8 }, .{ .x = 0.5, .y = 1 });
@@ -662,17 +662,17 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     var curves = try prepared_path.fillCurves(allocator, allocator);
     defer curves.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").core.files.atlas_record_key.RecordKey{
-        .namespace = @import("snail").core.files.atlas_record_key.ns.path_fill,
+    const key = @import("snail").recordKey.RecordKey{
+        .namespace = @import("snail").recordKey.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
@@ -734,7 +734,7 @@ test "cubic stroke has no detached coverage island near its start cap" {
     const geometry = @import("geometry.zig");
     const Vec2 = math.Vec2;
 
-    var path = @import("snail").core.files.path.Path.init(allocator);
+    var path = @import("snail").Path.init(allocator);
     defer path.deinit();
     try path.moveTo(.{ .x = 0.08, .y = 0.7 });
     try path.cubicTo(
@@ -752,17 +752,17 @@ test "cubic stroke has no detached coverage island near its start cap" {
     });
     defer curves.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").core.files.atlas_record_key.RecordKey{
-        .namespace = @import("snail").core.files.atlas_record_key.ns.path_stroke,
+    const key = @import("snail").recordKey.RecordKey{
+        .namespace = @import("snail").recordKey.ns.path_stroke,
         .a = 0,
     };
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
         .key = key,
         .curves = curves,
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
@@ -836,14 +836,14 @@ test "draw scissor_rect clips writes to the rect" {
     var curves = try font.extractCurves(allocator, allocator, gid);
     defer curves.deinit();
 
-    var pool = try @import("snail").core.files.atlas_page_pool.PagePool.init(allocator, .{
+    var pool = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").core.files.atlas_record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail").core.files.atlas.Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
     var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -852,14 +852,14 @@ test "draw scissor_rect clips writes to the rect" {
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
     const px_size: f32 = 36.0;
-    const shape = @import("snail").core.files.picture_shape.Shape{
+    const shape = @import("snail").Shape{
         .key = key,
         .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 8, .ty = 40 },
         .local_color = .{ 1, 1, 1, 1 },
     };
-    const shapes = [_]@import("snail").core.files.picture_shape.Shape{shape};
+    const shapes = [_]@import("snail").Shape{shape};
 
-    const emit_mod = @import("snail").core.files.picture_emit;
+    const emit_mod = @import("snail");
     const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
     defer allocator.free(words);
     var segs: [2]draw_records.DrawSegment = undefined;

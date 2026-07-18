@@ -1,16 +1,16 @@
 //! Curve coverage evaluation for the software rasterizer.
 
 const std = @import("std");
-const snail = @import("snail").core;
+const snail = @import("snail");
 const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const cubic = @import("coverage/cubic_solver.zig");
 const texture = @import("texture.zig");
-const band_tex = @import("snail").core.files.format_band_texture;
-const render_abi = @import("snail").core.files.format_abi;
+const band_tex = @import("snail").render.band_texture;
+const render_abi = @import("snail").render.abi;
 
-const bezier = @import("snail").core.files.math_bezier;
-const curve_tex = @import("snail").core.files.format_curve_texture;
+const bezier = @import("snail").render.curve;
+const curve_tex = @import("snail").render.curve_texture;
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
 const GlyphBandEntry = band_tex.GlyphBandEntry;

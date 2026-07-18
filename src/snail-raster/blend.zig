@@ -1,7 +1,7 @@
 //! Pixel blending and target encoding for the software rasterizer.
 
 const std = @import("std");
-const snail = @import("snail").core;
+const snail = @import("snail");
 const color_mod = @import("color.zig");
 const coverage_mod = @import("coverage.zig");
 

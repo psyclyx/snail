@@ -22,18 +22,18 @@
 
 const std = @import("std");
 
-const atlas_mod = @import("snail").core.files.atlas;
-const draw_records = @import("snail").core.files.picture_draw_records;
-const page_mod = @import("snail").core.files.atlas_page;
-const page_pool_mod = @import("snail").core.files.atlas_page_pool;
-const curve_tex = @import("snail").core.files.format_curve_texture;
-const band_tex = @import("snail").core.files.format_band_texture;
-const paint_records = @import("snail").core.files.atlas_paint_records;
+const atlas_mod = @import("snail");
+const draw_records = @import("snail");
+const page_mod = @import("snail");
+const page_pool_mod = @import("snail");
+const curve_tex = @import("snail").render.curve_texture;
+const band_tex = @import("snail").render.band_texture;
+const paint_records = @import("snail").render.paint_records;
 const resources_mod = @import("resources.zig");
 const path_paint_mod = @import("path_paint.zig");
-const image_mod = @import("snail").core.files.image;
-const cache_base = @import("snail").core.files.backend_cache_base;
-const range_allocator = @import("snail").core.files.backend_range_allocator;
+const image_mod = @import("snail");
+const cache_base = @import("snail").render.cache;
+const range_allocator = @import("snail").render.range_allocator;
 
 const RangeAllocator = range_allocator.RangeAllocator;
 const Range = range_allocator.Range;
@@ -449,7 +449,7 @@ pub const BackendCache = struct {
                     const View = struct { layer: u32, uv_scale: struct { x: f32, y: f32 } };
                     const uv_scale_x: f32 = 1.0;
                     const uv_scale_y: f32 = 1.0;
-                    @import("snail").core.files.format_upload_common.patchImagePaintRecord(
+                    @import("snail").render.upload.patchImagePaintRecord(
                         self.layer_info_buf,
                         INFO_WIDTH,
                         INFO_WIDTH,
@@ -557,8 +557,8 @@ test "cache init allocates fixed-capacity buffers" {
 }
 
 test "release returns range to free list and allows reuse" {
-    const record_key_mod = @import("snail").core.files.atlas_record_key;
-    const font_mod = @import("snail").core.font;
+    const record_key_mod = @import("snail").recordKey;
+    const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -624,8 +624,8 @@ test "release returns range to free list and allows reuse" {
 }
 
 test "uploadDelta errors for unknown pool" {
-    const record_key_mod = @import("snail").core.files.atlas_record_key;
-    const font_mod = @import("snail").core.font;
+    const record_key_mod = @import("snail").recordKey;
+    const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -663,8 +663,8 @@ test "uploadDelta errors for unknown pool" {
 }
 
 test "uploadDelta errors for released binding" {
-    const record_key_mod = @import("snail").core.files.atlas_record_key;
-    const font_mod = @import("snail").core.font;
+    const record_key_mod = @import("snail").recordKey;
+    const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);
@@ -699,8 +699,8 @@ test "uploadDelta accepts a different atlas on the same pool" {
     // affected pages. This is correct, just less efficient than a
     // true extension would be. Lock that in so future "tighten the
     // contract" rewrites don't accidentally make it an error.
-    const record_key_mod = @import("snail").core.files.atlas_record_key;
-    const font_mod = @import("snail").core.font;
+    const record_key_mod = @import("snail").recordKey;
+    const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try font_mod.Font.init(font_data);

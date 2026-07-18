@@ -13,12 +13,12 @@
 //! `pub` re-exports.
 
 const std = @import("std");
-const snail = @import("snail").core;
+const snail = @import("snail");
 const coverage = @import("../coverage.zig");
 const subpixel = @import("subpixel.zig");
 const cubic = @import("cubic_solver.zig");
 const texture = @import("../texture.zig");
-const band_tex = @import("snail").core.files.format_band_texture;
+const band_tex = @import("snail").render.band_texture;
 
 const FillRule = snail.FillRule;
 const Vec2 = snail.Vec2;
