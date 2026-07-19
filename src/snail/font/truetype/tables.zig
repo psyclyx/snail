@@ -97,7 +97,7 @@ pub const ProgramTables = struct {
     pub fn initFace(data: []const u8, face_index: u32) ParseError!ProgramTables {
         if (data.len < 12) return error.InvalidFont;
         const directory: usize = sfnt.directoryOffset(data, face_index) catch |err| switch (err) {
-            error.InvalidFaceIndex => return error.InvalidFont,
+            error.InvalidFaceIndex, error.UnsupportedFontContainer => return error.InvalidFont,
             else => |e| return e,
         };
 
