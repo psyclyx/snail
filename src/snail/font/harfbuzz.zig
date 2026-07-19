@@ -61,6 +61,10 @@ pub const HarfBuzzShaper = struct {
     hooks_allocator: ?std.mem.Allocator,
 
     pub fn init(font_data: []const u8, units_per_em: u16) !HarfBuzzShaper {
+        return initFace(font_data, 0, units_per_em);
+    }
+
+    pub fn initFace(font_data: []const u8, face_index: u32, units_per_em: u16) !HarfBuzzShaper {
         const blob = hb.hb_blob_create(
             font_data.ptr,
             @intCast(font_data.len),
@@ -69,7 +73,7 @@ pub const HarfBuzzShaper = struct {
             null,
         ) orelse return error.HarfBuzzInitFailed;
 
-        const face = hb.hb_face_create(blob, 0) orelse {
+        const face = hb.hb_face_create(blob, face_index) orelse {
             hb.hb_blob_destroy(blob);
             return error.HarfBuzzInitFailed;
         };

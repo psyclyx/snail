@@ -46,8 +46,12 @@ pub const AutohintAnalyzer = struct {
     std_y: f32 = 0,
 
     pub fn init(allocator: Allocator, font_data: []const u8) !AutohintAnalyzer {
-        const program = try vm.Program.init(font_data);
-        const font = try ttf.Font.init(font_data);
+        return initFace(allocator, font_data, 0);
+    }
+
+    pub fn initFace(allocator: Allocator, font_data: []const u8, face_index: u32) !AutohintAnalyzer {
+        const program = try vm.Program.initFace(font_data, face_index);
+        const font = try ttf.Font.initFace(font_data, face_index);
         var blues = try blue_mod.deriveLatin(allocator, &program, &font, .{});
         if (blues.zones.len == 0) {
             blues.deinit();

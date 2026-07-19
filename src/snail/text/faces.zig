@@ -210,7 +210,11 @@ fn parseShapers(allocator: Allocator, font: *const Font) !ParsedShapers {
     errdefer parsed.deinit();
     parsed.shaper = opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset) catch null;
     if (comptime build_options.enable_harfbuzz) {
-        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.init(font.inner.data, font.inner.units_per_em) catch null;
+        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.initFace(
+            font.inner.data,
+            font.inner.face_index,
+            font.inner.units_per_em,
+        ) catch null;
     }
     return parsed;
 }

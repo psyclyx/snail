@@ -1,4 +1,5 @@
 const std = @import("std");
+const sfnt = @import("../sfnt.zig");
 
 pub const ParseError = error{
     UnexpectedEof,
@@ -90,7 +91,15 @@ pub const ProgramTables = struct {
     gasp: ?TableRecord = null,
 
     pub fn init(data: []const u8) ParseError!ProgramTables {
+        return initFace(data, 0);
+    }
+
+    pub fn initFace(data: []const u8, face_index: u32) ParseError!ProgramTables {
         if (data.len < 12) return error.InvalidFont;
+        const directory: usize = sfnt.directoryOffset(data, face_index) catch |err| switch (err) {
+            error.InvalidFaceIndex => return error.InvalidFont,
+            else => |e| return e,
+        };
 
         var out = ProgramTables{
             .data = data,
@@ -100,8 +109,8 @@ pub const ProgramTables = struct {
         var have_head = false;
         var have_maxp = false;
 
-        const num_tables = try readU16(data, 4);
-        var offset: usize = 12;
+        const num_tables = try readU16(data, directory + 4);
+        var offset: usize = directory + 12;
         for (0..num_tables) |_| {
             if (offset + 16 > data.len) return error.UnexpectedEof;
             const tag = data[offset..][0..4];

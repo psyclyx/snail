@@ -143,7 +143,7 @@ pub const HintVm = struct {
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
     /// back to `font.extractCurves`.
     pub fn init(allocator: std.mem.Allocator, font: *const Font) !HintVm {
-        const program = tt_vm.Program.init(font.inner.data) catch return error.NoHinting;
+        const program = tt_vm.Program.initFace(font.inner.data, font.inner.face_index) catch return error.NoHinting;
         return .{ .allocator = allocator, .program = program };
     }
 

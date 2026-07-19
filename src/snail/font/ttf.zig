@@ -1,4 +1,5 @@
 const std = @import("std");
+const sfnt = @import("sfnt.zig");
 const tt_outline = @import("truetype/outline.zig");
 const vec = @import("../math/vec.zig");
 const bezier_mod = @import("../math/bezier.zig");
@@ -60,6 +61,8 @@ fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) vo
 /// with separate scratch allocators per thread).
 pub const Font = struct {
     data: []const u8,
+    face_index: u32 = 0,
+    directory_offset: u32 = 0,
     units_per_em: u16 = 1000,
     num_glyphs: u16 = 0,
     cmap_offset: u32 = 0,
@@ -83,7 +86,15 @@ pub const Font = struct {
     ascii_glyph_lut: [128]u16 = .{0} ** 128,
 
     pub fn init(data: []const u8) !Font {
-        var font = Font{ .data = data };
+        return initFace(data, 0);
+    }
+
+    pub fn initFace(data: []const u8, face_index: u32) !Font {
+        var font = Font{
+            .data = data,
+            .face_index = face_index,
+            .directory_offset = try sfnt.directoryOffset(data, face_index),
+        };
         try font.parseTableDirectory();
         try font.parseHead();
         try font.parseMaxp();
@@ -127,10 +138,11 @@ pub const Font = struct {
     }
 
     fn parseTableDirectory(self: *Font) !void {
-        if (self.data.len < 12) return error.InvalidFont;
-        const num_tables = try readU16(self.data, 4);
+        const directory: usize = self.directory_offset;
+        if (directory > self.data.len or self.data.len - directory < 12) return error.InvalidFont;
+        const num_tables = try readU16(self.data, directory + 4);
         const fields = self.tableFields();
-        var offset: usize = 12;
+        var offset: usize = directory + 12;
         for (0..num_tables) |_| {
             if (offset + 16 > self.data.len) return error.UnexpectedEof;
             const tag = self.data[offset .. offset + 4];

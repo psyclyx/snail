@@ -1,6 +1,7 @@
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const ttf = @import("font/ttf.zig");
+const sfnt = @import("font/sfnt.zig");
 const curves_mod = @import("atlas/curves.zig");
 const curve_tex = @import("format/curve_texture.zig");
 const band_tex = @import("format/band_texture.zig");
@@ -37,6 +38,21 @@ pub const Font = struct {
     /// The data slice must outlive the Font.
     pub fn init(data: []const u8) !Font {
         return .{ .inner = try ttf.Font.init(data) };
+    }
+
+    /// Parse one zero-based face from a standalone font or TTC/OTC.
+    /// The data slice must outlive the Font.
+    pub fn initFace(data: []const u8, face_index: u32) !Font {
+        return .{ .inner = try ttf.Font.initFace(data, face_index) };
+    }
+
+    /// Return the number of faces in a standalone font or collection.
+    pub fn faceCount(data: []const u8) !u32 {
+        return sfnt.faceCount(data);
+    }
+
+    pub fn faceIndex(self: *const Font) u32 {
+        return self.inner.face_index;
     }
 
     pub fn unitsPerEm(self: *const Font) u16 {
