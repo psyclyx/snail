@@ -6,7 +6,6 @@
 //! from these records by `warp.fitGlyph` at draw time.
 
 const std = @import("std");
-const build_options = @import("build_options");
 
 const analysis = @import("analysis.zig");
 const blue_mod = @import("blue.zig");
@@ -15,7 +14,7 @@ const outline = @import("../truetype/outline.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
 const font_mod = @import("../../font.zig");
-const modern_font = if (build_options.enable_harfbuzz) @import("../harfbuzz_font.zig") else struct {};
+const modern_font = @import("../harfbuzz_font.zig");
 
 const Allocator = std.mem.Allocator;
 const Vec2 = @import("../../math/vec.zig").Vec2;
@@ -40,7 +39,7 @@ pub const FontFeatures = struct {
 pub const AutohintAnalyzer = struct {
     allocator: Allocator,
     program: ?vm.Program,
-    modern_instance: if (build_options.enable_harfbuzz) ?modern_font.Instance else void,
+    modern_instance: ?modern_font.Instance,
     font: font_mod.Font,
     blues: blue_mod.Blues,
     normalized_blues: []blue_mod.FeatureZone,
@@ -63,41 +62,38 @@ pub const AutohintAnalyzer = struct {
     pub fn initFont(allocator: Allocator, source_font: *const font_mod.Font) !AutohintAnalyzer {
         const use_modern = source_font.inner.outline_format != .truetype or source_font.variations.len != 0;
         var program: ?vm.Program = null;
-        var modern_instance: if (build_options.enable_harfbuzz) ?modern_font.Instance else void =
-            if (comptime build_options.enable_harfbuzz) null else {};
+        var modern_instance: ?modern_font.Instance = null;
         var blues: blue_mod.Blues = undefined;
 
         if (use_modern) {
-            if (comptime build_options.enable_harfbuzz) {
-                modern_instance = try modern_font.Instance.init(
-                    source_font.inner.data,
-                    source_font.inner.face_index,
-                    source_font.inner.units_per_em,
-                    source_font.variations,
-                );
-                errdefer if (modern_instance) |*instance| instance.deinit();
-                const blue_context = ModernBlueContext{
-                    .instance = &modern_instance.?,
-                    .font = source_font,
-                };
-                blues = try blue_mod.deriveLatinWith(
+            modern_instance = try modern_font.Instance.init(
+                source_font.inner.data,
+                source_font.inner.face_index,
+                source_font.inner.units_per_em,
+                source_font.variations,
+            );
+            errdefer if (modern_instance) |*instance| instance.deinit();
+            const blue_context = ModernBlueContext{
+                .instance = &modern_instance.?,
+                .font = source_font,
+            };
+            blues = try blue_mod.deriveLatinWith(
+                allocator,
+                source_font.inner.units_per_em,
+                blue_context,
+                modernGlyphExtreme,
+                .{},
+            );
+            if (blues.zones.len == 0) {
+                blues.deinit();
+                blues = try deriveStatisticalBluesModern(
                     allocator,
-                    source_font.inner.units_per_em,
-                    blue_context,
-                    modernGlyphExtreme,
+                    &modern_instance.?,
+                    source_font,
+                    .default,
                     .{},
                 );
-                if (blues.zones.len == 0) {
-                    blues.deinit();
-                    blues = try deriveStatisticalBluesModern(
-                        allocator,
-                        &modern_instance.?,
-                        source_font,
-                        .default,
-                        .{},
-                    );
-                }
-            } else return error.HarfBuzzDisabled;
+            }
         } else {
             program = try vm.Program.initFace(source_font.inner.data, source_font.inner.face_index);
             blues = try blue_mod.deriveLatin(allocator, &program.?, &source_font.inner, .{});
@@ -141,9 +137,7 @@ pub const AutohintAnalyzer = struct {
     pub fn deinit(self: *AutohintAnalyzer) void {
         self.allocator.free(self.normalized_blues);
         self.blues.deinit();
-        if (comptime build_options.enable_harfbuzz) {
-            if (self.modern_instance) |*instance| instance.deinit();
-        }
+        if (self.modern_instance) |*instance| instance.deinit();
         self.* = undefined;
     }
 
@@ -187,36 +181,34 @@ pub const AutohintAnalyzer = struct {
             return .{ .x = x, .y = y, .left = min_x / upm };
         }
 
-        if (comptime build_options.enable_harfbuzz) {
-            var glyph_outline = try self.modern_instance.?.glyphOutline(scratch, glyph_id, 1.0);
-            defer glyph_outline.deinit();
-            if (glyph_outline.segments.len == 0)
-                return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
-            var bounds = glyph_outline.segments[0].boundingBox();
-            for (glyph_outline.segments[1..]) |curve| bounds = bounds.merge(curve.boundingBox());
-            var y_analysis = try analysis.analyzeCurves(
-                scratch,
-                glyph_outline.segments,
-                glyph_outline.contours,
-                self.font.inner.units_per_em,
-                self.params,
-                .y,
-            );
-            defer y_analysis.deinit();
-            self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
-            const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
-            var x_analysis = try analysis.analyzeCurves(
-                scratch,
-                glyph_outline.segments,
-                glyph_outline.contours,
-                self.font.inner.units_per_em,
-                self.params,
-                .x,
-            );
-            defer x_analysis.deinit();
-            const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
-            return .{ .x = x, .y = y, .left = bounds.min.x / upm };
-        } else return error.HarfBuzzDisabled;
+        var glyph_outline = try self.modern_instance.?.glyphOutline(scratch, glyph_id, 1.0);
+        defer glyph_outline.deinit();
+        if (glyph_outline.segments.len == 0)
+            return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
+        var bounds = glyph_outline.segments[0].boundingBox();
+        for (glyph_outline.segments[1..]) |curve| bounds = bounds.merge(curve.boundingBox());
+        var y_analysis = try analysis.analyzeCurves(
+            scratch,
+            glyph_outline.segments,
+            glyph_outline.contours,
+            self.font.inner.units_per_em,
+            self.params,
+            .y,
+        );
+        defer y_analysis.deinit();
+        self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
+        const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
+        var x_analysis = try analysis.analyzeCurves(
+            scratch,
+            glyph_outline.segments,
+            glyph_outline.contours,
+            self.font.inner.units_per_em,
+            self.params,
+            .x,
+        );
+        defer x_analysis.deinit();
+        const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
+        return .{ .x = x, .y = y, .left = bounds.min.x / upm };
     }
 
     fn analyzeEdges(self: *AutohintAnalyzer, allocator: Allocator, glyph_id: u16, axis: analysis.Axis) !analysis.GlyphAnalysis {
@@ -236,25 +228,23 @@ pub const AutohintAnalyzer = struct {
                 axis,
             );
         }
-        if (comptime build_options.enable_harfbuzz) {
-            var glyph_outline = try self.modern_instance.?.glyphOutline(allocator, glyph_id, 1.0);
-            defer glyph_outline.deinit();
-            return analysis.analyzeCurves(
-                allocator,
-                glyph_outline.segments,
-                glyph_outline.contours,
-                self.font.inner.units_per_em,
-                self.params,
-                axis,
-            );
-        } else return error.HarfBuzzDisabled;
+        var glyph_outline = try self.modern_instance.?.glyphOutline(allocator, glyph_id, 1.0);
+        defer glyph_outline.deinit();
+        return analysis.analyzeCurves(
+            allocator,
+            glyph_outline.segments,
+            glyph_outline.contours,
+            self.font.inner.units_per_em,
+            self.params,
+            axis,
+        );
     }
 };
 
-const ModernBlueContext = if (build_options.enable_harfbuzz) struct {
+const ModernBlueContext = struct {
     instance: *modern_font.Instance,
     font: *const font_mod.Font,
-} else void;
+};
 
 fn modernGlyphExtreme(
     allocator: Allocator,
@@ -262,7 +252,6 @@ fn modernGlyphExtreme(
     ch: u8,
     kind: blue_mod.BlueKind,
 ) !?f32 {
-    if (comptime !build_options.enable_harfbuzz) return null;
     const glyph_id = context.font.glyphIndex(ch) catch return null;
     if (glyph_id == 0) return null;
     var glyph_outline = try context.instance.glyphOutline(allocator, glyph_id, 1.0);
@@ -381,12 +370,11 @@ fn deriveStatisticalBlues(
 
 fn deriveStatisticalBluesModern(
     allocator: Allocator,
-    instance: if (build_options.enable_harfbuzz) *modern_font.Instance else void,
+    instance: *modern_font.Instance,
     font: *const font_mod.Font,
     analysis_params: analysis.Params,
     blue_params: blue_mod.Params,
 ) !blue_mod.Blues {
-    if (comptime !build_options.enable_harfbuzz) return error.HarfBuzzDisabled;
     var bottom = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
     var top = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
     var outlined_glyphs: usize = 0;
@@ -740,7 +728,6 @@ test "font analysis is normalized once" {
 }
 
 test "CFF2 autohint analyzes the selected variable instance" {
-    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
     const light_coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 200 }};
     const heavy_coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 900 }};
     var light_font = try font_mod.Font.initWithOptions(

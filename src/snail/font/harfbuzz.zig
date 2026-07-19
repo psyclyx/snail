@@ -1,6 +1,6 @@
 //! HarfBuzz text shaping integration.
 //! Provides full OpenType shaping (Arabic, Devanagari, etc.)
-//! via the HarfBuzz library. Compile with -Dharfbuzz=true.
+//! via the HarfBuzz library.
 //!
 //! Each `HarfBuzzShaper` carries an em-scale font (`hb_font_em`, default OT
 //! funcs, scale = upem) used for normal shaping. When an `AdvanceProvider`

@@ -11,9 +11,8 @@
 //!   shape time via `ShapeOptions.advance_provider` (typically backed
 //!   by `snail.HintedGlyphCache`).
 //!
-//! Per-face HB and OpenType shapers are still parsed once at `build`
-//! time and reused across `shape()` calls — that's the "owns" part of
-//! `Faces`.
+//! Per-face HarfBuzz shapers are parsed once at `build` time and reused
+//! across `shape()` calls — that's the "owns" part of `Faces`.
 //!
 //! Thread safety: not thread-safe. The per-face HarfBuzz shapers carry
 //! HB-internal mutable state, and `shape()` configures the active
@@ -22,14 +21,9 @@
 //! parse-only and freely shareable between threads.
 
 const std = @import("std");
-const build_options = @import("build_options");
 
 const font_mod = @import("../font.zig");
-const opentype = @import("../font/opentype.zig");
-const harfbuzz = if (build_options.enable_harfbuzz) @import("../font/harfbuzz.zig") else struct {
-    pub const HarfBuzzShaper = void;
-    pub const Feature = void;
-};
+const harfbuzz = @import("../font/harfbuzz.zig");
 
 const text_mod = @import("../text.zig");
 
@@ -58,36 +52,27 @@ pub const Face = struct {
     synthetic: SyntheticStyle = .{},
 };
 
-/// Internal per-face state. Owns the OT / HB shapers parsed from the
+/// Internal per-face state. Owns the HarfBuzz shaper parsed from the
 /// underlying font data; multiple `FaceState`s with the same `*const
-/// Font` share one parse (the `owns_shapers` flag tracks that).
+/// Font` share one parse (the `owns_shaper` flag tracks that).
 pub const FaceState = struct {
     font: *const Font,
     weight: FontWeight,
     italic: bool,
     synthetic: SyntheticStyle,
-    shaper: ?opentype.Shaper,
-    hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void,
-    owns_shapers: bool,
+    hb_shaper: harfbuzz.HarfBuzzShaper,
+    owns_shaper: bool,
 
     fn deinit(self: *FaceState) void {
-        if (!self.owns_shapers) return;
-        if (self.shaper) |*s| s.deinit();
-        if (comptime build_options.enable_harfbuzz) {
-            if (self.hb_shaper) |*hbs| hbs.deinit();
-        }
+        if (self.owns_shaper) self.hb_shaper.deinit();
     }
 };
 
-const ParsedShapers = struct {
-    shaper: ?opentype.Shaper,
-    hb_shaper: if (build_options.enable_harfbuzz) ?harfbuzz.HarfBuzzShaper else void,
+const ParsedShaper = struct {
+    hb_shaper: harfbuzz.HarfBuzzShaper,
 
-    fn deinit(self: *ParsedShapers) void {
-        if (self.shaper) |*s| s.deinit();
-        if (comptime build_options.enable_harfbuzz) {
-            if (self.hb_shaper) |*hbs| hbs.deinit();
-        }
+    fn deinit(self: *ParsedShaper) void {
+        self.hb_shaper.deinit();
     }
 };
 
@@ -163,7 +148,7 @@ fn buildFaceStates(allocator: Allocator, specs: []const Face) ![]FaceState {
     var initialized: usize = 0;
     errdefer for (out[0..initialized]) |*f| f.deinit();
 
-    var parsed_cache: std.AutoHashMap(*const Font, ParsedShapers) = .init(allocator);
+    var parsed_cache: std.AutoHashMap(*const Font, ParsedShaper) = .init(allocator);
     defer parsed_cache.deinit();
 
     for (specs, 0..) |spec, i| {
@@ -173,12 +158,11 @@ fn buildFaceStates(allocator: Allocator, specs: []const Face) ![]FaceState {
                 .weight = spec.weight,
                 .italic = spec.italic,
                 .synthetic = spec.synthetic,
-                .shaper = cached.shaper,
                 .hb_shaper = cached.hb_shaper,
-                .owns_shapers = false,
+                .owns_shaper = false,
             };
         } else {
-            var parsed = try parseShapers(allocator, spec.font);
+            var parsed = try parseShaper(spec.font);
             errdefer parsed.deinit();
             try parsed_cache.put(spec.font, parsed);
             out[i] = .{
@@ -186,9 +170,8 @@ fn buildFaceStates(allocator: Allocator, specs: []const Face) ![]FaceState {
                 .weight = spec.weight,
                 .italic = spec.italic,
                 .synthetic = spec.synthetic,
-                .shaper = parsed.shaper,
                 .hb_shaper = parsed.hb_shaper,
-                .owns_shapers = true,
+                .owns_shaper = true,
             };
         }
         initialized += 1;
@@ -202,22 +185,15 @@ fn deinitFaceStates(allocator: Allocator, faces: []FaceState) void {
     allocator.free(faces);
 }
 
-fn parseShapers(allocator: Allocator, font: *const Font) !ParsedShapers {
-    var parsed = ParsedShapers{
-        .shaper = null,
-        .hb_shaper = if (comptime build_options.enable_harfbuzz) null else {},
-    };
-    errdefer parsed.deinit();
-    parsed.shaper = opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset) catch null;
-    if (comptime build_options.enable_harfbuzz) {
-        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.initInstance(
+fn parseShaper(font: *const Font) !ParsedShaper {
+    return .{
+        .hb_shaper = try harfbuzz.HarfBuzzShaper.initInstance(
             font.inner.data,
             font.inner.face_index,
             font.inner.units_per_em,
             font.variations,
-        ) catch null;
-    }
-    return parsed;
+        ),
+    };
 }
 
 // ── Fallback chains ──
@@ -364,7 +340,7 @@ fn itemizeText(allocator: Allocator, faces_value: *const Faces, style: FontStyle
     return try runs.toOwnedSlice(allocator);
 }
 
-// ── Per-run shaping (HB + analytic fallback) ──
+// ── Per-run shaping ──
 
 const ShapeRunResult = struct {
     glyphs: []ShapedText.Glyph,
@@ -391,9 +367,7 @@ fn shapeRun(
         if (r.face_index == face_index) r.glyph_id else null
     else
         null;
-    if (try shapeWithHarfbuzz(allocator, fc, face_index, font_id, faces_value.allocator, text, source_base, missing_replacement, opts)) |r| return r;
-    const inv_upem = 1.0 / @as(f32, @floatFromInt(fc.font.inner.units_per_em));
-    return shapeWithFallback(allocator, fc, face_index, font_id, text, source_base, inv_upem, missing_replacement);
+    return shapeWithHarfbuzz(allocator, fc, face_index, font_id, faces_value.allocator, text, source_base, missing_replacement, opts);
 }
 
 fn shapeWithHarfbuzz(
@@ -406,10 +380,8 @@ fn shapeWithHarfbuzz(
     source_base: u32,
     missing_replacement: ?u16,
     opts: ShapeOptions,
-) !?ShapeRunResult {
-    if (comptime !build_options.enable_harfbuzz) return null;
-    if (fc.hb_shaper == null) return null;
-    const hbs: *harfbuzz.HarfBuzzShaper = &fc.hb_shaper.?;
+) !ShapeRunResult {
+    const hbs: *harfbuzz.HarfBuzzShaper = &fc.hb_shaper;
 
     var feature_buf: [32]harfbuzz.Feature = undefined;
     const hb_features = buildHbFeatures(opts.features, source_base, @intCast(text.len), &feature_buf);
@@ -499,7 +471,6 @@ fn buildHbFeatures(
     segment_len: u32,
     out_buf: []harfbuzz.Feature,
 ) []const harfbuzz.Feature {
-    if (comptime !build_options.enable_harfbuzz) return &.{};
     if (features.len == 0) return &.{};
     var n: usize = 0;
     for (features) |f| {
@@ -523,128 +494,6 @@ fn buildHbFeatures(
         n += 1;
     }
     return out_buf[0..n];
-}
-
-const FallbackRun = struct {
-    gids: []u16,
-    src_starts: []u32,
-    src_ends: []u32,
-    glyph_count: usize,
-
-    fn deinit(self: *FallbackRun, allocator: Allocator) void {
-        allocator.free(self.gids);
-        allocator.free(self.src_starts);
-        allocator.free(self.src_ends);
-        self.* = undefined;
-    }
-};
-
-fn shapeWithFallback(
-    allocator: Allocator,
-    fc: *const FaceState,
-    face_index: FaceIndex,
-    font_id: u32,
-    text: []const u8,
-    source_base: u32,
-    inv_upem: f32,
-    missing_replacement: ?u16,
-) !ShapeRunResult {
-    var cp_count: usize = 0;
-    {
-        const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-        var it = utf8_view.iterator();
-        while (it.nextCodepoint()) |_| cp_count += 1;
-    }
-    if (cp_count == 0) return emptyRun();
-
-    var run = try buildFallbackRun(allocator, fc, text, source_base, cp_count);
-    defer run.deinit(allocator);
-    applyFallbackLigatures(fc, &run);
-
-    const out = try allocator.alloc(ShapedText.Glyph, run.glyph_count);
-    errdefer allocator.free(out);
-
-    var cursor_x: f32 = 0;
-    var prev_gid: u16 = 0;
-    for (run.gids[0..run.glyph_count], 0..) |gid, i| {
-        if (gid == 0) {
-            const glyph_id = missing_replacement orelse 0;
-            const advance = if (glyph_id == 0)
-                500.0 * inv_upem
-            else
-                @as(f32, @floatFromInt(fc.font.advanceWidth(glyph_id) catch 500)) * inv_upem;
-            out[i] = .{
-                .face_index = face_index,
-                .glyph_id = glyph_id,
-                .x_offset = cursor_x,
-                .y_offset = 0,
-                .x_advance = advance,
-                .y_advance = 0,
-                .source_start = run.src_starts[i],
-                .source_end = run.src_ends[i],
-                .font_id = font_id,
-            };
-            cursor_x += advance;
-            prev_gid = 0;
-            continue;
-        }
-        cursor_x += @as(f32, @floatFromInt(fallbackKerning(fc, prev_gid, gid))) * inv_upem;
-        const advance = @as(f32, @floatFromInt(fc.font.advanceWidth(gid) catch 500)) * inv_upem;
-        out[i] = .{
-            .face_index = face_index,
-            .glyph_id = gid,
-            .x_offset = cursor_x,
-            .y_offset = 0,
-            .x_advance = advance,
-            .y_advance = 0,
-            .source_start = run.src_starts[i],
-            .source_end = run.src_ends[i],
-            .font_id = font_id,
-        };
-        cursor_x += advance;
-        prev_gid = gid;
-    }
-    return .{ .glyphs = out, .advance_x = cursor_x, .advance_y = 0 };
-}
-
-fn buildFallbackRun(allocator: Allocator, fc: *const FaceState, text: []const u8, source_base: u32, cp_count: usize) !FallbackRun {
-    const gids = try allocator.alloc(u16, cp_count);
-    errdefer allocator.free(gids);
-    const src_starts = try allocator.alloc(u32, cp_count);
-    errdefer allocator.free(src_starts);
-    const src_ends = try allocator.alloc(u32, cp_count);
-    errdefer allocator.free(src_ends);
-
-    var glyph_count: usize = 0;
-    const utf8_view = std.unicode.Utf8View.initUnchecked(text);
-    var it = utf8_view.iterator();
-    while (it.nextCodepointSlice()) |cp_slice| {
-        const byte_pos = @intFromPtr(cp_slice.ptr) - @intFromPtr(text.ptr);
-        const cp = std.unicode.utf8Decode(cp_slice) catch 0;
-        gids[glyph_count] = fc.font.glyphIndex(@intCast(cp)) catch 0;
-        src_starts[glyph_count] = source_base + @as(u32, @intCast(byte_pos));
-        src_ends[glyph_count] = source_base + @as(u32, @intCast(byte_pos + cp_slice.len));
-        glyph_count += 1;
-    }
-    return .{ .gids = gids, .src_starts = src_starts, .src_ends = src_ends, .glyph_count = glyph_count };
-}
-
-fn applyFallbackLigatures(fc: *const FaceState, run: *FallbackRun) void {
-    if (fc.shaper) |shaper| {
-        run.glyph_count = shaper.applyLigaturesTracked(
-            run.gids[0..run.glyph_count],
-            run.src_starts[0..run.glyph_count],
-            run.src_ends[0..run.glyph_count],
-        ) catch run.glyph_count;
-    }
-}
-
-fn fallbackKerning(fc: *const FaceState, prev_gid: u16, gid: u16) i16 {
-    if (prev_gid == 0) return 0;
-    var kern: i16 = 0;
-    if (fc.shaper) |shaper| kern = shaper.getKernAdjustment(prev_gid, gid) catch 0;
-    if (kern == 0) kern = fc.font.getKerning(prev_gid, gid) catch 0;
-    return kern;
 }
 
 // ── Font-id derivation ──
@@ -793,8 +642,45 @@ test "shape produces ShapedText with font_id populated" {
     }
 }
 
+test "shape preserves HarfBuzz complex-script behavior" {
+    const Case = struct {
+        font_data: []const u8,
+        text: []const u8,
+        glyph_count: usize,
+    };
+    const cases = [_]Case{
+        .{ .font_data = assets.noto_sans_arabic, .text = "بسم الله", .glyph_count = 9 },
+        .{ .font_data = assets.noto_sans_devanagari, .text = "नमस्ते", .glyph_count = 5 },
+        .{ .font_data = assets.noto_sans_thai, .text = "สวัสดี", .glyph_count = 6 },
+        .{ .font_data = assets.noto_sans_mongolian, .text = "ᠮᠣᠩᠭᠣᠯ", .glyph_count = 5 },
+    };
+
+    for (cases) |case| {
+        var font = try Font.init(case.font_data);
+        var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+        defer faces.deinit();
+        var shaped = try shape(testing.allocator, &faces, case.text, .{});
+        defer shaped.deinit();
+        try testing.expectEqual(case.glyph_count, shaped.glyphs.len);
+        try testing.expect(shaped.advanceX() > 0);
+    }
+}
+
+test "shape forwards OpenType feature overrides" {
+    var font = try Font.init(assets.noto_sans_regular);
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
+
+    var default = try shape(testing.allocator, &faces, "office", .{});
+    defer default.deinit();
+    const no_liga = [_]OpenTypeFeature{.{ .tag = "liga".*, .value = 0 }};
+    var expanded = try shape(testing.allocator, &faces, "office", .{ .features = &no_liga });
+    defer expanded.deinit();
+
+    try testing.expect(expanded.glyphs.len > default.glyphs.len);
+}
+
 test "HarfBuzz shaping uses variable font coordinates" {
-    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
     const light_coords = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 200 }};
     const heavy_coords = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 900 }};
     var light_font = try Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &light_coords });

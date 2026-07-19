@@ -681,10 +681,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     const has_presentation_feedback = window.hasPresentationFeedback();
 
     std.debug.print("snail - GPU text & vector rendering\n", .{});
-    std.debug.print("Backend: {s}, HarfBuzz: {s}\n", .{
-        active.backendName(),
-        if (build_options.enable_harfbuzz) "ON" else "OFF",
-    });
+    std.debug.print("Backend: {s}\n", .{active.backendName()});
     renderer_driver.warnIfDebugCpu(active.kind());
     std.debug.print(
         "Keys: arrows pan, Z/X zoom, R rotate, H TT hinting, B AA mode, C backend, O HUD on/off, T timing prints, L dump repro, Esc quit\n",
