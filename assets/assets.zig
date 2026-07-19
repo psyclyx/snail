@@ -10,4 +10,6 @@ pub const noto_sans_symbols = @embedFile("NotoSansSymbols-Regular.ttf");
 pub const noto_sans_thai = @embedFile("NotoSansThai-Regular.ttf");
 pub const noto_emoji = @embedFile("NotoEmoji-Regular.ttf");
 pub const twemoji_mozilla = @embedFile("TwemojiMozilla.ttf");
+pub const source_serif_cff = @embedFile("test-fonts/SourceSerif4-Regular.otf");
+pub const source_serif_cff2_variable = @embedFile("test-fonts/SourceSerif4Variable-Roman.otf");
 pub const dots_rgba = @embedFile("dots_16x16.rgba");

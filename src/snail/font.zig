@@ -2,6 +2,9 @@ const std = @import("std");
 const bezier = @import("math/bezier.zig");
 const ttf = @import("font/ttf.zig");
 const sfnt = @import("font/sfnt.zig");
+const font_types = @import("font/types.zig");
+const build_options = @import("build_options");
+const modern_font = if (build_options.enable_harfbuzz) @import("font/harfbuzz_font.zig") else struct {};
 const curves_mod = @import("atlas/curves.zig");
 const curve_tex = @import("format/curve_texture.zig");
 const band_tex = @import("format/band_texture.zig");
@@ -10,6 +13,10 @@ pub const GlyphMetrics = ttf.GlyphMetrics;
 pub const LineMetrics = ttf.LineMetrics;
 pub const DecorationMetrics = ttf.DecorationMetrics;
 pub const ScriptMetrics = ttf.ScriptMetrics;
+pub const OutlineFormat = ttf.OutlineFormat;
+pub const Variation = font_types.Variation;
+pub const VariationAxis = font_types.VariationAxis;
+pub const Options = font_types.Options;
 pub const tt = struct {
     pub const exec = @import("font/truetype/exec.zig");
     pub const graphics = @import("font/truetype/graphics.zig");
@@ -33,17 +40,30 @@ test {
 /// No deinit — the struct holds no owned resources; let it go out of scope.
 pub const Font = struct {
     inner: ttf.Font,
+    variations: []const Variation = &.{},
 
-    /// Parse a TrueType font from raw file data.
+    /// Parse an OpenType font from raw file data.
     /// The data slice must outlive the Font.
     pub fn init(data: []const u8) !Font {
-        return .{ .inner = try ttf.Font.init(data) };
+        return initWithOptions(data, .{});
     }
 
     /// Parse one zero-based face from a standalone font or TTC/OTC.
     /// The data slice must outlive the Font.
     pub fn initFace(data: []const u8, face_index: u32) !Font {
-        return .{ .inner = try ttf.Font.initFace(data, face_index) };
+        return initWithOptions(data, .{ .face_index = face_index });
+    }
+
+    /// Parse a font face and borrow its variable-font coordinates. Both the
+    /// font bytes and the variations slice must outlive the Font.
+    pub fn initWithOptions(data: []const u8, options: Options) !Font {
+        for (options.variations) |variation| {
+            if (!std.math.isFinite(variation.value)) return error.InvalidVariation;
+        }
+        return .{
+            .inner = try ttf.Font.initFace(data, options.face_index),
+            .variations = options.variations,
+        };
     }
 
     /// Return the number of faces in a standalone font or collection.
@@ -53,6 +73,19 @@ pub const Font = struct {
 
     pub fn faceIndex(self: *const Font) u32 {
         return self.inner.face_index;
+    }
+
+    pub fn outlineFormat(self: *const Font) OutlineFormat {
+        return self.inner.outline_format;
+    }
+
+    /// Inspect the design axes advertised by `fvar`. Caller owns the result.
+    pub fn variationAxes(self: *const Font, allocator: std.mem.Allocator) ![]VariationAxis {
+        if (comptime build_options.enable_harfbuzz) {
+            return modern_font.variationAxes(allocator, self.inner.data, self.inner.face_index);
+        } else {
+            return error.HarfBuzzDisabled;
+        }
     }
 
     pub fn unitsPerEm(self: *const Font) u16 {
@@ -68,35 +101,79 @@ pub const Font = struct {
     }
 
     pub fn glyphMetrics(self: *const Font, glyph_id: u16) !GlyphMetrics {
+        if (self.requiresModernBackend()) {
+            if (comptime build_options.enable_harfbuzz) {
+                const metrics = try modern_font.glyphMetrics(
+                    self.inner.data,
+                    self.inner.face_index,
+                    self.inner.units_per_em,
+                    self.variations,
+                    glyph_id,
+                );
+                return .{
+                    .advance_width = std.math.cast(u16, metrics.advance_width) orelse return error.InvalidFont,
+                    .lsb = std.math.cast(i16, metrics.lsb) orelse return error.InvalidFont,
+                    .bbox = metrics.bbox,
+                };
+            } else return error.HarfBuzzDisabled;
+        }
         return self.inner.glyphMetrics(glyph_id);
     }
 
     /// Return ascent/descent/line_gap from the font `hhea` table, in font units.
     pub fn lineMetrics(self: *const Font) !LineMetrics {
+        if (self.variations.len != 0) {
+            if (comptime build_options.enable_harfbuzz) {
+                const metrics = try modern_font.lineMetrics(
+                    self.inner.data,
+                    self.inner.face_index,
+                    self.inner.units_per_em,
+                    self.variations,
+                );
+                return .{
+                    .ascent = try metricI16(metrics.ascent),
+                    .descent = try metricI16(metrics.descent),
+                    .line_gap = try metricI16(metrics.line_gap),
+                };
+            } else return error.HarfBuzzDisabled;
+        }
         return self.inner.lineMetrics();
     }
 
     pub fn advanceWidth(self: *const Font, glyph_id: u16) !i16 {
+        if (self.requiresModernBackend()) {
+            return std.math.cast(i16, (try self.glyphMetrics(glyph_id)).advance_width) orelse error.InvalidFont;
+        }
         return self.inner.advanceWidth(glyph_id);
     }
 
     /// Underline and strikethrough metrics from the post and OS/2 tables, in font units.
     pub fn decorationMetrics(self: *const Font) !DecorationMetrics {
+        if (self.variations.len != 0) {
+            return .{
+                .underline_position = try self.modernMetric(.underline_offset),
+                .underline_thickness = try self.modernMetric(.underline_size),
+                .strikethrough_position = try self.modernMetric(.strikeout_offset),
+                .strikethrough_thickness = try self.modernMetric(.strikeout_size),
+            };
+        }
         return self.inner.decorationMetrics();
     }
 
     /// Superscript size and offset from the OS/2 table, in font units.
     pub fn superscriptMetrics(self: *const Font) !ScriptMetrics {
+        if (self.variations.len != 0) return self.modernScriptMetrics(true);
         return self.inner.superscriptMetrics();
     }
 
     /// Subscript size and offset from the OS/2 table, in font units.
     pub fn subscriptMetrics(self: *const Font) !ScriptMetrics {
+        if (self.variations.len != 0) return self.modernScriptMetrics(false);
         return self.inner.subscriptMetrics();
     }
 
     pub fn bbox(self: *const Font, glyph_id: u16) !bezier.BBox {
-        return self.inner.bbox(glyph_id);
+        return (try self.glyphMetrics(glyph_id)).bbox;
     }
 
     /// Extract a glyph's outlines into the renderable `GlyphCurves` form
@@ -134,7 +211,42 @@ pub const Font = struct {
     pub fn colrLayerCount(self: *const Font, base_glyph_id: u16) u16 {
         return self.inner.colrLayerCount(base_glyph_id);
     }
+
+    fn requiresModernBackend(self: *const Font) bool {
+        return self.inner.outline_format != .truetype or self.variations.len != 0;
+    }
+
+    fn modernMetric(self: *const Font, tag: font_types.MetricTag) !i16 {
+        if (comptime build_options.enable_harfbuzz) {
+            return metricI16(try modern_font.metricByTag(
+                self.inner.data,
+                self.inner.face_index,
+                self.inner.units_per_em,
+                self.variations,
+                tag,
+            ));
+        } else return error.HarfBuzzDisabled;
+    }
+
+    fn modernScriptMetrics(self: *const Font, superscript: bool) !ScriptMetrics {
+        if (comptime build_options.enable_harfbuzz) {
+            const tags: [4]font_types.MetricTag = if (superscript)
+                .{ .superscript_x_size, .superscript_y_size, .superscript_x_offset, .superscript_y_offset }
+            else
+                .{ .subscript_x_size, .subscript_y_size, .subscript_x_offset, .subscript_y_offset };
+            return .{
+                .x_size = try self.modernMetric(tags[0]),
+                .y_size = try self.modernMetric(tags[1]),
+                .x_offset = try self.modernMetric(tags[2]),
+                .y_offset = try self.modernMetric(tags[3]),
+            };
+        } else return error.HarfBuzzDisabled;
+    }
 };
+
+fn metricI16(value: i32) !i16 {
+    return std.math.cast(i16, value) orelse error.InvalidFont;
+}
 
 const CurveSegment = bezier.CurveSegment;
 
@@ -144,6 +256,20 @@ fn extractCurvesInner(
     scratch: std.mem.Allocator,
     glyph_id: u16,
 ) !curves_mod.GlyphCurves {
+    if (font.requiresModernBackend()) {
+        if (comptime build_options.enable_harfbuzz) {
+            const segs = try modern_font.outlineSegments(
+                scratch,
+                font.inner.data,
+                font.inner.face_index,
+                font.inner.units_per_em,
+                font.variations,
+                glyph_id,
+            );
+            defer scratch.free(segs);
+            return packGlyphCurves(allocator, scratch, segs, (try font.glyphMetrics(glyph_id)).bbox);
+        } else return error.HarfBuzzDisabled;
+    }
     // `parseGlyph` returns contours, sub-curves, and an internal
     // component-cache hashmap all allocated on `scratch`; the data is
     // read once below and then discarded. We wrap `scratch` in a
@@ -169,6 +295,17 @@ fn extractCurvesInner(
         }
     }
 
+    return packGlyphCurves(allocator, scratch, segs, glyph.metrics.bbox);
+}
+
+fn packGlyphCurves(
+    allocator: std.mem.Allocator,
+    scratch: std.mem.Allocator,
+    segs: []const CurveSegment,
+    metrics_bbox: bezier.BBox,
+) !curves_mod.GlyphCurves {
+    if (segs.len == 0) return curves_mod.GlyphCurves.empty(allocator);
+
     // Cache analytic bboxes during prepare so glyphRenderBBox and the
     // band-build pass don't each recompute them.
     const prepared_bboxes = try scratch.alloc(bezier.BBox, segs.len);
@@ -176,7 +313,7 @@ fn extractCurvesInner(
     const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, segs, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
-    const render_bbox = glyphRenderBBoxFromBBoxes(glyph.metrics.bbox, prepared_bboxes);
+    const render_bbox = glyphRenderBBoxFromBBoxes(metrics_bbox, prepared_bboxes);
 
     // Single-glyph direct encoding. Skip `buildCurveTexture`'s TEX_WIDTH
     // padding (which would allocate ~32 KB per glyph just to drop most of
@@ -264,6 +401,61 @@ test "extractCurves returns empty for whitespace glyph" {
     defer curves.deinit();
 
     try std.testing.expect(curves.isEmpty());
+}
+
+test "static CFF font exposes metrics and cubic outlines" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const font_data = @import("assets").source_serif_cff;
+    var font = try Font.init(font_data);
+    try std.testing.expectEqual(OutlineFormat.cff, font.outlineFormat());
+
+    const glyph_id = try font.glyphIndex('S');
+    const metrics = try font.glyphMetrics(glyph_id);
+    try std.testing.expect(metrics.advance_width > 0);
+    try std.testing.expect(metrics.bbox.width() > 0);
+
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer curves.deinit();
+    try std.testing.expect(curves.curve_count > 0);
+    try std.testing.expect(curves.band_bytes.len > 0);
+}
+
+test "CFF2 variable coordinates affect axes metrics and outlines" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const font_data = @import("assets").source_serif_cff2_variable;
+    const light_coords = [_]Variation{
+        .{ .tag = "wght".*, .value = 200 },
+        .{ .tag = "opsz".*, .value = 20 },
+    };
+    const heavy_coords = [_]Variation{
+        .{ .tag = "wght".*, .value = 900 },
+        .{ .tag = "opsz".*, .value = 20 },
+    };
+    var light = try Font.initWithOptions(font_data, .{ .variations = &light_coords });
+    var heavy = try Font.initWithOptions(font_data, .{ .variations = &heavy_coords });
+    try std.testing.expectEqual(OutlineFormat.cff2, light.outlineFormat());
+
+    const axes = try light.variationAxes(std.testing.allocator);
+    defer std.testing.allocator.free(axes);
+    var found_weight = false;
+    var found_optical_size = false;
+    for (axes) |axis| {
+        if (std.mem.eql(u8, &axis.tag, "wght")) found_weight = true;
+        if (std.mem.eql(u8, &axis.tag, "opsz")) found_optical_size = true;
+    }
+    try std.testing.expect(found_weight);
+    try std.testing.expect(found_optical_size);
+
+    const glyph_id = try light.glyphIndex('m');
+    const light_metrics = try light.glyphMetrics(glyph_id);
+    const heavy_metrics = try heavy.glyphMetrics(glyph_id);
+    try std.testing.expect(light_metrics.advance_width != heavy_metrics.advance_width);
+
+    var light_curves = try light.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer light_curves.deinit();
+    var heavy_curves = try heavy.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer heavy_curves.deinit();
+    try std.testing.expect(!std.mem.eql(u16, light_curves.curve_bytes, heavy_curves.curve_bytes));
 }
 
 test "extractCurves matches existing curve packing path byte-for-byte" {

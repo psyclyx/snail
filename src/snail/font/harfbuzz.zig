@@ -13,6 +13,7 @@
 
 const std = @import("std");
 const text_types = @import("../text.zig");
+const font_types = @import("types.zig");
 const hb = @cImport({
     @cInclude("hb.h");
 });
@@ -65,6 +66,15 @@ pub const HarfBuzzShaper = struct {
     }
 
     pub fn initFace(font_data: []const u8, face_index: u32, units_per_em: u16) !HarfBuzzShaper {
+        return initInstance(font_data, face_index, units_per_em, &.{});
+    }
+
+    pub fn initInstance(
+        font_data: []const u8,
+        face_index: u32,
+        units_per_em: u16,
+        variations: []const font_types.Variation,
+    ) !HarfBuzzShaper {
         const blob = hb.hb_blob_create(
             font_data.ptr,
             @intCast(font_data.len),
@@ -92,6 +102,9 @@ pub const HarfBuzzShaper = struct {
 
         const upem: c_int = @intCast(units_per_em);
         hb.hb_font_set_scale(font, upem, upem);
+        for (variations) |variation| {
+            hb.hb_font_set_variation(font, makeTag(variation.tag), variation.value);
+        }
 
         return .{
             .hb_face = face,

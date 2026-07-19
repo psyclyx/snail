@@ -210,10 +210,11 @@ fn parseShapers(allocator: Allocator, font: *const Font) !ParsedShapers {
     errdefer parsed.deinit();
     parsed.shaper = opentype.Shaper.init(allocator, font.inner.data, font.inner.gsub_offset, font.inner.gpos_offset) catch null;
     if (comptime build_options.enable_harfbuzz) {
-        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.initFace(
+        parsed.hb_shaper = harfbuzz.HarfBuzzShaper.initInstance(
             font.inner.data,
             font.inner.face_index,
             font.inner.units_per_em,
+            font.variations,
         ) catch null;
     }
     return parsed;
@@ -790,4 +791,25 @@ test "shape produces ShapedText with font_id populated" {
     for (shaped.glyphs) |g| {
         try testing.expectEqual(@as(u32, 0), g.font_id);
     }
+}
+
+test "HarfBuzz shaping uses variable font coordinates" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const light_coords = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 200 }};
+    const heavy_coords = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 900 }};
+    var light_font = try Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &light_coords });
+    var heavy_font = try Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &heavy_coords });
+
+    var light_faces = try Faces.build(testing.allocator, &.{.{ .font = &light_font }});
+    defer light_faces.deinit();
+    var heavy_faces = try Faces.build(testing.allocator, &.{.{ .font = &heavy_font }});
+    defer heavy_faces.deinit();
+
+    var light_text = try shape(testing.allocator, &light_faces, "m", .{});
+    defer light_text.deinit();
+    var heavy_text = try shape(testing.allocator, &heavy_faces, "m", .{});
+    defer heavy_text.deinit();
+    try testing.expectEqual(@as(usize, 1), light_text.glyphs.len);
+    try testing.expectEqual(@as(usize, 1), heavy_text.glyphs.len);
+    try testing.expect(light_text.glyphs[0].x_advance != heavy_text.glyphs[0].x_advance);
 }

@@ -50,6 +50,12 @@ pub const Glyph = struct {
     metrics: GlyphMetrics,
 };
 
+pub const OutlineFormat = enum {
+    truetype,
+    cff,
+    cff2,
+};
+
 fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) void {
     for (contours) |contour| {
         if (contour.curves.len > 0) allocator.free(contour.curves);
@@ -64,6 +70,7 @@ pub const Font = struct {
     face_index: u32 = 0,
     directory_offset: u32 = 0,
     units_per_em: u16 = 1000,
+    outline_format: OutlineFormat = .truetype,
     num_glyphs: u16 = 0,
     cmap_offset: u32 = 0,
     glyf_offset: u32 = 0,
@@ -77,6 +84,8 @@ pub const Font = struct {
     gpos_offset: u32 = 0,
     colr_offset: u32 = 0,
     cpal_offset: u32 = 0,
+    cff_offset: u32 = 0,
+    cff2_offset: u32 = 0,
     os2_offset: u32 = 0,
     post_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
@@ -118,7 +127,7 @@ pub const Font = struct {
         return std.mem.readInt(u32, data[offset..][0..4], .big);
     }
 
-    fn tableFields(self: *Font) [14]struct { tag: *const [4]u8, dest: *u32 } {
+    fn tableFields(self: *Font) [16]struct { tag: *const [4]u8, dest: *u32 } {
         return .{
             .{ .tag = "head", .dest = &self.head_offset },
             .{ .tag = "maxp", .dest = &self.maxp_offset },
@@ -132,6 +141,8 @@ pub const Font = struct {
             .{ .tag = "GPOS", .dest = &self.gpos_offset },
             .{ .tag = "COLR", .dest = &self.colr_offset },
             .{ .tag = "CPAL", .dest = &self.cpal_offset },
+            .{ .tag = "CFF ", .dest = &self.cff_offset },
+            .{ .tag = "CFF2", .dest = &self.cff2_offset },
             .{ .tag = "OS/2", .dest = &self.os2_offset },
             .{ .tag = "post", .dest = &self.post_offset },
         };
@@ -155,8 +166,18 @@ pub const Font = struct {
             }
             offset += 16;
         }
-        if (self.head_offset == 0 or self.glyf_offset == 0 or self.loca_offset == 0)
+        if (self.head_offset == 0 or self.maxp_offset == 0 or self.cmap_offset == 0 or
+            self.hhea_offset == 0 or self.hmtx_offset == 0)
             return error.MissingRequiredTable;
+        if (self.glyf_offset != 0 and self.loca_offset != 0) {
+            self.outline_format = .truetype;
+        } else if (self.cff2_offset != 0) {
+            self.outline_format = .cff2;
+        } else if (self.cff_offset != 0) {
+            self.outline_format = .cff;
+        } else {
+            return error.MissingRequiredTable;
+        }
     }
 
     fn parseHead(self: *Font) !void {
