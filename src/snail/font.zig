@@ -459,6 +459,61 @@ test "CFF2 variable coordinates affect axes metrics and outlines" {
     try std.testing.expect(!std.mem.eql(u16, light_curves.curve_bytes, heavy_curves.curve_bytes));
 }
 
+test "OpenType collections select CFF and varied CFF2 faces" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const collection = @import("assets").test_opentype_collection;
+    try std.testing.expectEqual(@as(u32, 2), try Font.faceCount(collection));
+
+    var cff = try Font.initFace(collection, 0);
+    try std.testing.expectEqual(OutlineFormat.cff, cff.outlineFormat());
+    var cff_curves = try cff.extractCurves(
+        std.testing.allocator,
+        std.testing.allocator,
+        try cff.glyphIndex('A'),
+    );
+    defer cff_curves.deinit();
+    try std.testing.expect(cff_curves.curve_count > 0);
+
+    const coordinates = [_]Variation{.{ .tag = "wght".*, .value = 800 }};
+    var cff2 = try Font.initWithOptions(collection, .{
+        .face_index = 1,
+        .variations = &coordinates,
+    });
+    try std.testing.expectEqual(@as(u32, 1), cff2.faceIndex());
+    try std.testing.expectEqual(OutlineFormat.cff2, cff2.outlineFormat());
+    const axes = try cff2.variationAxes(std.testing.allocator);
+    defer std.testing.allocator.free(axes);
+    try std.testing.expect(axes.len > 0);
+    var cff2_curves = try cff2.extractCurves(
+        std.testing.allocator,
+        std.testing.allocator,
+        try cff2.glyphIndex('S'),
+    );
+    defer cff2_curves.deinit();
+    try std.testing.expect(cff2_curves.curve_count > 0);
+    try std.testing.expectError(error.InvalidFaceIndex, Font.initFace(collection, 2));
+}
+
+test "TrueType collections use the selected native face" {
+    const collection = @import("assets").test_truetype_collection;
+    try std.testing.expectEqual(@as(u32, 2), try Font.faceCount(collection));
+    var mono = try Font.initFace(collection, 0);
+    var serif = try Font.initFace(collection, 1);
+    try std.testing.expectEqual(OutlineFormat.truetype, mono.outlineFormat());
+    try std.testing.expectEqual(OutlineFormat.truetype, serif.outlineFormat());
+
+    const mono_metrics = try mono.glyphMetrics(try mono.glyphIndex('M'));
+    const serif_metrics = try serif.glyphMetrics(try serif.glyphIndex('M'));
+    try std.testing.expect(mono_metrics.advance_width != serif_metrics.advance_width);
+    var curves = try serif.extractCurves(
+        std.testing.allocator,
+        std.testing.allocator,
+        try serif.glyphIndex('A'),
+    );
+    defer curves.deinit();
+    try std.testing.expect(curves.curve_count > 0);
+}
+
 test "extractCurves matches existing curve packing path byte-for-byte" {
     // The producer reuses `buildCurveTexture` and `buildGlyphBandData` from
     // render/format. For a single-glyph input, the produced curve_bytes

@@ -38,6 +38,7 @@ Files:
 
 - `test-fonts/SourceSerif4-Regular.otf`
 - `test-fonts/SourceSerif4Variable-Roman.otf`
+- `test-fonts/SnailTestCollection.otc` (derived test fixture)
 
 These are unmodified release 4.005 files from Adobe's Source Serif repository:
 https://github.com/adobe-fonts/source-serif/tree/4.005R
@@ -49,6 +50,14 @@ https://github.com/adobe-fonts/source-serif/tree/4.005R
   `edf160d0d584deee8a3bb2c3371b2a7624ca63580fbe02c57c1f4c91e84d8787`
 - `SourceSerif4Variable-Roman.otf` SHA-256:
   `867b73c6a954a4a64616906d179f94572a748790a1d022ebeeff07f56ea0221a`
+- `SnailTestCollection.otc` SHA-256:
+  `06f3d80f994294f7a2e65537a16b5b349e95acead8e98c116c66980a69f3c473`
+
+`SnailTestCollection.otc` was generated with FontTools 4.63.0 from the two
+release files above. Each face was subset to U+0020, U+0041, U+0053, U+006D,
+U+006E, and U+FFFD; all layout features were retained; the faces were renamed
+to “Snail Test CFF” and “Snail Test CFF2 Variable” to avoid Adobe's Reserved
+Font Name; and the renamed faces were packaged as an OpenType collection.
 
 Source Serif is licensed under the SIL Open Font License, Version 1.1,
 reproduced below.
@@ -151,6 +160,14 @@ Files:
 
 - `DejaVuSansMono.ttf`
 - `DejaVuSerif.ttf`
+- `test-fonts/SnailTestTrueTypeCollection.ttc` (derived test fixture)
+
+`SnailTestTrueTypeCollection.ttc` was generated with FontTools 4.63.0 by
+subsetting the two DejaVu files to U+0020, U+0041, U+004D, U+0053, U+006D,
+U+006E, and U+FFFD, retaining all layout features, renaming the faces to
+“Snail Test Mono” and “Snail Test Serif”, and packaging them as a TrueType
+collection. Its SHA-256 is
+`e813012de32a2046aaa6987ff1710100ed020ca7e10d6e731eaf89f083c9397f`.
 
 Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.
 

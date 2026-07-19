@@ -304,6 +304,23 @@ test "HintVm rejects selected variable instances" {
     try testing.expectError(error.NoHinting, HintVm.init(testing.allocator, &font));
 }
 
+test "HintVm executes the selected TrueType collection face" {
+    const collection = @import("assets").test_truetype_collection;
+    var font = try Font.initFace(collection, 1);
+    var hinter = try HintVm.init(testing.allocator, &font);
+    defer hinter.deinit();
+    var prepared = try hinter.prepare(HintPpem.uniform(16 * 64));
+    defer prepared.deinit();
+    var curves = try hinter.hintGlyph(
+        testing.allocator,
+        testing.allocator,
+        &prepared,
+        try font.glyphIndex('A'),
+    );
+    defer curves.deinit();
+    try testing.expect(curves.curve_count > 0);
+}
+
 test "HintVm produces GlyphCurves for a hinted glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
