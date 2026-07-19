@@ -467,6 +467,26 @@ test "CFF2 variable coordinates affect axes metrics and outlines" {
     try std.testing.expect(!std.mem.eql(u16, light_curves.curve_bytes, heavy_curves.curve_bytes));
 }
 
+test "TrueType gvar coordinates affect native-format outlines" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const font_data = @import("assets").noto_sans_mono;
+    const thin_coordinates = [_]Variation{.{ .tag = "wght".*, .value = 100 }};
+    const black_coordinates = [_]Variation{.{ .tag = "wght".*, .value = 900 }};
+    var thin = try Font.initWithOptions(font_data, .{ .variations = &thin_coordinates });
+    var black = try Font.initWithOptions(font_data, .{ .variations = &black_coordinates });
+    try std.testing.expectEqual(OutlineFormat.truetype, thin.outlineFormat());
+
+    const glyph_id = try thin.glyphIndex('m');
+    var thin_curves = try thin.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer thin_curves.deinit();
+    var black_curves = try black.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer black_curves.deinit();
+    try std.testing.expect(!std.mem.eql(u16, thin_curves.curve_bytes, black_curves.curve_bytes));
+    const thin_bbox = try thin.bbox(glyph_id);
+    const black_bbox = try black.bbox(glyph_id);
+    try std.testing.expect(thin_bbox.width() != black_bbox.width() or thin_bbox.height() != black_bbox.height());
+}
+
 test "OpenType collections select CFF and varied CFF2 faces" {
     if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
     const collection = @import("assets").test_opentype_collection;
