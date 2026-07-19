@@ -6,6 +6,7 @@
 //! from these records by `warp.fitGlyph` at draw time.
 
 const std = @import("std");
+const build_options = @import("build_options");
 
 const analysis = @import("analysis.zig");
 const blue_mod = @import("blue.zig");
@@ -13,6 +14,8 @@ const warp = @import("warp.zig");
 const outline = @import("../truetype/outline.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
+const font_mod = @import("../../font.zig");
+const modern_font = if (build_options.enable_harfbuzz) @import("../harfbuzz_font.zig") else struct {};
 
 const Allocator = std.mem.Allocator;
 const Vec2 = @import("../../math/vec.zig").Vec2;
@@ -36,8 +39,9 @@ pub const FontFeatures = struct {
 
 pub const AutohintAnalyzer = struct {
     allocator: Allocator,
-    program: vm.Program,
-    font: ttf.Font,
+    program: ?vm.Program,
+    modern_instance: if (build_options.enable_harfbuzz) ?modern_font.Instance else void,
+    font: font_mod.Font,
     blues: blue_mod.Blues,
     normalized_blues: []blue_mod.FeatureZone,
     params: analysis.Params = .default,
@@ -50,18 +54,64 @@ pub const AutohintAnalyzer = struct {
     }
 
     pub fn initFace(allocator: Allocator, font_data: []const u8, face_index: u32) !AutohintAnalyzer {
-        const program = try vm.Program.initFace(font_data, face_index);
-        const font = try ttf.Font.initFace(font_data, face_index);
-        var blues = try blue_mod.deriveLatin(allocator, &program, &font, .{});
-        if (blues.zones.len == 0) {
-            blues.deinit();
-            blues = try deriveStatisticalBlues(allocator, &program, &font, .default, .{});
+        var font = try font_mod.Font.initFace(font_data, face_index);
+        return initFont(allocator, &font);
+    }
+
+    /// Build analysis for an exact selected face and variable-font instance.
+    /// The Font's borrowed bytes and variation slice must outlive this value.
+    pub fn initFont(allocator: Allocator, source_font: *const font_mod.Font) !AutohintAnalyzer {
+        const use_modern = source_font.inner.outline_format != .truetype or source_font.variations.len != 0;
+        var program: ?vm.Program = null;
+        var modern_instance: if (build_options.enable_harfbuzz) ?modern_font.Instance else void =
+            if (comptime build_options.enable_harfbuzz) null else {};
+        var blues: blue_mod.Blues = undefined;
+
+        if (use_modern) {
+            if (comptime build_options.enable_harfbuzz) {
+                modern_instance = try modern_font.Instance.init(
+                    source_font.inner.data,
+                    source_font.inner.face_index,
+                    source_font.inner.units_per_em,
+                    source_font.variations,
+                );
+                errdefer if (modern_instance) |*instance| instance.deinit();
+                const blue_context = ModernBlueContext{
+                    .instance = &modern_instance.?,
+                    .font = source_font,
+                };
+                blues = try blue_mod.deriveLatinWith(
+                    allocator,
+                    source_font.inner.units_per_em,
+                    blue_context,
+                    modernGlyphExtreme,
+                    .{},
+                );
+                if (blues.zones.len == 0) {
+                    blues.deinit();
+                    blues = try deriveStatisticalBluesModern(
+                        allocator,
+                        &modern_instance.?,
+                        source_font,
+                        .default,
+                        .{},
+                    );
+                }
+            } else return error.HarfBuzzDisabled;
+        } else {
+            program = try vm.Program.initFace(source_font.inner.data, source_font.inner.face_index);
+            blues = try blue_mod.deriveLatin(allocator, &program.?, &source_font.inner, .{});
+            if (blues.zones.len == 0) {
+                blues.deinit();
+                blues = try deriveStatisticalBlues(allocator, &program.?, &source_font.inner, .default, .{});
+            }
         }
         errdefer blues.deinit();
         var self: AutohintAnalyzer = .{
             .allocator = allocator,
             .program = program,
-            .font = font,
+            .modern_instance = modern_instance,
+            .font = source_font.*,
             .blues = blues,
             .normalized_blues = &.{},
         };
@@ -77,13 +127,7 @@ pub const AutohintAnalyzer = struct {
         for (ref) |ch| {
             const gid = self.font.glyphIndex(ch) catch continue;
             if (gid == 0) continue;
-            var topo = self.program.loadGlyphTopology(self.allocator, gid) catch continue;
-            defer topo.deinit();
-            const simple = switch (topo) {
-                .simple => |simple| simple,
-                else => continue,
-            };
-            var result = analysis.analyzeGlyph(self.allocator, simple.points, simple.contours, self.font.units_per_em, self.params, axis) catch continue;
+            var result = self.analyzeEdges(self.allocator, gid, axis) catch continue;
             defer result.deinit();
             for (result.edges, 0..) |edge, i| {
                 if (edge.isStem() and edge.stem > i) widths.append(self.allocator, edge.width) catch {};
@@ -97,11 +141,14 @@ pub const AutohintAnalyzer = struct {
     pub fn deinit(self: *AutohintAnalyzer) void {
         self.allocator.free(self.normalized_blues);
         self.blues.deinit();
+        if (comptime build_options.enable_harfbuzz) {
+            if (self.modern_instance) |*instance| instance.deinit();
+        }
         self.* = undefined;
     }
 
     pub fn fontFeatures(self: *const AutohintAnalyzer) FontFeatures {
-        const upm: f32 = @floatFromInt(self.font.units_per_em);
+        const upm: f32 = @floatFromInt(self.font.inner.units_per_em);
         return .{
             .blues = self.normalized_blues,
             .std_x = self.std_x / upm,
@@ -117,30 +164,117 @@ pub const AutohintAnalyzer = struct {
         x_buf: []FeatureEdge,
         y_buf: []FeatureEdge,
     ) !GlyphFeatures {
-        var pts: std.ArrayList(outline.Point) = .empty;
-        defer pts.deinit(scratch);
-        var contours: std.ArrayList(outline.ContourRange) = .empty;
-        defer contours.deinit(scratch);
-        try flattenGlyph(scratch, &self.program, glyph_id, &pts, &contours, 0);
+        const upm: f32 = @floatFromInt(self.font.inner.units_per_em);
+        if (upm <= 0) return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
 
-        const upm: f32 = @floatFromInt(self.font.units_per_em);
-        if (pts.items.len == 0 or upm <= 0) return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
+        if (self.program) |*program| {
+            var pts: std.ArrayList(outline.Point) = .empty;
+            defer pts.deinit(scratch);
+            var contours: std.ArrayList(outline.ContourRange) = .empty;
+            defer contours.deinit(scratch);
+            try flattenGlyph(scratch, program, glyph_id, &pts, &contours, 0);
+            if (pts.items.len == 0) return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
 
-        var min_x: f32 = std.math.inf(f32);
-        for (pts.items) |point| min_x = @min(min_x, @as(f32, @floatFromInt(point.x)));
+            var min_x: f32 = std.math.inf(f32);
+            for (pts.items) |point| min_x = @min(min_x, @as(f32, @floatFromInt(point.x)));
+            var y_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.inner.units_per_em, self.params, .y);
+            defer y_analysis.deinit();
+            self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
+            const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
+            var x_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.inner.units_per_em, self.params, .x);
+            defer x_analysis.deinit();
+            const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
+            return .{ .x = x, .y = y, .left = min_x / upm };
+        }
 
-        var y_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .y);
-        defer y_analysis.deinit();
-        self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
-        const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
+        if (comptime build_options.enable_harfbuzz) {
+            var glyph_outline = try self.modern_instance.?.glyphOutline(scratch, glyph_id, 1.0);
+            defer glyph_outline.deinit();
+            if (glyph_outline.segments.len == 0)
+                return .{ .x = x_buf[0..0], .y = y_buf[0..0], .left = 0 };
+            var bounds = glyph_outline.segments[0].boundingBox();
+            for (glyph_outline.segments[1..]) |curve| bounds = bounds.merge(curve.boundingBox());
+            var y_analysis = try analysis.analyzeCurves(
+                scratch,
+                glyph_outline.segments,
+                glyph_outline.contours,
+                self.font.inner.units_per_em,
+                self.params,
+                .y,
+            );
+            defer y_analysis.deinit();
+            self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
+            const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
+            var x_analysis = try analysis.analyzeCurves(
+                scratch,
+                glyph_outline.segments,
+                glyph_outline.contours,
+                self.font.inner.units_per_em,
+                self.params,
+                .x,
+            );
+            defer x_analysis.deinit();
+            const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
+            return .{ .x = x, .y = y, .left = bounds.min.x / upm };
+        } else return error.HarfBuzzDisabled;
+    }
 
-        var x_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .x);
-        defer x_analysis.deinit();
-        const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
-
-        return .{ .x = x, .y = y, .left = min_x / upm };
+    fn analyzeEdges(self: *AutohintAnalyzer, allocator: Allocator, glyph_id: u16, axis: analysis.Axis) !analysis.GlyphAnalysis {
+        if (self.program) |*program| {
+            var topology = try program.loadGlyphTopology(allocator, glyph_id);
+            defer topology.deinit();
+            const simple = switch (topology) {
+                .simple => |simple| simple,
+                else => return error.NotSimpleGlyph,
+            };
+            return analysis.analyzeGlyph(
+                allocator,
+                simple.points,
+                simple.contours,
+                self.font.inner.units_per_em,
+                self.params,
+                axis,
+            );
+        }
+        if (comptime build_options.enable_harfbuzz) {
+            var glyph_outline = try self.modern_instance.?.glyphOutline(allocator, glyph_id, 1.0);
+            defer glyph_outline.deinit();
+            return analysis.analyzeCurves(
+                allocator,
+                glyph_outline.segments,
+                glyph_outline.contours,
+                self.font.inner.units_per_em,
+                self.params,
+                axis,
+            );
+        } else return error.HarfBuzzDisabled;
     }
 };
+
+const ModernBlueContext = if (build_options.enable_harfbuzz) struct {
+    instance: *modern_font.Instance,
+    font: *const font_mod.Font,
+} else void;
+
+fn modernGlyphExtreme(
+    allocator: Allocator,
+    context: ModernBlueContext,
+    ch: u8,
+    kind: blue_mod.BlueKind,
+) !?f32 {
+    if (comptime !build_options.enable_harfbuzz) return null;
+    const glyph_id = context.font.glyphIndex(ch) catch return null;
+    if (glyph_id == 0) return null;
+    var glyph_outline = try context.instance.glyphOutline(allocator, glyph_id, 1.0);
+    defer glyph_outline.deinit();
+    if (glyph_outline.segments.len == 0) return null;
+    var bounds = glyph_outline.segments[0].boundingBox();
+    for (glyph_outline.segments[1..]) |curve| bounds = bounds.merge(curve.boundingBox());
+    return switch (kind) {
+        .top => bounds.max.y,
+        .bottom => bounds.min.y,
+    };
+}
 
 const statistical_zone_bin_count = 257;
 const statistical_zone_bin_offset = 128;
@@ -211,6 +345,11 @@ fn deriveStatisticalBlues(
 
     const glyph_count: usize = font.num_glyphs;
     const sample_count = @min(glyph_count, max_statistical_glyph_samples);
+    if (sample_count == 0) return .{
+        .allocator = allocator,
+        .units_per_em = font.units_per_em,
+        .zones = try allocator.alloc(blue_mod.Zone, 0),
+    };
     for (0..sample_count) |sample_index| {
         const glyph_index = sample_index * glyph_count / sample_count;
         defer _ = scratch_state.reset(.retain_capacity);
@@ -237,17 +376,90 @@ fn deriveStatisticalBlues(
         addExtremumCandidate(&top, result.edges, max_y, extremum_tolerance, em);
     }
 
+    return finishStatisticalBlues(allocator, font.units_per_em, outlined_glyphs, &bottom, &top, blue_params);
+}
+
+fn deriveStatisticalBluesModern(
+    allocator: Allocator,
+    instance: if (build_options.enable_harfbuzz) *modern_font.Instance else void,
+    font: *const font_mod.Font,
+    analysis_params: analysis.Params,
+    blue_params: blue_mod.Params,
+) !blue_mod.Blues {
+    if (comptime !build_options.enable_harfbuzz) return error.HarfBuzzDisabled;
+    var bottom = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
+    var top = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
+    var outlined_glyphs: usize = 0;
+    const em: f32 = @floatFromInt(font.inner.units_per_em);
+    const extremum_tolerance = em / 24.0;
+
+    var scratch_state = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+    const glyph_count: usize = font.inner.num_glyphs;
+    const sample_count = @min(glyph_count, max_statistical_glyph_samples);
+    if (sample_count == 0) return .{
+        .allocator = allocator,
+        .units_per_em = font.inner.units_per_em,
+        .zones = try allocator.alloc(blue_mod.Zone, 0),
+    };
+
+    for (0..sample_count) |sample_index| {
+        const glyph_index = sample_index * glyph_count / sample_count;
+        defer _ = scratch_state.reset(.retain_capacity);
+        var glyph_outline = instance.glyphOutline(scratch, @intCast(glyph_index), 1.0) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        defer glyph_outline.deinit();
+        if (glyph_outline.segments.len == 0) continue;
+        outlined_glyphs += 1;
+
+        var bounds = glyph_outline.segments[0].boundingBox();
+        for (glyph_outline.segments[1..]) |curve| bounds = bounds.merge(curve.boundingBox());
+        var result = try analysis.analyzeCurves(
+            scratch,
+            glyph_outline.segments,
+            glyph_outline.contours,
+            font.inner.units_per_em,
+            analysis_params,
+            .y,
+        );
+        defer result.deinit();
+        addExtremumCandidate(&bottom, result.edges, bounds.min.y, extremum_tolerance, em);
+        addExtremumCandidate(&top, result.edges, bounds.max.y, extremum_tolerance, em);
+    }
+
+    return finishStatisticalBlues(
+        allocator,
+        font.inner.units_per_em,
+        outlined_glyphs,
+        &bottom,
+        &top,
+        blue_params,
+    );
+}
+
+fn finishStatisticalBlues(
+    allocator: Allocator,
+    units_per_em: u16,
+    outlined_glyphs: usize,
+    bottom: *[statistical_zone_bin_count]ZoneBin,
+    top: *[statistical_zone_bin_count]ZoneBin,
+    blue_params: blue_mod.Params,
+) !blue_mod.Blues {
+    const em: f32 = @floatFromInt(units_per_em);
     var zones: std.ArrayList(blue_mod.Zone) = .empty;
     errdefer zones.deinit(allocator);
     const minimum_samples: u32 = @max(4, @as(u32, @intCast(outlined_glyphs / 32)));
     while (zones.items.len < max_statistical_zones) {
-        const peak = strongestZonePeak(&bottom, &top);
+        const peak = strongestZonePeak(bottom, top);
         if (peak.score < minimum_samples) break;
 
         var accumulated: ZoneBin = .{};
         const lo = peak.index -| 1;
         const hi = @min(peak.index + 2, statistical_zone_bin_count);
-        const source = if (peak.kind == .bottom) &bottom else &top;
+        const source = if (peak.kind == .bottom) bottom else top;
         for (source[lo..hi]) |bin| accumulated.merge(bin);
         const ref = accumulated.reference() orelse break;
         const max_overshoot = blue_params.max_overshoot_em * em;
@@ -274,7 +486,7 @@ fn deriveStatisticalBlues(
 
     return .{
         .allocator = allocator,
-        .units_per_em = font.units_per_em,
+        .units_per_em = units_per_em,
         .zones = try zones.toOwnedSlice(allocator),
     };
 }
@@ -525,6 +737,35 @@ test "font analysis is normalized once" {
         try testing.expect(@abs(zone.ref) < 2);
         try testing.expect(@abs(zone.shoot) < 2);
     }
+}
+
+test "CFF2 autohint analyzes the selected variable instance" {
+    if (comptime !build_options.enable_harfbuzz) return error.SkipZigTest;
+    const light_coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 200 }};
+    const heavy_coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 900 }};
+    var light_font = try font_mod.Font.initWithOptions(
+        assets.source_serif_cff2_variable,
+        .{ .variations = &light_coordinates },
+    );
+    var heavy_font = try font_mod.Font.initWithOptions(
+        assets.source_serif_cff2_variable,
+        .{ .variations = &heavy_coordinates },
+    );
+    var light = try AutohintAnalyzer.initFont(testing.allocator, &light_font);
+    defer light.deinit();
+    var heavy = try AutohintAnalyzer.initFont(testing.allocator, &heavy_font);
+    defer heavy.deinit();
+
+    const glyph_id = try light_font.glyphIndex('m');
+    var light_x: [warp.max_knots]FeatureEdge = undefined;
+    var light_y: [warp.max_knots]FeatureEdge = undefined;
+    var heavy_x: [warp.max_knots]FeatureEdge = undefined;
+    var heavy_y: [warp.max_knots]FeatureEdge = undefined;
+    const light_glyph = try light.analyzeGlyph(testing.allocator, glyph_id, &light_x, &light_y);
+    const heavy_glyph = try heavy.analyzeGlyph(testing.allocator, glyph_id, &heavy_x, &heavy_y);
+    try testing.expect(light_glyph.x.len > 0);
+    try testing.expect(heavy_glyph.x.len > 0);
+    try testing.expect(light.fontFeatures().std_x != heavy.fontFeatures().std_x);
 }
 
 test "repeated analysis has one result independent of size" {

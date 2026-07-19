@@ -22,6 +22,7 @@ const std = @import("std");
 const bezier = @import("../../math/bezier.zig");
 const outline = @import("../truetype/outline.zig");
 const vec = @import("../../math/vec.zig");
+const font_types = @import("../types.zig");
 
 const Allocator = std.mem.Allocator;
 const ContourRange = outline.ContourRange;
@@ -224,6 +225,117 @@ pub fn analyzeGlyph(
     linkStems(edges, min_overlap, max_stem);
 
     return .{ .allocator = allocator, .units_per_em = units_per_em, .edges = edges };
+}
+
+/// Analyze already-decoded line/quadratic/cubic/conic contours. Coordinates
+/// are in font units. This is the outline-format-neutral entry point used by
+/// CFF/CFF2 and variable-font instances.
+pub fn analyzeCurves(
+    allocator: Allocator,
+    curves: []const bezier.CurveSegment,
+    contours: []const font_types.CurveRange,
+    units_per_em: u16,
+    params: Params,
+    axis: Axis,
+) !GlyphAnalysis {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const em: f32 = @floatFromInt(units_per_em);
+    const min_len = params.min_len_em * em;
+    const merge_dist = params.merge_em * em;
+    const min_overlap = params.min_overlap_em * em;
+    const max_stem = params.max_stem_em * em;
+
+    var segments: std.ArrayList(Segment) = .empty;
+    for (contours) |contour| {
+        if (contour.end <= contour.start or contour.end > curves.len) continue;
+        try collectCurveSegments(
+            arena,
+            curves[contour.start..contour.end],
+            params,
+            units_per_em,
+            min_len,
+            merge_dist,
+            axis,
+            &segments,
+        );
+    }
+
+    const edges = try mergeSegments(allocator, arena, segments.items, merge_dist);
+    errdefer allocator.free(edges);
+    linkStems(edges, min_overlap, max_stem);
+    return .{ .allocator = allocator, .units_per_em = units_per_em, .edges = edges };
+}
+
+fn collectCurveSegments(
+    arena: Allocator,
+    curves: []const bezier.CurveSegment,
+    params: Params,
+    em_units: u16,
+    min_len: f32,
+    merge_dist: f32,
+    axis: Axis,
+    out: *std.ArrayList(Segment),
+) !void {
+    const straight_eps = 1e-3 * @as(f32, @floatFromInt(em_units));
+    const flat_ratio = if (axis == .x) params.flat_ratio_x else params.flat_ratio;
+    for (curves) |curve| {
+        const end = curve.endPoint();
+        const straight = curve.kind == .line or curve.flatness() <= straight_eps;
+        if (straight) {
+            if (segmentFor(curve.p0, end, axis, flat_ratio, min_len, false)) |segment|
+                try out.append(arena, segment);
+        } else if (axis == .y) {
+            var previous = curve.p0;
+            var step: u32 = 1;
+            while (step <= params.curve_steps) : (step += 1) {
+                const t = @as(f32, @floatFromInt(step)) / @as(f32, @floatFromInt(params.curve_steps));
+                const point = curve.evaluate(t);
+                if (segmentFor(previous, point, .y, params.flat_ratio, min_len, true)) |segment|
+                    try out.append(arena, segment);
+                previous = point;
+            }
+        }
+    }
+
+    if (axis == .y) {
+        for (curves, 0..) |incoming, i| {
+            const outgoing = curves[(i + 1) % curves.len];
+            if (curveEndpointExtremumSegment(incoming, outgoing, params.flat_ratio)) |segment| {
+                if (!hasNearbySegment(out.items, segment.pos, merge_dist)) try out.append(arena, segment);
+            }
+        }
+    }
+}
+
+fn curveEndpointExtremumSegment(
+    incoming: bezier.CurveSegment,
+    outgoing: bezier.CurveSegment,
+    flat_ratio: f32,
+) ?Segment {
+    const point = incoming.endPoint();
+    if (Vec2.length(Vec2.sub(point, outgoing.p0)) > 1e-4) return null;
+    const in_tangent = incoming.derivative(1.0);
+    const out_tangent = outgoing.derivative(0.0);
+    if (@abs(in_tangent.x) <= 1e-6 or @abs(out_tangent.x) <= 1e-6 or
+        @abs(in_tangent.y) > flat_ratio * @abs(in_tangent.x) or
+        @abs(out_tangent.y) > flat_ratio * @abs(out_tangent.x)) return null;
+
+    const before = incoming.evaluate(0.5).y;
+    const after = outgoing.evaluate(0.5).y;
+    const is_max = point.y >= before and point.y >= after and (point.y > before or point.y > after);
+    const is_min = point.y <= before and point.y <= after and (point.y < before or point.y < after);
+    if (!is_max and !is_min) return null;
+    return .{
+        .pos = point.y,
+        .min = point.x,
+        .max = point.x,
+        .dir = if (in_tangent.x >= 0) 1 else -1,
+        .round = true,
+        .synthetic_apex = true,
+    };
 }
 
 /// Emit near-axis-aligned segments of one contour. `contourToCurves` places

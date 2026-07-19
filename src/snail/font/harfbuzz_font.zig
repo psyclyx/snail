@@ -29,11 +29,11 @@ pub const LineMetrics = struct {
     line_gap: i32,
 };
 
-const Instance = struct {
+pub const Instance = struct {
     face: *hb.hb_face_t,
     font: *hb.hb_font_t,
 
-    fn init(data: []const u8, face_index: u32, units_per_em: u16, variations: []const types.Variation) !Instance {
+    pub fn init(data: []const u8, face_index: u32, units_per_em: u16, variations: []const types.Variation) !Instance {
         const blob = hb.hb_blob_create(
             data.ptr,
             @intCast(data.len),
@@ -58,9 +58,30 @@ const Instance = struct {
         return .{ .face = face, .font = font };
     }
 
-    fn deinit(self: *Instance) void {
+    pub fn deinit(self: *Instance) void {
         hb.hb_font_destroy(self.font);
         hb.hb_face_destroy(self.face);
+        self.* = undefined;
+    }
+
+    pub fn glyphOutline(
+        self: *Instance,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        coordinate_scale: f32,
+    ) !Outline {
+        return drawOutline(allocator, self.font, glyph_id, coordinate_scale);
+    }
+};
+
+pub const Outline = struct {
+    allocator: std.mem.Allocator,
+    segments: []CurveSegment,
+    contours: []types.CurveRange,
+
+    pub fn deinit(self: *Outline) void {
+        self.allocator.free(self.segments);
+        self.allocator.free(self.contours);
         self.* = undefined;
     }
 };
@@ -185,17 +206,26 @@ pub fn variationAxes(
     return result;
 }
 
-pub fn outlineSegments(
+pub fn glyphOutline(
     allocator: std.mem.Allocator,
     data: []const u8,
     face_index: u32,
     units_per_em: u16,
     variations: []const types.Variation,
     glyph_id: u16,
-) ![]CurveSegment {
+    coordinate_scale: f32,
+) !Outline {
     var instance = try Instance.init(data, face_index, units_per_em, variations);
     defer instance.deinit();
+    return instance.glyphOutline(allocator, glyph_id, coordinate_scale);
+}
 
+fn drawOutline(
+    allocator: std.mem.Allocator,
+    font: *hb.hb_font_t,
+    glyph_id: u16,
+    coordinate_scale: f32,
+) !Outline {
     const funcs = hb.hb_draw_funcs_create() orelse return error.HarfBuzzInitFailed;
     defer hb.hb_draw_funcs_destroy(funcs);
     hb.hb_draw_funcs_set_move_to_func(funcs, drawMoveTo, null, null);
@@ -207,20 +237,32 @@ pub fn outlineSegments(
 
     var context = DrawContext{
         .allocator = allocator,
-        .scale = 1.0 / @as(f32, @floatFromInt(units_per_em)),
+        .scale = coordinate_scale,
     };
-    errdefer context.segments.deinit(allocator);
-    if (hb.hb_font_draw_glyph_or_fail(instance.font, glyph_id, funcs, &context) == 0)
+    errdefer {
+        context.segments.deinit(allocator);
+        context.contours.deinit(allocator);
+    }
+    if (hb.hb_font_draw_glyph_or_fail(font, glyph_id, funcs, &context) == 0)
         return error.UnsupportedOutlineFormat;
     if (context.err) |err| return err;
     context.closeContour();
     if (context.err) |err| return err;
-    return context.segments.toOwnedSlice(allocator);
+    const segments = try context.segments.toOwnedSlice(allocator);
+    errdefer allocator.free(segments);
+    const contours = try context.contours.toOwnedSlice(allocator);
+    return .{
+        .allocator = allocator,
+        .segments = segments,
+        .contours = contours,
+    };
 }
 
 const DrawContext = struct {
     allocator: std.mem.Allocator,
     segments: std.ArrayList(CurveSegment) = .empty,
+    contours: std.ArrayList(types.CurveRange) = .empty,
+    contour_start: usize = 0,
     scale: f32,
     start: Vec2 = .zero,
     current: Vec2 = .zero,
@@ -243,6 +285,15 @@ const DrawContext = struct {
         if (self.current.x != self.start.x or self.current.y != self.start.y) {
             self.append(CurveSegment.fromLine(self.current, self.start));
         }
+        if (self.err == null and self.segments.items.len > self.contour_start) {
+            self.contours.append(self.allocator, .{
+                .start = @intCast(self.contour_start),
+                .end = @intCast(self.segments.items.len),
+            }) catch |err| {
+                self.err = err;
+            };
+        }
+        self.contour_start = self.segments.items.len;
         self.current = self.start;
         self.path_open = false;
     }
@@ -265,6 +316,7 @@ fn drawMoveTo(
     const to = context.point(to_x, to_y);
     context.start = to;
     context.current = to;
+    context.contour_start = context.segments.items.len;
     context.path_open = true;
 }
 

@@ -29,6 +29,11 @@ pub const MetricTag = enum {
     underline_offset,
 };
 
+pub const CurveRange = struct {
+    start: u32,
+    end: u32,
+};
+
 pub const Options = struct {
     /// Zero-based face in a TTC/OTC. Standalone fonts only accept zero.
     face_index: u32 = 0,

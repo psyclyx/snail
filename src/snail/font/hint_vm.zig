@@ -143,6 +143,9 @@ pub const HintVm = struct {
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
     /// back to `font.extractCurves`.
     pub fn init(allocator: std.mem.Allocator, font: *const Font) !HintVm {
+        // The bytecode interpreter consumes unvaried `glyf` topology. Using it
+        // on CFF or a selected variable instance would hint the wrong points.
+        if (font.inner.outline_format != .truetype or font.variations.len != 0) return error.NoHinting;
         const program = tt_vm.Program.initFace(font.inner.data, font.inner.face_index) catch return error.NoHinting;
         return .{ .allocator = allocator, .program = program };
     }
@@ -290,6 +293,15 @@ test "HintVm init fails cleanly on fonts without hinting" {
     };
     const res = HintVm.init(testing.allocator, &font);
     try testing.expectError(error.NoHinting, res);
+}
+
+test "HintVm rejects selected variable instances" {
+    const coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 700 }};
+    var font = try Font.initWithOptions(
+        @import("assets").noto_sans_mono,
+        .{ .variations = &coordinates },
+    );
+    try testing.expectError(error.NoHinting, HintVm.init(testing.allocator, &font));
 }
 
 test "HintVm produces GlyphCurves for a hinted glyph" {
