@@ -32,6 +32,7 @@ pub const LineMetrics = struct {
 pub const Instance = struct {
     face: *hb.hb_face_t,
     font: *hb.hb_font_t,
+    draw_funcs: *hb.hb_draw_funcs_t,
 
     pub fn init(data: []const u8, face_index: u32, units_per_em: u16, variations: []const types.Variation) !Instance {
         const blob = hb.hb_blob_create(
@@ -55,10 +56,20 @@ pub const Instance = struct {
         for (variations) |variation| {
             hb.hb_font_set_variation(font, makeTag(variation.tag), variation.value);
         }
-        return .{ .face = face, .font = font };
+
+        const draw_funcs = hb.hb_draw_funcs_create() orelse return error.HarfBuzzInitFailed;
+        errdefer hb.hb_draw_funcs_destroy(draw_funcs);
+        hb.hb_draw_funcs_set_move_to_func(draw_funcs, drawMoveTo, null, null);
+        hb.hb_draw_funcs_set_line_to_func(draw_funcs, drawLineTo, null, null);
+        hb.hb_draw_funcs_set_quadratic_to_func(draw_funcs, drawQuadraticTo, null, null);
+        hb.hb_draw_funcs_set_cubic_to_func(draw_funcs, drawCubicTo, null, null);
+        hb.hb_draw_funcs_set_close_path_func(draw_funcs, drawClosePath, null, null);
+        hb.hb_draw_funcs_make_immutable(draw_funcs);
+        return .{ .face = face, .font = font, .draw_funcs = draw_funcs };
     }
 
     pub fn deinit(self: *Instance) void {
+        hb.hb_draw_funcs_destroy(self.draw_funcs);
         hb.hb_font_destroy(self.font);
         hb.hb_face_destroy(self.face);
         self.* = undefined;
@@ -70,7 +81,11 @@ pub const Instance = struct {
         glyph_id: u16,
         coordinate_scale: f32,
     ) !Outline {
-        return drawOutline(allocator, self.font, glyph_id, coordinate_scale);
+        return drawOutline(allocator, self.font, self.draw_funcs, glyph_id, coordinate_scale);
+    }
+
+    pub fn glyphMetrics(self: *Instance, units_per_em: u16, glyph_id: u16) GlyphMetrics {
+        return readGlyphMetrics(self.font, units_per_em, glyph_id);
     }
 };
 
@@ -96,9 +111,13 @@ pub fn glyphMetrics(
     var instance = try Instance.init(data, face_index, units_per_em, variations);
     defer instance.deinit();
 
-    const advance = hb.hb_font_get_glyph_h_advance(instance.font, glyph_id);
+    return instance.glyphMetrics(units_per_em, glyph_id);
+}
+
+fn readGlyphMetrics(font: *hb.hb_font_t, units_per_em: u16, glyph_id: u16) GlyphMetrics {
+    const advance = hb.hb_font_get_glyph_h_advance(font, glyph_id);
     var extents: hb.hb_glyph_extents_t = std.mem.zeroes(hb.hb_glyph_extents_t);
-    _ = hb.hb_font_get_glyph_extents(instance.font, glyph_id, &extents);
+    _ = hb.hb_font_get_glyph_extents(font, glyph_id, &extents);
 
     const scale = 1.0 / @as(f32, @floatFromInt(units_per_em));
     const x_min: f32 = @floatFromInt(extents.x_bearing);
@@ -223,18 +242,10 @@ pub fn glyphOutline(
 fn drawOutline(
     allocator: std.mem.Allocator,
     font: *hb.hb_font_t,
+    funcs: *hb.hb_draw_funcs_t,
     glyph_id: u16,
     coordinate_scale: f32,
 ) !Outline {
-    const funcs = hb.hb_draw_funcs_create() orelse return error.HarfBuzzInitFailed;
-    defer hb.hb_draw_funcs_destroy(funcs);
-    hb.hb_draw_funcs_set_move_to_func(funcs, drawMoveTo, null, null);
-    hb.hb_draw_funcs_set_line_to_func(funcs, drawLineTo, null, null);
-    hb.hb_draw_funcs_set_quadratic_to_func(funcs, drawQuadraticTo, null, null);
-    hb.hb_draw_funcs_set_cubic_to_func(funcs, drawCubicTo, null, null);
-    hb.hb_draw_funcs_set_close_path_func(funcs, drawClosePath, null, null);
-    hb.hb_draw_funcs_make_immutable(funcs);
-
     var context = DrawContext{
         .allocator = allocator,
         .scale = coordinate_scale,

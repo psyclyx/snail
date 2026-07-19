@@ -258,17 +258,25 @@ fn extractCurvesInner(
 ) !curves_mod.GlyphCurves {
     if (font.requiresModernBackend()) {
         if (comptime build_options.enable_harfbuzz) {
-            var outline = try modern_font.glyphOutline(
-                scratch,
+            var instance = try modern_font.Instance.init(
                 font.inner.data,
                 font.inner.face_index,
                 font.inner.units_per_em,
                 font.variations,
+            );
+            defer instance.deinit();
+            var outline = try instance.glyphOutline(
+                scratch,
                 glyph_id,
                 1.0 / @as(f32, @floatFromInt(font.inner.units_per_em)),
             );
             defer outline.deinit();
-            return packGlyphCurves(allocator, scratch, outline.segments, (try font.glyphMetrics(glyph_id)).bbox);
+            return packGlyphCurves(
+                allocator,
+                scratch,
+                outline.segments,
+                instance.glyphMetrics(font.inner.units_per_em, glyph_id).bbox,
+            );
         } else return error.HarfBuzzDisabled;
     }
     // `parseGlyph` returns contours, sub-curves, and an internal
