@@ -33,48 +33,21 @@ jobs:
             pkg-config \
             glslc \
             libegl1-mesa-dev \
-            libfreetype-dev \
             libgl1-mesa-dri \
             libglvnd-dev \
             libharfbuzz-dev \
             libvulkan-dev \
             libwayland-dev \
-            mesa-vulkan-drivers \
-            vulkan-validationlayers \
             wayland-protocols
 
-      - name: Check generated C API
-        run: zig build check-c-api -Dcpu=baseline
-
-      - name: Test default feature set
+      - name: Test public modules
         run: zig build test -Dcpu=baseline
 
-      - name: Test without HarfBuzz
-        run: zig build test -Dcpu=baseline -Dharfbuzz=false
-
-      - name: Test backend-disabled builds
-        run: |
-          zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false
-          zig build test -Dcpu=baseline -Dvulkan=false
-          zig build test -Dcpu=baseline -Draster=false
-          zig build test -Dcpu=baseline -Dgl33=false -Dgl44=false -Dgles30=false -Dvulkan=false -Draster=false
-
-      - name: Build release C API libraries
-        run: zig build --release=fast -Dcpu=baseline
-
-      - name: Build demos
+      - name: Build consumer entry points
         run: |
           zig build install-demo --release=fast -Dcpu=baseline
-          zig build install-game-demo --release=fast -Dcpu=baseline
-
-      - name: Build demo renderer combinations
-        run: |
-          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false
-          zig build install-demo --release=fast -Dcpu=baseline -Draster=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Draster=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dvulkan=false -Draster=false
-          zig build install-demo --release=fast -Dcpu=baseline -Dgl33=false -Dgl44=false -Dvulkan=false
+          zig build install-game --release=fast -Dcpu=baseline
+          zig build install-perf --release=fast -Dcpu=baseline
 
       - name: Backend pixel comparison
         env:
@@ -98,9 +71,6 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: cachix/install-nix-action@v31
-
-      - name: Build library derivation
-        run: nix-build default.nix --no-out-link -A lib
 
       - name: Build demo derivation
         run: nix-build default.nix --no-out-link -A demo

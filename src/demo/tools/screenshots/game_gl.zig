@@ -8,7 +8,6 @@
 const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
-const build_options = @import("build_options");
 const offscreen_gl = @import("../../platform/offscreen_gl.zig");
 const passes = @import("../../game/passes.zig");
 const scene_mod = @import("../../game/scene.zig");
@@ -38,9 +37,9 @@ pub fn main() !void {
     const allocator = da.allocator();
     _ = std.c.mkdir("zig-out", 0o755);
 
-    if (build_options.enable_gl44) try renderOne(.gl44, allocator, "OpenGL 4.4", "zig-out/game-gl44.tga");
-    if (build_options.enable_gl33) try renderOne(.gl33, allocator, "OpenGL 3.3", "zig-out/game-gl33.tga");
-    if (build_options.enable_gles30) try renderOne(.gles30, allocator, "OpenGL ES 3.0", "zig-out/game-gles30.tga");
+    try renderOne(.gl44, allocator, "OpenGL 4.4", "zig-out/game-gl44.tga");
+    try renderOne(.gl33, allocator, "OpenGL 3.3", "zig-out/game-gl33.tga");
+    try renderOne(.gles30, allocator, "OpenGL ES 3.0", "zig-out/game-gles30.tga");
 }
 
 fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator, name: []const u8, out_path: [*:0]const u8) !void {

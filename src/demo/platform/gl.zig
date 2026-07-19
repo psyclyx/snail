@@ -1,5 +1,4 @@
 const std = @import("std");
-const build_options = @import("build_options");
 const egl_common = @import("egl.zig");
 const snail = @import("snail");
 const SubpixelOrder = @import("snail-raster").SubpixelOrder;
@@ -173,7 +172,6 @@ pub fn consumeMonitorChanged() bool {
 }
 
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
-    _ = build_options;
     if (app) |window| return window.currentSubpixelOrder(base);
     return base;
 }

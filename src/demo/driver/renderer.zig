@@ -14,17 +14,16 @@ const builtin = @import("builtin");
 const snail = @import("snail");
 const raster = @import("snail-raster");
 const embed_gl = @import("embed_gl");
-const build_options = @import("build_options");
 const presentation = @import("../platform/presentation.zig");
 const wayland = @import("../platform/wayland.zig");
 const demo_banner = @import("../scene/banner/root.zig");
 const driver_common = @import("common.zig");
 
-const gl_platform = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("../platform/gl.zig") else struct {};
-const vulkan_platform = if (build_options.enable_vulkan) @import("../platform/vulkan/windowed.zig") else struct {};
-const embed_vulkan = if (build_options.enable_vulkan) @import("embed_vulkan") else struct {};
-const cpu_platform = if (build_options.enable_raster) @import("../platform/cpu.zig") else struct {};
-const gl = if ((build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30)) @import("support").gl else struct {};
+const gl_platform = @import("../platform/gl.zig");
+const vulkan_platform = @import("../platform/vulkan/windowed.zig");
+const embed_vulkan = @import("embed_vulkan");
+const cpu_platform = @import("../platform/cpu.zig");
+const gl = @import("support").gl;
 
 pub const Kind = enum {
     vulkan,
@@ -37,33 +36,18 @@ pub const Kind = enum {
 };
 
 pub fn defaultKind() Kind {
-    if (comptime build_options.enable_vulkan) return .vulkan;
-    if (comptime build_options.enable_gl44) return .gl44;
-    if (comptime build_options.enable_gl33) return .gl33;
-    if (comptime build_options.enable_gles30) return .gles30;
-    if (comptime build_options.enable_raster) return .cpu;
-    @compileError("at least one demo backend must be enabled");
+    return .vulkan;
 }
 
 pub fn nextKind(current: Kind) Kind {
-    // Try the next backend in the cycle; fall back to current if no other is enabled.
-    const order = [_]Kind{ .vulkan, .gl44, .gl33, .gles30, .cpu, .cpu_less_threaded, .cpu_unthreaded };
-    var seen_current = false;
-    for (0..order.len * 2) |i| {
-        const k = order[i % order.len];
-        if (seen_current and kindEnabled(k)) return k;
-        if (k == current) seen_current = true;
-    }
-    return current;
-}
-
-fn kindEnabled(k: Kind) bool {
-    return switch (k) {
-        .vulkan => build_options.enable_vulkan,
-        .gl44 => build_options.enable_gl44,
-        .gl33 => build_options.enable_gl33,
-        .gles30 => build_options.enable_gles30,
-        .cpu, .cpu_less_threaded, .cpu_unthreaded => build_options.enable_raster,
+    return switch (current) {
+        .vulkan => .gl44,
+        .gl44 => .gl33,
+        .gl33 => .gles30,
+        .gles30 => .cpu,
+        .cpu => .cpu_less_threaded,
+        .cpu_less_threaded => .cpu_unthreaded,
+        .cpu_unthreaded => .vulkan,
     };
 }
 
@@ -133,54 +117,29 @@ pub const FrameTimings = driver_common.FrameTimings;
 const ScratchBuf = driver_common.ScratchBuf;
 
 pub const Driver = union(Kind) {
-    vulkan: if (build_options.enable_vulkan) VulkanDriver else void,
-    gl44: if (build_options.enable_gl44) Gl44Driver else void,
-    gl33: if (build_options.enable_gl33) Gl33Driver else void,
-    gles30: if (build_options.enable_gles30) Gles30Driver else void,
-    cpu: if (build_options.enable_raster) CpuDriver else void,
-    cpu_less_threaded: if (build_options.enable_raster) CpuDriver else void,
-    cpu_unthreaded: if (build_options.enable_raster) CpuDriver else void,
+    vulkan: VulkanDriver,
+    gl44: Gl44Driver,
+    gl33: Gl33Driver,
+    gles30: Gles30Driver,
+    cpu: CpuDriver,
+    cpu_less_threaded: CpuDriver,
+    cpu_unthreaded: CpuDriver,
 
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, selected: Kind) !Driver {
         return switch (selected) {
-            .vulkan => if (comptime build_options.enable_vulkan)
-                .{ .vulkan = try VulkanDriver.init(allocator, window) }
-            else
-                unreachable,
-            .gl44 => if (comptime build_options.enable_gl44)
-                .{ .gl44 = try Gl44Driver.init(allocator, window) }
-            else
-                unreachable,
-            .gl33 => if (comptime build_options.enable_gl33)
-                .{ .gl33 = try Gl33Driver.init(allocator, window) }
-            else
-                unreachable,
-            .gles30 => if (comptime build_options.enable_gles30)
-                .{ .gles30 = try Gles30Driver.init(allocator, window) }
-            else
-                unreachable,
-            .cpu => if (comptime build_options.enable_raster)
-                .{ .cpu = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu)) }
-            else
-                unreachable,
-            .cpu_less_threaded => if (comptime build_options.enable_raster)
-                .{ .cpu_less_threaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_less_threaded)) }
-            else
-                unreachable,
-            .cpu_unthreaded => if (comptime build_options.enable_raster)
-                .{ .cpu_unthreaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_unthreaded)) }
-            else
-                unreachable,
+            .vulkan => .{ .vulkan = try VulkanDriver.init(allocator, window) },
+            .gl44 => .{ .gl44 = try Gl44Driver.init(allocator, window) },
+            .gl33 => .{ .gl33 = try Gl33Driver.init(allocator, window) },
+            .gles30 => .{ .gles30 = try Gles30Driver.init(allocator, window) },
+            .cpu => .{ .cpu = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu)) },
+            .cpu_less_threaded => .{ .cpu_less_threaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_less_threaded)) },
+            .cpu_unthreaded => .{ .cpu_unthreaded = try CpuDriver.init(allocator, window, cpuThreadCount(.cpu_unthreaded)) },
         };
     }
 
     pub fn deinit(self: *Driver) void {
         switch (self.*) {
-            .vulkan => |*d| if (comptime build_options.enable_vulkan) d.deinit() else unreachable,
-            .gl44 => |*d| if (comptime build_options.enable_gl44) d.deinit() else unreachable,
-            .gl33 => |*d| if (comptime build_options.enable_gl33) d.deinit() else unreachable,
-            .gles30 => |*d| if (comptime build_options.enable_gles30) d.deinit() else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.deinit() else unreachable,
+            inline else => |*d| d.deinit(),
         }
     }
 
@@ -190,14 +149,11 @@ pub const Driver = union(Kind) {
 
     pub fn backendName(self: *Driver) [:0]const u8 {
         return switch (self.*) {
-            .vulkan => |*d| if (comptime build_options.enable_vulkan) blk: {
-                _ = d;
-                break :blk "Vulkan";
-            } else unreachable,
-            .gl44 => |*d| if (comptime build_options.enable_gl44) d.renderer_state.state.backendName() else unreachable,
-            .gl33 => |*d| if (comptime build_options.enable_gl33) d.renderer_state.state.backendName() else unreachable,
-            .gles30 => |*d| if (comptime build_options.enable_gles30) d.renderer_state.state.backendName() else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.renderer_state.backendName() else unreachable,
+            .vulkan => "Vulkan",
+            .gl44 => |*d| d.renderer_state.state.backendName(),
+            .gl33 => |*d| d.renderer_state.state.backendName(),
+            .gles30 => |*d| d.renderer_state.state.backendName(),
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| d.renderer_state.backendName(),
         };
     }
 
@@ -205,30 +161,24 @@ pub const Driver = union(Kind) {
     /// backends, which don't run the serial CPU instance loop).
     pub fn setInstanceProfile(self: *Driver, profile: ?*raster.InstanceProfileBuf) void {
         switch (self.*) {
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) {
-                d.renderer_state.instance_profile = profile;
-            },
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| d.renderer_state.instance_profile = profile,
             else => {},
         }
     }
 
     pub fn shouldClose(self: *Driver) bool {
         return switch (self.*) {
-            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.shouldClose() else true,
-            .gl44 => if (comptime build_options.enable_gl44) gl_platform.shouldClose() else true,
-            .gl33 => if (comptime build_options.enable_gl33) gl_platform.shouldClose() else true,
-            .gles30 => if (comptime build_options.enable_gles30) gl_platform.shouldClose() else true,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_raster) cpu_platform.shouldClose() else true,
+            .vulkan => vulkan_platform.shouldClose(),
+            .gl44, .gl33, .gles30 => gl_platform.shouldClose(),
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => cpu_platform.shouldClose(),
         };
     }
 
     pub fn presentationInfo(self: *Driver) presentation.Info {
         return switch (self.*) {
-            .vulkan => if (comptime build_options.enable_vulkan) vulkan_platform.presentationInfo() else .{},
-            .gl44 => if (comptime build_options.enable_gl44) gl_platform.presentationInfo() else .{},
-            .gl33 => if (comptime build_options.enable_gl33) gl_platform.presentationInfo() else .{},
-            .gles30 => if (comptime build_options.enable_gles30) gl_platform.presentationInfo() else .{},
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => if (comptime build_options.enable_raster) cpu_platform.presentationInfo() else .{},
+            .vulkan => vulkan_platform.presentationInfo(),
+            .gl44, .gl33, .gles30 => gl_platform.presentationInfo(),
+            .cpu, .cpu_less_threaded, .cpu_unthreaded => cpu_platform.presentationInfo(),
         };
     }
 
@@ -251,11 +201,7 @@ pub const Driver = union(Kind) {
     /// haven't wired up.
     pub fn lastFrameTimings(self: *Driver) FrameTimings {
         return switch (self.*) {
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) d.last_timings else .{},
-            .vulkan => |*d| if (comptime build_options.enable_vulkan) d.last_timings else .{},
-            .gl44 => |*d| if (comptime build_options.enable_gl44) d.last_timings else .{},
-            .gl33 => |*d| if (comptime build_options.enable_gl33) d.last_timings else .{},
-            .gles30 => |*d| if (comptime build_options.enable_gles30) d.last_timings else .{},
+            inline else => |*d| d.last_timings,
         };
     }
 
@@ -272,21 +218,7 @@ pub const Driver = union(Kind) {
     ) !bool {
         std.debug.assert(passes.len > 0 and passes.len <= MAX_PASSES);
         switch (self.*) {
-            .vulkan => |*d| if (comptime build_options.enable_vulkan) {
-                return d.renderFrame(allocator, passes, clear_srgb);
-            } else unreachable,
-            .gl44 => |*d| if (comptime build_options.enable_gl44) {
-                return d.renderFrame(allocator, passes, clear_srgb);
-            } else unreachable,
-            .gl33 => |*d| if (comptime build_options.enable_gl33) {
-                return d.renderFrame(allocator, passes, clear_srgb);
-            } else unreachable,
-            .gles30 => |*d| if (comptime build_options.enable_gles30) {
-                return d.renderFrame(allocator, passes, clear_srgb);
-            } else unreachable,
-            .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| if (comptime build_options.enable_raster) {
-                return d.renderFrame(allocator, passes, clear_srgb);
-            } else unreachable,
+            inline else => |*d| return d.renderFrame(allocator, passes, clear_srgb),
         }
     }
 };
@@ -311,7 +243,7 @@ const syncPassBindings = driver_common.syncPassBindings;
 // it would stall the CPU. To avoid the stall we keep a ring of 3 slots
 // of begin/end queries and read each slot's results 3 frames later,
 // after the GPU has long since retired them.
-const GlTimer = if (build_options.enable_gl33 or build_options.enable_gl44) struct {
+const GlTimer = struct {
     const RING: usize = 3;
     const SLOT_QUERIES: usize = MAX_PASSES * 2;
     const TOTAL_QUERIES: usize = SLOT_QUERIES * RING;
@@ -379,11 +311,11 @@ const GlTimer = if (build_options.enable_gl33 or build_options.enable_gl44) stru
     fn endFrame(self: *GlTimer) void {
         self.slot = (self.slot + 1) % @as(u32, @intCast(RING));
     }
-} else void;
+};
 
 // ── Vulkan ────────────────────────────────────────────────────────────────
 
-const VulkanDriver = if (build_options.enable_vulkan) struct {
+const VulkanDriver = struct {
     // Generous vertex ring slot; the interactive scenes are well under this.
     const SLOT_BYTES: usize = 8 * 1024 * 1024;
 
@@ -506,11 +438,11 @@ const VulkanDriver = if (build_options.enable_vulkan) struct {
         }
         return true;
     }
-} else void;
+};
 
 // ── GL 4.4 / 3.3 / GLES30 ─────────────────────────────────────────────────
 
-const Gl44Driver = if (build_options.enable_gl44) struct {
+const Gl44Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gl44Renderer,
     cache: ?embed_gl.Gl44BackendCache = null,
@@ -543,9 +475,9 @@ const Gl44Driver = if (build_options.enable_gl44) struct {
     fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, embed_gl.Gl44BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
-} else void;
+};
 
-const Gl33Driver = if (build_options.enable_gl33) struct {
+const Gl33Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gl33Renderer,
     cache: ?embed_gl.Gl33BackendCache = null,
@@ -578,9 +510,9 @@ const Gl33Driver = if (build_options.enable_gl33) struct {
     fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, embed_gl.Gl33BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
-} else void;
+};
 
-const Gles30Driver = if (build_options.enable_gles30) struct {
+const Gles30Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gles30Renderer,
     cache: ?embed_gl.Gles30BackendCache = null,
@@ -611,7 +543,7 @@ const Gles30Driver = if (build_options.enable_gles30) struct {
     fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
         return glRender(@TypeOf(self.*), self, embed_gl.Gles30BackendCache, allocator, passes, clear_srgb, &self.last_timings);
     }
-} else void;
+};
 
 fn glRender(
     comptime Self: type,
@@ -719,7 +651,7 @@ fn glRender(
 
 // ── CPU ───────────────────────────────────────────────────────────────────
 
-const CpuDriver = if (build_options.enable_raster) struct {
+const CpuDriver = struct {
     allocator: std.mem.Allocator,
     renderer_state: raster.Renderer,
     pool: ?*raster.ThreadPool = null,
@@ -851,4 +783,4 @@ const CpuDriver = if (build_options.enable_raster) struct {
         self.last_timings.swap_us = (wayland.getTime() - swap_t0) * 1_000_000.0;
         return true;
     }
-} else void;
+};

@@ -36,46 +36,27 @@ jobs:
             pkg-config \
             glslc \
             libegl1-mesa-dev \
-            libfreetype-dev \
             libgl1-mesa-dri \
             libglvnd-dev \
             libharfbuzz-dev \
             libvulkan-dev \
             libwayland-dev \
-            mesa-vulkan-drivers \
-            vulkan-validationlayers \
             wayland-protocols
 
-      - name: Check generated C API
-        run: zig build check-c-api -Dcpu=baseline
-
-      - name: Run tests
+      - name: Test public modules
         run: zig build test -Dcpu=baseline
 
-      - name: Build library
-        run: zig build --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Draster=true -Dharfbuzz=true
-
-      - name: Build demo
-        run: zig build install-demo --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Draster=true -Dharfbuzz=true
+      - name: Build consumer entry points
+        run: |
+          zig build install-demo --release=fast -Dcpu=baseline
+          zig build install-game --release=fast -Dcpu=baseline
+          zig build install-perf --release=fast -Dcpu=baseline
 
       - name: Backend pixel comparison
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build run-backend-compare -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Draster=true -Dharfbuzz=true
-
-      - name: Package artifacts
-        run: |
-          mkdir -p snail-${GITHUB_REF_NAME}
-          mkdir -p snail-${GITHUB_REF_NAME}/include
-          mkdir -p snail-${GITHUB_REF_NAME}/lib/pkgconfig
-          cp zig-out/lib/libsnail.a snail-${GITHUB_REF_NAME}/lib/
-          cp zig-out/lib/libsnail.so snail-${GITHUB_REF_NAME}/lib/
-          cp zig-out/lib/pkgconfig/snail.pc snail-${GITHUB_REF_NAME}/lib/pkgconfig/
-          cp zig-out/include/snail*.h snail-${GITHUB_REF_NAME}/include/
-          cp LICENSE CHANGELOG.md README.md snail-${GITHUB_REF_NAME}/
-          tar czf snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz snail-${GITHUB_REF_NAME}/
-          sha256sum snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+        run: zig build run-backend-compare -Dcpu=baseline
 
       - name: Extract release notes for this tag
         id: release_notes
@@ -97,15 +78,11 @@ jobs:
           if [ -s release_notes.md ]; then
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
-              --notes-file release_notes.md \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+              --notes-file release_notes.md
           else
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+              --generate-notes
           fi
         env:
           GH_TOKEN: ${{ github.token }}

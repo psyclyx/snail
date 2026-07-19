@@ -12,7 +12,6 @@ const std = @import("std");
 const snail = @import("snail");
 const raster = @import("snail-raster");
 const demo_support = @import("support");
-const build_options = @import("build_options");
 const assets_data = @import("assets");
 const renderer_driver = @import("../driver/renderer.zig");
 const driver_common = @import("../driver/common.zig");

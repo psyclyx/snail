@@ -128,8 +128,7 @@ const shader_specs = [_]ShaderSpec{
         .import_name = "snail_autohint.vert.spv",
         .generated_source_path = "vulkan-generated/snail_autohint.vert",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_autohint.vert",
-        .include_directive =
-            "#include \"snail_color_common.glsl\"\n" ++
+        .include_directive = "#include \"snail_color_common.glsl\"\n" ++
             "#include \"snail_autohint_warp.glsl\"\n" ++
             "#include \"snail_vert_body.glsl\"\n" ++
             "#include \"snail_autohint_vert_body.glsl\"",
@@ -239,13 +238,7 @@ const shader_specs = [_]ShaderSpec{
     },
 };
 
-pub fn createModule(b: *std.Build, enable_vulkan: bool) *std.Build.Module {
-    if (!enable_vulkan) {
-        return b.createModule(.{
-            .root_source_file = b.addWriteFiles().add("vk_stub.zig", ""),
-        });
-    }
-
+pub fn createModule(b: *std.Build) *std.Build.Module {
     const shader_dir = b.path("src/demo/render/vulkan/glsl");
     // The reference wrappers live with the demo; reusable color/coverage pieces
     // live in the library include directory and stay independently includable.

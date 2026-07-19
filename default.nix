@@ -3,12 +3,18 @@
 }:
 
 let
-  snail = pkgs.callPackage ./nix/snail.nix {
+  cleanSrc = pkgs.lib.cleanSourceWith {
     inherit src;
+    filter = path: type:
+      let
+        name = builtins.baseNameOf path;
+      in
+      !(builtins.elem name [ ".direnv" ".worktrees" ".zig-cache" "zig-out" ])
+      && pkgs.lib.cleanSourceFilter path type;
   };
 
   demo = pkgs.callPackage ./nix/snail-demo.nix {
-    inherit src;
+    src = cleanSrc;
   };
 
   shell = import ./shell.nix {
@@ -18,10 +24,9 @@ in
 {
   inherit demo shell;
 
-  lib = snail;
-  default = snail;
+  default = demo;
 
   packages = {
-    inherit snail demo;
+    inherit demo;
   };
 }

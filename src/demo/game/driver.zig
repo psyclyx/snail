@@ -11,7 +11,6 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const build_options = @import("build_options");
 const wayland = @import("../platform/wayland.zig");
 const presentation = @import("../platform/presentation.zig");
 const scene_mod = @import("scene.zig");
@@ -20,23 +19,21 @@ const gl_scene = @import("gl_scene.zig");
 
 const Scene = scene_mod.Scene;
 
-const any_gl = build_options.enable_gl33 or build_options.enable_gl44 or build_options.enable_gles30;
-const gl_platform = if (any_gl) @import("../platform/gl.zig") else struct {};
-const desktop_gl = if (build_options.enable_gl33 or build_options.enable_gl44) @cImport({
+const gl_platform = @import("../platform/gl.zig");
+const desktop_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GL/gl.h");
     @cInclude("GL/glext.h");
-}) else struct {};
-const gles_gl = if (build_options.enable_gles30) @cImport({
+});
+const gles_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
     @cInclude("GLES3/gl3.h");
     @cInclude("GLES2/gl2ext.h");
-}) else struct {};
+});
 
-const game_vulkan = build_options.enable_vulkan;
-const vulkan_platform = if (game_vulkan) @import("../platform/vulkan/windowed.zig") else struct {};
-const vk_scene = if (game_vulkan) @import("vk_scene.zig") else struct {};
-const embed_vulkan = if (game_vulkan) @import("embed_vulkan") else struct {};
+const vulkan_platform = @import("../platform/vulkan/windowed.zig");
+const vk_scene = @import("vk_scene.zig");
+const embed_vulkan = @import("embed_vulkan");
 
 /// Default-framebuffer depth bits the scene's depth testing needs.
 const DEPTH_BITS: i32 = 24;
@@ -44,34 +41,19 @@ const DEPTH_BITS: i32 = 24;
 pub const Kind = enum { vulkan, gl44, gl33, gles30 };
 
 pub fn defaultKind() Kind {
-    if (comptime build_options.enable_gl44) return .gl44;
-    if (comptime build_options.enable_gl33) return .gl33;
-    if (comptime build_options.enable_gles30) return .gles30;
-    if (comptime game_vulkan) return .vulkan;
-    @compileError("at least one game backend must be enabled");
-}
-
-fn kindEnabled(k: Kind) bool {
-    return switch (k) {
-        .vulkan => game_vulkan,
-        .gl44 => build_options.enable_gl44,
-        .gl33 => build_options.enable_gl33,
-        .gles30 => build_options.enable_gles30,
-    };
+    return .gl44;
 }
 
 pub fn nextKind(current: Kind) Kind {
-    const order = [_]Kind{ .gl44, .gl33, .gles30, .vulkan };
-    var seen = false;
-    for (0..order.len * 2) |i| {
-        const k = order[i % order.len];
-        if (seen and kindEnabled(k)) return k;
-        if (k == current) seen = true;
-    }
-    return current;
+    return switch (current) {
+        .gl44 => .gl33,
+        .gl33 => .gles30,
+        .gles30 => .vulkan,
+        .vulkan => .gl44,
+    };
 }
 
-/// Map a backend name (e.g. from `SNAIL_GAME_BACKEND`) to a Kind, if enabled.
+/// Map a backend name (e.g. from `SNAIL_GAME_BACKEND`) to a Kind.
 pub fn kindFromName(name: []const u8) ?Kind {
     const table = [_]struct { n: []const u8, k: Kind }{
         .{ .n = "gl44", .k = .gl44 },
@@ -79,9 +61,7 @@ pub fn kindFromName(name: []const u8) ?Kind {
         .{ .n = "gles30", .k = .gles30 },
         .{ .n = "vulkan", .k = .vulkan },
     };
-    for (table) |e| {
-        if (std.mem.eql(u8, name, e.n) and kindEnabled(e.k)) return e.k;
-    }
+    for (table) |e| if (std.mem.eql(u8, name, e.n)) return e.k;
     return null;
 }
 
@@ -108,26 +88,23 @@ fn displayTargetEncoding(info: presentation.Info) @import("snail-raster").Target
 // ── Union ────────────────────────────────────────────────────────────────────
 
 pub const Driver = union(Kind) {
-    vulkan: if (game_vulkan) VulkanGameDriver else void,
-    gl44: if (build_options.enable_gl44) GlDriver(.gl44) else void,
-    gl33: if (build_options.enable_gl33) GlDriver(.gl33) else void,
-    gles30: if (build_options.enable_gles30) GlDriver(.gles30) else void,
+    vulkan: VulkanGameDriver,
+    gl44: GlDriver(.gl44),
+    gl33: GlDriver(.gl33),
+    gles30: GlDriver(.gles30),
 
     pub fn init(allocator: std.mem.Allocator, window: *wayland.Window, scene: *Scene, selected: Kind) !Driver {
         return switch (selected) {
-            .gl44 => if (comptime build_options.enable_gl44) .{ .gl44 = try GlDriver(.gl44).init(allocator, window, scene) } else unreachable,
-            .gl33 => if (comptime build_options.enable_gl33) .{ .gl33 = try GlDriver(.gl33).init(allocator, window, scene) } else unreachable,
-            .gles30 => if (comptime build_options.enable_gles30) .{ .gles30 = try GlDriver(.gles30).init(allocator, window, scene) } else unreachable,
-            .vulkan => if (comptime game_vulkan) .{ .vulkan = try VulkanGameDriver.init(allocator, window, scene) } else unreachable,
+            .gl44 => .{ .gl44 = try GlDriver(.gl44).init(allocator, window, scene) },
+            .gl33 => .{ .gl33 = try GlDriver(.gl33).init(allocator, window, scene) },
+            .gles30 => .{ .gles30 = try GlDriver(.gles30).init(allocator, window, scene) },
+            .vulkan => .{ .vulkan = try VulkanGameDriver.init(allocator, window, scene) },
         };
     }
 
     pub fn deinit(self: *Driver) void {
         switch (self.*) {
-            .gl44 => |*d| if (comptime build_options.enable_gl44) d.deinit() else unreachable,
-            .gl33 => |*d| if (comptime build_options.enable_gl33) d.deinit() else unreachable,
-            .gles30 => |*d| if (comptime build_options.enable_gles30) d.deinit() else unreachable,
-            .vulkan => |*d| if (comptime game_vulkan) d.deinit() else unreachable,
+            inline else => |*d| d.deinit(),
         }
     }
 
@@ -149,25 +126,22 @@ pub const Driver = union(Kind) {
 
     pub fn shouldClose(self: *Driver) bool {
         return switch (self.*) {
-            .gl44, .gl33, .gles30 => if (comptime any_gl) gl_platform.shouldClose() else true,
-            .vulkan => if (comptime game_vulkan) self.vulkan.shouldClose() else true,
+            .gl44, .gl33, .gles30 => gl_platform.shouldClose(),
+            .vulkan => self.vulkan.shouldClose(),
         };
     }
 
     pub fn presentationInfo(self: *Driver) presentation.Info {
         return switch (self.*) {
-            .gl44, .gl33, .gles30 => if (comptime any_gl) gl_platform.presentationInfo() else .{},
-            .vulkan => if (comptime game_vulkan) self.vulkan.presentationInfo() else .{},
+            .gl44, .gl33, .gles30 => gl_platform.presentationInfo(),
+            .vulkan => self.vulkan.presentationInfo(),
         };
     }
 
     /// Render the whole scene.
     pub fn renderFrame(self: *Driver, scene: *Scene) !void {
         switch (self.*) {
-            .gl44 => |*d| if (comptime build_options.enable_gl44) try d.renderFrame(scene) else unreachable,
-            .gl33 => |*d| if (comptime build_options.enable_gl33) try d.renderFrame(scene) else unreachable,
-            .gles30 => |*d| if (comptime build_options.enable_gles30) try d.renderFrame(scene) else unreachable,
-            .vulkan => |*d| if (comptime game_vulkan) try d.renderFrame(scene) else unreachable,
+            inline else => |*d| try d.renderFrame(scene),
         }
     }
 };
@@ -238,7 +212,7 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
 
 // ── Vulkan (added in a later stage) ──────────────────────────────────────────
 
-const VulkanGameDriver = if (game_vulkan) struct {
+const VulkanGameDriver = struct {
     const Self = @This();
     ctx: embed_vulkan.VulkanContext,
     sr: vk_scene.VkSceneRenderer,
@@ -278,7 +252,7 @@ const VulkanGameDriver = if (game_vulkan) struct {
         try self.sr.record(cmd, vulkan_platform.currentFrameIndex(), scene, view_proj, surface);
         vulkan_platform.endFrame();
     }
-} else void;
+};
 
 fn srgbToLinear(v: f32) f32 {
     return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
