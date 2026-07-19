@@ -67,6 +67,7 @@ fn renderMode(
         .color = ink_color,
         .mode = mode,
         .snap = snap,
+        .world_to_pixel = .identity,
     });
     // Empty outlines intentionally have no autohint record; preserve their
     // no-op shape on the resident unhinted key, as the comparison grid does.
