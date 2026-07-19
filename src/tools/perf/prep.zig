@@ -7,13 +7,19 @@ const fixtures = @import("fixtures.zig");
 const cases = [_][]const u8{
     "shape-latin",
     "shape-multiscript",
+    "shape-cff2-variable",
     "place-run",
     "curves-unhinted",
+    "curves-cff",
+    "curves-gvar",
+    "curves-cff2",
     "truetype-prepare",
     "curves-truetype",
     "autohint-setup",
     "autohint-setup-nonlatin",
+    "autohint-setup-cff2",
     "analyze-autohint",
+    "analyze-autohint-cff2",
     "path-prepare",
     "path-pack",
     "atlas-build-text",
@@ -44,10 +50,22 @@ pub fn main(init: std.process.Init) !void {
         try shapeCase(allocator, args, fixtures.paragraph, 2048);
     } else if (std.mem.eql(u8, args.case, "shape-multiscript")) {
         try shapeCase(allocator, args, fixtures.multiscript, 2048);
+    } else if (std.mem.eql(u8, args.case, "shape-cff2-variable")) {
+        var font = try formatFont(.cff2);
+        try shapeFontCase(allocator, args, &font, fixtures.paragraph, 2048);
     } else if (std.mem.eql(u8, args.case, "place-run")) {
         try placeRunCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "curves-unhinted")) {
         try unhintedCase(allocator, args);
+    } else if (std.mem.eql(u8, args.case, "curves-cff")) {
+        var font = try formatFont(.cff);
+        try curvesFontCase(allocator, args, &font, 32);
+    } else if (std.mem.eql(u8, args.case, "curves-gvar")) {
+        var font = try formatFont(.gvar);
+        try curvesFontCase(allocator, args, &font, 32);
+    } else if (std.mem.eql(u8, args.case, "curves-cff2")) {
+        var font = try formatFont(.cff2);
+        try curvesFontCase(allocator, args, &font, 32);
     } else if (std.mem.eql(u8, args.case, "truetype-prepare")) {
         try trueTypePrepareCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "curves-truetype")) {
@@ -56,8 +74,14 @@ pub fn main(init: std.process.Init) !void {
         try autohintSetupCase(allocator, args, assets.noto_sans_regular);
     } else if (std.mem.eql(u8, args.case, "autohint-setup-nonlatin")) {
         try autohintSetupCase(allocator, args, assets.noto_sans_arabic);
+    } else if (std.mem.eql(u8, args.case, "autohint-setup-cff2")) {
+        var font = try formatFont(.cff2);
+        try autohintSetupFontCase(allocator, args, &font);
     } else if (std.mem.eql(u8, args.case, "analyze-autohint")) {
         try autohintAnalyzeCase(allocator, args);
+    } else if (std.mem.eql(u8, args.case, "analyze-autohint-cff2")) {
+        var font = try formatFont(.cff2);
+        try autohintAnalyzeFontCase(allocator, args, &font, 32);
     } else if (std.mem.eql(u8, args.case, "path-prepare")) {
         try pathPrepareCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "path-pack")) {
@@ -89,6 +113,19 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args.case, "emit-colr")) {
         try emitCase(allocator, args, .colr);
     } else unreachable;
+}
+
+const FormatFont = enum { cff, gvar, cff2 };
+const benchmark_variations = [_]snail.font.Variation{
+    .{ .tag = "wght".*, .value = 750 },
+};
+
+fn formatFont(format: FormatFont) !snail.Font {
+    return switch (format) {
+        .cff => snail.Font.init(assets.source_serif_cff),
+        .gvar => snail.Font.initWithOptions(assets.noto_sans_mono, .{ .variations = &benchmark_variations }),
+        .cff2 => snail.Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &benchmark_variations }),
+    };
 }
 
 fn iterations(args: common.Args, default: usize) usize {
@@ -140,6 +177,31 @@ fn shapeCase(allocator: std.mem.Allocator, args: common.Args, text: []const u8, 
             .{ .name = "input_bytes", .value = text.len },
             .{ .name = "output_glyphs", .value = context.output_glyphs },
             .{ .name = "font_faces", .value = fonts.fonts.len },
+        },
+        context.checksum,
+    );
+}
+
+fn shapeFontCase(
+    allocator: std.mem.Allocator,
+    args: common.Args,
+    font: *snail.Font,
+    text: []const u8,
+    default_iterations: usize,
+) !void {
+    var faces = try snail.Faces.build(allocator, &.{.{ .font = font }});
+    defer faces.deinit();
+    var context = ShapeContext{ .allocator = allocator, .faces = &faces, .text = text };
+    const result = try common.measure(allocator, &context, iterations(args, default_iterations), args.samples);
+    reportPrep(
+        args.case,
+        result,
+        try std.unicode.utf8CountCodepoints(text),
+        "codepoint",
+        &.{
+            .{ .name = "input_bytes", .value = text.len },
+            .{ .name = "output_glyphs", .value = context.output_glyphs },
+            .{ .name = "font_faces", .value = 1 },
         },
         context.checksum,
     );
@@ -216,12 +278,21 @@ const UnhintedContext = struct {
 
 fn unhintedCase(allocator: std.mem.Allocator, args: common.Args) !void {
     var font = try snail.Font.init(assets.noto_sans_regular);
+    return curvesFontCase(allocator, args, &font, 96);
+}
+
+fn curvesFontCase(
+    allocator: std.mem.Allocator,
+    args: common.Args,
+    font: *snail.Font,
+    default_iterations: usize,
+) !void {
     var glyphs: [94]u16 = undefined;
-    try asciiGlyphs(&font, &glyphs);
+    try asciiGlyphs(font, &glyphs);
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
-    var context = UnhintedContext{ .allocator = allocator, .font = &font, .glyphs = &glyphs, .scratch = &scratch };
-    const result = try common.measure(allocator, &context, iterations(args, 96), args.samples);
+    var context = UnhintedContext{ .allocator = allocator, .font = font, .glyphs = &glyphs, .scratch = &scratch };
+    const result = try common.measure(allocator, &context, iterations(args, default_iterations), args.samples);
     reportPrep(args.case, result, glyphs.len, "glyph", &.{.{ .name = "glyphs", .value = glyphs.len }}, context.checksum);
 }
 
@@ -317,6 +388,33 @@ fn autohintSetupCase(allocator: std.mem.Allocator, args: common.Args, font_data:
     );
 }
 
+const AutohintFontSetupContext = struct {
+    allocator: std.mem.Allocator,
+    font: *const snail.Font,
+    checksum: u64 = 14695981039346656037,
+
+    pub fn run(self: *AutohintFontSetupContext) !void {
+        var analyzer = try snail.autohint.AutohintAnalyzer.initFont(self.allocator, self.font);
+        defer analyzer.deinit();
+        const features = analyzer.fontFeatures();
+        common.hashValue(&self.checksum, features.std_x);
+        common.hashValue(&self.checksum, features.blues.len);
+    }
+};
+
+fn autohintSetupFontCase(allocator: std.mem.Allocator, args: common.Args, font: *const snail.Font) !void {
+    var context = AutohintFontSetupContext{ .allocator = allocator, .font = font };
+    const result = try common.measure(allocator, &context, iterations(args, 32), args.samples);
+    reportPrep(
+        args.case,
+        result,
+        1,
+        "font_analyzer",
+        &.{.{ .name = "font_bytes", .value = font.inner.data.len }},
+        context.checksum,
+    );
+}
+
 const AutohintAnalyzeContext = struct {
     analyzer: *snail.autohint.AutohintAnalyzer,
     glyphs: *const [94]u16,
@@ -339,14 +437,23 @@ const AutohintAnalyzeContext = struct {
 
 fn autohintAnalyzeCase(allocator: std.mem.Allocator, args: common.Args) !void {
     var font = try snail.Font.init(assets.noto_sans_regular);
+    return autohintAnalyzeFontCase(allocator, args, &font, 96);
+}
+
+fn autohintAnalyzeFontCase(
+    allocator: std.mem.Allocator,
+    args: common.Args,
+    font: *snail.Font,
+    default_iterations: usize,
+) !void {
     var glyphs: [94]u16 = undefined;
-    try asciiGlyphs(&font, &glyphs);
-    var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, assets.noto_sans_regular);
+    try asciiGlyphs(font, &glyphs);
+    var analyzer = try snail.autohint.AutohintAnalyzer.initFont(allocator, font);
     defer analyzer.deinit();
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     var context = AutohintAnalyzeContext{ .analyzer = &analyzer, .glyphs = &glyphs, .scratch = &scratch };
-    const result = try common.measure(allocator, &context, iterations(args, 96), args.samples);
+    const result = try common.measure(allocator, &context, iterations(args, default_iterations), args.samples);
     reportPrep(args.case, result, glyphs.len, "glyph", &.{.{ .name = "glyphs", .value = glyphs.len }}, context.checksum);
 }
 
