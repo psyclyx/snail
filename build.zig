@@ -131,7 +131,7 @@ fn createDemoVulkanPlatformModule(
 
 /// The reusable reference caller renderer for the Vulkan embeddable path
 /// (`src/demo/render/vulkan/root.zig`). Bound to a specific `snail` module so its vk
-/// types match the consumer's; created per consumer group (demo tools, bench).
+/// types match the consumer's; created per consumer group (demo tools).
 fn createEmbedVulkanModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
@@ -1036,58 +1036,51 @@ pub fn build(b: *std.Build) void {
     addInteractiveDemoStep(b, config, modules);
     addGameDemoStep(b, config, modules);
     addMinimalGlStep(b, config, modules);
-    addBenchStep(b, config, modules);
+    addPerfSteps(b, config, modules);
 }
 
-fn addBenchStep(
-    b: *std.Build,
-    config: BuildConfig,
-    modules: ProjectModules,
-) void {
-    const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast, modules.options, config.options.enable_harfbuzz);
-    const release_render_state_mod = createRenderStateModule(b, config.target, .ReleaseFast, release_snail_mod);
-    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
-    const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
-    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod);
-
-    const offscreen_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/platform/offscreen_gl.zig"),
+fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) void {
+    const prep_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/perf/prep.zig"),
         .target = config.target,
-        .optimize = .ReleaseFast,
+        .optimize = config.optimize,
         .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+        },
     });
-    offscreen_gl_mod.linkSystemLibrary("EGL", .{});
+    const prep_exe = b.addExecutable(.{ .name = "snail-perf-prep", .root_module = prep_mod });
 
-    var bench_imports: std.ArrayListUnmanaged(std.Build.Module.Import) = .empty;
-    bench_imports.appendSlice(b.allocator, &.{
-        .{ .name = "assets", .module = modules.assets },
-        .{ .name = "snail", .module = release_snail_mod },
-        .{ .name = "snail-raster", .module = release_raster_mod },
-        .{ .name = "support", .module = release_support_mod },
-        .{ .name = "build_options", .module = modules.options },
-        .{ .name = "demo_platform_offscreen_gl", .module = offscreen_gl_mod },
-    }) catch @panic("OOM");
-
-    if (config.options.enable_vulkan) {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, modules.options, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
-        bench_imports.append(b.allocator, .{ .name = "demo_platform_vulkan", .module = release_vk_platform_mod }) catch @panic("OOM");
-        const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types);
-        bench_imports.append(b.allocator, .{ .name = "embed_vulkan", .module = embed_vulkan_mod }) catch @panic("OOM");
-    }
-
-    const bench_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/bench.zig"),
+    const raster_perf_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/perf/raster.zig"),
         .target = config.target,
-        .optimize = .ReleaseFast,
+        .optimize = config.optimize,
         .link_libc = true,
-        .imports = bench_imports.items,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail-raster", .module = modules.raster },
+        },
     });
-    configureEglOffscreenModule(bench_mod, modules.options, config.options, embed_gl_mod);
-    bench_mod.linkSystemLibrary("freetype2", .{});
+    const raster_perf_exe = b.addExecutable(.{ .name = "snail-perf-raster", .root_module = raster_perf_mod });
 
-    const bench_exe = b.addExecutable(.{ .name = "snail-bench", .root_module = bench_mod });
-    b.installArtifact(bench_exe);
-    const run_bench = b.addRunArtifact(bench_exe);
-    const bench_step = b.step("bench", "Run the snail benchmark harness (writes a markdown report to stdout). Set SNAIL_BENCH_ONLY=<sections> to focus.");
-    bench_step.dependOn(&run_bench.step);
+    const glsl_perf_mod = b.createModule(.{
+        .root_source_file = b.path("src/tools/perf/glsl.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+        },
+    });
+    glsl_perf_mod.linkSystemLibrary("EGL", .{});
+    glsl_perf_mod.linkSystemLibrary("OpenGL", .{});
+    const glsl_perf_exe = b.addExecutable(.{ .name = "snail-perf-glsl", .root_module = glsl_perf_mod });
+
+    const install_perf = b.step("install-perf", "Install the consumer-facing performance regression runners");
+    install_perf.dependOn(&b.addInstallArtifact(prep_exe, .{}).step);
+    install_perf.dependOn(&b.addInstallArtifact(raster_perf_exe, .{}).step);
+    install_perf.dependOn(&b.addInstallArtifact(glsl_perf_exe, .{}).step);
 }

@@ -117,10 +117,10 @@ pub const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 
 // ── Shader modules ──
 
-/// Compiled SPIR-V. All shape families share `vert_spv` and the single-binding
-/// vertex input above; they differ only in fragment shader (and subpixel also
-/// in blend). Callers hand these to `vkCreateShaderModule`.
+/// Compiled SPIR-V. Autohint uses its fitting vertex stage; the other families
+/// share `vert_spv`. Callers hand these to `vkCreateShaderModule`.
 pub const vert_spv = vk_shaders.vert_spv;
+pub const vert_autohint_spv = vk_shaders.vert_autohint_spv;
 pub const frag_text_spv = vk_shaders.frag_text_spv;
 pub const frag_hinted_text_spv = vk_shaders.frag_hinted_text_spv;
 pub const frag_autohint_spv = vk_shaders.frag_autohint_spv;
@@ -162,6 +162,7 @@ pub const Family = enum { text, colr, path, hinted_text, autohint, subpixel };
 /// The frag module + blend the caller's pipeline for `family` must use. Vertex
 /// input, descriptor-set layout and push constants are the same for all.
 pub const PipelineRecipe = struct {
+    vert_spv: []align(4) const u8,
     frag_spv: []align(4) const u8,
     blend: Blend,
     /// Subpixel needs the `dualSrcBlend` device feature; gate on it and fall
@@ -171,12 +172,12 @@ pub const PipelineRecipe = struct {
 
 pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
-        .text => .{ .frag_spv = frag_text_spv, .blend = .premultiplied },
-        .colr => .{ .frag_spv = frag_colr_spv, .blend = .premultiplied },
-        .path => .{ .frag_spv = frag_path_spv, .blend = .premultiplied },
-        .hinted_text => .{ .frag_spv = frag_hinted_text_spv, .blend = .premultiplied },
-        .autohint => .{ .frag_spv = frag_autohint_spv, .blend = .premultiplied },
-        .subpixel => .{ .frag_spv = frag_text_subpixel_dual_spv, .blend = .dual_source, .requires_dual_src_blend = true },
+        .text => .{ .vert_spv = vert_spv, .frag_spv = frag_text_spv, .blend = .premultiplied },
+        .colr => .{ .vert_spv = vert_spv, .frag_spv = frag_colr_spv, .blend = .premultiplied },
+        .path => .{ .vert_spv = vert_spv, .frag_spv = frag_path_spv, .blend = .premultiplied },
+        .hinted_text => .{ .vert_spv = vert_spv, .frag_spv = frag_hinted_text_spv, .blend = .premultiplied },
+        .autohint => .{ .vert_spv = vert_autohint_spv, .frag_spv = frag_autohint_spv, .blend = .premultiplied },
+        .subpixel => .{ .vert_spv = vert_spv, .frag_spv = frag_text_subpixel_dual_spv, .blend = .dual_source, .requires_dual_src_blend = true },
     };
 }
 

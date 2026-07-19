@@ -10,7 +10,6 @@ const vertex_mod = @import("format/vertex.zig");
 const draw_mod = @import("draw/records.zig");
 const curve_texture_mod = @import("format/curve_texture.zig");
 const band_texture_mod = @import("format/band_texture.zig");
-const text_hint_mod = @import("format/text_hint.zig");
 const autohint_record_mod = @import("format/autohint_record.zig");
 const curve_mod = @import("math/bezier.zig");
 
@@ -33,8 +32,6 @@ pub const records = struct {
     pub const BandCounts = abi_mod.BandCounts;
     pub const paint_texels_per_record = abi_mod.paint_texels_per_record;
     pub const composite_mode_fill_stroke_inside = abi_mod.composite_mode_fill_stroke_inside;
-    pub const hint_record_flag_expanded_bands = abi_mod.hint_record_flag_expanded_bands;
-    pub const hint_record_flag_unordered_bands = abi_mod.hint_record_flag_unordered_bands;
     pub const glyphLocationX = abi_mod.glyphLocationX;
     pub const glyphLocationY = abi_mod.glyphLocationY;
     pub const glyphWordAtlasLayer = abi_mod.glyphWordAtlasLayer;
@@ -58,7 +55,6 @@ pub const atlas = struct {
     pub const PACKED_ANCHOR_CHUNK_EXTENT = curve_texture_mod.PACKED_ANCHOR_CHUNK_EXTENT;
     pub const DIRECT_ENCODING_KIND_BIAS = curve_texture_mod.DIRECT_ENCODING_KIND_BIAS;
     pub const decodePackedAnchor = curve_texture_mod.decodePackedAnchor;
-    pub const unpackBandPadding = text_hint_mod.unpackBandPadding;
 
     pub const autohint = struct {
         pub const header_floats = autohint_record_mod.header_floats;

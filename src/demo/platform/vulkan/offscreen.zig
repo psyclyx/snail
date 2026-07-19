@@ -1,4 +1,4 @@
-//! Demo-only headless Vulkan platform path used by benchmarks and capture tools.
+//! Demo-only headless Vulkan platform path used by capture tools.
 
 const std = @import("std");
 
@@ -18,7 +18,7 @@ var command_pool: vk.VkCommandPool = null;
 
 // ── Offscreen (headless) Vulkan path ──
 // No window, no surface, no swapchain, no present.
-// Equivalent to GL's offscreen EGL+pbuffer+FBO path. Used by benchmarks.
+// Equivalent to GL's offscreen EGL+pbuffer+FBO path.
 
 const OFFSCREEN_FORMAT: vk.VkFormat = vk.VK_FORMAT_R8G8B8A8_SRGB;
 const DEPTH_FORMAT: vk.VkFormat = vk.VK_FORMAT_D32_SFLOAT;
@@ -117,7 +117,7 @@ pub fn deinitOffscreen() void {
 
 /// Begin an offscreen frame. Returns the command buffer to record into.
 /// Waits only for the current ring slot, allowing the CPU to queue several
-/// frames ahead during headless benchmarks instead of idling every frame.
+/// frames ahead during headless capture instead of idling every frame.
 pub fn beginFrameOffscreen() vk.VkCommandBuffer {
     return beginFrameOffscreenWithClear(.{ 0.12, 0.12, 0.14, 1.0 });
 }
@@ -218,7 +218,7 @@ pub fn captureOffscreenRgba8(allocator: std.mem.Allocator) ![]u8 {
 fn createInstanceOffscreen() !void {
     const app_info = std.mem.zeroInit(vk.VkApplicationInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_APPLICATION_INFO,
-        .pApplicationName = "snail-bench",
+        .pApplicationName = "snail-offscreen",
         .apiVersion = vk.VK_API_VERSION_1_1,
     });
     const ci = std.mem.zeroInit(vk.VkInstanceCreateInfo, .{

@@ -124,17 +124,41 @@ pub fn emit(
                 final_transform,
                 packed_policy,
             );
-        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
-            try cur.appendPathRecordTransformedTinted(
+        } else if (atlas.lookupHintedRecord(shape.key)) |hinted_info| {
+            try cur.appendHintedTextTransformedTinted(
                 rec.bbox,
-                paint_info.info_x,
-                try addRowBase(paint_info.info_y, binding.info_row_base),
-                paint_info.layer_count,
+                hinted_info.info_x,
+                try addRowBase(hinted_info.info_y, binding.info_row_base),
+                hinted_info.layer_count,
                 shape.local_color,
                 world_tint,
                 atlas_layer,
                 final_transform,
             );
+        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
+            if (shape.key.namespace == record_key_mod.ns.unhinted_glyph) {
+                try cur.appendMultiLayerGlyphTransformedTinted(
+                    rec.bbox,
+                    paint_info.info_x,
+                    try addRowBase(paint_info.info_y, binding.info_row_base),
+                    paint_info.layer_count,
+                    shape.local_color,
+                    world_tint,
+                    atlas_layer,
+                    final_transform,
+                );
+            } else {
+                try cur.appendPathRecordTransformedTinted(
+                    rec.bbox,
+                    paint_info.info_x,
+                    try addRowBase(paint_info.info_y, binding.info_row_base),
+                    paint_info.layer_count,
+                    shape.local_color,
+                    world_tint,
+                    atlas_layer,
+                    final_transform,
+                );
+            }
         } else {
             try cur.appendGlyphTransformedTinted(
                 rec.bbox,
@@ -513,29 +537,37 @@ test "emit splits contiguous shapes into exact semantic segments" {
     var path_curves = try makeTinyCurves(testing.allocator);
     defer path_curves.deinit();
     const regular_key = record_key_mod.unhintedGlyph(0, 1);
+    const colr_key = record_key_mod.unhintedGlyph(1, 2);
     const path_key = record_key_mod.RecordKey{ .namespace = record_key_mod.ns.path_fill, .a = 1 };
+    const hinted_key = record_key_mod.hintedGlyph(0, 3, 16 * 64);
     var atlas = try Atlas.from(testing.allocator, pool, &.{
         .{ .key = regular_key, .curves = regular_curves },
+        .{ .key = colr_key, .curves = regular_curves, .paint = .{ .solid = .{ 1, 0, 0, 1 } } },
         .{ .key = path_key, .curves = path_curves, .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
+        .{ .key = hinted_key, .curves = regular_curves },
     });
     defer atlas.deinit();
 
     const shapes = [_]Shape{
         .{ .key = regular_key },
+        .{ .key = colr_key },
         .{ .key = path_key },
+        .{ .key = hinted_key },
         .{ .key = regular_key },
     };
-    var words: [3 * WORDS_PER_INSTANCE]u32 = undefined;
-    var segments: [3]DrawSegment = undefined;
+    var words: [5 * WORDS_PER_INSTANCE]u32 = undefined;
+    var segments: [5]DrawSegment = undefined;
     var word_len: usize = 0;
     var segment_len: usize = 0;
     const result = try emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    try testing.expectEqual(@as(u32, 3), result.segment_count);
-    try testing.expectEqual(@as(usize, 3), segment_len);
+    try testing.expectEqual(@as(u32, 5), result.segment_count);
+    try testing.expectEqual(@as(usize, 5), segment_len);
     try testing.expectEqual(draw_records.ShapeKind.regular, segments[0].kind);
-    try testing.expectEqual(draw_records.ShapeKind.path, segments[1].kind);
-    try testing.expectEqual(draw_records.ShapeKind.regular, segments[2].kind);
+    try testing.expectEqual(draw_records.ShapeKind.colr, segments[1].kind);
+    try testing.expectEqual(draw_records.ShapeKind.path, segments[2].kind);
+    try testing.expectEqual(draw_records.ShapeKind.hinted_text, segments[3].kind);
+    try testing.expectEqual(draw_records.ShapeKind.regular, segments[4].kind);
     for (segments) |segment| {
         try testing.expectEqual(@as(u32, 1), segment.shape_count);
         try testing.expectEqual(@as(u32, WORDS_PER_INSTANCE), segment.words_len);

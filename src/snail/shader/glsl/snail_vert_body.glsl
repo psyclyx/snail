@@ -44,18 +44,29 @@ void snailVertex() {
 
     uint gz = a_glyph.x;
     uint gw = a_glyph.y;
+    #ifdef SNAIL_AUTOHINT_VERTEX
+    v_info = ivec2(gz & 0xFFFFu, gz >> 16u);
+    v_policy0 = a_policy0;
+    v_policy1 = a_policy1;
+    v_texcoord_layer.z = a_bnd.w;
+    #else
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
     v_policy0 = a_policy0;
     v_policy1 = a_policy1;
     v_banding = a_bnd;
+    #endif
     // sRGB decode the per-instance color and tint at the vertex stage:
     // these are constant across all four corners of the glyph quad
     // (text uses one color per instance), so per-vertex conversion is
     // 4 invocations vs the ~100+ fragments per glyph that previously
     // each ran 6 `pow` calls. Fragment shaders now use `v_color` /
     // `v_tint` as already-linear values.
+    #ifdef SNAIL_AUTOHINT_VERTEX
+    v_paint = vec4(srgbToLinear(a_col.rgb), a_col.a) * vec4(srgbToLinear(eff_tint.rgb), eff_tint.a);
+    #else
     v_color = vec4(srgbToLinear(a_col.rgb), a_col.a);
     v_tint = vec4(srgbToLinear(eff_tint.rgb), eff_tint.a);
+    #endif
 
     // Slug dynamic dilation
     vec4 m0 = vec4(SNAIL_MVP[0].x, SNAIL_MVP[1].x, SNAIL_MVP[2].x, SNAIL_MVP[3].x);
@@ -83,7 +94,11 @@ void snailVertex() {
     d *= snailVertexDilationScale();
 
     vec2 p = pos + d;
+    #ifdef SNAIL_AUTOHINT_VERTEX
+    v_texcoord_layer.xy = vec2(em.x + dot(d, jac.xy), em.y + dot(d, jac.zw));
+    #else
     v_texcoord = vec2(em.x + dot(d, jac.xy), em.y + dot(d, jac.zw));
+    #endif
 
     gl_Position = SNAIL_MVP * vec4(p, 0.0, 1.0);
 }

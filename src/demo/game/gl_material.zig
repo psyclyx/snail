@@ -149,7 +149,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
                 0.5,  0.5,  0.0, 1.0, 1.0,
                 -0.5, 0.5,  0.0, 0.0, 1.0,
             };
-            const idx = [_]u32{ 0, 1, 2, 0, 2, 3 };
+            const idx = [_]u32{ 1, 2, 0, 2, 3, 0 };
             gl.glGenVertexArrays(1, &self.vao);
             gl.glGenBuffers(1, &self.vbo);
             gl.glGenBuffers(1, &self.ebo);

@@ -9,7 +9,7 @@
 //! Works on either axis (`analyzeGlyph(.., axis)`): `.y` finds horizontal
 //! features (baseline/x-height/crossbars/stem tops), `.x` finds vertical
 //! stems. Each axis stays a separable, monotone, invertible coordinate warp.
-//! A font with no clean stem structure (much non-Latin text) simply yields
+//! A glyph with no clean stem or shared-reference structure simply yields
 //! few/no edges and renders unwarped (identity), which is the non-breaking
 //! guarantee. See [[project_snail]].
 //!
@@ -70,12 +70,47 @@ pub const Axis = enum { y, x };
 /// Stable, serializable edge facts produced by outline analysis. Positions and
 /// widths are expressed as em fractions by the producer; fitting adds targets
 /// later without mutating these facts.
-pub const FeatureEdge = struct {
+pub const FeatureEdge = extern struct {
     pos: f32,
     width: f32,
     stem: i16,
     blue: i16,
-    flags: packed struct(u16) { round: bool, synthetic_apex: bool = false, _reserved: u14 = 0 },
+    flags: packed struct(u32) {
+        round: bool,
+        synthetic_apex: bool = false,
+        /// Direction used by blue-zone fitting. The grid-only direction is
+        /// derivable from the stem relation; the blue-zone direction also
+        /// depends on the nearest shared zone, so analysis records it once.
+        semantics_resolved: bool = false,
+        blue_dir_negative: bool = false,
+        /// Pre-resolved companion for a round blue edge under grid-only and
+        /// blue-zone policies. 62 means no companion; 63 means an older or
+        /// caller-authored record that still needs the generic search. These replace the two
+        /// quadratic searches that the shader used to repeat at draw time.
+        grid_companion: u6 = 63,
+        blue_companion: u6 = 63,
+        _reserved: u16 = 0,
+    },
+
+    pub fn direction(self: FeatureEdge, use_blues: bool, features: []const FeatureEdge) i8 {
+        if (use_blues) return if (self.flags.blue_dir_negative) -1 else 1;
+        if (self.stem >= 0 and @as(usize, @intCast(self.stem)) < features.len and
+            features[@intCast(self.stem)].pos > self.pos)
+        {
+            return -1;
+        }
+        return 1;
+    }
+
+    pub fn companion(self: FeatureEdge, use_blues: bool) i16 {
+        if (!self.flags.semantics_resolved) return -2;
+        const encoded = if (use_blues) self.flags.blue_companion else self.flags.grid_companion;
+        return switch (encoded) {
+            62 => -1,
+            63 => -2,
+            else => @intCast(encoded),
+        };
+    }
 };
 
 /// A near-axis-aligned run of the outline: a candidate contribution to an
@@ -127,6 +162,10 @@ pub const Edge = struct {
     /// Apex recovered from an analytic endpoint tangent rather than a sampled
     /// run. Used only as a natural-width companion during fitting.
     synthetic_apex: bool = false,
+    /// Pre-resolved blue-apex companion. -2 asks the generic fitter to use
+    /// its legacy search (useful for direct callers/tests); -1 means analysis
+    /// proved that no companion exists.
+    companion: i16 = -2,
 
     pub fn isStem(self: Edge) bool {
         return self.stem >= 0;

@@ -125,6 +125,24 @@ const shader_specs = [_]ShaderSpec{
         .output_name = "snail.vert.spv",
     },
     .{
+        .import_name = "snail_autohint.vert.spv",
+        .generated_source_path = "vulkan-generated/snail_autohint.vert",
+        .wrapper_path = "../src/demo/render/vulkan/glsl/snail_autohint.vert",
+        .include_directive =
+            "#include \"snail_color_common.glsl\"\n" ++
+            "#include \"snail_autohint_warp.glsl\"\n" ++
+            "#include \"snail_vert_body.glsl\"\n" ++
+            "#include \"snail_autohint_vert_body.glsl\"",
+        .source_paths = &.{
+            "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_autohint_warp.glsl",
+            "../src/snail/shader/glsl/snail_vert_body.glsl",
+            "../src/snail/shader/glsl/snail_autohint_vert_body.glsl",
+        },
+        .stage_arg = "-fshader-stage=vert",
+        .output_name = "snail_autohint.vert.spv",
+    },
+    .{
         .import_name = "snail_text.frag.spv",
         .generated_source_path = "vulkan-generated/snail_text.frag",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_text.frag",
@@ -145,11 +163,12 @@ const shader_specs = [_]ShaderSpec{
         .import_name = "snail_colr.frag.spv",
         .generated_source_path = "vulkan-generated/snail_colr.frag",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_colr.frag",
-        .include_directive = fragment_common_includes ++ "#include \"snail_colr_frag_body.glsl\"",
+        .include_directive = fragment_common_includes ++ "#include \"snail_path_frag_body.glsl\"\n#include \"snail_colr_frag_body.glsl\"",
         .source_paths = &.{
             "../src/snail/shader/glsl/snail_render_abi.glsl",
             "../src/snail/shader/glsl/snail_coverage_common.glsl",
             "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_path_frag_body.glsl",
             "../src/snail/shader/glsl/snail_colr_frag_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
@@ -173,11 +192,12 @@ const shader_specs = [_]ShaderSpec{
         .import_name = "snail_hinted_text.frag.spv",
         .generated_source_path = "vulkan-generated/snail_hinted_text.frag",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail_hinted_text.frag",
-        .include_directive = fragment_common_includes ++ "#include \"snail_hinted_text_frag_body.glsl\"",
+        .include_directive = fragment_common_includes ++ "#include \"snail_text_frag_body.glsl\"\n#include \"snail_hinted_text_frag_body.glsl\"",
         .source_paths = &.{
             "../src/snail/shader/glsl/snail_render_abi.glsl",
             "../src/snail/shader/glsl/snail_coverage_common.glsl",
             "../src/snail/shader/glsl/snail_color_common.glsl",
+            "../src/snail/shader/glsl/snail_text_frag_body.glsl",
             "../src/snail/shader/glsl/snail_hinted_text_frag_body.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
@@ -190,14 +210,14 @@ const shader_specs = [_]ShaderSpec{
         .include_directive = fragment_common_includes ++
             "#include \"snail_text_frag_body.glsl\"\n" ++
             "#include \"snail_autohint_warp.glsl\"\n" ++
-            "#include \"snail_autohint_main.glsl\"",
+            "#include \"snail_autohint_fast_main.glsl\"",
         .source_paths = &.{
             "../src/snail/shader/glsl/snail_render_abi.glsl",
             "../src/snail/shader/glsl/snail_coverage_common.glsl",
             "../src/snail/shader/glsl/snail_color_common.glsl",
             "../src/snail/shader/glsl/snail_text_frag_body.glsl",
             "../src/snail/shader/glsl/snail_autohint_warp.glsl",
-            "../src/snail/shader/glsl/snail_autohint_main.glsl",
+            "../src/snail/shader/glsl/snail_autohint_fast_main.glsl",
         },
         .stage_arg = "-fshader-stage=frag",
         .output_name = "snail_autohint.frag.spv",

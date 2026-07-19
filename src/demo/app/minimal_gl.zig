@@ -2,7 +2,9 @@
 //!
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules. It owns the EGL context, GL resources, shader
-//! entry points, atlas upload loop, draw submission, and screenshot writer.
+//! entry points, atlas upload loop, draw submission, and screenshot writer. Its
+//! one frame covers unhinted, autohinted, TrueType-hinted, and COLR text plus
+//! filled and stroked paths.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -18,8 +20,8 @@ const c = @cImport({
     @cInclude("sys/stat.h");
 });
 
-const width = 800;
-const height = 360;
+const width = 960;
+const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
@@ -30,6 +32,14 @@ const vertex_source: [:0]const u8 =
     glsl.source(.color_common) ++ "\n" ++
     glsl.source(.vertex_body) ++ "\n" ++
     "void main() { snailVertex(); }\n";
+const autohint_vertex_source: [:0]const u8 =
+    "#version 330 core\n" ++
+    glsl.source(.autohint_vertex_interface) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.autohint_warp) ++ "\n" ++
+    glsl.source(.vertex_body) ++ "\n" ++
+    glsl.source(.autohint_vertex_body) ++ "\n" ++
+    "void main() { snailAutohintVertex(); }\n";
 const regular_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
     glsl.source(.render_fragment_interface) ++ "\n" ++
@@ -41,13 +51,13 @@ const regular_fragment_source: [:0]const u8 =
     "void main() { snailTextFragment(); }\n";
 const autohint_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.autohint_fragment_interface) ++ "\n" ++
     glsl.source(.render_abi) ++ "\n" ++
     glsl.source(.coverage_common) ++ "\n" ++
     glsl.source(.color_common) ++ "\n" ++
     glsl.source(.text_coverage_body) ++ "\n" ++
     glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.autohint_body) ++ "\n" ++
+    glsl.source(.autohint_fast_body) ++ "\n" ++
     "void main() { snailAutohintFragment(); }\n";
 const truetype_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
@@ -55,6 +65,7 @@ const truetype_fragment_source: [:0]const u8 =
     glsl.source(.render_abi) ++ "\n" ++
     glsl.source(.coverage_common) ++ "\n" ++
     glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.text_coverage_body) ++ "\n" ++
     glsl.source(.hinted_text_body) ++ "\n" ++
     "void main() { snailHintedTextFragment(); }\n";
 const path_fragment_source: [:0]const u8 =
@@ -65,20 +76,31 @@ const path_fragment_source: [:0]const u8 =
     glsl.source(.color_common) ++ "\n" ++
     glsl.source(.path_body) ++ "\n" ++
     "void main() { snailPathFragment(); }\n";
+const colr_fragment_source: [:0]const u8 =
+    "#version 330 core\n" ++
+    glsl.source(.render_fragment_interface) ++ "\n" ++
+    glsl.source(.render_abi) ++ "\n" ++
+    glsl.source(.coverage_common) ++ "\n" ++
+    glsl.source(.color_common) ++ "\n" ++
+    glsl.source(.path_body) ++ "\n" ++
+    glsl.source(.colr_body) ++ "\n" ++
+    "void main() { snailColrFragment(); }\n";
 
 const Programs = struct {
     regular: c.GLuint,
     autohint: c.GLuint,
     truetype: c.GLuint,
     path: c.GLuint,
+    colr: c.GLuint,
 
     fn init() !Programs {
-        var self = Programs{ .regular = 0, .autohint = 0, .truetype = 0, .path = 0 };
+        var self = Programs{ .regular = 0, .autohint = 0, .truetype = 0, .path = 0, .colr = 0 };
         errdefer self.deinit();
-        self.regular = try linkProgram(regular_fragment_source);
-        self.autohint = try linkProgram(autohint_fragment_source);
-        self.truetype = try linkProgram(truetype_fragment_source);
-        self.path = try linkProgram(path_fragment_source);
+        self.regular = try linkProgram(vertex_source, regular_fragment_source);
+        self.autohint = try linkProgram(autohint_vertex_source, autohint_fragment_source);
+        self.truetype = try linkProgram(vertex_source, truetype_fragment_source);
+        self.path = try linkProgram(vertex_source, path_fragment_source);
+        self.colr = try linkProgram(vertex_source, colr_fragment_source);
         return self;
     }
 
@@ -87,6 +109,7 @@ const Programs = struct {
         c.glDeleteProgram(self.autohint);
         c.glDeleteProgram(self.truetype);
         c.glDeleteProgram(self.path);
+        c.glDeleteProgram(self.colr);
     }
 
     fn forKind(self: Programs, kind: snail.render.records.ShapeKind) c.GLuint {
@@ -95,7 +118,7 @@ const Programs = struct {
             .autohint => self.autohint,
             .hinted_text => self.truetype,
             .path => self.path,
-            .colr => unreachable,
+            .colr => self.colr,
         };
     }
 };
@@ -217,9 +240,14 @@ pub fn main() !void {
     defer egl.deinit();
 
     var font = try snail.Font.init(assets.dejavu_sans_mono);
-    var faces = try snail.Faces.build(allocator, &.{.{ .font = &font }});
+    var emoji_font = try snail.Font.init(assets.twemoji_mozilla);
+    var faces = try snail.Faces.build(allocator, &.{
+        .{ .font = &font },
+        .{ .font = &emoji_font, .fallback = true },
+    });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0);
+    const emoji_font_id = faces.fontIdForFace(1);
 
     var seed = try snail.shape(allocator, &faces, "Hello, ", .{});
     defer seed.deinit();
@@ -252,11 +280,20 @@ pub fn main() !void {
     try extendWithAutohint(allocator, &atlas, &analyzer, font_id, shaped.glyphs);
     try gpu.upload(&atlas);
 
-    // Round 4: extend once more with per-ppem TrueType curves and a painted
-    // vector path. Nothing below uses a demo cache, scene, or renderer.
+    // Round 4: extend once more with per-ppem TrueType curves, filled and
+    // stroked paths, and one composite COLR glyph. Nothing below uses a demo
+    // cache, scene, or renderer.
     var hint_vm = try snail.HintVm.init(allocator, &font);
     defer hint_vm.deinit();
-    const path_shape = try extendWithTrueTypeAndPath(allocator, &atlas, &hint_vm, font_id, shaped.glyphs);
+    const extras = try extendWithTrueTypePathsAndColr(
+        allocator,
+        &atlas,
+        &hint_vm,
+        font_id,
+        shaped.glyphs,
+        &emoji_font,
+        emoji_font_id,
+    );
     try gpu.upload(&atlas);
 
     const autohint_policy = snail.autohint.AutohintPolicy{
@@ -265,14 +302,14 @@ pub fn main() !void {
     };
     const world_to_pixel = snail.Transform2D.identity;
     const unhinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
-        .baseline = .{ .x = 48, .y = 82 },
+        .baseline = .{ .x = 48, .y = 92 },
         .em = 34,
         .color = .{ 0.10, 0.22, 0.48, 1.0 },
         .mode = .unhinted,
     });
     defer allocator.free(unhinted);
     const autohinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
-        .baseline = .{ .x = 48, .y = 174 },
+        .baseline = .{ .x = 48, .y = 202 },
         .em = 34,
         .color = .{ 0.18, 0.48, 0.30, 1.0 },
         .mode = .{ .autohint = autohint_policy },
@@ -290,7 +327,7 @@ pub fn main() !void {
         }
     }
     const truetype = try snail.placeRunAlloc(allocator, &shaped, null, .{
-        .baseline = .{ .x = 48, .y = 266 },
+        .baseline = .{ .x = 48, .y = 312 },
         .em = 34,
         .color = .{ 0.54, 0.20, 0.20, 1.0 },
         .mode = .{ .truetype = .{ .ppem_26_6 = ppem } },
@@ -299,18 +336,34 @@ pub fn main() !void {
     });
     defer allocator.free(truetype);
 
-    const total_shapes = 1 + unhinted.len + autohinted.len + truetype.len;
+    const total_shapes = extras.len + unhinted.len + autohinted.len + truetype.len;
     const words = try allocator.alloc(u32, snail.emit.wordBudget(total_shapes));
     defer allocator.free(words);
-    const segments = try allocator.alloc(snail.render.records.DrawSegment, 4);
+    const segments = try allocator.alloc(snail.render.records.DrawSegment, 6);
     defer allocator.free(segments);
     var word_len: usize = 0;
     var segment_len: usize = 0;
     const binding = gpu.binding.?;
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, &.{path_shape}, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, &extras, .identity, .{ 1, 1, 1, 1 });
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, unhinted, .identity, .{ 1, 1, 1, 1 });
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, autohinted, .identity, .{ 1, 1, 1, 1 });
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, truetype, .identity, .{ 1, 1, 1, 1 });
+
+    var seen = struct {
+        regular: bool = false,
+        autohint: bool = false,
+        hinted_text: bool = false,
+        colr: bool = false,
+        path_shapes: u32 = 0,
+    }{};
+    for (segments[0..segment_len]) |segment| switch (segment.kind) {
+        .regular => seen.regular = true,
+        .autohint => seen.autohint = true,
+        .hinted_text => seen.hinted_text = true,
+        .colr => seen.colr = true,
+        .path => seen.path_shapes += segment.shape_count,
+    };
+    std.debug.assert(seen.regular and seen.autohint and seen.hinted_text and seen.colr and seen.path_shapes == 2);
 
     var target = try RenderTarget.init();
     defer target.deinit();
@@ -396,13 +449,23 @@ fn extendWithAutohint(allocator: std.mem.Allocator, atlas: *snail.Atlas, analyze
     try replaceWithExtension(allocator, atlas, entries.items);
 }
 
-fn extendWithTrueTypeAndPath(allocator: std.mem.Allocator, atlas: *snail.Atlas, vm: *snail.HintVm, font_id: u32, glyphs: []const snail.ShapedText.Glyph) !snail.Shape {
+fn extendWithTrueTypePathsAndColr(
+    allocator: std.mem.Allocator,
+    atlas: *snail.Atlas,
+    vm: *snail.HintVm,
+    font_id: u32,
+    glyphs: []const snail.ShapedText.Glyph,
+    emoji_font: *const snail.Font,
+    emoji_font_id: u32,
+) ![3]snail.Shape {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
     var entries: std.ArrayList(snail.AtlasEntry) = .empty;
     defer entries.deinit(allocator);
     var owned: std.ArrayList(snail.GlyphCurves) = .empty;
     defer deinitCurves(allocator, &owned);
+    var colr_layers: std.ArrayList(snail.AtlasLayer) = .empty;
+    defer colr_layers.deinit(allocator);
 
     var prepared_hint = try vm.prepare(snail.HintPpem.uniform(ppem));
     defer prepared_hint.deinit();
@@ -414,24 +477,86 @@ fn extendWithTrueTypeAndPath(allocator: std.mem.Allocator, atlas: *snail.Atlas, 
         try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1] });
     }
 
-    var path = snail.Path.init(allocator);
-    defer path.deinit();
-    try path.moveTo(.{ .x = 580, .y = 84 });
-    try path.cubicTo(.{ .x = 645, .y = 25 }, .{ .x = 748, .y = 62 }, .{ .x = 724, .y = 140 });
-    try path.cubicTo(.{ .x = 700, .y = 220 }, .{ .x = 605, .y = 192 }, .{ .x = 588, .y = 278 });
-    try path.cubicTo(.{ .x = 540, .y = 224 }, .{ .x = 520, .y = 145 }, .{ .x = 580, .y = 84 });
-    try path.close();
-    var prepared_path = try path.prepare(allocator);
-    defer prepared_path.deinit();
-    try owned.append(allocator, try prepared_path.fillCurves(allocator, scratch.allocator()));
-    const path_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = 1 };
+    // Filled path.
+    var fill_path = snail.Path.init(allocator);
+    defer fill_path.deinit();
+    try fill_path.addRoundedRect(.{ .x = 530, .y = 205, .w = 145, .h = 105 }, 22);
+    var prepared_fill = try fill_path.prepare(allocator);
+    defer prepared_fill.deinit();
+    try owned.append(allocator, try prepared_fill.fillCurves(allocator, scratch.allocator()));
+    _ = scratch.reset(.retain_capacity);
+    const fill_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = 1 };
     try entries.append(allocator, .{
-        .key = path_key,
+        .key = fill_key,
         .curves = owned.items[owned.items.len - 1],
-        .paint = .{ .solid = .{ 0.34, 0.25, 0.72, 0.92 } },
+        .paint = prepared_fill.paintForDesign(.{ .solid = .{ 0.34, 0.25, 0.72, 0.92 } }),
     });
+
+    // Stroked path. `strokeCurves` outlines the source-space stroke before
+    // packing it, so the same path program consumes the resulting geometry.
+    var stroke_path = snail.Path.init(allocator);
+    defer stroke_path.deinit();
+    try stroke_path.moveTo(.{ .x = 705, .y = 220 });
+    try stroke_path.cubicTo(.{ .x = 760, .y = 330 }, .{ .x = 855, .y = 175 }, .{ .x = 920, .y = 295 });
+    var prepared_stroke = try stroke_path.prepare(allocator);
+    defer prepared_stroke.deinit();
+    const stroke_style = snail.StrokeStyle{
+        .paint = .{ .solid = .{ 0.10, 0.48, 0.64, 1.0 } },
+        .width = 12,
+        .cap = .round,
+        .join = .round,
+    };
+    try owned.append(allocator, try prepared_stroke.strokeCurves(allocator, scratch.allocator(), stroke_style));
+    _ = scratch.reset(.retain_capacity);
+    const stroke_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = 1 };
+    try entries.append(allocator, .{
+        .key = stroke_key,
+        .curves = owned.items[owned.items.len - 1],
+        .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+    });
+
+    // Composite COLRv0 glyph. A base unhinted-glyph key with paint records is
+    // emitted as `.colr`; every additional palette layer becomes AtlasLayer.
+    const emoji_gid = try emoji_font.glyphIndex(0x1F30D); // globe
+    var layer_iter = emoji_font.colrLayers(emoji_gid);
+    const first_layer = layer_iter.next() orelse return error.MissingColrLayers;
+    try owned.append(allocator, try emoji_font.extractCurves(allocator, scratch.allocator(), first_layer.glyph_id));
+    _ = scratch.reset(.retain_capacity);
+    const first_color: [4]f32 = if (first_layer.color[0] < 0)
+        .{ 0.18, 0.35, 0.70, 1.0 }
+    else
+        first_layer.color;
+    const colr_base_curves = owned.items[owned.items.len - 1];
+    while (layer_iter.next()) |layer| {
+        try owned.append(allocator, try emoji_font.extractCurves(allocator, scratch.allocator(), layer.glyph_id));
+        _ = scratch.reset(.retain_capacity);
+        const color: [4]f32 = if (layer.color[0] < 0)
+            .{ 0.18, 0.35, 0.70, 1.0 }
+        else
+            layer.color;
+        try colr_layers.append(allocator, .{
+            .curves = owned.items[owned.items.len - 1],
+            .paint = .{ .solid = color },
+        });
+    }
+    const colr_key = snail.recordKey.unhintedGlyph(emoji_font_id, emoji_gid);
+    try entries.append(allocator, .{
+        .key = colr_key,
+        .curves = colr_base_curves,
+        .paint = .{ .solid = first_color },
+        .extra_layers = colr_layers.items,
+    });
+
     try replaceWithExtension(allocator, atlas, entries.items);
-    return .{ .key = path_key, .local_transform = prepared_path.placedBy(.identity), .local_color = .{ 1, 1, 1, 1 } };
+    return .{
+        .{ .key = fill_key, .local_transform = prepared_fill.placedBy(.identity) },
+        .{ .key = stroke_key, .local_transform = prepared_stroke.placedBy(.identity) },
+        .{
+            .key = colr_key,
+            .local_transform = .{ .xx = 92, .xy = 0, .tx = 775, .yx = 0, .yy = -92, .ty = 145 },
+            .local_color = .{ 1, 1, 1, 1 },
+        },
+    };
 }
 
 fn replaceWithExtension(allocator: std.mem.Allocator, atlas: *snail.Atlas, entries: []const snail.AtlasEntry) !void {
@@ -558,7 +683,7 @@ fn initGeometry(byte_capacity: usize) Geometry {
     c.glBindVertexArray(out.vao);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, out.vbo);
     c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(byte_capacity), null, c.GL_STREAM_DRAW);
-    const indices = [6]u32{ 0, 1, 2, 0, 2, 3 };
+    const indices = [6]u32{ 1, 2, 0, 2, 3, 0 };
     c.glBindBuffer(c.GL_ELEMENT_ARRAY_BUFFER, out.ebo);
     c.glBufferData(c.GL_ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(indices)), &indices, c.GL_STATIC_DRAW);
     const stride: c.GLsizei = snail.render.records.BYTES_PER_INSTANCE;
@@ -619,8 +744,8 @@ fn compileShader(kind: c.GLenum, source: [:0]const u8) !c.GLuint {
     return shader;
 }
 
-fn linkProgram(fragment_source: [:0]const u8) !c.GLuint {
-    const vertex = try compileShader(c.GL_VERTEX_SHADER, vertex_source);
+fn linkProgram(vertex_source_arg: [:0]const u8, fragment_source: [:0]const u8) !c.GLuint {
+    const vertex = try compileShader(c.GL_VERTEX_SHADER, vertex_source_arg);
     defer c.glDeleteShader(vertex);
     const fragment = try compileShader(c.GL_FRAGMENT_SHADER, fragment_source);
     defer c.glDeleteShader(fragment);

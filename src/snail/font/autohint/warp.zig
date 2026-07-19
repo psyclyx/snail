@@ -212,12 +212,16 @@ pub fn fitAxis(
         for (font.blues, 0..) |zone, i| zones[i] = .{ .ref = zone.ref, .shoot = zone.shoot };
     }
     for (features, 0..) |feature, i| {
-        const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < features.len and
-            features[@intCast(feature.stem)].pos > feature.pos;
-        const valid_blue = use_blues and feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < font.blues.len;
-        const bottom_blue = valid_blue and font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref;
-        var companion_dir: i8 = 1;
-        if (feature.stem < 0 and !valid_blue and use_blues) {
+        var direction = feature.direction(use_blues, features);
+        if (!feature.flags.semantics_resolved and feature.stem >= 0 and
+            @as(usize, @intCast(feature.stem)) < features.len and
+            features[@intCast(feature.stem)].pos > feature.pos)
+        {
+            direction = -1;
+        }
+        if (!feature.flags.semantics_resolved and feature.stem < 0 and use_blues and
+            !(feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < font.blues.len))
+        {
             var nearest_gap = std.math.inf(f32);
             for (features) |candidate| {
                 if (candidate.blue < 0 or @as(usize, @intCast(candidate.blue)) >= font.blues.len) continue;
@@ -225,19 +229,26 @@ pub fn fitAxis(
                 if (gap >= nearest_gap) continue;
                 nearest_gap = gap;
                 const candidate_zone = font.blues[@intCast(candidate.blue)];
-                companion_dir = if (candidate_zone.shoot < candidate_zone.ref) 1 else -1;
+                direction = if (candidate_zone.shoot < candidate_zone.ref) 1 else -1;
             }
+        }
+        if (!feature.flags.semantics_resolved and use_blues and feature.blue >= 0 and
+            @as(usize, @intCast(feature.blue)) < font.blues.len and
+            font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref)
+        {
+            direction = -1;
         }
         edges[i] = .{
             .pos = feature.pos,
             .min = 0,
             .max = 0,
-            .dir = if (partner_above or bottom_blue) -1 else companion_dir,
+            .dir = direction,
             .stem = feature.stem,
             .width = feature.width,
             .blue = if (use_blues) feature.blue else if (axis_policy.@"align" != .none) feature.blue else -1,
             .round = feature.flags.round,
             .synthetic_apex = feature.flags.synthetic_apex,
+            .companion = feature.companion(use_blues),
         };
     }
 
@@ -450,14 +461,19 @@ pub fn buildKnotsReg(
     for (edges, 0..) |e, i| {
         if (e.blue < 0 or !e.round or hinted[i]) continue;
         const top = e.dir > 0;
-        var best: isize = -1;
+        var best: isize = e.companion;
         var best_gap: f32 = std.math.floatMax(f32);
-        for (edges, 0..) |c, k| {
-            if (k == i or c.dir == e.dir) continue; // need the opposite face
-            const gap = if (top) e.pos - c.pos else c.pos - e.pos;
-            if (gap <= 0 or gap >= best_gap) continue; // interior side, nearest
-            best_gap = gap;
-            best = @intCast(k);
+        if (best >= 0) {
+            const candidate = edges[@intCast(best)];
+            best_gap = if (top) e.pos - candidate.pos else candidate.pos - e.pos;
+        } else if (best == -2) {
+            for (edges, 0..) |c, k| {
+                if (k == i or c.dir == e.dir) continue; // need the opposite face
+                const gap = if (top) e.pos - c.pos else c.pos - e.pos;
+                if (gap <= 0 or gap >= best_gap) continue; // interior side, nearest
+                best_gap = gap;
+                best = @intCast(k);
+            }
         }
         if (best < 0) continue;
         const j: usize = @intCast(best);

@@ -13,7 +13,6 @@ const render_state = @import("render-state");
 const bezier = @import("snail").render.atlas;
 const band_tex = @import("snail").render.atlas;
 const render_abi = @import("snail").render.records;
-const text_hint_format = @import("snail").render.atlas;
 const autohint_record = @import("snail").render.atlas.autohint;
 const autohint_warp = @import("snail").autohint.warp;
 const autohint_policy = @import("snail").autohint.policy;
@@ -40,7 +39,6 @@ const texture_mod = @import("texture.zig");
 
 const SubpixelCoverage = coverage_mod.SubpixelCoverage;
 const SubpixelCoveragePlan = coverage_mod.SubpixelCoveragePlan;
-const HintedTextRecord = coverage_mod.HintedTextRecord;
 const addColors = path_paint_mod.addColors;
 const advanceLocalPixel = geometry_mod.advanceLocalPixel;
 const compositeOver = path_paint_mod.compositeOver;
@@ -52,7 +50,6 @@ const evalGlyphCoverageRowH = coverage_mod.evalGlyphCoverageRowH;
 const evalGlyphCoverageSaturatedRowH = coverage_mod.evalGlyphCoverageSaturatedRowH;
 const evalGlyphCoverageSubpixel = coverage_mod.evalGlyphCoverageSubpixel;
 const evalGlyphCoverageSubpixelRowH = coverage_mod.evalGlyphCoverageSubpixelRowH;
-const evalHintedTextCoverageBandSpan = coverage_mod.evalHintedTextCoverageBandSpan;
 const prepareRowHorizSpanState = coverage_mod.prepareRowHorizSpanState;
 const prepareRowHorizState = coverage_mod.prepareRowHorizState;
 const prepareSaturatedRowState = coverage_mod.prepareSaturatedRowState;
@@ -81,7 +78,6 @@ fn expandDeviceBounds(bounds: *ScreenBounds, pixels: f32) void {
     bounds.max.x += pixels;
     bounds.max.y += pixels;
 }
-const srgbColorToLinear = color_mod.srgbColorToLinear;
 const subpixelBlendCoverage = coverage_mod.subpixelBlendCoverage;
 const transformedGlyphBounds = geometry_mod.transformedGlyphBounds;
 
@@ -587,7 +583,6 @@ pub const Renderer = struct {
     fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
-        const layer_count = render_abi.specialGlyphWordLayerCount(gw);
         const info_x = render_abi.glyphLocationX(gz);
         const info_y = render_abi.glyphLocationY(gz);
         const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(decoded.band[3]));
@@ -605,11 +600,9 @@ pub const Renderer = struct {
         }
 
         const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
-        if (special_kind == .path and first_tag < 0.0) {
+        if ((special_kind == .path or special_kind == .colr) and first_tag < 0.0) {
             const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
             self.renderPathBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.tint, atlas_layer, entry, record, false);
-        } else if (special_kind == .colr) {
-            self.renderColrBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.color, decoded.tint, info_x, resolved.local_y, layer_count, atlas_layer, entry.data, entry.width);
         }
     }
 
@@ -625,9 +618,7 @@ pub const Renderer = struct {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
-        const meta = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 2);
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2]));
-        const band_pad = text_hint_format.unpackBandPadding(@intFromFloat(meta[3]));
         const be = GlyphBandEntry{
             .glyph_x = @intFromFloat(header[0]),
             .glyph_y = @intFromFloat(header[1]),
@@ -638,23 +629,13 @@ pub const Renderer = struct {
             .band_offset_x = band[2],
             .band_offset_y = band[3],
         };
-        self.renderTransformedHintedGlyph(
+        self.renderTransformedGlyph(
             page,
             decoded.bbox,
             be,
             decoded.transform,
             multiplyLinearColor(decoded.color, decoded.tint),
-            .{
-                .data = entry.data,
-                .width = entry.width,
-                .info_x = info_x,
-                .info_y = info_y,
-                .base_curve_texel = @intFromFloat(meta[0]),
-                .curve_count = @intFromFloat(meta[1]),
-                .flags = @intFromFloat(meta[2]),
-                .h_band_pad = band_pad.h,
-                .v_band_pad = band_pad.v,
-            },
+            false,
         );
     }
 
@@ -692,73 +673,6 @@ pub const Renderer = struct {
             off,
             policy,
         );
-    }
-
-    fn renderColrBatchLayers(
-        self: *Renderer,
-        prepared: *const PreparedResources,
-        union_bbox: snail.BBox,
-        transform: Transform2D,
-        default_color: [4]f32,
-        tint: [4]f32,
-        info_x: u16,
-        info_y: u16,
-        layer_count: u16,
-        atlas_layer: u32,
-        data: []const f32,
-        width: u32,
-    ) void {
-        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
-        for (0..layer_count) |layer_idx| {
-            const base = @as(u32, info_x) + @as(u32, @intCast(layer_idx)) * 3;
-            const t0_x = base % width;
-            const t0_y = @as(u32, info_y) + base / width;
-
-            // texel 0: (glyph_x, glyph_y, packed_bands, page_index)
-            const t0 = (t0_y * width + t0_x) * 4;
-            if (t0 + 3 >= data.len) return;
-            const glyph_x: u16 = @intFromFloat(data[t0 + 0]);
-            const glyph_y: u16 = @intFromFloat(data[t0 + 1]);
-            const band_counts = render_abi.unpackBandCounts(@bitCast(data[t0 + 2]));
-
-            // texel 1: (band_scale_x, band_scale_y, band_offset_x, band_offset_y)
-            const t1_base = base + 1;
-            const t1_x = t1_base % width;
-            const t1_y = @as(u32, info_y) + t1_base / width;
-            const t1 = (t1_y * width + t1_x) * 4;
-            if (t1 + 3 >= data.len) return;
-
-            // texel 2: (r, g, b, a) layer color
-            const t2_base = base + 2;
-            const t2_x = t2_base % width;
-            const t2_y = @as(u32, info_y) + t2_base / width;
-            const t2 = (t2_y * width + t2_x) * 4;
-            if (t2 + 3 >= data.len) return;
-            const layer_color = [4]f32{
-                data[t2 + 0], data[t2 + 1], data[t2 + 2], data[t2 + 3],
-            };
-            // Negative sentinel means use default color.
-            const color: [4]f32 = multiplyLinearColor(
-                if (layer_color[0] < 0) default_color else srgbColorToLinear(layer_color),
-                tint,
-            );
-
-            const be = GlyphBandEntry{
-                .glyph_x = glyph_x,
-                .glyph_y = glyph_y,
-                .h_band_count = band_counts.h,
-                .v_band_count = band_counts.v,
-                .band_scale_x = data[t1 + 0],
-                .band_scale_y = data[t1 + 1],
-                .band_offset_x = data[t1 + 2],
-                .band_offset_y = data[t1 + 3],
-            };
-
-            if (be.h_band_count == 0 or be.v_band_count == 0) continue;
-
-            // Use the union bbox for all layers (same as GPU path).
-            self.renderTransformedGlyph(page, union_bbox, be, transform, color, false);
-        }
     }
 
     const PathRasterState = struct {
@@ -1654,19 +1568,7 @@ pub const Renderer = struct {
         color: [4]f32,
         allow_subpixel: bool,
     ) void {
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, null, null);
-    }
-
-    fn renderTransformedHintedGlyph(
-        self: *Renderer,
-        page: anytype,
-        bbox: snail.BBox,
-        be: GlyphBandEntry,
-        transform: Transform2D,
-        color: [4]f32,
-        record: HintedTextRecord,
-    ) void {
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, record, null);
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, null);
     }
 
     /// Fit the immutable analysis once for this draw, then render the shared
@@ -1693,7 +1595,7 @@ pub const Renderer = struct {
             .y = autohint_record.yFeatures(record_data, record_off),
             .left = autohint_record.glyphLeft(record_data, record_off),
         }, autohint_record.fontFeatures(record_data, record_off), policy, scale, &x_out, &y_out);
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, null, .{ .x = fitted.x, .y = fitted.y });
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, .{ .x = fitted.x, .y = fitted.y });
     }
 
     fn renderTransformedGlyphMaybeHinted(
@@ -1704,7 +1606,6 @@ pub const Renderer = struct {
         transform: Transform2D,
         color: [4]f32,
         allow_subpixel: bool,
-        hint_record: ?HintedTextRecord,
         warp: ?AutohintWarp,
     ) void {
         const inverse = inverseTransform(transform) orelse return;
@@ -1726,17 +1627,10 @@ pub const Renderer = struct {
         const sample_dy = Vec2.new(inverse.xy, inverse.yy);
         const subpixel_plan = SubpixelCoveragePlan.init(sample_dx, sample_dy, self.subpixel_order);
 
-        // The row-batched H-axis fast path applies when (a) the transform is
-        // axis-aligned (sample_dx.y == 0 so em_y is row-constant), (b) we're
-        // in subpixel mode with RGB/BGR stripes (plan.step.y == 0 so all 7
-        // subpixel samples in every pixel share em_y too), (c) the atlas
-        // page is prepared, and (d) hinting is off (hinted text caches
-        // shaped curves elsewhere). When any of those fails we fall back to
-        // per-pixel evaluation.
         // Row-batched H-axis fast path. Applies when (a) the transform is
         // axis-aligned (sample_dx.y == 0 so em_y is row-constant), (b) the
-        // atlas page is prepared, and (c) hinting is off (hinted text caches
-        // shaped curves elsewhere). For RGB/BGR subpixel we additionally
+        // atlas page is prepared, and (c) no draw-time warp is active. For
+        // RGB/BGR subpixel we additionally
         // require plan.step.y == 0 so all 7 subpixel samples share em_y too;
         // the non-subpixel path needs only the row-constant em_y. When any
         // condition fails we fall back to per-pixel evaluation.
@@ -1748,8 +1642,8 @@ pub const Renderer = struct {
         const axis_aligned = @abs(sample_dx.y) < 1e-9;
         const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and subpixel_plan.step.y == 0.0;
         const grayscale_path = !allow_subpixel or self.subpixel_order == .none;
-        const use_row_h_subpixel = prepared_page and axis_aligned and subpixel_rgb and hint_record == null and warp == null;
-        const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and hint_record == null and warp == null;
+        const use_row_h_subpixel = prepared_page and axis_aligned and subpixel_rgb and warp == null;
+        const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and warp == null;
         const use_row_h = use_row_h_subpixel or use_row_h_grayscale;
 
         var row: u32 = @intCast(py0);
@@ -1802,7 +1696,6 @@ pub const Renderer = struct {
             const fast_row_eligible =
                 grayscale_path and
                 h_uniform and
-                hint_record == null and
                 warp == null and
                 @as(u32, @intCast(px1)) > @as(u32, @intCast(px0)) + 2;
             if (fast_row_eligible) {
@@ -1857,10 +1750,8 @@ pub const Renderer = struct {
                     sppe = .{ .x = ppe.x / sx.inv_slope, .y = ppe.y / sy.inv_slope };
                 }
                 if (!allow_subpixel or self.subpixel_order == .none or warp != null) {
-                    // Text/hinted glyphs from fonts use non-zero winding by convention.
-                    const raw_cov = if (hint_record) |record|
-                        evalHintedTextCoverageBandSpan(page, record, sample.x, sample.y, epp.x, epp.y, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero)
-                    else if (row_state_ready)
+                    // Glyphs from fonts use non-zero winding by convention.
+                    const raw_cov = if (row_state_ready)
                         evalGlyphCoverageRowH(page, sample.x, sample.y, &row_state, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero)
                     else
                         evalGlyphCoverage(page, sample.x, sample.y, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero);

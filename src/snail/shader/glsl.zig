@@ -12,6 +12,9 @@ pub const Fragment = enum {
     color_common,
     vertex_interface,
     vertex_body,
+    autohint_vertex_interface,
+    autohint_fragment_interface,
+    autohint_vertex_body,
     render_fragment_interface,
     text_coverage_interface,
     text_subpixel_interface,
@@ -21,7 +24,7 @@ pub const Fragment = enum {
     path_body,
     hinted_text_body,
     autohint_warp,
-    autohint_body,
+    autohint_fast_body,
     text_subpixel_body,
     text_sample_interface_gl,
     text_sample_interface_gles,
@@ -37,6 +40,9 @@ pub fn source(comptime fragment: Fragment) [:0]const u8 {
         .color_common => @embedFile("glsl/snail_color_common.glsl"),
         .vertex_interface => @embedFile("glsl/snail_vert.interface.glsl"),
         .vertex_body => @embedFile("glsl/snail_vert_body.glsl"),
+        .autohint_vertex_interface => @embedFile("glsl/snail_autohint_vert.interface.glsl"),
+        .autohint_fragment_interface => @embedFile("glsl/snail_autohint_frag.interface.glsl"),
+        .autohint_vertex_body => @embedFile("glsl/snail_autohint_vert_body.glsl"),
         .render_fragment_interface => @embedFile("glsl/snail_frag.interface.glsl"),
         .text_coverage_interface => @embedFile("glsl/snail_text_coverage.interface.glsl"),
         .text_subpixel_interface => @embedFile("glsl/snail_text_subpixel.interface.glsl"),
@@ -46,7 +52,7 @@ pub fn source(comptime fragment: Fragment) [:0]const u8 {
         .path_body => @embedFile("glsl/snail_path_frag_body.glsl"),
         .hinted_text_body => @embedFile("glsl/snail_hinted_text_frag_body.glsl"),
         .autohint_warp => @embedFile("glsl/snail_autohint_warp.glsl"),
-        .autohint_body => @embedFile("glsl/snail_autohint_main.glsl"),
+        .autohint_fast_body => @embedFile("glsl/snail_autohint_fast_main.glsl"),
         .text_subpixel_body => @embedFile("glsl/snail_text_subpixel_body.glsl"),
         .text_sample_interface_gl => @embedFile("glsl/snail_text_sample.interface.glsl"),
         .text_sample_interface_gles => @embedFile("glsl/snail_text_sample.interface.gles30.glsl"),
@@ -63,6 +69,9 @@ pub fn fileName(fragment: Fragment) []const u8 {
         .color_common => "snail_color_common.glsl",
         .vertex_interface => "snail_vert.interface.glsl",
         .vertex_body => "snail_vert_body.glsl",
+        .autohint_vertex_interface => "snail_autohint_vert.interface.glsl",
+        .autohint_fragment_interface => "snail_autohint_frag.interface.glsl",
+        .autohint_vertex_body => "snail_autohint_vert_body.glsl",
         .render_fragment_interface => "snail_frag.interface.glsl",
         .text_coverage_interface => "snail_text_coverage.interface.glsl",
         .text_subpixel_interface => "snail_text_subpixel.interface.glsl",
@@ -72,7 +81,7 @@ pub fn fileName(fragment: Fragment) []const u8 {
         .path_body => "snail_path_frag_body.glsl",
         .hinted_text_body => "snail_hinted_text_frag_body.glsl",
         .autohint_warp => "snail_autohint_warp.glsl",
-        .autohint_body => "snail_autohint_main.glsl",
+        .autohint_fast_body => "snail_autohint_fast_main.glsl",
         .text_subpixel_body => "snail_text_subpixel_body.glsl",
         .text_sample_interface_gl => "snail_text_sample.interface.glsl",
         .text_sample_interface_gles => "snail_text_sample.interface.gles30.glsl",
@@ -86,10 +95,11 @@ pub fn fileName(fragment: Fragment) []const u8 {
 pub const dependencies = struct {
     pub const vertex = [_]Fragment{ .color_common, .vertex_body };
     pub const regular_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .regular_text_body };
-    pub const colr = [_]Fragment{ .render_abi, .coverage_common, .color_common, .colr_body };
+    pub const colr = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body, .colr_body };
     pub const path = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body };
-    pub const hinted_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .hinted_text_body };
-    pub const autohint = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_body };
+    pub const hinted_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .hinted_text_body };
+    pub const autohint_vertex = [_]Fragment{ .color_common, .autohint_warp, .vertex_body, .autohint_vertex_body };
+    pub const autohint_fast = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_fast_body };
     pub const text_subpixel = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_subpixel_body };
     pub const text_sample = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .text_sample_body };
 };

@@ -7,7 +7,6 @@ const subpixel = @import("coverage/subpixel.zig");
 const cubic = @import("coverage/cubic_solver.zig");
 const texture = @import("texture.zig");
 const band_tex = @import("snail").render.atlas;
-const render_abi = @import("snail").render.records;
 
 const bezier = @import("snail").render.atlas;
 const curve_tex = @import("snail").render.atlas;
@@ -155,26 +154,6 @@ pub fn prepareAxisCurve(
 pub const CoveragePair = struct {
     cov: f32,
     wgt: f32,
-};
-
-pub const HintedTextRecord = struct {
-    data: []const f32,
-    width: u32,
-    info_x: u16,
-    info_y: u16,
-    base_curve_texel: u32,
-    curve_count: u16,
-    flags: u16 = 0,
-    h_band_pad: u16 = 0,
-    v_band_pad: u16 = 0,
-
-    fn hasExpandedBands(self: HintedTextRecord) bool {
-        return (self.flags & render_abi.hint_record_flag_expanded_bands) != 0;
-    }
-
-    fn hasUnorderedBands(self: HintedTextRecord) bool {
-        return (self.flags & render_abi.hint_record_flag_unordered_bands) != 0;
-    }
 };
 
 const GlyphBandState = struct {
@@ -734,63 +713,6 @@ fn accumulateGenericCurveCoverage(result: *CoveragePair, page: anytype, curve_ba
     return accumulateGlyphCoverageSegment(result, decodeCurveSegment(tex0, tex1, tex2, meta), sample_rc, ppe, horizontal);
 }
 
-fn hintedCurveIndex(record: HintedTextRecord, curve_base: usize) ?u32 {
-    const curve_texel = @as(u32, @intCast(curve_base / 4));
-    if (curve_texel < record.base_curve_texel) return null;
-    const delta = curve_texel - record.base_curve_texel;
-    if (delta % curve_tex.CURVE_SEGMENT_TEXELS != 0) return null;
-    const index = delta / curve_tex.CURVE_SEGMENT_TEXELS;
-    if (index >= record.curve_count) return null;
-    return index;
-}
-
-fn hintedLayerTexel(record: HintedTextRecord, offset: u32) [4]f32 {
-    if (record.width == 0) return .{ 0, 0, 0, 0 };
-    const texel = @as(u32, record.info_y) * record.width + @as(u32, record.info_x) + offset;
-    const base = @as(usize, texel) * 4;
-    if (base + 3 >= record.data.len) return .{ 0, 0, 0, 0 };
-    return .{
-        record.data[base + 0],
-        record.data[base + 1],
-        record.data[base + 2],
-        record.data[base + 3],
-    };
-}
-
-// Read absolute hinted control points for the curve at this index out of
-// the snapshot's layer-info slab. Matches `fetchHintedQuadratic` in the
-// GPU hinted shader: no base-outline fetch, two texels per curve, p3 is
-// retained for parity with `CurveSegment` but always zero for quadratics.
-fn hintedSegment(record: HintedTextRecord, curve_base: usize) CurveSegment {
-    var out = CurveSegment{
-        .kind = .quadratic,
-        .p0 = .zero,
-        .p1 = .zero,
-        .p2 = .zero,
-        .p3 = .zero,
-    };
-    const curve_index = hintedCurveIndex(record, curve_base) orelse return out;
-    const point_offset = 3 + curve_index * 2;
-    const pts0 = hintedLayerTexel(record, point_offset);
-    const pts1 = hintedLayerTexel(record, point_offset + 1);
-    out.p0 = .{ .x = pts0[0], .y = pts0[1] };
-    out.p1 = .{ .x = pts0[2], .y = pts0[3] };
-    out.p2 = .{ .x = pts1[0], .y = pts1[1] };
-    out.p3 = .{ .x = pts1[2], .y = pts1[3] };
-    return out;
-}
-
-fn accumulateHintedCurveCoverage(
-    result: *CoveragePair,
-    record: HintedTextRecord,
-    curve_base: usize,
-    sample_rc: Vec2,
-    ppe: f32,
-    comptime horizontal: bool,
-) CoverageScan {
-    return accumulateGlyphCoverageSegment(result, hintedSegment(record, curve_base), sample_rc, ppe, horizontal);
-}
-
 fn accumulateEncodedQuadraticCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
     const p0_abs = if (direct)
         Vec2.new(tex0[0], tex0[1])
@@ -846,15 +768,6 @@ fn coverageBandSpan(coord: f32, epp_axis: f32, band_scale: f32, band_offset: f32
     const first = clampInt(@as(i32, @intFromFloat(@floor(center - half_width))), 0, band_max);
     const last = clampInt(@as(i32, @intFromFloat(@floor(center + half_width))), 0, band_max);
     return .{ .first = first, .last = @max(first, last) };
-}
-
-fn expandBandSpan(span: BandSpan, pad: u16, band_max: i32) BandSpan {
-    if (span.first > span.last or band_max < 0) return span;
-    const pad_i: i32 = @intCast(pad);
-    return .{
-        .first = clampInt(span.first - pad_i, 0, band_max),
-        .last = clampInt(span.last + pad_i, 0, band_max),
-    };
 }
 
 fn isBandSpanOwner(first_member: u32, band: i32, first_span_band: i32) bool {
@@ -929,35 +842,6 @@ fn evalGenericGlyphCoverageAxisBandSpan(
     return result;
 }
 
-fn evalHintedTextCoverageAxisBandSpan(
-    page: anytype,
-    record: HintedTextRecord,
-    sample_rc: Vec2,
-    ppe: f32,
-    glyph_band_base: usize,
-    header_base: i32,
-    span: BandSpan,
-    comptime horizontal: bool,
-) CoveragePair {
-    var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    if (span.first > span.last) return result;
-    const dedup = span.first != span.last;
-    const ordered = !record.hasUnorderedBands();
-
-    var band = span.first;
-    while (band <= span.last) : (band += 1) {
-        const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
-        const band_base = glyph_band_base + header[1];
-        var i: u32 = 0;
-        while (i < header[0]) : (i += 1) {
-            const curve_ref = readBandCurveRef(page, band_base + i) orelse continue;
-            if (dedup and !isBandSpanOwner(curve_ref.first_member_band, band, span.first)) continue;
-            if (accumulateHintedCurveCoverage(&result, record, curve_ref.base, sample_rc, ppe, horizontal) == .stop_scan and ordered) break;
-        }
-    }
-    return result;
-}
-
 inline fn evalGlyphCoverageAxisBandSpan(
     page: anytype,
     sample_rc: Vec2,
@@ -1024,35 +908,6 @@ pub fn evalGlyphCoverageBandSpan(
     const h_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_x, glyph_band_base, 0, h_span, true);
     const v_pair = evalGlyphCoverageAxisBandSpan(page, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false);
     return resolveCoverage(h_pair, v_pair, fill_rule);
-}
-
-pub fn evalHintedTextCoverageBandSpan(
-    page: anytype,
-    record: HintedTextRecord,
-    em_x: f32,
-    em_y: f32,
-    epp_x: f32,
-    epp_y: f32,
-    ppe_x: f32,
-    ppe_y: f32,
-    be: GlyphBandEntry,
-    band_max_h: i32,
-    band_max_v: i32,
-    fill_rule: FillRule,
-) f32 {
-    const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
-    const sample_rc = Vec2.new(em_x, em_y);
-    var h_span = coverageBandSpan(em_y, epp_y, be.band_scale_y, be.band_offset_y, band_max_h);
-    var v_span = coverageBandSpan(em_x, epp_x, be.band_scale_x, be.band_offset_x, band_max_v);
-    if (record.hasExpandedBands()) {
-        h_span = expandBandSpan(h_span, record.h_band_pad, band_max_h);
-        v_span = expandBandSpan(v_span, record.v_band_pad, band_max_v);
-    }
-    return resolveCoverage(
-        evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_x, glyph_band_base, 0, h_span, true),
-        evalHintedTextCoverageAxisBandSpan(page, record, sample_rc, ppe_y, glyph_band_base, band_max_h + 1, v_span, false),
-        fill_rule,
-    );
 }
 
 // Subpixel rendering evaluates analytic coverage at seven colocated sample
@@ -1662,32 +1517,6 @@ test "monotonic cubic winding is invariant under path normalization" {
         );
         try std.testing.expectApproxEqAbs(@as(f32, 1.0), pair.cov, 1e-6);
     }
-}
-
-test "hinted segment decodes absolute layer-info control points" {
-    // Snapshot layer-info slab holds absolute hinted positions directly;
-    // the base curve atlas is never consulted on a hinted lookup.
-    const layer_info = [_]f32{
-        0,    0,   0,   0,
-        0,    0,   0,   0,
-        0,    1,   0,   0,
-        0.25, 0.0, 0.0, 0.5,
-        0.75, 0.5, 0.0, 0.0,
-    };
-    const record = HintedTextRecord{
-        .data = &layer_info,
-        .width = 5,
-        .info_x = 0,
-        .info_y = 0,
-        .base_curve_texel = 0,
-        .curve_count = 1,
-    };
-
-    const segment = hintedSegment(record, 0);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.25), segment.p0.x, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p1.y, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.75), segment.p2.x, 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), segment.p2.y, 0.001);
 }
 
 pub fn clampInt(v: i32, lo: i32, hi: i32) i32 {

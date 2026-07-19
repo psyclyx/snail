@@ -82,10 +82,14 @@ pub fn wordBudget(scene: Scene) usize {
     return snail.emit.wordBudget(scene.paths_picture.shapes.len) + snail.emit.wordBudget(scene.text_picture.shapes.len);
 }
 
+pub fn segmentBudget(scene: Scene) usize {
+    return snail.emit.segmentBudget(scene.paths_picture.shapes.len) + snail.emit.segmentBudget(scene.text_picture.shapes.len);
+}
+
 pub const EmitOut = struct { words_len: usize, segs_len: usize };
 
 /// Emit both atlases' pictures into `words` / `segs`. The buffers must
-/// be large enough — `wordBudget(scene)` for words, ≥4 entries for segs.
+/// be large enough — `wordBudget(scene)` words and `segmentBudget(scene)` segments.
 pub fn emitScene(
     words: []u32,
     segs: []snail.render.records.DrawSegment,
@@ -145,7 +149,7 @@ pub fn renderCpuToPixelsFmt(
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -187,7 +191,7 @@ pub fn renderCpuToPixels(
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -322,7 +326,7 @@ pub fn renderGlToPixels(
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 
@@ -358,7 +362,7 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
 
     const words = try allocator.alloc(u32, wordBudget(scene));
     defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
+    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
     defer allocator.free(segs);
     const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
 

@@ -1,13 +1,15 @@
 #version 450
 #extension GL_GOOGLE_include_directive : require
 
-layout(location = 0) in vec4 v_color;
-layout(location = 1) in vec2 v_texcoord;
-layout(location = 2) flat in vec4 v_banding;
-layout(location = 3) flat in ivec4 v_glyph;
-layout(location = 4) in vec4 v_tint;
-layout(location = 5) flat in uvec4 v_policy0;
-layout(location = 6) flat in uvec3 v_policy1;
+layout(location = 0) in vec4 v_paint;
+layout(location = 1) in vec3 v_texcoord_layer;
+layout(location = 2) flat in ivec2 v_info;
+layout(location = 3) flat in uvec4 v_policy0;
+layout(location = 4) flat in uvec3 v_policy1;
+layout(location = 5) flat in vec4 v_ah_x_targets[4];
+layout(location = 9) flat in vec4 v_ah_y_targets[4];
+layout(location = 13) flat in uvec4 v_ah_x_sources;
+layout(location = 14) flat in uvec4 v_ah_y_sources;
 
 layout(set = 0, binding = 0) uniform sampler2DArray u_curve_tex;
 layout(set = 0, binding = 1) uniform usampler2DArray u_band_tex;
@@ -36,6 +38,6 @@ layout(location = 0) out vec4 frag_color;
 #include "snail_color_common.glsl"
 #include "snail_text_frag_body.glsl"
 #include "snail_autohint_warp.glsl"
-#include "snail_autohint_main.glsl"
+#include "snail_autohint_fast_main.glsl"
 
 void main() { snailAutohintFragment(); }

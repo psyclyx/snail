@@ -49,6 +49,10 @@ pub const AutohintAnalyzer = struct {
         const program = try vm.Program.init(font_data);
         const font = try ttf.Font.init(font_data);
         var blues = try blue_mod.deriveLatin(allocator, &program, &font, .{});
+        if (blues.zones.len == 0) {
+            blues.deinit();
+            blues = try deriveStatisticalBlues(allocator, &program, &font, .default, .{});
+        }
         errdefer blues.deinit();
         var self: AutohintAnalyzer = .{
             .allocator = allocator,
@@ -124,19 +128,203 @@ pub const AutohintAnalyzer = struct {
         var y_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .y);
         defer y_analysis.deinit();
         self.blues.assignEdges(y_analysis.edges, self.blue_tol_em);
-        const y = convertEdges(y_analysis.edges, upm, y_buf);
+        const y = convertEdges(y_analysis.edges, upm, self.normalized_blues, y_buf);
 
         var x_analysis = try analysis.analyzeGlyph(scratch, pts.items, contours.items, self.font.units_per_em, self.params, .x);
         defer x_analysis.deinit();
-        const x = convertEdges(x_analysis.edges, upm, x_buf);
+        const x = convertEdges(x_analysis.edges, upm, &.{}, x_buf);
 
         return .{ .x = x, .y = y, .left = min_x / upm };
     }
 };
 
-fn convertEdges(edges: []const analysis.Edge, upm: f32, out: []FeatureEdge) []const FeatureEdge {
+const statistical_zone_bin_count = 257;
+const statistical_zone_bin_offset = 128;
+const statistical_zone_bins_per_em: f32 = 64;
+const max_statistical_zones = 6;
+const max_statistical_glyph_samples = 256;
+
+const ZoneBin = struct {
+    count: u32 = 0,
+    flat_sum: f64 = 0,
+    flat_count: u32 = 0,
+    round_sum: f64 = 0,
+    round_count: u32 = 0,
+
+    fn add(self: *ZoneBin, pos: f32, round: bool) void {
+        self.count += 1;
+        if (round) {
+            self.round_sum += pos;
+            self.round_count += 1;
+        } else {
+            self.flat_sum += pos;
+            self.flat_count += 1;
+        }
+    }
+
+    fn merge(self: *ZoneBin, other: ZoneBin) void {
+        self.count += other.count;
+        self.flat_sum += other.flat_sum;
+        self.flat_count += other.flat_count;
+        self.round_sum += other.round_sum;
+        self.round_count += other.round_count;
+    }
+
+    fn reference(self: ZoneBin) ?f32 {
+        if (self.flat_count > 0) return @floatCast(self.flat_sum / @as(f64, @floatFromInt(self.flat_count)));
+        if (self.round_count > 0) return @floatCast(self.round_sum / @as(f64, @floatFromInt(self.round_count)));
+        return null;
+    }
+
+    fn overshoot(self: ZoneBin) ?f32 {
+        if (self.round_count == 0) return null;
+        return @floatCast(self.round_sum / @as(f64, @floatFromInt(self.round_count)));
+    }
+};
+
+/// Fonts without the Latin reference glyphs used by `deriveLatin` still tend
+/// to repeat a small set of outline extrema: Arabic baselines/descenders,
+/// Devanagari headlines, Mongolian joining rails, and analogous metrics in
+/// other scripts. Infer only those font-global rails here. This is a one-time,
+/// ppem-independent font analysis; individual glyph records still contain
+/// only the semantic zone/stem relationships consumed at draw time.
+fn deriveStatisticalBlues(
+    allocator: Allocator,
+    program: *const vm.Program,
+    font: *const ttf.Font,
+    analysis_params: analysis.Params,
+    blue_params: blue_mod.Params,
+) !blue_mod.Blues {
+    var bottom = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
+    var top = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
+    var outlined_glyphs: usize = 0;
+    const em: f32 = @floatFromInt(font.units_per_em);
+    const extremum_tolerance = em / 24.0;
+
+    var scratch_state = std.heap.ArenaAllocator.init(allocator);
+    defer scratch_state.deinit();
+    const scratch = scratch_state.allocator();
+
+    const glyph_count: usize = font.num_glyphs;
+    const sample_count = @min(glyph_count, max_statistical_glyph_samples);
+    for (0..sample_count) |sample_index| {
+        const glyph_index = sample_index * glyph_count / sample_count;
+        defer _ = scratch_state.reset(.retain_capacity);
+        var points: std.ArrayList(outline.Point) = .empty;
+        var contours: std.ArrayList(outline.ContourRange) = .empty;
+        flattenGlyph(scratch, program, @intCast(glyph_index), &points, &contours, 0) catch |err| switch (err) {
+            error.OutOfMemory => return err,
+            else => continue,
+        };
+        if (points.items.len == 0) continue;
+        outlined_glyphs += 1;
+
+        var min_y: f32 = std.math.inf(f32);
+        var max_y: f32 = -std.math.inf(f32);
+        for (points.items) |point| {
+            const y: f32 = @floatFromInt(point.y);
+            min_y = @min(min_y, y);
+            max_y = @max(max_y, y);
+        }
+
+        var result = try analysis.analyzeGlyph(scratch, points.items, contours.items, font.units_per_em, analysis_params, .y);
+        defer result.deinit();
+        addExtremumCandidate(&bottom, result.edges, min_y, extremum_tolerance, em);
+        addExtremumCandidate(&top, result.edges, max_y, extremum_tolerance, em);
+    }
+
+    var zones: std.ArrayList(blue_mod.Zone) = .empty;
+    errdefer zones.deinit(allocator);
+    const minimum_samples: u32 = @max(4, @as(u32, @intCast(outlined_glyphs / 32)));
+    while (zones.items.len < max_statistical_zones) {
+        const peak = strongestZonePeak(&bottom, &top);
+        if (peak.score < minimum_samples) break;
+
+        var accumulated: ZoneBin = .{};
+        const lo = peak.index -| 1;
+        const hi = @min(peak.index + 2, statistical_zone_bin_count);
+        const source = if (peak.kind == .bottom) &bottom else &top;
+        for (source[lo..hi]) |bin| accumulated.merge(bin);
+        const ref = accumulated.reference() orelse break;
+        const max_overshoot = blue_params.max_overshoot_em * em;
+        const measured_shoot = accumulated.overshoot() orelse ref;
+        var shoot = switch (peak.kind) {
+            .bottom => std.math.clamp(measured_shoot, ref - max_overshoot, ref),
+            .top => std.math.clamp(measured_shoot, ref, ref + max_overshoot),
+        };
+        // `FeatureZone` intentionally stays two floats. Preserve bottom/top
+        // direction in the sign of a sub-FUnit no-op overshoot when a cluster
+        // has no measured round samples; it is far below any pixel threshold.
+        if (shoot == ref) shoot += if (peak.kind == .bottom) -em / 65536.0 else em / 65536.0;
+        try zones.append(allocator, .{ .pos = ref, .shoot = shoot, .kind = peak.kind });
+
+        // A zone owns an ~1/12 em neighborhood in both directions and kinds.
+        // This prevents near-identical top/bottom extrema from becoming two
+        // ambiguous references while retaining genuinely separate rails.
+        const separation_bins: usize = 5;
+        const clear_lo = peak.index -| separation_bins;
+        const clear_hi = @min(peak.index + separation_bins + 1, statistical_zone_bin_count);
+        @memset(bottom[clear_lo..clear_hi], .{});
+        @memset(top[clear_lo..clear_hi], .{});
+    }
+
+    return .{
+        .allocator = allocator,
+        .units_per_em = font.units_per_em,
+        .zones = try zones.toOwnedSlice(allocator),
+    };
+}
+
+fn addExtremumCandidate(
+    bins: *[statistical_zone_bin_count]ZoneBin,
+    edges: []const analysis.Edge,
+    extremum: f32,
+    tolerance: f32,
+    em: f32,
+) void {
+    var best: ?analysis.Edge = null;
+    var best_gap = tolerance;
+    for (edges) |edge| {
+        const gap = @abs(edge.pos - extremum);
+        if (gap >= best_gap) continue;
+        best = edge;
+        best_gap = gap;
+    }
+    const edge = best orelse return;
+    const quantized: i32 = @intFromFloat(@round(edge.pos / em * statistical_zone_bins_per_em));
+    const index = quantized + statistical_zone_bin_offset;
+    if (index < 0 or index >= statistical_zone_bin_count) return;
+    bins[@intCast(index)].add(edge.pos, edge.round);
+}
+
+const ZonePeak = struct {
+    index: usize = 0,
+    kind: blue_mod.BlueKind = .bottom,
+    score: u32 = 0,
+    center_count: u32 = 0,
+};
+
+fn strongestZonePeak(bottom: *const [statistical_zone_bin_count]ZoneBin, top: *const [statistical_zone_bin_count]ZoneBin) ZonePeak {
+    var best: ZonePeak = .{};
+    for ([_]struct { kind: blue_mod.BlueKind, bins: *const [statistical_zone_bin_count]ZoneBin }{
+        .{ .kind = .bottom, .bins = bottom },
+        .{ .kind = .top, .bins = top },
+    }) |source| {
+        for (source.bins, 0..) |center, i| {
+            var score: u32 = 0;
+            for (source.bins[i -| 1..@min(i + 2, statistical_zone_bin_count)]) |bin| score += bin.count;
+            if (score > best.score or (score == best.score and center.count > best.center_count)) {
+                best = .{ .index = i, .kind = source.kind, .score = score, .center_count = center.count };
+            }
+        }
+    }
+    return best;
+}
+
+fn convertEdges(edges: []const analysis.Edge, upm: f32, zones: []const blue_mod.FeatureZone, out: []FeatureEdge) []const FeatureEdge {
     if (edges.len > warp.max_knots or edges.len > out.len) return out[0..0];
-    for (edges, out[0..edges.len]) |edge, *feature| {
+    var all: [warp.max_knots]FeatureEdge = undefined;
+    for (edges, all[0..edges.len]) |edge, *feature| {
         feature.* = .{
             .pos = edge.pos / upm,
             .width = edge.width / upm,
@@ -145,7 +333,84 @@ fn convertEdges(edges: []const analysis.Edge, upm: f32, out: []FeatureEdge) []co
             .flags = .{ .round = edge.round, .synthetic_apex = edge.synthetic_apex },
         };
     }
-    return out[0..edges.len];
+    const features = all[0..edges.len];
+    for (features, 0..) |*feature, i| {
+        feature.flags.semantics_resolved = true;
+        feature.flags.blue_dir_negative = semanticDirection(features, zones, i, true) < 0;
+    }
+    for (features, 0..) |*feature, i| {
+        if (feature.blue < 0 or !feature.flags.round) continue;
+        feature.flags.grid_companion = findCompanion(features, zones, i, false);
+        feature.flags.blue_companion = findCompanion(features, zones, i, true);
+    }
+
+    // Once semantic relationships are explicit, unrelated outline extrema no
+    // longer participate in fitting. Keep only actual stem/blue operations and
+    // the companions referenced by those operations; remap their indices into
+    // a compact, ppem-independent fit program.
+    var keep = [_]bool{false} ** warp.max_knots;
+    for (features, 0..) |feature, i| keep[i] = feature.stem >= 0 or feature.blue >= 0;
+    for (features) |feature| {
+        if (feature.flags.grid_companion < 62) keep[feature.flags.grid_companion] = true;
+        if (feature.flags.blue_companion < 62) keep[feature.flags.blue_companion] = true;
+    }
+    var remap = [_]i16{-1} ** warp.max_knots;
+    var count: usize = 0;
+    for (features, 0..) |feature, i| {
+        if (!keep[i]) continue;
+        remap[i] = @intCast(count);
+        out[count] = feature;
+        count += 1;
+    }
+    for (out[0..count]) |*feature| {
+        if (feature.stem >= 0) feature.stem = remap[@intCast(feature.stem)];
+        feature.flags.grid_companion = remapCompanion(feature.flags.grid_companion, &remap);
+        feature.flags.blue_companion = remapCompanion(feature.flags.blue_companion, &remap);
+    }
+    return out[0..count];
+}
+
+fn remapCompanion(encoded: u6, remap: *const [warp.max_knots]i16) u6 {
+    if (encoded >= 62) return encoded;
+    const mapped = remap[encoded];
+    return if (mapped < 0) 62 else @intCast(mapped);
+}
+
+fn semanticDirection(features: []const FeatureEdge, zones: []const blue_mod.FeatureZone, index: usize, use_blues: bool) i8 {
+    const feature = features[index];
+    const partner_above = feature.stem >= 0 and @as(usize, @intCast(feature.stem)) < features.len and
+        features[@intCast(feature.stem)].pos > feature.pos;
+    const valid_blue = use_blues and feature.blue >= 0 and @as(usize, @intCast(feature.blue)) < zones.len;
+    const bottom_blue = valid_blue and zones[@intCast(feature.blue)].shoot < zones[@intCast(feature.blue)].ref;
+    if (partner_above or bottom_blue) return -1;
+    if (feature.stem >= 0 or valid_blue or !use_blues) return 1;
+
+    var nearest = std.math.inf(f32);
+    var direction: i8 = 1;
+    for (features) |candidate| {
+        if (candidate.blue < 0 or @as(usize, @intCast(candidate.blue)) >= zones.len) continue;
+        const gap = @abs(candidate.pos - feature.pos);
+        if (gap >= nearest) continue;
+        nearest = gap;
+        const zone = zones[@intCast(candidate.blue)];
+        direction = if (zone.shoot < zone.ref) 1 else -1;
+    }
+    return direction;
+}
+
+fn findCompanion(features: []const FeatureEdge, zones: []const blue_mod.FeatureZone, index: usize, use_blues: bool) u6 {
+    const direction = semanticDirection(features, zones, index, use_blues);
+    const top = direction > 0;
+    var best: u6 = 62;
+    var best_gap = std.math.inf(f32);
+    for (features, 0..) |candidate, candidate_index| {
+        if (candidate_index == index or semanticDirection(features, zones, candidate_index, use_blues) == direction) continue;
+        const gap = if (top) features[index].pos - candidate.pos else candidate.pos - features[index].pos;
+        if (gap <= 0 or gap >= best_gap) continue;
+        best_gap = gap;
+        best = @intCast(candidate_index);
+    }
+    return best;
 }
 
 /// Resolve `glyph_id` (simple or compound) into a single flat point/contour
@@ -383,4 +648,54 @@ test "fitGlyph consumes normalized analysis without retaining targets" {
     try testing.expect(fitted.x.len > 0);
     try testing.expect(fitted.y.len > 0);
     try testing.expect(!@hasField(FeatureEdge, "target"));
+}
+
+test "statistical zones retain and safely fit non-Latin reference edges" {
+    const Case = struct { data: []const u8, codepoint: u21 };
+    const cases = [_]Case{
+        .{ .data = assets.noto_sans_arabic, .codepoint = 0x0645 }, // Arabic meem
+        .{ .data = assets.noto_sans_devanagari, .codepoint = 0x0915 }, // Devanagari ka
+        .{ .data = assets.noto_sans_mongolian, .codepoint = 0x1820 }, // Mongolian a
+    };
+    const policy: @import("policy.zig").AutohintPolicy = .{
+        .y = .{
+            .@"align" = .blue_zones,
+            .stem_width = .natural,
+            .overshoot = .preserve,
+        },
+    };
+
+    for (cases) |case| {
+        var analyzer = try AutohintAnalyzer.init(testing.allocator, case.data);
+        defer analyzer.deinit();
+        try testing.expect(analyzer.blues.zones.len > 0);
+        try testing.expect(analyzer.blues.zones.len <= max_statistical_zones);
+
+        const glyph_id = try analyzer.font.glyphIndex(case.codepoint);
+        var feature_x: [warp.max_knots]FeatureEdge = undefined;
+        var feature_y: [warp.max_knots]FeatureEdge = undefined;
+        const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_id, &feature_x, &feature_y);
+        try testing.expect(glyph.y.len > 0 and glyph.y.len <= 16);
+        var has_reference = false;
+        for (glyph.y) |feature| if (feature.blue >= 0) {
+            has_reference = true;
+        };
+        try testing.expect(has_reference);
+
+        for ([_]f32{ 9, 12, 16 }) |ppem| {
+            var x_out: [warp.max_knots]warp.Knot = undefined;
+            var y_out: [warp.max_knots]warp.Knot = undefined;
+            const fitted = warp.fitGlyph(glyph, analyzer.fontFeatures(), policy, .{ .x = ppem, .y = ppem }, &x_out, &y_out);
+            try testing.expect(fitted.y.len > 0 and fitted.y.len <= 16);
+            for (fitted.y, 0..) |knot, i| {
+                // Zone assignment is limited to 1/24 em and grid rounding to
+                // half a pixel. Leave margin for monotonic collision repair.
+                try testing.expect(@abs(knot.target - knot.base) * ppem <= 1.5);
+                if (i > 0) {
+                    try testing.expect(fitted.y[i - 1].base < knot.base);
+                    try testing.expect(fitted.y[i - 1].target < knot.target);
+                }
+            }
+        }
+    }
 }

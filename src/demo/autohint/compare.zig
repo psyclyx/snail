@@ -339,6 +339,7 @@ pub const Compare = struct {
             .color = text_color,
             .mode = mode,
             .snap = snap,
+            .world_to_pixel = .identity,
         });
         // An empty outline has no bands to back an autohint record. Keep its
         // no-op shape on the shared unhinted key so emit-time lookup succeeds

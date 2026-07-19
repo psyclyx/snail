@@ -78,7 +78,7 @@ pub const VulkanResourceLayout = struct {
             .binding = contract.LAYER_INFO_BINDING,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
             .descriptorCount = 1,
-            .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
+            .stageFlags = vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT,
         });
         bindings[contract.LAYER_INFO_BINDING].pImmutableSamplers = &self.sampler_nearest;
         bindings[contract.IMAGE_BINDING] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{

@@ -149,6 +149,11 @@ pub const Atlas = struct {
     /// Per-key (info_x, info_y) into `layer_info_data` for autohint records.
     /// Same persistent-map shape as `paint_lookup`.
     autohint_lookup: PaintLookup,
+    /// Per-key (info_x, info_y) into `layer_info_data` for baked TrueType
+    /// glyph band records. The hinted outline itself remains in the ordinary
+    /// curve/band atlas; this small record lets the hinted-text instance ABI
+    /// address it while retaining a distinct shader/program family.
+    hinted_lookup: PaintLookup,
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
     /// to `null`. The software renderer's `BackendCache.upload`
@@ -167,6 +172,7 @@ pub const Atlas = struct {
             .lookup = RecordLookup.init(allocator, .{}),
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
+            .hinted_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 
@@ -181,6 +187,7 @@ pub const Atlas = struct {
         if (self.paint_image_records) |records| self.allocator.free(records);
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
+        self.hinted_lookup.deinit();
         self.lookup.deinit();
         self.* = undefined;
     }
@@ -195,6 +202,11 @@ pub const Atlas = struct {
     /// Look up the autohint slab record (if any) bound to `key`.
     pub fn lookupAutohintRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
         return self.autohint_lookup.get(key);
+    }
+
+    /// Look up the band record for a baked per-PPEM TrueType glyph.
+    pub fn lookupHintedRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
+        return self.hinted_lookup.get(key);
     }
 
     pub fn contains(self: *const Atlas, key: RecordKey) bool {
@@ -319,6 +331,7 @@ pub const Atlas = struct {
             .lookup = lookup,
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
+            .hinted_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 

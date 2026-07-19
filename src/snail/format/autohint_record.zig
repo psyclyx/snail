@@ -110,9 +110,9 @@ fn writeFeatureRun(out: []f32, features: []const FeatureEdge) usize {
         out[dst + 0] = edge.pos;
         out[dst + 1] = edge.width;
         const refs_bits: u32 = @bitCast(refs);
-        const flags_bits: u16 = @bitCast(edge.flags);
+        const flags_bits: u32 = @bitCast(edge.flags);
         out[dst + 2] = @bitCast(refs_bits);
-        out[dst + 3] = @bitCast(@as(u32, flags_bits));
+        out[dst + 3] = @bitCast(flags_bits);
     }
     return 1 + floats_per_feature * features.len;
 }

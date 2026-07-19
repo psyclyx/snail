@@ -116,7 +116,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
             self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
             self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
-            self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader, shaders.fragment_shader_autohint, false);
+            self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
             }
@@ -622,7 +622,7 @@ fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl
 
 fn initEbo() void {
     // Single quad index pattern — instancing repeats it per glyph.
-    const indices = [6]u32{ 0, 1, 2, 0, 2, 3 };
+    const indices = [6]u32{ 1, 2, 0, 2, 3, 0 };
     gl.glBufferData(gl.GL_ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(indices)), &indices, gl.GL_STATIC_DRAW);
 }
 

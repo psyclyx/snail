@@ -20,6 +20,7 @@ const band_tex_format = @import("../format/band_texture.zig");
 const paint_records = @import("paint_records.zig");
 const autohint_format = @import("../format/autohint_record.zig");
 const autohint_warp = @import("../font/autohint/warp.zig");
+const render_abi = @import("../format/abi.zig");
 const paint_mod = @import("../paint.zig");
 
 const Atlas = atlas_mod.Atlas;
@@ -53,6 +54,7 @@ pub const Builder = struct {
     layer_info_texels: u32,
     paint_lookup: PaintLookup,
     autohint_lookup: PaintLookup,
+    hinted_lookup: PaintLookup,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
@@ -67,6 +69,7 @@ pub const Builder = struct {
             .layer_info_texels = 0,
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
+            .hinted_lookup = PaintLookup.init(allocator, .{}),
             .paint_image_records = .empty,
         };
     }
@@ -88,6 +91,7 @@ pub const Builder = struct {
             .layer_info_texels = 0,
             .paint_lookup = base.paint_lookup.clone(),
             .autohint_lookup = base.autohint_lookup.clone(),
+            .hinted_lookup = base.hinted_lookup.clone(),
             .paint_image_records = .empty,
         };
         errdefer b.abort();
@@ -116,6 +120,7 @@ pub const Builder = struct {
         self.layer_info_buf.deinit(self.allocator);
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
+        self.hinted_lookup.deinit();
         self.paint_image_records.deinit(self.allocator);
     }
 
@@ -139,6 +144,46 @@ pub const Builder = struct {
         const next = try self.autohint_lookup.put(key, value);
         self.autohint_lookup.deinit();
         self.autohint_lookup = next;
+    }
+
+    fn hintedLookupPut(self: *Builder, key: RecordKey, value: PaintRecordInfo) !void {
+        const next = try self.hinted_lookup.put(key, value);
+        self.hinted_lookup.deinit();
+        self.hinted_lookup = next;
+    }
+
+    /// Write the two texels a hinted-text instance needs to resolve the
+    /// baked glyph's ordinary band record. Curves are not duplicated into
+    /// layer-info: HintVm already produced direct-encoded hinted curves.
+    fn insertHintedRecord(self: *Builder, key: RecordKey, bands: GlyphBandEntry) InsertError!void {
+        std.debug.assert(bands.h_band_count > 0 and bands.v_band_count > 0);
+        const texel_offset = self.layer_info_texels;
+        const new_texels = std.math.add(u32, texel_offset, 2) catch return error.LayerInfoTooLarge;
+        const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        if (new_texels > max_texels) return error.LayerInfoTooLarge;
+        const need_floats = @as(usize, new_texels) * 4;
+        if (self.layer_info_buf.items.len < need_floats) {
+            try self.layer_info_buf.resize(self.allocator, need_floats);
+            @memset(self.layer_info_buf.items[@as(usize, texel_offset) * 4 .. need_floats], 0);
+        }
+        paint_records.setTexel(self.layer_info_buf.items, paint_records.info_width, texel_offset, .{
+            @floatFromInt(bands.glyph_x),
+            @floatFromInt(bands.glyph_y),
+            @bitCast(render_abi.packBandCounts(bands.h_band_count, bands.v_band_count)),
+            0,
+        });
+        paint_records.setTexel(self.layer_info_buf.items, paint_records.info_width, texel_offset + 1, .{
+            bands.band_scale_x,
+            bands.band_scale_y,
+            bands.band_offset_x,
+            bands.band_offset_y,
+        });
+        try self.hintedLookupPut(key, .{
+            .info_x = @intCast(texel_offset % paint_records.info_width),
+            .info_y = @intCast(texel_offset / paint_records.info_width),
+            .layer_count = 1,
+        });
+        self.layer_info_texels = new_texels;
     }
 
     /// Append one immutable feature record after validating counts and slab
@@ -231,6 +276,7 @@ pub const Builder = struct {
             .layer_info_height = layer_info_height,
             .paint_lookup = self.paint_lookup,
             .autohint_lookup = self.autohint_lookup,
+            .hinted_lookup = self.hinted_lookup,
             .paint_image_records = paint_image_records_out,
         };
     }
@@ -485,6 +531,10 @@ pub const Builder = struct {
         };
 
         try self.lookupPut(entry.key, record);
+
+        if (entry.key.namespace == record_key_mod.ns.hinted_glyph) {
+            try self.insertHintedRecord(entry.key, base_placement.bands);
+        }
 
         // Autohint: immutable analysis over the shared base glyph.
         if (entry.autohint) |analysis| {

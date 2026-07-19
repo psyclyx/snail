@@ -246,7 +246,7 @@ pub fn createTransferPool(ctx: VulkanContext) !vk.VkCommandPool {
 
 fn buildPipeline(ctx: VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe, depth_test: bool) !vk.VkPipeline {
     const device = ctx.device;
-    const vert_module = try shaderModule(device, contract.vert_spv);
+    const vert_module = try shaderModule(device, r.vert_spv);
     defer vk.vkDestroyShaderModule(device, vert_module, null);
     const frag_module = try shaderModule(device, r.frag_spv);
     defer vk.vkDestroyShaderModule(device, frag_module, null);

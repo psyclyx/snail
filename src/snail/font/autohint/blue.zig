@@ -9,9 +9,10 @@
 //! reference letters; they are entirely ppem-independent — the per-size
 //! rounding happens later in the warp. See [[project_snail]].
 //!
-//! Scope: Latin reference strings. A font with no Latin coverage simply
-//! produces empty/degenerate zones and every edge stays unlinked, so its text
-//! renders unwarped rather than mis-hinted — the non-Latin safety guarantee.
+//! `deriveLatin` covers curated Latin reference strings. The higher-level
+//! producer falls back to repeated font-wide outline extrema when those strings
+//! have no coverage, giving other scripts shared rails without pretending that
+//! their metrics are Latin x-height/cap-height semantics.
 
 const std = @import("std");
 
