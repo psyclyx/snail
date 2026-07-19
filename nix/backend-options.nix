@@ -5,7 +5,6 @@
 , enableGLES30 ? true
 , enableVulkan ? true
 , enableRaster ? true
-, enableHarfBuzz ? true
 , enableCApi ? true
 , cApiShared ? enableCApi
 , cApiStatic ? enableCApi
@@ -25,7 +24,6 @@ in
     (boolFlag "gles30" enableGLES30)
     (boolFlag "vulkan" enableVulkan)
     (boolFlag "raster" enableRaster)
-    (boolFlag "harfbuzz" enableHarfBuzz)
     (boolFlag "c-api" enableCApi)
     (boolFlag "c-api-shared" cApiShared)
     (boolFlag "c-api-static" cApiStatic)

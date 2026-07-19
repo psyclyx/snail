@@ -17,7 +17,6 @@
 , enableGLES30 ? true
 , enableVulkan ? true
 , enableRaster ? true
-, enableHarfBuzz ? true
 , optimize ? "fast"
 , cpu ? "baseline"
 }:
@@ -31,7 +30,6 @@ let
       enableGLES30
       enableVulkan
       enableRaster
-      enableHarfBuzz
       optimize
       cpu;
     enableCApi = false;
@@ -51,11 +49,11 @@ stdenv.mkDerivation {
   ];
 
   buildInputs =
-    lib.optionals (enableGL33 || enableGL44 || enableGLES30) [
-      libGL
-    ]
-    ++ lib.optionals enableHarfBuzz [
+    [
       harfbuzz
+    ]
+    ++ lib.optionals (enableGL33 || enableGL44 || enableGLES30) [
+      libGL
     ]
     ++ lib.optionals enableVulkan [
       vulkan-loader
