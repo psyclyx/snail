@@ -1,9 +1,9 @@
 //! All-in-one hinting validation overlay for the interactive demo.
 //!
 //! Renders the same sample string in five hinting modes — unhinted, explicit
-//! y-only, natural-width x/y, full-width x/y, and the font's built-in TrueType
+//! y-only, natural-width x/y, full-width x/y, and the font's built-in TT
 //! hinting — stacked across a spread of ppems. Lets you compare both composable policies
-//! against the TrueType reference and unhinted baseline in one glance. Toggle
+//! against the TT-hint reference and unhinted baseline in one glance. Toggle
 //! with V. Drawn as a
 //! projection-only pass so it stays put while the world pans/zooms.
 
@@ -95,12 +95,12 @@ pub const x_natural_policy: snail.autohint.AutohintPolicy = .{
 /// Positioning is INDEPENDENT: `relative` anchors the whole stem cluster and, at
 /// the demo's non-integer render scale, lands the leftmost stem off the pixel grid
 /// (the 'm' left leg renders as a thin straddled sliver); independent snaps each
-/// stem edge to its own grid line — crisper here and closer to TrueType.
+/// stem edge to its own grid line — crisper here and closer to TT hinting.
 /// Overshoot is PRESERVED, not suppressed: a round apex (o/e/c/ς top, bowl bottom)
 /// whose overshoot is suppressed snaps exactly onto the x-height/baseline pixel
 /// row, and because that arc is nearly flat it fills the row uniformly → a visibly
 /// flat-topped 'o'. Keeping the (sub-pixel) overshoot lifts the apex off the row so
-/// it AA's into a curve like TrueType; at small ppem the overshoot is a fraction of
+/// it AA's into a curve like TT hinting; at small ppem the overshoot is a fraction of
 /// a pixel and doesn't blur the line.
 pub const default_policy: snail.autohint.AutohintPolicy = .{
     .x = .{
@@ -145,7 +145,7 @@ const rows = [_]Row{
     .{ .tag = "xn", .mode = .{ .autohint = x_natural_policy }, .snap = .columns },
     .{ .tag = "xf", .mode = .{ .autohint = xy_policy }, .snap = .columns },
     .{ .tag = "df", .mode = .{ .autohint = default_policy }, .snap = .columns },
-    .{ .tag = "tt", .mode = .{ .truetype = .{ .ppem_26_6 = 0 } }, .snap = .columns },
+    .{ .tag = "tt", .mode = .{ .tt_hint = .{ .ppem_26_6 = 0 } }, .snap = .columns },
 };
 
 pub const Compare = struct {
@@ -155,7 +155,7 @@ pub const Compare = struct {
     faces: snail.Faces,
     font_id: u32,
     auto: snail.autohint.AutohintAnalyzer,
-    /// The font's own TrueType hinting, if it has any (DejaVu does; Noto Sans
+    /// The font's own TT hinting, if it has any (DejaVu does; Noto Sans
     /// Mono is unhinted, so this stays null and the tt row renders unhinted).
     tt: ?snail.HintVm,
     /// Short display name for the font (e.g. "DejaVu", "Noto").
@@ -324,7 +324,7 @@ pub const Compare = struct {
         // world→device transform is identity and column snapping rounds to
         // integer device pens. The y-only row keeps natural x positioning.
         const mode: @FieldType(snail.RunPlacement, "mode") = switch (row_desc.mode) {
-            .truetype => .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
+            .tt_hint => .{ .tt_hint = .{ .ppem_26_6 = ppem_26_6 } },
             else => row_desc.mode,
         };
         // Column snapping is a monospace convenience; a proportional face must
@@ -358,7 +358,7 @@ pub const Compare = struct {
     }
 
     /// Ensure the atlas holds unhinted curves and one immutable autohint
-    /// analysis per sample glyph, plus TrueType-baked curves for each PPEM.
+    /// analysis per sample glyph, plus TT-hinted curves for each PPEM.
     /// Feature slices and TT curves live on `scratch`; the atlas copies them.
     pub fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
         var entries: std.ArrayList(snail.AtlasEntry) = .empty;
@@ -399,7 +399,7 @@ pub const Compare = struct {
             });
         }
 
-        // Only TrueType preparation and baked curves remain PPEM-specific.
+        // Only TT-hint preparation and baked curves remain PPEM-specific.
         for (grid_ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             // Run fpgm/prep once for this size; every glyph hints from it.

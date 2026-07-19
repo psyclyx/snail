@@ -86,7 +86,7 @@ test "user namespaces start at 1024" {
     try std.testing.expect(ns.user_base > ns.autohint_glyph);
 }
 
-test "autohint and truetype keys of the same glyph never collide" {
+test "autohint and tt-hint keys of the same glyph never collide" {
     const tt = hintedGlyph(3, 42, 12 * 64);
     const au = autohintGlyph(3, 42);
     try std.testing.expect(!tt.eql(au));

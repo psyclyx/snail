@@ -1,4 +1,4 @@
-// Baked TrueType hints use the ordinary curve and band atlas. The small
+// Baked TT hints use the ordinary curve and band atlas. The small
 // layer-info record exists only because the special-instance ABI needs an
 // address for the band metadata while retaining a distinct program family.
 ivec2 offsetHintedInfoLoc(ivec2 base, int offset) {

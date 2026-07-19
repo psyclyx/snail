@@ -14,7 +14,7 @@ const c = @cImport({
 const cases = [_][]const u8{
     "text-gray",
     "text-lcd",
-    "text-truetype",
+    "text-tt-hint",
     "text-autohint",
     "text-autohint-fallback",
     "text-colr",
@@ -157,7 +157,7 @@ pub fn main(init: std.process.Init) !void {
         32
     else
         null;
-    const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-truetype"))
+    const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
         .hinted
     else if (isAutohintCase(args.case))
         .autohint
@@ -216,7 +216,7 @@ pub fn main(init: std.process.Init) !void {
         work_unit = "fragment_glyph_test";
     } else {
         if (emitted.segment_len != 1) return error.ExpectedHomogeneousScene;
-        const expected_kind: snail.render.records.ShapeKind = if (std.mem.eql(u8, args.case, "text-truetype"))
+        const expected_kind: snail.render.records.ShapeKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
             .hinted_text
         else if (isAutohintCase(args.case))
             .autohint
@@ -233,7 +233,7 @@ pub fn main(init: std.process.Init) !void {
             subpixel_fragment_source
         else if (isAutohintCase(args.case))
             autohint_fragment_source
-        else if (std.mem.eql(u8, args.case, "text-truetype"))
+        else if (std.mem.eql(u8, args.case, "text-tt-hint"))
             hinted_fragment_source
         else if (std.mem.eql(u8, args.case, "text-colr"))
             colr_fragment_source

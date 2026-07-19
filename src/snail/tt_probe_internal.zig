@@ -1,4 +1,4 @@
-//! Private compiler-module surface for the TrueType research probe.
+//! Private compiler-module surface for the TT-hint research probe.
 //! Not imported by the public `snail` module.
 
 pub const hint = @import("font/truetype/hint.zig");

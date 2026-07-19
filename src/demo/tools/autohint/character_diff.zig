@@ -1,7 +1,7 @@
 //! Per-character composable-autohint comparison harness.
 //!
 //! Each corpus character is rendered alone at 9..14 PPEM through four
-//! harness-local policies and the TrueType path. Writes one contact sheet per
+//! harness-local policies and the TT-hint path. Writes one contact sheet per
 //! font/size plus a stable TSV under zig-out/autohint-character-diff/.
 
 const std = @import("std");
@@ -288,7 +288,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, font_desc: anyty
             const text = [_]u8{ch};
             const shaped = try compare.shape_cache.shape(&compare.faces, &text, .{});
             const ppem_26_6 = ppem * 64;
-            const reference_rgba = try renderCharacter(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, @floatFromInt(ppem), .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } });
+            const reference_rgba = try renderCharacter(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, @floatFromInt(ppem), .{ .tt_hint = .{ .ppem_26_6 = ppem_26_6 } });
             defer allocator.free(reference_rgba);
             extractInk(reference_rgba, ref_ink);
             paintLabel(sheet, row, ref_ink);

@@ -106,7 +106,7 @@ pub fn passesWordBudget(passes: []const Pass) usize {
 }
 
 /// Conservative segment budget. A picture can alternate semantic families
-/// (for example unhinted/autohint/TrueType validation rows), so one picture
+/// (for example unhinted/autohint/TT-hint validation rows), so one picture
 /// may emit many segments even though adjacent shapes normally coalesce.
 pub fn passesSegBudget(passes: []const Pass) usize {
     var total: usize = 0;
@@ -188,8 +188,8 @@ pub fn clearColorForShader(color_srgb: [4]f32, encoding: @import("snail-raster")
 }
 
 test "segment budget covers every shape in mixed pictures" {
-    const shapes_a = [_]snail.Shape{.{}, .{}, .{}};
-    const shapes_b = [_]snail.Shape{.{}, .{}};
+    const shapes_a = [_]snail.Shape{ .{}, .{}, .{} };
+    const shapes_b = [_]snail.Shape{ .{}, .{} };
     const picture_a = demo_support.Picture{ .allocator = std.testing.allocator, .shapes = &shapes_a };
     const picture_b = demo_support.Picture{ .allocator = std.testing.allocator, .shapes = &shapes_b };
     const pictures = [_]*const demo_support.Picture{ &picture_a, &picture_b };

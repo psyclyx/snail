@@ -60,14 +60,14 @@ pub const HintMode = union(enum) {
     /// Immutable autohint analysis with draw-time fitting policy. Analysis
     /// identity and scale are independent of policy and pixel size.
     autohint: policy_mod.AutohintPolicy,
-    /// TrueType baked per-ppem curves in pixel space, so scale = em/ppem_px.
-    truetype: struct { ppem_26_6: u32 },
+    /// TT-hinted, per-ppem curves in pixel space, so scale = em/ppem_px.
+    tt_hint: struct { ppem_26_6: u32 },
 
     /// Local-transform uniform scale for this mode at `em`.
     pub fn scale(self: HintMode, em: f32) f32 {
         return switch (self) {
             .unhinted, .autohint => em,
-            .truetype => |t| blk: {
+            .tt_hint => |t| blk: {
                 const ppem_px = @as(f32, @floatFromInt(t.ppem_26_6)) / 64.0;
                 break :blk if (ppem_px > 0.0) em / ppem_px else em;
             },
@@ -79,13 +79,13 @@ pub const HintMode = union(enum) {
         return switch (self) {
             .unhinted => record_key.unhintedGlyph(font_id, glyph_id),
             .autohint => record_key.autohintGlyph(font_id, glyph_id),
-            .truetype => |m| record_key.hintedGlyph(font_id, glyph_id, m.ppem_26_6),
+            .tt_hint => |m| record_key.hintedGlyph(font_id, glyph_id, m.ppem_26_6),
         };
     }
 };
 
 /// Per-glyph origin snapping. Grid-fit hinting (strong autohint x policies or
-/// TrueType) only pays off if each glyph origin lands on an integer DEVICE
+/// TT hinting) only pays off if each glyph origin lands on an integer DEVICE
 /// pixel; a fractional pen smears the stems for glyphs after the first.
 /// Strong x policies therefore normally pair with `.origins` or `.columns`;
 /// the policy and snapping choice remain explicit and independent.
@@ -323,13 +323,13 @@ test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
         try testing.expectApproxEqAbs(@as(f32, 5), shapes[0].local_transform.tx, 1e-5);
     }
 
-    // truetype: em/ppem_px scale, hinted namespace, columns = integer + uniform.
+    // tt_hint: em/ppem_px scale, hinted namespace, columns = integer + uniform.
     {
         const ppem: u32 = 13 * 64; // ppem_px = 13, em = 16 -> scale = 16/13
         const shapes = try placeRunAlloc(allocator, &shaped, null, .{
             .baseline = .{ .x = 5, .y = 30 },
             .em = 16,
-            .mode = .{ .truetype = .{ .ppem_26_6 = ppem } },
+            .mode = .{ .tt_hint = .{ .ppem_26_6 = ppem } },
             .snap = .columns,
             .world_to_pixel = Transform2D{}, // identity: world == device
         });

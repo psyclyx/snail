@@ -1,7 +1,7 @@
 //! Headless CPU+GL render of the hinting-validation grid, for verifying
 //! hinting quality without the interactive Wayland loop. Writes
 //! zig-out/autohint-screenshot{,-gl}.tga. Each ppem shows four rows in
-//! V-overlay order: unhinted (un), y-only (y), strong xy (xy), TrueType (tt).
+//! V-overlay order: unhinted (un), y-only (y), strong xy (xy), TT hinting (tt).
 
 const std = @import("std");
 const snail = @import("snail");

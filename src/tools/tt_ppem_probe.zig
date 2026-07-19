@@ -1,4 +1,4 @@
-//! RESEARCH PROBE (not shipped): can TrueType bytecode hinting be reproduced at
+//! RESEARCH PROBE (not shipped): can TT bytecode hinting be reproduced at
 //! any ppem from a single ppem-INDEPENDENT per-glyph descriptor?
 //!
 //! Iteration 1 (findings doc 2026-07-13) showed independent per-point output

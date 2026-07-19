@@ -87,22 +87,22 @@ prep_cases=(
   shape-multiscript
   place-run
   curves-unhinted
-  truetype-prepare
-  curves-truetype
+  tt-hint-prepare
+  curves-tt-hint
   autohint-setup
   autohint-setup-nonlatin
   analyze-autohint
   path-prepare
   path-pack
   atlas-build-text
-  atlas-build-truetype
+  atlas-build-tt-hint
   atlas-build-autohint
   atlas-build-path
   atlas-build-mixed
   atlas-build-colr
   atlas-upload-plan
   emit-text
-  emit-truetype
+  emit-tt-hint
   emit-autohint
   emit-path
   emit-mixed
@@ -117,7 +117,7 @@ done
 raster_cases=(
   "text-gray|serial"
   "text-lcd|serial"
-  "text-truetype|serial"
+  "text-tt-hint|serial"
   "text-autohint|serial"
   "text-colr|serial"
   "path|serial"
@@ -133,7 +133,7 @@ for spec in "${raster_cases[@]}"; do
 done
 
 if ((run_gpu)); then
-  gpu_cases=(text-gray text-lcd text-truetype text-autohint text-autohint-fallback text-colr path text-sample-8 text-sample-32)
+  gpu_cases=(text-gray text-lcd text-tt-hint text-autohint text-autohint-fallback text-colr path text-sample-8 text-sample-32)
   echo
   echo "GPU timer-query microbenchmarks"
   for case_name in "${gpu_cases[@]}"; do

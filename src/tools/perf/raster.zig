@@ -7,7 +7,7 @@ const fixtures = @import("fixtures.zig");
 const cases = [_][]const u8{
     "text-gray",
     "text-lcd",
-    "text-truetype",
+    "text-tt-hint",
     "text-autohint",
     "text-colr",
     "path",
@@ -35,7 +35,7 @@ pub fn main(init: std.process.Init) !void {
         std.process.exit(2);
     };
     const allocator = std.heap.smp_allocator;
-    const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-truetype"))
+    const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
         .hinted
     else if (std.mem.eql(u8, args.case, "text-autohint"))
         .autohint

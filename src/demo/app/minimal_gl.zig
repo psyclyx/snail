@@ -3,7 +3,7 @@
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules. It owns the EGL context, GL resources, shader
 //! entry points, atlas upload loop, draw submission, and screenshot writer. Its
-//! one frame covers unhinted, autohinted, TrueType-hinted, and COLR text plus
+//! one frame covers unhinted, autohinted, TT-hinted, and COLR text plus
 //! filled and stroked paths.
 
 const std = @import("std");
@@ -59,7 +59,7 @@ const autohint_fragment_source: [:0]const u8 =
     glsl.source(.autohint_warp) ++ "\n" ++
     glsl.source(.autohint_fast_body) ++ "\n" ++
     "void main() { snailAutohintFragment(); }\n";
-const truetype_fragment_source: [:0]const u8 =
+const tt_hint_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
     glsl.source(.render_fragment_interface) ++ "\n" ++
     glsl.source(.render_abi) ++ "\n" ++
@@ -89,16 +89,16 @@ const colr_fragment_source: [:0]const u8 =
 const Programs = struct {
     regular: c.GLuint,
     autohint: c.GLuint,
-    truetype: c.GLuint,
+    tt_hint: c.GLuint,
     path: c.GLuint,
     colr: c.GLuint,
 
     fn init() !Programs {
-        var self = Programs{ .regular = 0, .autohint = 0, .truetype = 0, .path = 0, .colr = 0 };
+        var self = Programs{ .regular = 0, .autohint = 0, .tt_hint = 0, .path = 0, .colr = 0 };
         errdefer self.deinit();
         self.regular = try linkProgram(vertex_source, regular_fragment_source);
         self.autohint = try linkProgram(autohint_vertex_source, autohint_fragment_source);
-        self.truetype = try linkProgram(vertex_source, truetype_fragment_source);
+        self.tt_hint = try linkProgram(vertex_source, tt_hint_fragment_source);
         self.path = try linkProgram(vertex_source, path_fragment_source);
         self.colr = try linkProgram(vertex_source, colr_fragment_source);
         return self;
@@ -107,7 +107,7 @@ const Programs = struct {
     fn deinit(self: Programs) void {
         c.glDeleteProgram(self.regular);
         c.glDeleteProgram(self.autohint);
-        c.glDeleteProgram(self.truetype);
+        c.glDeleteProgram(self.tt_hint);
         c.glDeleteProgram(self.path);
         c.glDeleteProgram(self.colr);
     }
@@ -116,7 +116,7 @@ const Programs = struct {
         return switch (kind) {
             .regular => self.regular,
             .autohint => self.autohint,
-            .hinted_text => self.truetype,
+            .hinted_text => self.tt_hint,
             .path => self.path,
             .colr => self.colr,
         };
@@ -280,12 +280,12 @@ pub fn main() !void {
     try extendWithAutohint(allocator, &atlas, &analyzer, font_id, shaped.glyphs);
     try gpu.upload(&atlas);
 
-    // Round 4: extend once more with per-ppem TrueType curves, filled and
+    // Round 4: extend once more with per-ppem TT-hinted curves, filled and
     // stroked paths, and one composite COLR glyph. Nothing below uses a demo
     // cache, scene, or renderer.
     var hint_vm = try snail.HintVm.init(allocator, &font);
     defer hint_vm.deinit();
-    const extras = try extendWithTrueTypePathsAndColr(
+    const extras = try extendWithTtHintPathsAndColr(
         allocator,
         &atlas,
         &hint_vm,
@@ -326,17 +326,17 @@ pub fn main() !void {
             shape.autohint_policy = null;
         }
     }
-    const truetype = try snail.placeRunAlloc(allocator, &shaped, null, .{
+    const tt_hinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
         .baseline = .{ .x = 48, .y = 312 },
         .em = 34,
         .color = .{ 0.54, 0.20, 0.20, 1.0 },
-        .mode = .{ .truetype = .{ .ppem_26_6 = ppem } },
+        .mode = .{ .tt_hint = .{ .ppem_26_6 = ppem } },
         .snap = .origins,
         .world_to_pixel = world_to_pixel,
     });
-    defer allocator.free(truetype);
+    defer allocator.free(tt_hinted);
 
-    const total_shapes = extras.len + unhinted.len + autohinted.len + truetype.len;
+    const total_shapes = extras.len + unhinted.len + autohinted.len + tt_hinted.len;
     const words = try allocator.alloc(u32, snail.emit.wordBudget(total_shapes));
     defer allocator.free(words);
     const segments = try allocator.alloc(snail.render.records.DrawSegment, 6);
@@ -347,7 +347,7 @@ pub fn main() !void {
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, &extras, .identity, .{ 1, 1, 1, 1 });
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, unhinted, .identity, .{ 1, 1, 1, 1 });
     _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, autohinted, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, truetype, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, tt_hinted, .identity, .{ 1, 1, 1, 1 });
 
     var seen = struct {
         regular: bool = false,
@@ -449,7 +449,7 @@ fn extendWithAutohint(allocator: std.mem.Allocator, atlas: *snail.Atlas, analyze
     try replaceWithExtension(allocator, atlas, entries.items);
 }
 
-fn extendWithTrueTypePathsAndColr(
+fn extendWithTtHintPathsAndColr(
     allocator: std.mem.Allocator,
     atlas: *snail.Atlas,
     vm: *snail.HintVm,

@@ -421,7 +421,7 @@ fn addScreenshotSteps(
     const autohint_shot_step = b.step("run-autohint-screenshot", "Render the composable autohint policy comparison through the CPU backend and write zig-out/autohint-screenshot.tga");
     autohint_shot_step.dependOn(&run_autohint_shot.step);
 
-    // Autohint xy policy vs TrueType agreement metric + overlay — CPU backend.
+    // Autohint xy policy vs TT-hint agreement metric + overlay — CPU backend.
     const autohint_diff_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
@@ -437,7 +437,7 @@ fn addScreenshotSteps(
     selectDemoEntry(b, autohint_diff_mod, .autohint_diff);
     const autohint_diff_exe = b.addExecutable(.{ .name = "snail-autohint-diff", .root_module = autohint_diff_mod });
     const run_autohint_diff = b.addRunArtifact(autohint_diff_exe);
-    const autohint_diff_step = b.step("run-autohint-diff", "Render the autohint xy policy vs TrueType at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
+    const autohint_diff_step = b.step("run-autohint-diff", "Render the autohint xy policy vs TT hinting at every demo ppem, print a disagreement score and write zig-out/autohint-diff.tga");
     autohint_diff_step.dependOn(&run_autohint_diff.step);
 
     const character_diff_mod = b.createModule(.{
@@ -496,7 +496,7 @@ fn addScreenshotSteps(
     });
     const tt_probe_exe = b.addExecutable(.{ .name = "snail-tt-probe", .root_module = tt_probe_mod });
     const run_tt_probe = b.addRunArtifact(tt_probe_exe);
-    const tt_probe_step = b.step("run-tt-probe", "Probe whether TrueType hinting output is a ppem-independent per-glyph function");
+    const tt_probe_step = b.step("run-tt-probe", "Probe whether TT-hint output is a ppem-independent per-glyph function");
     tt_probe_step.dependOn(&run_tt_probe.step);
 
     // Banner screenshot — full interactive-demo scene through CPU backend.

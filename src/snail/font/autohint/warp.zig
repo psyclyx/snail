@@ -82,7 +82,7 @@ pub const Params = struct {
     /// Ignored when `full_stem_hint` is set.
     stem_hint_max_px: f32 = 1.6,
     /// Width-hint EVERY stem to a whole pixel, ignoring `stem_hint_max_px`.
-    /// Crisper and heavier — matches TrueType's "all stems on solid pixels".
+    /// Crisper and heavier — matches TT hinting's "all stems on solid pixels".
     /// Used for the x-axis, where vertical-stem sharpness is the whole point;
     /// the y-axis stays light (thick horizontals keep natural weight).
     full_stem_hint: bool = false,
@@ -316,7 +316,7 @@ fn blueTarget(e: Edge, blues: []const BlueZone, px_per_unit: f32, overshoot_min_
         // Preserve (min_px < 0): keep the apex natural. A round apex is nearly
         // flat at its peak, so pinning it to the snapped blue row crushes the
         // top ~1px flat; left natural, the curve AA's into a round top like the
-        // unhinted/TrueType render (flat edges still snap for crisp alignment).
+        // unhinted/TT-hinted render (flat edges still snap for crisp alignment).
         if (overshoot_min_px < 0) return e.pos;
         // Suppress: snap to the blue row, keeping overshoot only once it's worth
         // at least `overshoot_min_px` (a crisper, flatter look at small ppem).
@@ -491,7 +491,7 @@ pub fn buildKnotsReg(
     // blue-linked edges, and the weight-preserving companions from pass 2.5.
     // Un-hinted thick stems, interior curve apexes, and stray edges are NOT
     // snapped — they interpolate between the real knots (the same idea as
-    // TrueType's interpolate-untouched-points). This keeps baseline/x-height
+    // TT hinting's interpolate-untouched-points). This keeps baseline/x-height
     // alignment at every size while stem-width crispness fades out as the
     // glyph grows and AA already renders stems cleanly.
     var count: usize = 0;

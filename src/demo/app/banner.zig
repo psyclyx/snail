@@ -813,7 +813,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         }
         if (window.isKeyPressed(KEY_V)) {
             compare_on = !compare_on;
-            std.debug.print("\nautohint-validation={s} (each section labeled with its ppem; rows: un=unhinted, y=y-only, xn=x-natural-width, xf=x-full-width, df=tuned default, tt=truetype)\n", .{if (compare_on) "on" else "off"});
+            std.debug.print("\nautohint-validation={s} (each section labeled with its ppem; rows: un=unhinted, y=y-only, xn=x-natural-width, xf=x-full-width, df=tuned default, tt=tt-hint)\n", .{if (compare_on) "on" else "off"});
         }
         if (window.isKeyPressed(KEY_T)) {
             timing_enabled = !timing_enabled;
@@ -1008,7 +1008,7 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const compose_us = (wayland.getTime() - compose_t0) * 1_000_000.0;
         // Autohint comparison overlay (screen-space, projection-only like the
         // HUD). Built only when toggled on; immutable autohint analysis is
-        // shared across PPEMs, while TrueType records remain per-PPEM. A
+        // shared across PPEMs, while TT-hint records remain per-PPEM. A
         // `dirty` on first growth triggers re-upload.
         _ = compare_arena.reset(.retain_capacity);
         _ = compare_scratch.reset(.retain_capacity);

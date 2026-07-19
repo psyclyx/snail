@@ -280,7 +280,7 @@ fn addHintedText(build: *SceneBuild, fonts: *FontSet) !void {
             .baseline = .{ .x = 18, .y = 38 + @as(f32, @floatFromInt(row)) * 54 },
             .em = 20,
             .color = .{ 0.08, 0.18 + @as(f32, @floatFromInt(row)) * 0.04, 0.34, 1 },
-            .mode = .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } },
+            .mode = .{ .tt_hint = .{ .ppem_26_6 = ppem_26_6 } },
         });
         defer build.allocator.free(placed);
         try build.shapes.appendSlice(build.allocator, placed);

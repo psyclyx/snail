@@ -1,4 +1,4 @@
-//! TrueType bytecode hinting wrapped as a `GlyphCurves` producer.
+//! TT bytecode hinting wrapped as a `GlyphCurves` producer.
 //!
 //! `HintVm` is a PURE producer over an immutable per-ppem state:
 //!

@@ -325,7 +325,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
             .em = hint_opts.hint_ppem_px,
             .color = tagline_color,
-            .mode = .{ .truetype = .{ .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)) } },
+            .mode = .{ .tt_hint = .{ .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)) } },
         })
     else
         try demo_support.placeRun(allocator, &shaped_tagline, &faces, .{

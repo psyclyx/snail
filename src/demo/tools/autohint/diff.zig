@@ -1,15 +1,15 @@
-//! Objective autohint default-policy-vs-TrueType agreement metric for the hinting work.
+//! Objective autohint default-policy-vs-TT-hint agreement metric.
 //!
 //! For every ppem in the demo grid, this renders the sample string TWICE
 //! through the CPU backend at the same baseline/origin — once with the
 //! explicit demo-local xy policy, once with the font's own
-//! TrueType hinting (the gold standard we're chasing). It then:
+//! TT hinting (the reference we're chasing). It then:
 //!
 //!   * prints a per-size disagreement score (summed |ink_xy - ink_tt| and a
 //!     count of pixels that differ by more than a visible margin), plus a
 //!     grand total — the single number to drive down while iterating; and
 //!   * writes zig-out/autohint-diff.tga, a red/green overlay where red is
-//!     xy-policy-only ink, green is TrueType-only ink, and gray is where
+//!     xy-policy-only ink, green is TT-hint-only ink, and gray is where
 //!     both agree — so the *location* of every disagreement is visible.
 //!
 //! Run with `zig build run-autohint-diff`. CPU-only (no GL/Wayland).
@@ -163,7 +163,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
     @memset(comp_tt, 255);
     @memset(composite, 255);
 
-    std.debug.print("autohint default policy vs TrueType disagreement (lower = closer)\n", .{});
+    std.debug.print("autohint default policy vs TT-hint disagreement (lower = closer)\n", .{});
     std.debug.print("  ppem  em   sum|Δ|   px>margin   best_dx,dy residual  (rigid shift that best aligns xy->tt; 0,0 => not a registration offset)\n", .{});
 
     var grand: u64 = 0;
@@ -172,7 +172,7 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, compare: *compar
         const em = compare_mod.Compare.devEm(ppem, 1.0);
         const ppem_26_6: u32 = @intFromFloat(em * 64.0);
 
-        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .truetype = .{ .ppem_26_6 = ppem_26_6 } }, snap);
+        const tt = try renderMode(allocator, frame.allocator(), pool, &compare.atlas, &empty_atlas, &empty_pic, shaped, em, 0, 0, .{ .tt_hint = .{ .ppem_26_6 = ppem_26_6 } }, snap);
         defer allocator.free(tt);
         extractInk(tt, tt_ink);
 

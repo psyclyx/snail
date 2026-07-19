@@ -149,7 +149,7 @@ pub const Atlas = struct {
     /// Per-key (info_x, info_y) into `layer_info_data` for autohint records.
     /// Same persistent-map shape as `paint_lookup`.
     autohint_lookup: PaintLookup,
-    /// Per-key (info_x, info_y) into `layer_info_data` for baked TrueType
+    /// Per-key (info_x, info_y) into `layer_info_data` for baked TT-hint
     /// glyph band records. The hinted outline itself remains in the ordinary
     /// curve/band atlas; this small record lets the hinted-text instance ABI
     /// address it while retaining a distinct shader/program family.
@@ -204,7 +204,7 @@ pub const Atlas = struct {
         return self.autohint_lookup.get(key);
     }
 
-    /// Look up the band record for a baked per-PPEM TrueType glyph.
+    /// Look up the band record for a baked per-PPEM TT-hinted glyph.
     pub fn lookupHintedRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
         return self.hinted_lookup.get(key);
     }

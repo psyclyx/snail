@@ -13,8 +13,8 @@ const cases = [_][]const u8{
     "curves-cff",
     "curves-gvar",
     "curves-cff2",
-    "truetype-prepare",
-    "curves-truetype",
+    "tt-hint-prepare",
+    "curves-tt-hint",
     "autohint-setup",
     "autohint-setup-nonlatin",
     "autohint-setup-cff2",
@@ -23,14 +23,14 @@ const cases = [_][]const u8{
     "path-prepare",
     "path-pack",
     "atlas-build-text",
-    "atlas-build-truetype",
+    "atlas-build-tt-hint",
     "atlas-build-autohint",
     "atlas-build-path",
     "atlas-build-mixed",
     "atlas-build-colr",
     "atlas-upload-plan",
     "emit-text",
-    "emit-truetype",
+    "emit-tt-hint",
     "emit-autohint",
     "emit-path",
     "emit-mixed",
@@ -66,10 +66,10 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args.case, "curves-cff2")) {
         var font = try formatFont(.cff2);
         try curvesFontCase(allocator, args, &font, 32);
-    } else if (std.mem.eql(u8, args.case, "truetype-prepare")) {
-        try trueTypePrepareCase(allocator, args);
-    } else if (std.mem.eql(u8, args.case, "curves-truetype")) {
-        try trueTypeCurvesCase(allocator, args);
+    } else if (std.mem.eql(u8, args.case, "tt-hint-prepare")) {
+        try ttHintPrepareCase(allocator, args);
+    } else if (std.mem.eql(u8, args.case, "curves-tt-hint")) {
+        try ttHintCurvesCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "autohint-setup")) {
         try autohintSetupCase(allocator, args, assets.noto_sans_regular);
     } else if (std.mem.eql(u8, args.case, "autohint-setup-nonlatin")) {
@@ -88,7 +88,7 @@ pub fn main(init: std.process.Init) !void {
         try pathPackCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "atlas-build-text")) {
         try atlasBuildCase(allocator, args, .regular);
-    } else if (std.mem.eql(u8, args.case, "atlas-build-truetype")) {
+    } else if (std.mem.eql(u8, args.case, "atlas-build-tt-hint")) {
         try atlasBuildCase(allocator, args, .hinted);
     } else if (std.mem.eql(u8, args.case, "atlas-build-autohint")) {
         try atlasBuildCase(allocator, args, .autohint);
@@ -102,7 +102,7 @@ pub fn main(init: std.process.Init) !void {
         try uploadPlanCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "emit-text")) {
         try emitCase(allocator, args, .regular);
-    } else if (std.mem.eql(u8, args.case, "emit-truetype")) {
+    } else if (std.mem.eql(u8, args.case, "emit-tt-hint")) {
         try emitCase(allocator, args, .hinted);
     } else if (std.mem.eql(u8, args.case, "emit-autohint")) {
         try emitCase(allocator, args, .autohint);
@@ -296,12 +296,12 @@ fn curvesFontCase(
     reportPrep(args.case, result, glyphs.len, "glyph", &.{.{ .name = "glyphs", .value = glyphs.len }}, context.checksum);
 }
 
-const TrueTypePrepareContext = struct {
+const TtHintPrepareContext = struct {
     allocator: std.mem.Allocator,
     font: *const snail.Font,
     checksum: u64 = 14695981039346656037,
 
-    pub fn run(self: *TrueTypePrepareContext) !void {
+    pub fn run(self: *TtHintPrepareContext) !void {
         var vm = try snail.HintVm.init(self.allocator, self.font);
         defer vm.deinit();
         var prepared = try vm.prepare(snail.HintPpem.uniform(20 * 64));
@@ -310,14 +310,14 @@ const TrueTypePrepareContext = struct {
     }
 };
 
-fn trueTypePrepareCase(allocator: std.mem.Allocator, args: common.Args) !void {
+fn ttHintPrepareCase(allocator: std.mem.Allocator, args: common.Args) !void {
     var font = try snail.Font.init(assets.noto_sans_regular);
-    var context = TrueTypePrepareContext{ .allocator = allocator, .font = &font };
+    var context = TtHintPrepareContext{ .allocator = allocator, .font = &font };
     const result = try common.measure(allocator, &context, iterations(args, 512), args.samples);
     reportPrep(args.case, result, 1, "font_ppem_context", &.{.{ .name = "ppem", .value = 20 }}, context.checksum);
 }
 
-const TrueTypeCurvesContext = struct {
+const TtHintCurvesContext = struct {
     allocator: std.mem.Allocator,
     vm: *snail.HintVm,
     prepared: *const snail.HintVm.Prepared,
@@ -325,7 +325,7 @@ const TrueTypeCurvesContext = struct {
     scratch: *std.heap.ArenaAllocator,
     checksum: u64 = 14695981039346656037,
 
-    pub fn run(self: *TrueTypeCurvesContext) !void {
+    pub fn run(self: *TtHintCurvesContext) !void {
         for (self.glyphs) |glyph_id| {
             var curves = try self.vm.hintGlyph(self.allocator, self.scratch.allocator(), self.prepared, glyph_id);
             consumeCurves(&self.checksum, &curves);
@@ -335,7 +335,7 @@ const TrueTypeCurvesContext = struct {
     }
 };
 
-fn trueTypeCurvesCase(allocator: std.mem.Allocator, args: common.Args) !void {
+fn ttHintCurvesCase(allocator: std.mem.Allocator, args: common.Args) !void {
     var font = try snail.Font.init(assets.noto_sans_regular);
     var glyphs: [94]u16 = undefined;
     try asciiGlyphs(&font, &glyphs);
@@ -345,7 +345,7 @@ fn trueTypeCurvesCase(allocator: std.mem.Allocator, args: common.Args) !void {
     defer prepared.deinit();
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
-    var context = TrueTypeCurvesContext{
+    var context = TtHintCurvesContext{
         .allocator = allocator,
         .vm = &vm,
         .prepared = &prepared,

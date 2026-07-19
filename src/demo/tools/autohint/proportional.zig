@@ -1,4 +1,4 @@
-//! Spot-check the autohint policies on a PROPORTIONAL, TrueType-hinted face
+//! Spot-check the autohint policies on a PROPORTIONAL, TT-hinted face
 //! (NotoSans-Regular) — the demo grid otherwise only exercises monospace fonts.
 //! Renders the un/y/xn/xf/df/tt rows across the grid ppems with per-glyph ORIGIN
 //! snapping (correct for variable advances) and writes zig-out/autohint-prop.tga.
