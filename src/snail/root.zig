@@ -100,6 +100,12 @@ pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 
+const atlas_populate = @import("atlas/populate.zig");
+pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
+pub const extendUnhintedRun = atlas_populate.extendUnhintedRun;
+pub const extendAutohintRun = atlas_populate.extendAutohintRun;
+pub const extendTtHintRun = atlas_populate.extendTtHintRun;
+
 const shape_mod = @import("draw/shape.zig");
 pub const Shape = shape_mod.Shape;
 
@@ -149,6 +155,7 @@ test {
     _ = @import("atlas/page.zig");
     _ = @import("atlas/page_pool.zig");
     _ = @import("atlas/upload_plan.zig");
+    _ = atlas_populate;
     _ = atlas_mod;
     _ = @import("path.zig");
     _ = @import("path_pack.zig");

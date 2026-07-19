@@ -91,6 +91,11 @@ pub fn emit(
             return error.MissingRecord;
         };
 
+        // Empty records are non-rendering glyphs (spaces, zero-contour
+        // controls). Their semantic side records are intentionally optional;
+        // skip before validating mode-specific metadata.
+        if (rec.curve_count == 0) continue;
+
         const ah_info_opt = atlas.lookupAutohintRecord(shape.key);
         const packed_policy = if (ah_info_opt != null) blk: {
             const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
@@ -100,10 +105,6 @@ pub fn emit(
             if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
             break :blk [_]u32{0} ** 7;
         };
-
-        // An empty record (curve_count == 0) corresponds to a non-rendering
-        // glyph (e.g. ASCII space). Skip emitting any instance for it.
-        if (rec.curve_count == 0) continue;
 
         const page = atlas.pages[rec.page_index];
         if (page.layer_index > std.math.maxInt(u8)) return error.AtlasLayerOverflow;

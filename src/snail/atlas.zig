@@ -176,6 +176,15 @@ pub const Atlas = struct {
         };
     }
 
+    /// Empty atlas associated with `pool`. Unlike `empty`, this value can be
+    /// populated with `extend` / `extendInPlace`; it is useful for callers
+    /// whose atlas starts empty and grows on demand.
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) Atlas {
+        var atlas = empty(allocator);
+        atlas.pool = pool;
+        return atlas;
+    }
+
     pub fn deinit(self: *Atlas) void {
         if (self.pool) |pool| {
             for (self.pages) |p| pool.release(p);
@@ -262,6 +271,20 @@ pub const Atlas = struct {
         }
 
         return builder.finish();
+    }
+
+    /// Replace this atlas with an extension while preserving `extend`'s
+    /// failure atomicity: on error `self` remains valid and unchanged.
+    /// Empty entry slices are a no-op.
+    pub fn extendInPlace(
+        self: *Atlas,
+        allocator: std.mem.Allocator,
+        entries: []const Entry,
+    ) InsertError!void {
+        if (entries.len == 0) return;
+        const grown = try self.extend(allocator, entries);
+        self.deinit();
+        self.* = grown;
     }
 
     /// Union of pages and lookups. The result references the union of pages

@@ -247,12 +247,13 @@ pub fn main() !void {
     });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0);
-    const emoji_font_id = faces.fontIdForFace(1);
 
     var seed = try snail.shape(allocator, &faces, "Hello, ", .{});
     defer seed.deinit();
     var shaped = try snail.shape(allocator, &faces, text, .{});
     defer shaped.deinit();
+    var emoji = try snail.shape(allocator, &faces, "\xF0\x9F\x8C\x8D", .{});
+    defer emoji.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
         .max_layers = 8,
@@ -265,35 +266,46 @@ pub fn main() !void {
     defer gpu.deinit();
 
     // Round 1: seed a new atlas with the first part of the unhinted run.
-    var atlas = try atlasFromUnhinted(allocator, pool, &font, font_id, seed.glyphs);
+    var atlas = snail.Atlas.init(allocator, pool);
     defer atlas.deinit();
+    try snail.extendUnhintedRun(&atlas, allocator, &faces, &seed, .{});
     try gpu.upload(&atlas);
 
     // Round 2: extend it with the remaining unhinted glyphs. This is the
     // ordinary hot path: `planDelta` keeps the binding and uploads new pages.
-    try extendWithUnhinted(allocator, &atlas, &font, font_id, shaped.glyphs);
+    try snail.extendUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
     try gpu.upload(&atlas);
 
     // Round 3: extend the same atlas with immutable autohint analysis.
     var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, assets.dejavu_sans_mono);
     defer analyzer.deinit();
-    try extendWithAutohint(allocator, &atlas, &analyzer, font_id, shaped.glyphs);
+    try snail.extendAutohintRun(&atlas, allocator, &analyzer, font_id, &shaped);
     try gpu.upload(&atlas);
 
-    // Round 4: extend once more with per-ppem TT-hinted curves, filled and
-    // stroked paths, and one composite COLR glyph. Nothing below uses a demo
-    // cache, scene, or renderer.
+    // Round 4: extend once more with per-PPEM TT-hinted curves, filled and
+    // stroked paths, and one composite COLR glyph. The core helpers own all
+    // temporary font-atlas packing; only path construction remains local.
     var hint_vm = try snail.HintVm.init(allocator, &font);
     defer hint_vm.deinit();
-    const extras = try extendWithTtHintPathsAndColr(
-        allocator,
-        &atlas,
-        &hint_vm,
-        font_id,
-        shaped.glyphs,
-        &emoji_font,
-        emoji_font_id,
-    );
+    var hint_cache = snail.HintedGlyphCache.init(allocator, &hint_vm, font_id);
+    defer hint_cache.deinit();
+    try snail.extendTtHintRun(&atlas, allocator, &hint_cache, &shaped, ppem);
+    const path_shapes = try extendWithPaths(allocator, &atlas);
+    try snail.extendUnhintedRun(&atlas, allocator, &faces, &emoji, .{
+        .colr_foreground = .{ 0.18, 0.35, 0.70, 1.0 },
+    });
+    const colr = try snail.placeRunAlloc(allocator, &emoji, null, .{
+        .baseline = .{ .x = 775, .y = 145 },
+        .em = 92,
+        .color = .{ 1, 1, 1, 1 },
+    });
+    defer allocator.free(colr);
+    std.debug.assert(colr.len == 1);
+    const extras = [3]snail.Shape{
+        path_shapes[0],
+        path_shapes[1],
+        colr[0],
+    };
     try gpu.upload(&atlas);
 
     const autohint_policy = snail.autohint.AutohintPolicy{
@@ -317,15 +329,6 @@ pub fn main() !void {
         .world_to_pixel = world_to_pixel,
     });
     defer allocator.free(autohinted);
-    // Whitespace has no outline to analyze, so it deliberately has no
-    // autohint record. Keep those no-op shapes on their unhinted key.
-    for (shaped.glyphs, autohinted) |glyph, *shape| {
-        const base = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
-        if (atlas.lookupRecord(base).?.curve_count == 0) {
-            shape.key = base;
-            shape.autohint_policy = null;
-        }
-    }
     const tt_hinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
         .baseline = .{ .x = 48, .y = 312 },
         .em = 34,
@@ -396,86 +399,9 @@ pub fn main() !void {
     std.debug.print("wrote zig-out/minimal-gl.tga\n", .{});
 }
 
-fn atlasFromUnhinted(allocator: std.mem.Allocator, pool: *snail.PagePool, font: *const snail.Font, font_id: u32, glyphs: []const snail.ShapedText.Glyph) !snail.Atlas {
-    var entries: std.ArrayList(snail.AtlasEntry) = .empty;
-    defer entries.deinit(allocator);
-    var owned: std.ArrayList(snail.GlyphCurves) = .empty;
-    defer deinitCurves(allocator, &owned);
-    try appendUnhinted(allocator, null, font, font_id, glyphs, &entries, &owned);
-    return snail.Atlas.from(allocator, pool, entries.items);
-}
-
-fn extendWithUnhinted(allocator: std.mem.Allocator, atlas: *snail.Atlas, font: *const snail.Font, font_id: u32, glyphs: []const snail.ShapedText.Glyph) !void {
-    var entries: std.ArrayList(snail.AtlasEntry) = .empty;
-    defer entries.deinit(allocator);
-    var owned: std.ArrayList(snail.GlyphCurves) = .empty;
-    defer deinitCurves(allocator, &owned);
-    try appendUnhinted(allocator, atlas, font, font_id, glyphs, &entries, &owned);
-    if (entries.items.len > 0) try replaceWithExtension(allocator, atlas, entries.items);
-}
-
-fn appendUnhinted(allocator: std.mem.Allocator, atlas: ?*const snail.Atlas, font: *const snail.Font, font_id: u32, glyphs: []const snail.ShapedText.Glyph, entries: *std.ArrayList(snail.AtlasEntry), owned: *std.ArrayList(snail.GlyphCurves)) !void {
+fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.Shape {
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();
-    for (glyphs) |glyph| {
-        const key = snail.recordKey.unhintedGlyph(font_id, glyph.glyph_id);
-        if ((atlas != null and atlas.?.contains(key)) or hasKey(entries.items, key)) continue;
-        try owned.append(allocator, try font.extractCurves(allocator, scratch.allocator(), glyph.glyph_id));
-        _ = scratch.reset(.retain_capacity);
-        try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1] });
-    }
-}
-
-fn extendWithAutohint(allocator: std.mem.Allocator, atlas: *snail.Atlas, analyzer: *snail.autohint.AutohintAnalyzer, font_id: u32, glyphs: []const snail.ShapedText.Glyph) !void {
-    var scratch = std.heap.ArenaAllocator.init(allocator);
-    defer scratch.deinit();
-    var entries: std.ArrayList(snail.AtlasEntry) = .empty;
-    defer entries.deinit(allocator);
-    for (glyphs) |glyph| {
-        const key = snail.recordKey.autohintGlyph(font_id, glyph.glyph_id);
-        if (atlas.contains(key) or hasKey(entries.items, key)) continue;
-        const base_key = snail.recordKey.unhintedGlyph(font_id, glyph.glyph_id);
-        if (atlas.lookupRecord(base_key).?.curve_count == 0) continue;
-        const x = try scratch.allocator().alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
-        const y = try scratch.allocator().alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
-        const analysis = try analyzer.analyzeGlyph(scratch.allocator(), glyph.glyph_id, x, y);
-        try entries.append(allocator, .{
-            .key = key,
-            .curves = snail.GlyphCurves.empty(scratch.allocator()),
-            .autohint = .{ .font = analyzer.fontFeatures(), .glyph = analysis },
-            .autohint_base = base_key,
-        });
-    }
-    try replaceWithExtension(allocator, atlas, entries.items);
-}
-
-fn extendWithTtHintPathsAndColr(
-    allocator: std.mem.Allocator,
-    atlas: *snail.Atlas,
-    vm: *snail.HintVm,
-    font_id: u32,
-    glyphs: []const snail.ShapedText.Glyph,
-    emoji_font: *const snail.Font,
-    emoji_font_id: u32,
-) ![3]snail.Shape {
-    var scratch = std.heap.ArenaAllocator.init(allocator);
-    defer scratch.deinit();
-    var entries: std.ArrayList(snail.AtlasEntry) = .empty;
-    defer entries.deinit(allocator);
-    var owned: std.ArrayList(snail.GlyphCurves) = .empty;
-    defer deinitCurves(allocator, &owned);
-    var colr_layers: std.ArrayList(snail.AtlasLayer) = .empty;
-    defer colr_layers.deinit(allocator);
-
-    var prepared_hint = try vm.prepare(snail.HintPpem.uniform(ppem));
-    defer prepared_hint.deinit();
-    for (glyphs) |glyph| {
-        const key = snail.recordKey.hintedGlyph(font_id, glyph.glyph_id, ppem);
-        if (atlas.contains(key) or hasKey(entries.items, key)) continue;
-        try owned.append(allocator, try vm.hintGlyph(allocator, scratch.allocator(), &prepared_hint, glyph.glyph_id));
-        _ = scratch.reset(.retain_capacity);
-        try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1] });
-    }
 
     // Filled path.
     var fill_path = snail.Path.init(allocator);
@@ -483,14 +409,10 @@ fn extendWithTtHintPathsAndColr(
     try fill_path.addRoundedRect(.{ .x = 530, .y = 205, .w = 145, .h = 105 }, 22);
     var prepared_fill = try fill_path.prepare(allocator);
     defer prepared_fill.deinit();
-    try owned.append(allocator, try prepared_fill.fillCurves(allocator, scratch.allocator()));
+    var fill_curves = try prepared_fill.fillCurves(allocator, scratch.allocator());
+    defer fill_curves.deinit();
     _ = scratch.reset(.retain_capacity);
     const fill_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = 1 };
-    try entries.append(allocator, .{
-        .key = fill_key,
-        .curves = owned.items[owned.items.len - 1],
-        .paint = prepared_fill.paintForDesign(.{ .solid = .{ 0.34, 0.25, 0.72, 0.92 } }),
-    });
 
     // Stroked path. `strokeCurves` outlines the source-space stroke before
     // packing it, so the same path program consumes the resulting geometry.
@@ -506,74 +428,27 @@ fn extendWithTtHintPathsAndColr(
         .cap = .round,
         .join = .round,
     };
-    try owned.append(allocator, try prepared_stroke.strokeCurves(allocator, scratch.allocator(), stroke_style));
+    var stroke_curves = try prepared_stroke.strokeCurves(allocator, scratch.allocator(), stroke_style);
+    defer stroke_curves.deinit();
     _ = scratch.reset(.retain_capacity);
     const stroke_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = 1 };
-    try entries.append(allocator, .{
-        .key = stroke_key,
-        .curves = owned.items[owned.items.len - 1],
-        .paint = prepared_stroke.paintForDesign(stroke_style.paint),
-    });
 
-    // Composite COLRv0 glyph. A base unhinted-glyph key with paint records is
-    // emitted as `.colr`; every additional palette layer becomes AtlasLayer.
-    const emoji_gid = try emoji_font.glyphIndex(0x1F30D); // globe
-    var layer_iter = emoji_font.colrLayers(emoji_gid);
-    const first_layer = layer_iter.next() orelse return error.MissingColrLayers;
-    try owned.append(allocator, try emoji_font.extractCurves(allocator, scratch.allocator(), first_layer.glyph_id));
-    _ = scratch.reset(.retain_capacity);
-    const first_color: [4]f32 = if (first_layer.color[0] < 0)
-        .{ 0.18, 0.35, 0.70, 1.0 }
-    else
-        first_layer.color;
-    const colr_base_curves = owned.items[owned.items.len - 1];
-    while (layer_iter.next()) |layer| {
-        try owned.append(allocator, try emoji_font.extractCurves(allocator, scratch.allocator(), layer.glyph_id));
-        _ = scratch.reset(.retain_capacity);
-        const color: [4]f32 = if (layer.color[0] < 0)
-            .{ 0.18, 0.35, 0.70, 1.0 }
-        else
-            layer.color;
-        try colr_layers.append(allocator, .{
-            .curves = owned.items[owned.items.len - 1],
-            .paint = .{ .solid = color },
-        });
-    }
-    const colr_key = snail.recordKey.unhintedGlyph(emoji_font_id, emoji_gid);
-    try entries.append(allocator, .{
-        .key = colr_key,
-        .curves = colr_base_curves,
-        .paint = .{ .solid = first_color },
-        .extra_layers = colr_layers.items,
+    try atlas.extendInPlace(allocator, &.{
+        .{
+            .key = fill_key,
+            .curves = fill_curves,
+            .paint = prepared_fill.paintForDesign(.{ .solid = .{ 0.34, 0.25, 0.72, 0.92 } }),
+        },
+        .{
+            .key = stroke_key,
+            .curves = stroke_curves,
+            .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+        },
     });
-
-    try replaceWithExtension(allocator, atlas, entries.items);
     return .{
         .{ .key = fill_key, .local_transform = prepared_fill.placedBy(.identity) },
         .{ .key = stroke_key, .local_transform = prepared_stroke.placedBy(.identity) },
-        .{
-            .key = colr_key,
-            .local_transform = .{ .xx = 92, .xy = 0, .tx = 775, .yx = 0, .yy = -92, .ty = 145 },
-            .local_color = .{ 1, 1, 1, 1 },
-        },
     };
-}
-
-fn replaceWithExtension(allocator: std.mem.Allocator, atlas: *snail.Atlas, entries: []const snail.AtlasEntry) !void {
-    if (entries.len == 0) return;
-    const grown = try atlas.extend(allocator, entries);
-    atlas.deinit();
-    atlas.* = grown;
-}
-
-fn hasKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
-    for (entries) |entry| if (entry.key.eql(key)) return true;
-    return false;
-}
-
-fn deinitCurves(allocator: std.mem.Allocator, curves: *std.ArrayList(snail.GlyphCurves)) void {
-    for (curves.items) |*item| item.deinit();
-    curves.deinit(allocator);
 }
 
 const Egl = struct {
