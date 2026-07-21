@@ -490,6 +490,56 @@ test "emit reports MissingRecord on unknown key" {
     try testing.expectError(EmitError.MissingRecord, emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
 }
 
+test "emit reports BufferTooSmall before writing anything" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    const shapes = [_]Shape{
+        .{ .key = record_key_mod.unhintedGlyph(0, 1) },
+        .{ .key = record_key_mod.unhintedGlyph(0, 1) },
+    };
+
+    // Two shapes, one-instance buffer: rejected up front.
+    var instances: [1]Instance = undefined;
+    var batches: [2]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    const binding = Binding{ .pool = pool };
+    try testing.expectError(EmitError.BufferTooSmall, emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectEqual(@as(usize, 0), ilen);
+    try testing.expectEqual(@as(usize, 0), blen);
+}
+
+test "emit reports InvalidTransform for a degenerate composed transform" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    // Zero scale collapses the determinant below the emit threshold.
+    const shapes = [_]Shape{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .local_transform = .{ .xx = 0, .xy = 0, .yx = 0, .yy = 0 },
+    }};
+
+    var instances: [1]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    const binding = Binding{ .pool = pool };
+    try testing.expectError(EmitError.InvalidTransform, emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
+}
+
 test "emit coalesces adjacent same-binding calls" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,

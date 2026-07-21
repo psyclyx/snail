@@ -42,10 +42,11 @@ pub const records = struct {
     pub const unpackBandCounts = abi_mod.unpackBandCounts;
 };
 
-/// Decoders for the immutable atlas bytes returned by `AtlasUploadPlanner`.
+/// Decoders for the immutable geometry/record bytes returned by
+/// `AtlasUploadPlanner`.
 /// GPU callers normally use the shipped shader functions; this surface lets a
 /// software renderer consume the exact same representation.
-pub const atlas = struct {
+pub const geometry = struct {
     pub const CurveKind = curve_mod.CurveKind;
     pub const CurveSegment = curve_mod.CurveSegment;
     pub const GlyphBandEntry = band_texture_mod.GlyphBandEntry;
@@ -68,5 +69,5 @@ pub const atlas = struct {
 
 test {
     _ = records;
-    _ = atlas;
+    _ = geometry;
 }

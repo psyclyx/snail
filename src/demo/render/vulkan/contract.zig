@@ -54,7 +54,7 @@ pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
     vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT;
 
 /// Build the per-draw push constants for the text-coverage recipe from a
-/// `DrawState`. This is the single source of truth the all-in-one renderer and
+/// `DrawState`. This is the single source of truth the reference caller and
 /// an embeddable caller both use, so their pushed constants are identical.
 /// `grayscale` selects the non-subpixel path (the text-coverage recipe today).
 pub fn textPushConstants(draw_state: render_state.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
@@ -135,7 +135,7 @@ pub const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
 pub const Blend = enum { premultiplied, dual_source };
 
 /// The color-blend attachment state for a family's blend. Single source of
-/// truth shared with the all-in-one renderer so caller pipelines match exactly.
+/// truth for caller pipelines, shared with the CPU renderer's decode path.
 pub fn blendAttachment(mode: Blend) vk.VkPipelineColorBlendAttachmentState {
     // Shader outputs are premultiplied by coverage, so src factor stays ONE.
     return std.mem.zeroInit(vk.VkPipelineColorBlendAttachmentState, .{
@@ -185,7 +185,7 @@ pub fn recipe(family: Family) PipelineRecipe {
 /// pipeline, `subpixel_dual_source` uses `.subpixel` (dual-source blend).
 pub const TextRenderMode = enum { grayscale, subpixel_dual_source };
 
-/// Choose the render mode for a regular-text run, matching the all-in-one
+/// Choose the render mode for a regular-text run, matching the reference
 /// renderer. Returns `.grayscale` unless subpixel is requested (`draw_state`'s
 /// subpixel order) and `supports_dual_src` is true. The caller passes the
 /// result to `familyForKind` and to

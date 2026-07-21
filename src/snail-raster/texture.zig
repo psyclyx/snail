@@ -2,8 +2,8 @@
 
 const snail = @import("snail");
 
-const bezier = @import("snail").render.atlas;
-const curve_tex = @import("snail").render.atlas;
+const bezier = @import("snail").render.geometry;
+const curve_tex = @import("snail").render.geometry;
 const CurveSegment = bezier.CurveSegment;
 const band_curve_loc_x_bits = 12;
 const band_curve_loc_x_mask: u32 = (1 << band_curve_loc_x_bits) - 1;

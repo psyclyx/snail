@@ -107,7 +107,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         info_scratch_stride: usize,
         active_bindings: u32 = 0,
         // Highest atlas generation uploaded so far — a coarse residency proxy the
-        // all-in-one renderer uses to reject stale bindings. Advanced by the
+        // reference GL renderer's stale-binding guard consumes. Advanced by the
         // planner-driven upload paths; never affects texel output.
         upload_generation: u32 = 0,
 

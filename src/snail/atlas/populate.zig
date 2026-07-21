@@ -404,6 +404,40 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
 }
 
+test "outline_only COLR handling records base outlines and ignores layers" {
+    var regular = try Font.init(@import("assets").noto_sans_regular);
+    var emoji = try Font.init(@import("assets").twemoji_mozilla);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{
+        .{ .font = &regular },
+        .{ .font = &emoji, .fallback = true },
+    });
+    defer faces.deinit();
+    var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
+    defer shaped.deinit();
+
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+
+    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .outline_only });
+
+    // The COLR glyph is recorded as a plain base outline: present under
+    // its base key, with no composite paint record and no layer records.
+    const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
+    try testing.expect(atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)));
+    try testing.expect(atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)) == null);
+    var iter = emoji.colrLayers(emoji_glyph.glyph_id);
+    while (iter.next()) |layer| {
+        if (layer.glyph_id == emoji_glyph.glyph_id) continue;
+        try testing.expect(!atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, layer.glyph_id)));
+    }
+}
+
 test "layers COLR handling records per-layer glyphs for fanout placement" {
     var regular = try Font.init(@import("assets").noto_sans_regular);
     var emoji = try Font.init(@import("assets").twemoji_mozilla);

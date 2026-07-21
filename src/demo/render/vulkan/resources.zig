@@ -19,7 +19,7 @@ pub const PipelineShape = device_atlas.PipelineShape;
 pub const VulkanResourceLayout = resource_layout.VulkanResourceLayout;
 
 /// Build the cache's `PipelineShape` from a standalone `VulkanResourceLayout`
-/// plus a caller-owned transfer command pool — no all-in-one `VulkanRenderer`
+/// plus a caller-owned transfer command pool — no library-owned renderer
 /// needed. This is how an embeddable consumer constructs a
 /// `VulkanDeviceAtlas`: create a resource layout, a transfer command pool on
 /// the graphics queue family, then `VulkanDeviceAtlas.init(alloc, pool,

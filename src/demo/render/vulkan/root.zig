@@ -1,12 +1,11 @@
 //! Reference caller renderer for the Vulkan embeddable path.
 //!
-//! This is the worked example an integrator copies: snail owns the font data
-//! (atlas, cache, descriptor set, `emit` instances) and hands over the public
-//! the includable snail shader pieces; this owns the complete shaders,
-//! pipelines, and draw. It builds one
-//! pipeline per shape family, walks the emit stream's glyph runs, and binds the
-//! family pipeline each run needs — reproducing the all-in-one `VulkanRenderer`
-//! from the public surface alone.
+//! This is the worked example an integrator copies: snail supplies the font
+//! data (atlas, planner regions, `emit` instances) and the includable shader
+//! pieces; this renderer owns the complete shaders, pipelines, and draw. It
+//! builds one pipeline per shape family, walks the emit stream's glyph runs,
+//! and binds the family pipeline each run needs — an engine-shaped reference
+//! built from the public surface alone.
 //!
 //! It renders into a caller-provided command buffer + render pass; the caller
 //! owns the offscreen/swapchain target, the descriptor set (from

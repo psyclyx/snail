@@ -1,9 +1,8 @@
 //! Standalone owner of the Vulkan sampler + descriptor-set-layout resources.
 //!
-//! These used to live inside the all-in-one `VulkanPipeline`. They are pulled
-//! out here so both the all-in-one renderer and an embeddable caller consume
-//! the *same* layout — and so the descriptor-set layout (a core piece of the
-//! embeddable contract) outlives the all-in-one renderer's removal.
+//! The descriptor-set layout is a core piece of the embeddable contract:
+//! it is the stable surface callers build their own pipelines from, and
+//! the device atlas writes its descriptor set against the same layout.
 //!
 //! The layout owns two immutable samplers (nearest for the curve/band/
 //! layer-info textures, linear for the image array) baked into a 4-binding

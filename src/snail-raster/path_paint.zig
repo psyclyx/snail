@@ -4,7 +4,7 @@ const std = @import("std");
 const snail = @import("snail");
 const color = @import("color.zig");
 const atlas_mod = @import("snail");
-const band_tex = @import("snail").render.atlas;
+const band_tex = @import("snail").render.geometry;
 const render_abi = @import("snail").render.records;
 
 const PaintImageRecord = atlas_mod.PaintImageRecord;

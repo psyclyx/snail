@@ -30,6 +30,7 @@ pub const Fragment = enum {
     text_sample_interface_gles,
     text_sample_interface_vulkan,
     text_sample_body,
+    linear_resolve_body,
 };
 
 /// Runtime source for one canonical fragment.
@@ -58,6 +59,7 @@ pub fn source(comptime fragment: Fragment) [:0]const u8 {
         .text_sample_interface_gles => @embedFile("glsl/snail_text_sample.interface.gles30.glsl"),
         .text_sample_interface_vulkan => @embedFile("glsl/snail_text_sample.interface.vulkan.glsl"),
         .text_sample_body => @embedFile("glsl/snail_text_sample_body.glsl"),
+        .linear_resolve_body => @embedFile("glsl/snail_linear_resolve_body.glsl"),
     };
 }
 
@@ -87,6 +89,7 @@ pub fn fileName(fragment: Fragment) []const u8 {
         .text_sample_interface_gles => "snail_text_sample.interface.gles30.glsl",
         .text_sample_interface_vulkan => "snail_text_sample.interface.vulkan.glsl",
         .text_sample_body => "snail_text_sample_body.glsl",
+        .linear_resolve_body => "snail_linear_resolve_body.glsl",
     };
 }
 
@@ -102,6 +105,9 @@ pub const dependencies = struct {
     pub const autohint_fast = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_fast_body };
     pub const text_subpixel = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_subpixel_body };
     pub const text_sample = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .text_sample_body };
+    /// Fullscreen linear-resolve pass (float intermediate seed/encode) for
+    /// hosts without hardware sRGB encode; see the fragment's recipe doc.
+    pub const linear_resolve = [_]Fragment{ .color_common, .linear_resolve_body };
 };
 
 /// Storage width required by the GLES records-interface fragment.

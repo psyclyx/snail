@@ -21,6 +21,7 @@ const autohint_warp = glsl.source(.autohint_warp);
 const autohint_vert_body = glsl.source(.autohint_vertex_body);
 const autohint_fast_main = glsl.source(.autohint_fast_body);
 const subpixel_body = glsl.source(.text_subpixel_body);
+const linear_resolve_body = glsl.source(.linear_resolve_body);
 
 const vertex_entry = "\nvoid main() { snailVertex(); }\n";
 const autohint_vertex_entry = "\nvoid main() { snailAutohintVertex(); }\n";
@@ -33,6 +34,34 @@ const autohint_fast_fragment_body = text_coverage ++ "\n" ++ autohint_warp ++ "\
 const autohint_vertex_source = autohint_vert_interface ++ "\n" ++ color_common ++ "\n" ++ autohint_warp ++ "\n" ++ vertex_body ++ "\n" ++ autohint_vert_body ++ autohint_vertex_entry;
 const subpixel_fragment_body = render_abi ++ "\n" ++ coverage_common ++ "\n" ++ color_common ++ "\n" ++ subpixel_body ++ "\nvoid main() { snailSubpixelFragment(); }\n";
 
+// Fullscreen linear-resolve pass (see snail_linear_resolve_body.glsl for
+// the recipe). Vertex stage is the standard bufferless fullscreen triangle;
+// the fragment stage dispatches seed vs encode on `u_mode`.
+const linear_resolve_vertex_body =
+    \\out vec2 v_uv;
+    \\void main() {
+    \\    vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0,
+    \\                    (gl_VertexID == 2) ? 3.0 : -1.0);
+    \\    v_uv = pos * 0.5 + 0.5;
+    \\    gl_Position = vec4(pos, 0.0, 1.0);
+    \\}
+    \\
+;
+const linear_resolve_fragment_frame =
+    \\in vec2 v_uv;
+    \\uniform sampler2D u_linear_tex;
+    \\uniform sampler2D u_dst_tex;
+    \\uniform int u_mode;
+    \\out vec4 frag_color;
+    \\void main() {
+    \\    frag_color = (u_mode == 0)
+    \\        ? snailLinearResolveSeed(texture(u_dst_tex, v_uv))
+    \\        : snailLinearResolveEncode(texture(u_linear_tex, v_uv));
+    \\}
+    \\
+;
+const linear_resolve_fragment_body = color_common ++ "\n" ++ linear_resolve_body ++ "\n" ++ linear_resolve_fragment_frame;
+
 pub const Gl330 = struct {
     const version = "#version 330 core\n\n";
 
@@ -44,6 +73,8 @@ pub const Gl330 = struct {
     pub const fragment_shader_tt_hinted_text = version ++ frag_interface ++ "\n" ++ hinted_fragment_body;
     pub const fragment_shader_autohint = version ++ autohint_frag_interface ++ "\n" ++ autohint_fast_fragment_body;
     pub const fragment_shader_text_subpixel_dual = version ++ "#define SNAIL_DUAL_SOURCE 1\n\n" ++ text_interface ++ "\n" ++ subpixel_fragment_body;
+    pub const linear_resolve_vertex_shader = version ++ linear_resolve_vertex_body;
+    pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 };
 
 pub const Gles30 = struct {
@@ -63,6 +94,8 @@ pub const Gles30 = struct {
     pub const fragment_shader_tt_hinted_text = version ++ frag_interface ++ "\n" ++ hinted_fragment_body;
     pub const fragment_shader_autohint = version ++ autohint_frag_interface ++ "\n" ++ autohint_fast_fragment_body;
     pub const fragment_shader_text_subpixel_dual = "";
+    pub const linear_resolve_vertex_shader = version ++ linear_resolve_vertex_body;
+    pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 };
 
 test "reference entry points stay outside the library shader surface" {

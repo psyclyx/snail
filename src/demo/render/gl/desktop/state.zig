@@ -28,8 +28,8 @@ fn regularTextRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextR
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
 const LinearResolveState = linear_resolve.StateFor(gl, .{
-    .vertex_shader = linear_resolve_vertex_shader,
-    .fragment_shader = linear_resolve_fragment_shader,
+    .vertex_shader = shaders.linear_resolve_vertex_shader,
+    .fragment_shader = shaders.linear_resolve_fragment_shader,
     .dst_format = .intermediate,
     .linkProgram = gl_programs.linkProgram,
 });
@@ -627,64 +627,6 @@ fn initEbo() void {
 }
 
 // ── Shader compilation ──
-
-const linear_resolve_vertex_shader: [:0]const u8 =
-    \\#version 330 core
-    \\out vec2 v_uv;
-    \\void main() {
-    \\    vec2 pos = vec2((gl_VertexID == 1) ? 3.0 : -1.0,
-    \\                    (gl_VertexID == 2) ? 3.0 : -1.0);
-    \\    v_uv = pos * 0.5 + 0.5;
-    \\    gl_Position = vec4(pos, 0.0, 1.0);
-    \\}
-;
-
-const linear_resolve_fragment_shader: [:0]const u8 =
-    \\#version 330 core
-    \\in vec2 v_uv;
-    \\uniform sampler2D u_linear_tex;
-    \\uniform sampler2D u_dst_tex;
-    \\uniform int u_mode;
-    \\out vec4 frag_color;
-    \\
-    \\float srgbDecode(float c) {
-    \\    return (c <= 0.04045) ? c / 12.92 : pow((c + 0.055) / 1.055, 2.4);
-    \\}
-    \\
-    \\float srgbEncode(float c) {
-    \\    return (c <= 0.0031308) ? c * 12.92 : 1.055 * pow(c, 1.0 / 2.4) - 0.055;
-    \\}
-    \\
-    \\vec4 srgbDecodePremultiplied(vec4 premul) {
-    \\    if (premul.a <= 0.0) return vec4(0.0);
-    \\    float inv_a = 1.0 / premul.a;
-    \\    return vec4(
-    \\        srgbDecode(clamp(premul.r * inv_a, 0.0, 1.0)) * premul.a,
-    \\        srgbDecode(clamp(premul.g * inv_a, 0.0, 1.0)) * premul.a,
-    \\        srgbDecode(clamp(premul.b * inv_a, 0.0, 1.0)) * premul.a,
-    \\        premul.a
-    \\    );
-    \\}
-    \\
-    \\vec4 srgbEncodePremultiplied(vec4 premul) {
-    \\    if (premul.a <= 0.0) return vec4(0.0);
-    \\    float inv_a = 1.0 / premul.a;
-    \\    return vec4(
-    \\        srgbEncode(max(premul.r * inv_a, 0.0)) * premul.a,
-    \\        srgbEncode(max(premul.g * inv_a, 0.0)) * premul.a,
-    \\        srgbEncode(max(premul.b * inv_a, 0.0)) * premul.a,
-    \\        premul.a
-    \\    );
-    \\}
-    \\
-    \\void main() {
-    \\    if (u_mode == 0) {
-    \\        frag_color = srgbDecodePremultiplied(texture(u_dst_tex, v_uv));
-    \\    } else {
-    \\        frag_color = srgbEncodePremultiplied(texture(u_linear_tex, v_uv));
-    \\    }
-    \\}
-;
 
 fn applyBlendMode(mode: BlendMode) void {
     switch (mode) {

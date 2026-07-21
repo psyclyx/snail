@@ -8,7 +8,7 @@ snail renders text and vector art by evaluating Bezier curves at draw time. No b
 
 snail is a library, not a renderer: it owns no GPU objects, threads, caches, or eviction policy. It prepares data on the CPU and hands you texture contents, typed draw records, and entry-point-free shader fragments; your engine owns the textures, pipelines, uploads, and draw calls. An optional software renderer (`snail-raster`) covers hosts without a GPU.
 
-This is alpha-quality software. The Zig API is settling but not yet stable; a C API will be re-cut against the current primitives.
+This is alpha-quality software; see [Status](#status).
 
 ## Algorithm
 
@@ -130,7 +130,7 @@ _ = try snail.emit.emit(instances, batches, &ni, &nb,
 
 The complete, runnable version of this flow against a raw GL context is
 [`src/demo/app/minimal_gl.zig`](src/demo/app/minimal_gl.zig) (`zig build
-run-minimal-gl`) — it exercises all four record verbs, paths, COLR, and the
+run-minimal-gl`) — it exercises the record verbs, paths, COLR, and the
 delta-upload hot path. For a full engine-shaped integration (descriptor
 layouts, multi-pass, Vulkan), read the demo's reference callers in
 [`src/demo/render/gl/`](src/demo/render/gl) and
@@ -156,9 +156,13 @@ per-call configuration.
 **Colors are linear.** Every `[4]f32` color crossing the API is linear light
 with straight (non-premultiplied) alpha. snail never interprets your colors;
 gradients interpolate and tints multiply in linear light, and fragment output
-is **premultiplied linear** — encode via an sRGB framebuffer or your own
-resolve pass (blend state: `ONE, ONE_MINUS_SRC_ALPHA`). If you author in
-sRGB, convert once at the boundary with `snail.color.srgbToLinearColor`.
+is **premultiplied linear** — encode via an sRGB framebuffer or a resolve
+pass (blend state: `ONE, ONE_MINUS_SRC_ALPHA`). For targets without
+hardware sRGB encode, `shader.glsl` ships the linear-resolve fragments
+(`dependencies.linear_resolve`: float-intermediate seed/encode with
+premultiplication handled correctly); the demo GL renderers show the
+orchestration. If you author in sRGB, convert once at the boundary with
+`snail.color.srgbToLinearColor`.
 Font palette colors (CPAL, spec-defined sRGB) are converted at extraction.
 
 **Y axis is yours.** Glyph geometry is stored y-up (font units);
@@ -181,7 +185,7 @@ host-formatted image array. Layouts are stable and documented in
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
 allocator; there is no global or threadlocal state. `Atlas` is value-typed
-and persistent — `extend`/`compact`/`combine` return new snapshots sharing
+and persistent — `extend`/`compact` return new snapshots sharing
 unchanged pages, and lookups return records **by value**, so there is no
 entry-vs-eviction lifetime hazard. Upload `Region`s alias planner scratch
 (`layer_info`/`image`) or live page memory (`curve`/`band`): apply them
@@ -250,7 +254,8 @@ zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vul
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate
 zig build run-gamma-probe         # linear-blending / encode round-trip gate
-zig build run-composite-probe     # perspective coverage-hole gate
+zig build run-composite-probe     # perspective coverage-hole gate (GL)
+zig build run-coverage-parity     # affine coverage-hole gate (CPU rasterizer)
 zig build install-perf            # performance regression runners
 ```
 
