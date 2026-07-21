@@ -13,6 +13,7 @@ const DemoEntry = enum {
     autohint_screenshot,
     backend_compare,
     composite_probe,
+    coverage_parity_probe,
     coverage_probe,
     gamma_probe,
     algorithm_diagrams,
@@ -401,6 +402,25 @@ fn addScreenshotSteps(
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
+
+    // CPU coverage-parity probe (affine twin of the composite probe).
+    const coverage_parity_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/root.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    selectDemoEntry(b, coverage_parity_mod, .coverage_parity_probe);
+    const coverage_parity_exe = b.addExecutable(.{ .name = "snail-coverage-parity", .root_module = coverage_parity_mod });
+    const run_coverage_parity = b.addRunArtifact(coverage_parity_exe);
+    const coverage_parity_step = b.step("run-coverage-parity", "Sweep the composite panel through hostile affine transforms on the CPU rasterizer and gate on interior coverage holes");
+    coverage_parity_step.dependOn(&run_coverage_parity.step);
 
     // README algorithm diagrams — CPU backend.
     const algorithm_diagrams_mod = b.createModule(.{

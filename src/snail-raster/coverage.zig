@@ -6,10 +6,10 @@ const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
 const cubic = @import("coverage/cubic_solver.zig");
 const texture = @import("texture.zig");
-const band_tex = @import("snail").render.atlas;
+const band_tex = @import("snail").render.geometry;
 
-const bezier = @import("snail").render.atlas;
-const curve_tex = @import("snail").render.atlas;
+const bezier = @import("snail").render.geometry;
+const curve_tex = @import("snail").render.geometry;
 const CurveSegment = bezier.CurveSegment;
 const FillRule = snail.FillRule;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -242,21 +242,79 @@ pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f3
 }
 
 const root_code_eps = cubic.root_code_eps;
+const rootCodeCoord = cubic.rootCodeCoord;
 const snapNearTangentSqrt = cubic.snapNearTangentSqrt;
 const calcRootCode = cubic.calcRootCode;
 const solveHorizPoly = cubic.solveHorizPoly;
 const solveVertPoly = cubic.solveVertPoly;
 
-pub inline fn isNearEndRoot(t: f32) bool {
-    return t >= 1.0 - 1e-5;
+inline fn distToUnitInterval(t: f32) f32 {
+    return @max(@max(0.0, -t), t - 1.0);
 }
 
-pub inline fn isEndpointRootDelta(end_root_delta: f32) bool {
-    return @abs(end_root_delta) <= root_code_eps;
+/// Half-open sign-of-zero line crossing (mirrors the GLSL line path): a
+/// vertex exactly on the scanline snaps to +0 and reads as the positive
+/// side, so a vertex shared with the neighbouring segment is owned by
+/// exactly one of them. This replaces the old near-end-root skip, which
+/// paired with FP drift in a neighbouring conic's root could drop the
+/// crossing from BOTH segments and collapse an interior pixel's winding.
+/// Returns the crossing parameter clamped to [0, 1], or null.
+pub inline fn lineCrossingT(root_axis0: f32, root_axis2: f32) ?f32 {
+    const a0 = rootCodeCoord(root_axis0);
+    const a2 = rootCodeCoord(root_axis2);
+    if ((a0 < 0.0) == (a2 < 0.0)) return null;
+    const denom = root_axis2 - root_axis0;
+    if (@abs(denom) < 1e-10) return null;
+    return std.math.clamp(-root_axis0 / denom, 0.0, 1.0);
 }
 
-inline fn isHalfOpenEndpointRoot(t: f32, end_root_delta: f32) bool {
-    return isNearEndRoot(t) and isEndpointRootDelta(end_root_delta);
+pub const GatedConicRoots = struct { count: u8 = 0, t: [2]f32 = .{ 0, 0 } };
+
+/// Conic crossings with `calcRootCode` as the source of truth for the
+/// crossing COUNT (mirrors the GLSL conic path). The gate is the sign
+/// pattern of the weighted Bernstein control values, recovered from the
+/// sample-shifted power-basis root polynomial `pa·t² + pb·t + pc` (conic
+/// weights baked in). Solved parameters can FP-drift just outside [0, 1]
+/// at a shared vertex; they are clamped in — never rejected — so a
+/// crossing the conic owns is not dropped.
+pub inline fn gatedConicRoots(pa: f32, pb: f32, pc: f32) GatedConicRoots {
+    const c0 = pc;
+    const c1 = pc + 0.5 * pb;
+    const c2 = pa + pb + pc;
+    const code = calcRootCode(c0, c1, c2);
+    if (code == 0) return .{};
+    const want: u8 = if (code == 0x0101) 2 else 1;
+
+    var cand: [2]f32 = undefined;
+    var ncand: usize = 0;
+    if (@abs(pa) < root_code_eps) {
+        if (@abs(pb) >= root_code_eps) {
+            cand[0] = -pc / pb;
+            ncand = 1;
+        }
+    } else {
+        // disc < 0 is a near-tangent double root; snap, don't reject.
+        const disc = @max(pb * pb - 4.0 * pa * pc, 0.0);
+        const sqrt_disc = @sqrt(disc);
+        const inv2a = 0.5 / pa;
+        cand[0] = (-pb - sqrt_disc) * inv2a;
+        cand[1] = (-pb + sqrt_disc) * inv2a;
+        ncand = 2;
+    }
+    if (ncand == 0) return .{};
+
+    var out = GatedConicRoots{};
+    if (want == 1) {
+        var pick = cand[0];
+        if (ncand == 2 and distToUnitInterval(cand[1]) < distToUnitInterval(cand[0])) pick = cand[1];
+        out.t[0] = std.math.clamp(pick, 0.0, 1.0);
+        out.count = 1;
+    } else {
+        out.t[0] = std.math.clamp(cand[0], 0.0, 1.0);
+        out.t[1] = std.math.clamp(cand[1], 0.0, 1.0);
+        out.count = 2;
+    }
+    return out;
 }
 
 inline fn rootHullCanCross3(p0: f32, p1: f32, p2: f32, sample_root: f32) bool {
@@ -271,11 +329,11 @@ inline fn rootHullCanCross4(p0: f32, p1: f32, p2: f32, p3: f32, sample_root: f32
     return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
 }
 
-test "half-open endpoint guard preserves near-end interior roots" {
-    try std.testing.expect(isHalfOpenEndpointRoot(1.0, 0.0));
-    try std.testing.expect(isHalfOpenEndpointRoot(1.0 - 5e-6, root_code_eps * 0.5));
-    try std.testing.expect(!isHalfOpenEndpointRoot(1.0 - 5e-6, root_code_eps * 2.0));
-    try std.testing.expect(!isHalfOpenEndpointRoot(1.0 - 2e-5, 0.0));
+test "sign-of-zero snap treats near-zero root coords as on the line" {
+    try std.testing.expectEqual(@as(f32, 0.0), rootCodeCoord(root_code_eps * 0.5));
+    try std.testing.expectEqual(@as(f32, 0.0), rootCodeCoord(-root_code_eps * 0.5));
+    try std.testing.expect(rootCodeCoord(root_code_eps * 2.0) > 0.0);
+    try std.testing.expect(rootCodeCoord(-root_code_eps * 2.0) < 0.0);
 }
 
 const CoverageScan = enum {
@@ -324,13 +382,7 @@ inline fn accumulateLineCoverage(
 ) void {
     const root_axis0 = if (horizontal) p0y else p0x;
     const root_axis2 = if (horizontal) p2y else p2x;
-    const denom = root_axis2 - root_axis0;
-    if (@abs(denom) < 1e-10) return;
-
-    const t_raw = -root_axis0 / denom;
-    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
-    const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (isNearEndRoot(t) and isEndpointRootDelta(root_axis2)) return;
+    const t = lineCrossingT(root_axis0, root_axis2) orelse return;
 
     const derivative_axis = if (horizontal) p2y - p0y else p0x - p2x;
     if (@abs(derivative_axis) <= 1e-5) return;
@@ -378,23 +430,37 @@ inline fn accumulateGlyphCoverageSegment(
         return .continue_scan;
     }
 
-    switch (segment.kind) {
-        .conic => {
-            const p0 = if (horizontal) segment.p0.y else segment.p0.x;
-            const p1 = if (horizontal) segment.p1.y else segment.p1.x;
-            const p2 = if (horizontal) segment.p2.y else segment.p2.x;
-            const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
-            if (!rootHullCanCross3(p0, p1, p2, sample_root)) return .continue_scan;
-        },
-        .cubic => {
-            const p0 = if (horizontal) segment.p0.y else segment.p0.x;
-            const p1 = if (horizontal) segment.p1.y else segment.p1.x;
-            const p2 = if (horizontal) segment.p2.y else segment.p2.x;
-            const p3 = if (horizontal) segment.p3.y else segment.p3.x;
-            const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
-            if (!rootHullCanCross4(p0, p1, p2, p3, sample_root)) return .continue_scan;
-        },
-        .quadratic, .line => unreachable,
+    if (segment.kind == .conic) {
+        const p0r = if (horizontal) segment.p0.y - sample_rc.y else segment.p0.x - sample_rc.x;
+        const p1r = if (horizontal) segment.p1.y - sample_rc.y else segment.p1.x - sample_rc.x;
+        const p2r = if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x;
+        if (!rootHullCanCross3(p0r, p1r, p2r, 0.0)) return .continue_scan;
+        const c0 = segment.weights[0] * p0r;
+        const c1 = segment.weights[1] * p1r;
+        const c2 = segment.weights[2] * p2r;
+        const gated = gatedConicRoots(c0 - 2.0 * c1 + c2, 2.0 * (c1 - c0), c0);
+        for (gated.t[0..gated.count]) |t| {
+            const point = segment.evaluate(t);
+            const deriv = segment.derivative(t);
+            const derivative_axis = if (horizontal) deriv.y else -deriv.x;
+            if (@abs(derivative_axis) <= 1e-5) continue;
+            const distance = if (horizontal)
+                (point.x - sample_rc.x) * ppe
+            else
+                (point.y - sample_rc.y) * ppe;
+            appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+        }
+        return .continue_scan;
+    }
+
+    std.debug.assert(segment.kind == .cubic);
+    {
+        const p0 = if (horizontal) segment.p0.y else segment.p0.x;
+        const p1 = if (horizontal) segment.p1.y else segment.p1.x;
+        const p2 = if (horizontal) segment.p2.y else segment.p2.x;
+        const p3 = if (horizontal) segment.p3.y else segment.p3.x;
+        const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
+        if (!rootHullCanCross4(p0, p1, p2, p3, sample_root)) return .continue_scan;
     }
 
     const roots = if (horizontal)
@@ -403,30 +469,17 @@ inline fn accumulateGlyphCoverageSegment(
         solveSegmentVerticalRoots(segment, sample_rc.x);
 
     for (roots.t[0..roots.count]) |t| {
-        if (segment.kind != .cubic and isNearEndRoot(t)) {
-            const end_root_delta = switch (segment.kind) {
-                .conic, .quadratic, .line => if (horizontal) segment.p2.y - sample_rc.y else segment.p2.x - sample_rc.x,
-                .cubic => unreachable,
-            };
-            if (isEndpointRootDelta(end_root_delta)) continue;
-        }
-        const point = if (segment.kind == .cubic and t == 1.0) segment.p3 else segment.evaluate(t);
-        const derivative_axis = if (segment.kind == .cubic) blk: {
-            // Packed cubics are split into monotonic spans.  Their winding
-            // direction is therefore determined by the span endpoints, even
-            // when the crossing is a stationary inflection (or merely has a
-            // very small derivative after path normalization).  A fixed
-            // derivative epsilon is coordinate-scale dependent and used to
-            // drop these valid crossings.
-            break :blk if (horizontal)
-                segment.p3.y - segment.p0.y
-            else
-                segment.p0.x - segment.p3.x;
-        } else blk: {
-            const deriv = segment.derivative(t);
-            break :blk if (horizontal) deriv.y else -deriv.x;
-        };
-        if (segment.kind != .cubic and @abs(derivative_axis) <= 1e-5) continue;
+        const point = if (t == 1.0) segment.p3 else segment.evaluate(t);
+        // Packed cubics are split into monotonic spans. Their winding
+        // direction is therefore determined by the span endpoints, even
+        // when the crossing is a stationary inflection (or merely has a
+        // very small derivative after path normalization). A fixed
+        // derivative epsilon is coordinate-scale dependent and would drop
+        // these valid crossings.
+        const derivative_axis = if (horizontal)
+            segment.p3.y - segment.p0.y
+        else
+            segment.p0.x - segment.p3.x;
         const distance = if (horizontal)
             (point.x - sample_rc.x) * ppe
         else
@@ -499,27 +552,14 @@ inline fn accumulatePreparedLineCoverage(
     ppe: f32,
     comptime horizontal: bool,
 ) void {
-    const denom = curve.a_root;
-    if (@abs(denom) < 1e-10) return;
-
-    const t_raw = -(curve.p0_root - sample_root) / denom;
-    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
-    const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root)) return;
+    const root_axis0 = curve.p0_root - sample_root;
+    const t = lineCrossingT(root_axis0, root_axis0 + curve.a_root) orelse return;
 
     const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
     if (@abs(derivative_axis) <= 1e-5) return;
 
     const distance = (curve.p0_along - sample_along + curve.a_along * t) * ppe;
     appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
-}
-
-inline fn solvePreparedConicRoots(cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
-    return solveQuadraticRoots(
-        cold.conic_num_a_root - sample_root * cold.conic_den_a,
-        cold.conic_num_b_root - sample_root * cold.conic_den_b,
-        cold.conic_num_c_root - sample_root * cold.conic_den_c,
-    );
 }
 
 inline fn solvePreparedCubicRoots(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
@@ -609,44 +649,37 @@ pub inline fn accumulatePreparedCurveCoverage(
         return .continue_scan;
     }
 
-    if (curve.kind == .conic and !rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) {
+    if (curve.kind == .conic) {
+        if (!rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) return .continue_scan;
+        const cold = preparedCurveCold(curve, cold_curves);
+        const gated = gatedConicRoots(
+            cold.conic_num_a_root - sample_root * cold.conic_den_a,
+            cold.conic_num_b_root - sample_root * cold.conic_den_b,
+            cold.conic_num_c_root - sample_root * cold.conic_den_c,
+        );
+        for (gated.t[0..gated.count]) |t| {
+            const along = evaluatePreparedConicAlong(cold, t);
+            const root_deriv = derivativePreparedConicRoot(cold, t);
+            const derivative_axis = if (horizontal) root_deriv else -root_deriv;
+            if (@abs(derivative_axis) <= 1e-5) continue;
+            const distance = (along - sample_along) * ppe;
+            appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+        }
         return .continue_scan;
     }
 
+    std.debug.assert(curve.kind == .cubic);
     const cold = preparedCurveCold(curve, cold_curves);
-    if (curve.kind == .cubic) {
-        if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return .continue_scan;
-    }
+    if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return .continue_scan;
 
-    const roots = switch (curve.kind) {
-        .conic => solvePreparedConicRoots(cold, sample_root),
-        .cubic => solvePreparedCubicRoots(curve, cold, sample_root),
-        .quadratic, .line => unreachable,
-    };
+    const roots = solvePreparedCubicRoots(curve, cold, sample_root);
     for (roots.t[0..roots.count]) |t| {
-        if (curve.kind != .cubic and isNearEndRoot(t)) {
-            const end_root = switch (curve.kind) {
-                .conic => curve.p2_root,
-                .cubic => unreachable,
-                .quadratic, .line => unreachable,
-            };
-            if (isEndpointRootDelta(end_root - sample_root)) continue;
-        }
-        const along = switch (curve.kind) {
-            .conic => evaluatePreparedConicAlong(cold, t),
-            .cubic => evaluatePreparedCubicAlong(curve, cold, t),
-            .quadratic, .line => unreachable,
-        };
-        const root_deriv = switch (curve.kind) {
-            .conic => derivativePreparedConicRoot(cold, t),
-            // Cubics are monotonic spans, so endpoint direction is the
-            // scale-invariant winding sign.  Do not reject a valid crossing
-            // because normalization made its local derivative tiny.
-            .cubic => cold.cubic_p3_root - curve.p0_root,
-            .quadratic, .line => unreachable,
-        };
+        const along = evaluatePreparedCubicAlong(curve, cold, t);
+        // Cubics are monotonic spans, so endpoint direction is the
+        // scale-invariant winding sign.  Do not reject a valid crossing
+        // because normalization made its local derivative tiny.
+        const root_deriv = cold.cubic_p3_root - curve.p0_root;
         const derivative_axis = if (horizontal) root_deriv else -root_deriv;
-        if (curve.kind != .cubic and @abs(derivative_axis) <= 1e-5) continue;
         const distance = (along - sample_along) * ppe;
         appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
     }
@@ -949,16 +982,11 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             return entry;
         },
         .line => {
-            const denom = curve.a_root;
-            if (@abs(denom) >= 1e-10) {
-                const t_raw = -(curve.p0_root - sample_root) / denom;
-                if (t_raw >= -1e-5 and t_raw <= 1.0 + 1e-5) {
-                    const t = std.math.clamp(t_raw, 0.0, 1.0);
-                    const is_endpoint = isNearEndRoot(t) and isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root);
-                    if (!is_endpoint and @abs(denom) > 1e-5) {
-                        entry.along[0] = curve.p0_along + curve.a_along * t;
-                        entry.sign[0] = if (denom > 0.0) 1.0 else -1.0;
-                    }
+            const root_axis0 = curve.p0_root - sample_root;
+            if (lineCrossingT(root_axis0, root_axis0 + curve.a_root)) |t| {
+                if (@abs(curve.a_root) > 1e-5) {
+                    entry.along[0] = curve.p0_along + curve.a_along * t;
+                    entry.sign[0] = if (curve.a_root > 0.0) 1.0 else -1.0;
                 }
             }
             return entry;
@@ -967,10 +995,12 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             if (!rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) return entry;
             if (curve.cold_index >= cold_curves.len) return null;
             const cold = &cold_curves[curve.cold_index];
-            const roots = solvePreparedConicRoots(cold, sample_root);
-            for (roots.t[0..roots.count], 0..) |t, idx| {
-                if (idx >= 3) break;
-                if (isNearEndRoot(t) and isEndpointRootDelta(curve.p2_root - sample_root)) continue;
+            const gated = gatedConicRoots(
+                cold.conic_num_a_root - sample_root * cold.conic_den_a,
+                cold.conic_num_b_root - sample_root * cold.conic_den_b,
+                cold.conic_num_c_root - sample_root * cold.conic_den_c,
+            );
+            for (gated.t[0..gated.count], 0..) |t, idx| {
                 const root_deriv = derivativePreparedConicRoot(cold, t);
                 if (@abs(root_deriv) <= 1e-5) continue;
                 entry.along[idx] = evaluatePreparedConicAlong(cold, t);

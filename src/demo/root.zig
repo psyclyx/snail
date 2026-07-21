@@ -8,6 +8,7 @@ const entry = switch (@import("demo_entry").value) {
     .autohint_screenshot => @import("tools/autohint/screenshot.zig"),
     .backend_compare => @import("tools/compare/backends.zig"),
     .composite_probe => @import("tools/probes/composite.zig"),
+    .coverage_parity_probe => @import("tools/probes/coverage_parity.zig"),
     .coverage_probe => @import("tools/probes/coverage.zig"),
     .gamma_probe => @import("tools/probes/gamma.zig"),
     .algorithm_diagrams => @import("tools/diagrams/algorithm.zig"),

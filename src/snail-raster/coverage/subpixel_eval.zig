@@ -18,7 +18,7 @@ const coverage = @import("../coverage.zig");
 const subpixel = @import("subpixel.zig");
 const cubic = @import("cubic_solver.zig");
 const texture = @import("../texture.zig");
-const band_tex = @import("snail").render.atlas;
+const band_tex = @import("snail").render.geometry;
 
 const FillRule = snail.FillRule;
 const Vec2 = snail.Vec2;
@@ -275,12 +275,8 @@ fn accumulateLineSharedRoot(
     const first_lane: usize = @ctz(mask);
     const sample_root = if (horizontal) em_y[first_lane] else em_x[first_lane];
 
-    const denom = curve.a_root;
-    if (@abs(denom) < 1e-10) return;
-    const t_raw = -(curve.p0_root - sample_root) / denom;
-    if (t_raw < -1e-5 or t_raw > 1.0 + 1e-5) return;
-    const t = std.math.clamp(t_raw, 0.0, 1.0);
-    if (coverage.isNearEndRoot(t) and coverage.isEndpointRootDelta(curve.p0_root + curve.a_root - sample_root)) return;
+    const root_axis0 = curve.p0_root - sample_root;
+    const t = coverage.lineCrossingT(root_axis0, root_axis0 + curve.a_root) orelse return;
 
     const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
     if (@abs(derivative_axis) <= 1e-5) return;
