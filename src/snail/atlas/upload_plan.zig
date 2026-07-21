@@ -30,9 +30,11 @@ pub const INFO_WIDTH: u32 = paint_records.info_width;
 pub const Target = enum { curve, band, layer_info, image };
 
 /// One texel copy the caller must apply to its own texture. `src` are the
-/// source bytes (curve/band: the full page buffer; layer_info: the f32 slab as
-/// bytes; image: RGBA8 pixels). `layer` is the destination array layer
-/// (curve/band/image); `row_base` is the destination row (layer_info only).
+/// source bytes (curve/band: whole rows of the page plane; layer_info: the
+/// f32 slab as bytes; image: RGBA8 pixels). `layer` is the destination
+/// array layer (curve/band/image). `row_base` is the destination y row:
+/// page-local for curve/band (deltas re-upload only the grown row band of
+/// an append-only page), absolute (the binding's slot) for layer_info.
 pub const Region = struct {
     target: Target,
     layer: u32 = 0,
@@ -345,16 +347,22 @@ pub const Planner = struct {
             const cur_gen = p.currentGeneration();
             const cur_curve = p.curve.usedWords();
             const cur_band = p.band.usedWords();
-            const stale = self.prepared_generation[layer] != cur_gen or
+            const gen_match = self.prepared_generation[layer] == cur_gen;
+            const stale = !gen_match or
                 cur_curve != self.prepared_curve_words[layer] or
                 cur_band != self.prepared_band_words[layer];
             if (!stale) continue;
             self.prepared_generation[layer] = cur_gen;
 
-            const curve_bytes = p.curve.data.len * @sizeOf(page_mod.Word);
-            const band_bytes = p.band.data.len * @sizeOf(page_mod.Word);
-            try emitRegion(out, out_len, .{ .target = .curve, .layer = layer, .src = @as([*]const u8, @ptrCast(p.curve.data.ptr))[0..curve_bytes], .width = CURVE_TEX_WIDTH, .height = self.pool.options.curve_words_per_page / (CURVE_TEX_WIDTH * 4) });
-            try emitRegion(out, out_len, .{ .target = .band, .layer = layer, .src = @as([*]const u8, @ptrCast(p.band.data.ptr))[0..band_bytes], .width = BAND_TEX_WIDTH, .height = self.pool.options.band_words_per_page / (BAND_TEX_WIDTH * 2) });
+            // Pages are append-only, so within a generation only the rows
+            // from the previous watermark onward can have changed; a
+            // generation change (fresh or reused page) re-uploads from row
+            // zero. The watermark's boundary row re-uploads whole — its
+            // prefix is immutable, so rewriting it is redundant, never wrong.
+            const curve_from: u32 = if (gen_match) @min(self.prepared_curve_words[layer], cur_curve) else 0;
+            const band_from: u32 = if (gen_match) @min(self.prepared_band_words[layer], cur_band) else 0;
+            try emitPageTail(out, out_len, .curve, layer, p.curve.data, CURVE_TEX_WIDTH * 4, CURVE_TEX_WIDTH, curve_from, cur_curve);
+            try emitPageTail(out, out_len, .band, layer, p.band.data, BAND_TEX_WIDTH * 2, BAND_TEX_WIDTH, band_from, cur_band);
             self.prepared_curve_words[layer] = cur_curve;
             self.prepared_band_words[layer] = cur_band;
         }
@@ -390,6 +398,35 @@ pub const Planner = struct {
             const info_bytes = info_dst.len * @sizeOf(f32);
             try emitRegion(out, out_len, .{ .target = .layer_info, .row_base = slot.info_row_base, .src = @as([*]const u8, @ptrCast(info_dst.ptr))[0..info_bytes], .width = INFO_WIDTH, .height = atlas.layer_info_height });
         }
+    }
+
+    /// Emit the changed row band of one append-only page plane: the rows
+    /// spanning words `[from, to)`. No-op when the plane hasn't grown
+    /// (e.g. only the sibling plane changed).
+    fn emitPageTail(
+        out: []Region,
+        out_len: *usize,
+        target: Target,
+        layer: u32,
+        data: []const page_mod.Word,
+        row_words: u32,
+        width: u32,
+        from: u32,
+        to: u32,
+    ) Error!void {
+        if (to <= from) return;
+        const row_base = from / row_words;
+        const row_end = (to + row_words - 1) / row_words;
+        const byte_base = @as(usize, row_base) * row_words * @sizeOf(page_mod.Word);
+        const byte_end = @as(usize, row_end) * row_words * @sizeOf(page_mod.Word);
+        try emitRegion(out, out_len, .{
+            .target = target,
+            .layer = layer,
+            .row_base = row_base,
+            .src = @as([*]const u8, @ptrCast(data.ptr))[byte_base..byte_end],
+            .width = width,
+            .height = row_end - row_base,
+        });
     }
 
     fn findFreeBinding(self: *Planner) ?u32 {
@@ -646,4 +683,110 @@ test "Planner preflights atomically and is bound to one page pool" {
     try std.testing.expectError(error.UnknownPool, planner.planDelta(foreign_binding, &atlas, regions, &region_len, &.{}));
     try std.testing.expect(!planner.release(foreign_binding));
     try std.testing.expect(planner.release(binding));
+}
+
+test "planDelta uploads only the grown row band of an append-only page" {
+    const allocator = std.testing.allocator;
+    const GlyphCurves = atlas_mod.GlyphCurves;
+    const curve_row_words: u32 = CURVE_TEX_WIDTH * 4;
+    const band_row_words: u32 = BAND_TEX_WIDTH * 2;
+    const segment_words: u32 = 16; // CURVE_SEGMENT_TEXELS * 4
+
+    var pool = try PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = curve_row_words * 4,
+        .band_words_per_page = band_row_words * 2,
+    });
+    defer pool.deinit();
+
+    const Synthetic = struct {
+        fn curves(alloc: std.mem.Allocator, segment_count: u16) !GlyphCurves {
+            const curve_bytes = try alloc.alloc(u16, @as(usize, segment_count) * segment_words);
+            for (curve_bytes, 0..) |*w, i| w.* = @truncate(i);
+            // 1 h-band + 1 v-band, one ref each, both pointing at curve 0.
+            const band_bytes = try alloc.alloc(u16, 8);
+            band_bytes[0] = 1;
+            band_bytes[1] = 2;
+            band_bytes[2] = 1;
+            band_bytes[3] = 3;
+            band_bytes[4] = 0;
+            band_bytes[5] = 0;
+            band_bytes[6] = 0;
+            band_bytes[7] = 0;
+            return .{
+                .allocator = alloc,
+                .curve_bytes = curve_bytes,
+                .band_bytes = band_bytes,
+                .curve_count = segment_count,
+                .h_band_count = 1,
+                .v_band_count = 1,
+                .band_scale_x = 1.0,
+                .band_scale_y = 1.0,
+                .band_offset_x = 0.0,
+                .band_offset_y = 0.0,
+                .bbox = .{ .min = .zero, .max = .{ .x = 1, .y = 1 } },
+            };
+        }
+    };
+
+    // Big enough to spill into the second curve row (one row holds
+    // curve_row_words / segment_words segments).
+    const row_segments: u16 = @intCast(curve_row_words / segment_words);
+    var big = try Synthetic.curves(allocator, row_segments + 128);
+    defer big.deinit();
+    var atlas = try Atlas.from(allocator, pool, &.{
+        .{ .key = @import("record_key.zig").unhintedGlyph(0, 1), .curves = big },
+    });
+    defer atlas.deinit();
+
+    var planner = try OwnedPlanner.init(allocator, pool, .{
+        .max_bindings = 1,
+        .layer_info_height = 0,
+        .max_images = 0,
+        .max_image_width = 0,
+        .max_image_height = 0,
+    });
+    defer planner.deinit();
+
+    // Fresh plan: curve upload starts at row 0 and covers both used rows.
+    const first = try planner.plan(&atlas);
+    var found_curve = false;
+    for (first.regions) |r| {
+        if (r.target != .curve) continue;
+        found_curve = true;
+        try std.testing.expectEqual(@as(u32, 0), r.row_base);
+        try std.testing.expectEqual(@as(u32, 2), r.height);
+    }
+    try std.testing.expect(found_curve);
+
+    // Unchanged replan: nothing to upload.
+    const unchanged = try planner.planDelta(first.binding, &atlas);
+    try std.testing.expectEqual(@as(usize, 0), unchanged.regions.len);
+
+    // Append a small glyph: only the boundary row re-uploads, not the page.
+    var small = try Synthetic.curves(allocator, 8);
+    defer small.deinit();
+    try atlas.extendInPlace(allocator, &.{
+        .{ .key = @import("record_key.zig").unhintedGlyph(0, 2), .curves = small },
+    });
+    const delta = try planner.planDelta(first.binding, &atlas);
+    var curve_regions: usize = 0;
+    for (delta.regions) |r| {
+        switch (r.target) {
+            .curve => {
+                curve_regions += 1;
+                try std.testing.expectEqual(@as(u32, 1), r.row_base);
+                try std.testing.expectEqual(@as(u32, 1), r.height);
+                try std.testing.expectEqual(@as(usize, curve_row_words) * 2, r.src.len);
+            },
+            .band => {
+                // Band watermark is still inside row 0.
+                try std.testing.expectEqual(@as(u32, 0), r.row_base);
+                try std.testing.expectEqual(@as(u32, 1), r.height);
+            },
+            else => {},
+        }
+    }
+    try std.testing.expectEqual(@as(usize, 1), curve_regions);
+    try std.testing.expect(planner.release(first.binding));
 }

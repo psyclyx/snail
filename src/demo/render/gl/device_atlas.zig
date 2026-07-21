@@ -436,21 +436,21 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
 
         fn applyRegion(self: *Self, r: upload_plan.Region) void {
             switch (r.target) {
-                .curve => self.texSubImage3D(self.curve_array, 0, r.layer, r.width, r.height, gl.GL_RGBA, gl.GL_HALF_FLOAT, r.src.ptr),
-                .band => self.texSubImage3D(self.band_array, 1, r.layer, r.width, r.height, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, r.src.ptr),
-                .image => self.texSubImage3D(self.image_array_tex, 3, r.layer, r.width, r.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, r.src.ptr),
+                .curve => self.texSubImage3D(self.curve_array, 0, r.layer, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_HALF_FLOAT, r.src.ptr),
+                .band => self.texSubImage3D(self.band_array, 1, r.layer, r.row_base, r.width, r.height, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, r.src.ptr),
+                .image => self.texSubImage3D(self.image_array_tex, 3, r.layer, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, r.src.ptr),
                 .layer_info => self.texSubImage2D(self.layer_info_tex, 2, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_FLOAT, r.src.ptr),
             }
         }
 
-        fn texSubImage3D(self: *Self, tex: gl.GLuint, unit: gl.GLenum, layer: u32, width: u32, height: u32, format: gl.GLenum, ty: gl.GLenum, ptr: ?*const anyopaque) void {
+        fn texSubImage3D(self: *Self, tex: gl.GLuint, unit: gl.GLenum, layer: u32, row_base: u32, width: u32, height: u32, format: gl.GLenum, ty: gl.GLenum, ptr: ?*const anyopaque) void {
             _ = self;
             if (comptime variant.supportsDsa()) {
-                gl.glTextureSubImage3D(tex, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
+                gl.glTextureSubImage3D(tex, 0, 0, @intCast(row_base), @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             } else {
                 gl.glActiveTexture(@intCast(@as(i64, @intCast(gl.GL_TEXTURE0)) + @as(i64, @intCast(unit))));
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, tex);
-                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, 0, @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
+                gl.glTexSubImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, 0, @intCast(row_base), @intCast(layer), @intCast(width), @intCast(height), 1, format, ty, ptr);
             }
         }
 
