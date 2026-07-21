@@ -53,7 +53,7 @@ pub fn draw(
 ) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
     for (records.batches) |batch| {
         const cache = findCache(caches, batch.binding.pool) orelse return error.MissingBinding;
-        if (batch.binding.generation != 0 and cache.upload_generation < batch.binding.generation) {
+        if (batch.binding.generation != 0 and cache.uploadGeneration() < batch.binding.generation) {
             return error.StaleBinding;
         }
 
@@ -109,16 +109,17 @@ const testing = std.testing;
 test "draw MissingBinding when no cache covers the binding's pool" {
     const allocator = testing.allocator;
 
+    const upload_plan = @import("snail").atlas_upload;
     var pool_a = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 1,
-        .curve_words_per_page = 64,
-        .band_words_per_page = 32,
+        .curve_words_per_page = upload_plan.CURVE_TEX_WIDTH * 4,
+        .band_words_per_page = upload_plan.BAND_TEX_WIDTH * 2,
     });
     defer pool_a.deinit();
     var pool_b = try @import("snail").PagePool.init(allocator, .{
         .max_layers = 1,
-        .curve_words_per_page = 64,
-        .band_words_per_page = 32,
+        .curve_words_per_page = upload_plan.CURVE_TEX_WIDTH * 4,
+        .band_words_per_page = upload_plan.BAND_TEX_WIDTH * 2,
     });
     defer pool_b.deinit();
 

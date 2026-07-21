@@ -18,6 +18,7 @@ const page_pool_mod = @import("page_pool.zig");
 const draw_records = @import("../draw/records.zig");
 const paint_records = @import("paint_records.zig");
 const upload_patch = @import("upload_patch.zig");
+const image_mod = @import("../image.zig");
 
 pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
@@ -611,6 +612,14 @@ fn firstOccurrence(records: anytype, i: usize) bool {
         if (prev.image == img) return false;
     }
     return true;
+}
+
+/// The binding-relative array layer assigned to `image` — its index among
+/// the distinct images in first-seen record order. Public so device
+/// implementations that store image references instead of texels (the CPU
+/// renderer) can mirror the planner's mapping.
+pub fn imageLayerFor(records: []const ?atlas_mod.PaintImageRecord, image: *const image_mod.Image) u32 {
+    return imageLayer(records, image);
 }
 
 /// The array-layer assigned to `image` = its index among the distinct images in
