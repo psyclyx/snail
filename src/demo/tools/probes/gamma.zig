@@ -70,7 +70,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         defer prepared.deinit();
         curves[i] = try prepared.fillCurves(allocator, allocator);
         built += 1;
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = @intCast(i) };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = @intCast(i) };
         entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = .{ v, v, v, 1 } } };
         shapes[i] = .{
             .key = key,

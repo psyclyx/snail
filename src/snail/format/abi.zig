@@ -9,7 +9,7 @@ pub const special_layer_sentinel: u8 = 0xff;
 pub const SpecialLayerKind = enum(u8) {
     colr = 0,
     path = 1,
-    hinted_text = 2,
+    tt_hinted_text = 2,
     /// Resolution-independent light autohinting: the slab record carries the
     /// base (unhinted) glyph location + per-axis warp knots; the shader warps
     /// the sample coordinate and runs normal coverage against the base glyph.
@@ -67,7 +67,7 @@ pub fn specialGlyphWordKind(word: u32) ?SpecialLayerKind {
     return switch (raw) {
         @intFromEnum(SpecialLayerKind.colr) => .colr,
         @intFromEnum(SpecialLayerKind.path) => .path,
-        @intFromEnum(SpecialLayerKind.hinted_text) => .hinted_text,
+        @intFromEnum(SpecialLayerKind.tt_hinted_text) => .tt_hinted_text,
         @intFromEnum(SpecialLayerKind.autohint) => .autohint,
         else => null,
     };
@@ -121,7 +121,7 @@ test "GLSL render ABI constants match Zig constants" {
     try expectGlslConst(glsl, "SNAIL_SPECIAL_LAYER_SENTINEL", special_layer_sentinel);
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
-    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_HINTED_TEXT", @intFromEnum(SpecialLayerKind.hinted_text));
+    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_TT_HINTED_TEXT", @intFromEnum(SpecialLayerKind.tt_hinted_text));
     try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_AUTOHINT", @intFromEnum(SpecialLayerKind.autohint));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_SOLID", @intFromEnum(PaintRecordKind.solid));
     try expectGlslConst(glsl, "SNAIL_PAINT_KIND_LINEAR_GRADIENT", @intFromEnum(PaintRecordKind.linear_gradient));

@@ -38,7 +38,7 @@ pub const Builder = struct {
             return;
         }
         try self.owned_curves.append(self.allocator, curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_id.* };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_id.* };
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
@@ -68,7 +68,7 @@ pub const Builder = struct {
             return;
         }
         try self.owned_curves.append(self.allocator, curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = self.next_id.* };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_stroke, .a = self.next_id.* };
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
@@ -151,7 +151,7 @@ pub const Builder = struct {
         if (stroke_curves.isEmpty()) {
             // Stroke degenerate — emit fill only.
             try self.owned_curves.append(self.allocator, fill_curves);
-            const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_id.* };
+            const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_id.* };
             self.next_id.* += 1;
             try self.entries.append(self.allocator, .{
                 .key = key,
@@ -178,7 +178,7 @@ pub const Builder = struct {
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_id.* };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_id.* };
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,

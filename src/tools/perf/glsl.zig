@@ -79,15 +79,15 @@ const autohint_fragment_source: [:0]const u8 =
     glsl.source(.autohint_warp) ++ "\n" ++
     glsl.source(.autohint_fast_body) ++ "\n" ++
     "void main() { snailAutohintFragment(); }\n";
-const hinted_fragment_source: [:0]const u8 =
+const tt_hinted_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
     glsl.source(.render_fragment_interface) ++ "\n" ++
     glsl.source(.render_abi) ++ "\n" ++
     glsl.source(.coverage_common) ++ "\n" ++
     glsl.source(.color_common) ++ "\n" ++
     glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.hinted_text_body) ++ "\n" ++
-    "void main() { snailHintedTextFragment(); }\n";
+    glsl.source(.tt_hinted_text_body) ++ "\n" ++
+    "void main() { snailTtHintedTextFragment(); }\n";
 const path_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
     glsl.source(.render_fragment_interface) ++ "\n" ++
@@ -158,7 +158,7 @@ pub fn main(init: std.process.Init) !void {
     else
         null;
     const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
-        .hinted
+        .tt_hinted
     else if (isAutohintCase(args.case))
         .autohint
     else if (std.mem.eql(u8, args.case, "text-colr"))
@@ -217,7 +217,7 @@ pub fn main(init: std.process.Init) !void {
     } else {
         if (emitted.segment_len != 1) return error.ExpectedHomogeneousScene;
         const expected_kind: snail.render.records.ShapeKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
-            .hinted_text
+            .tt_hinted_text
         else if (isAutohintCase(args.case))
             .autohint
         else if (std.mem.eql(u8, args.case, "text-colr"))
@@ -234,7 +234,7 @@ pub fn main(init: std.process.Init) !void {
         else if (isAutohintCase(args.case))
             autohint_fragment_source
         else if (std.mem.eql(u8, args.case, "text-tt-hint"))
-            hinted_fragment_source
+            tt_hinted_fragment_source
         else if (std.mem.eql(u8, args.case, "text-colr"))
             colr_fragment_source
         else
@@ -299,13 +299,13 @@ pub fn main(init: std.process.Init) !void {
     const ns_per_work = @as(f64, @floatFromInt(median_per_draw)) / @as(f64, @floatFromInt(work_per_draw));
     const em_min: usize = switch (kind) {
         .regular, .autohint, .mixed => 18,
-        .hinted => 20,
+        .tt_hinted => 20,
         .colr => 38,
         .path => 0,
     };
     const em_max: usize = switch (kind) {
         .regular, .autohint, .mixed => 22,
-        .hinted => 20,
+        .tt_hinted => 20,
         .colr => 46,
         .path => 0,
     };

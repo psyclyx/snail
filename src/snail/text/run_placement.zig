@@ -79,7 +79,7 @@ pub const HintMode = union(enum) {
         return switch (self) {
             .unhinted => record_key.unhintedGlyph(font_id, glyph_id),
             .autohint => record_key.autohintGlyph(font_id, glyph_id),
-            .tt_hint => |m| record_key.hintedGlyph(font_id, glyph_id, m.ppem_26_6),
+            .tt_hint => |m| record_key.ttHintedGlyph(font_id, glyph_id, m.ppem_26_6),
         };
     }
 };
@@ -334,7 +334,7 @@ test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
             .world_to_pixel = Transform2D{}, // identity: world == device
         });
         defer allocator.free(shapes);
-        try testing.expect(shapes[0].key.namespace == record_key.ns.hinted_glyph);
+        try testing.expect(shapes[0].key.namespace == record_key.ns.tt_hinted_glyph);
         try testing.expectApproxEqAbs(@as(f32, 16.0 / 13.0), shapes[0].local_transform.xx, 1e-4);
         const x0 = shapes[0].local_transform.tx;
         const x1 = shapes[1].local_transform.tx;

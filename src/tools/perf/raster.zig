@@ -36,7 +36,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const allocator = std.heap.smp_allocator;
     const kind: fixtures.SceneKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
-        .hinted
+        .tt_hinted
     else if (std.mem.eql(u8, args.case, "text-autohint"))
         .autohint
     else if (std.mem.eql(u8, args.case, "text-colr"))
@@ -107,19 +107,19 @@ pub fn main(init: std.process.Init) !void {
     const instance_count = emitted.word_len / snail.render.records.WORDS_PER_INSTANCE;
     const thread_count = if (worker_pool_ptr) |p| p.threads.len + 1 else 1;
     const has_text = switch (kind) {
-        .regular, .hinted, .autohint, .mixed => true,
+        .regular, .tt_hinted, .autohint, .mixed => true,
         else => false,
     };
     const has_paths = kind == .path or kind == .mixed;
     const em_min: usize = switch (kind) {
         .regular, .autohint, .mixed => 18,
-        .hinted => 20,
+        .tt_hinted => 20,
         .colr => 38,
         .path => 0,
     };
     const em_max: usize = switch (kind) {
         .regular, .autohint, .mixed => 22,
-        .hinted => 20,
+        .tt_hinted => 20,
         .colr => 46,
         .path => 0,
     };

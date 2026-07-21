@@ -157,7 +157,7 @@ pub const Compare = struct {
     auto: snail.autohint.AutohintAnalyzer,
     /// The font's own TT hinting, if it has any (DejaVu does; Noto Sans
     /// Mono is unhinted, so this stays null and the tt row renders unhinted).
-    tt: ?snail.HintVm,
+    tt: ?snail.TtHintVm,
     /// Short display name for the font (e.g. "DejaVu", "Noto").
     label: []const u8,
     /// Proportional (non-monospace) face: the hinted rows snap per-glyph
@@ -187,7 +187,7 @@ pub const Compare = struct {
         const font_id = faces.fontIdForFace(0);
 
         const auto = try snail.autohint.AutohintAnalyzer.init(allocator, font_bytes);
-        const tt = snail.HintVm.init(allocator, font) catch null;
+        const tt = snail.TtHintVm.init(allocator, font) catch null;
 
         return .{
             .allocator = allocator,
@@ -349,7 +349,7 @@ pub const Compare = struct {
             for (shaped.glyphs, shapes) |glyph, *shape| {
                 const base = try self.glyph_cache.getOrInsert(self.allocator, frame_alloc, glyph.glyph_id);
                 if (base.curve_count == 0) {
-                    shape.key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+                    shape.key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
                     shape.autohint_policy = null;
                 }
             }
@@ -368,7 +368,7 @@ pub const Compare = struct {
         for ([_]*const snail.ShapedText{ shaped, tags }) |run| {
             for (run.glyphs) |g| {
                 if (g.font_id != self.font_id) continue;
-                const key = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
+                const key = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id);
                 if (self.atlas.contains(key) or hasKey(entries.items, key)) continue;
                 const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
                 try entries.append(scratch, .{ .key = key, .curves = c.* });
@@ -395,7 +395,7 @@ pub const Compare = struct {
                 .key = key_a,
                 .curves = snail.GlyphCurves.empty(scratch),
                 .autohint = .{ .font = self.auto.fontFeatures(), .glyph = glyph },
-                .autohint_base = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id),
+                .autohint_base = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id),
             });
         }
 
@@ -403,8 +403,8 @@ pub const Compare = struct {
         for (grid_ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             // Run fpgm/prep once for this size; every glyph hints from it.
-            var tt_prepared: ?snail.HintVm.Prepared = if (self.tt) |*vm|
-                (vm.prepare(snail.HintPpem.uniform(ppem_26_6)) catch null)
+            var tt_prepared: ?snail.TtHintVm.Prepared = if (self.tt) |*vm|
+                (vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch null)
             else
                 null;
             defer if (tt_prepared) |*p| p.deinit();
@@ -413,7 +413,7 @@ pub const Compare = struct {
                 if (g.font_id != self.font_id) continue;
 
                 if (self.tt) |*vm| if (tt_prepared) |*prepared| {
-                    const key_t = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
+                    const key_t = snail.record_key.ttHintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
                     if (!self.atlas.contains(key_t) and !hasKey(entries.items, key_t)) {
                         // Output on `scratch` (persists to the atlas build); VM
                         // internals on a dedicated temp arena so they can't
@@ -443,14 +443,14 @@ pub const Compare = struct {
     }
 };
 
-fn autoKey(font_id: u32, glyph_id: u16) snail.recordKey.RecordKey {
-    return snail.recordKey.autohintGlyph(font_id, glyph_id);
+fn autoKey(font_id: u32, glyph_id: u16) snail.record_key.RecordKey {
+    return snail.record_key.autohintGlyph(font_id, glyph_id);
 }
 
 const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };
 const tag_color = [4]f32{ 0.45, 0.48, 0.55, 1.0 };
 
-fn hasKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn hasKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -497,7 +497,7 @@ test "comparison setup reuses autohint analysis across grid PPEMs" {
         if (compare.tt != null) {
             for (grid_ppems) |ppem| {
                 const ppem_26_6: u32 = @intFromFloat(Compare.devEm(ppem, 1.0) * 64.0);
-                try testing.expect(compare.atlas.contains(snail.recordKey.hintedGlyph(compare.font_id, glyph_id.*, ppem_26_6)));
+                try testing.expect(compare.atlas.contains(snail.record_key.ttHintedGlyph(compare.font_id, glyph_id.*, ppem_26_6)));
             }
         }
     }
@@ -536,7 +536,7 @@ test "empty outlines remain shared unhinted no-op shapes" {
     }
     const i = empty_index orelse return error.TestExpectedEmptyOutline;
     const glyph = shaped.glyphs[i];
-    const base_key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+    const base_key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
     const base_record = compare.atlas.lookupRecord(base_key).?;
     try testing.expectEqual(@as(u32, 0), base_record.curve_count);
     try testing.expectEqual(@as(u16, 0), base_record.bands.h_band_count);

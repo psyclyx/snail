@@ -45,9 +45,9 @@ pub const Picture = struct {
 
 test "concat preserves shape order" {
     const allocator = std.testing.allocator;
-    var a = try Picture.from(allocator, &.{.{ .key = snail.recordKey.unhintedGlyph(0, 1) }});
+    var a = try Picture.from(allocator, &.{.{ .key = snail.record_key.unhintedGlyph(0, 1) }});
     defer a.deinit();
-    var b = try Picture.from(allocator, &.{.{ .key = snail.recordKey.unhintedGlyph(0, 2) }});
+    var b = try Picture.from(allocator, &.{.{ .key = snail.record_key.unhintedGlyph(0, 2) }});
     defer b.deinit();
     var combined = try Picture.concat(allocator, &.{ &a, &b });
     defer combined.deinit();

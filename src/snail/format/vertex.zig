@@ -112,7 +112,7 @@ fn rectHalf4(values: [4]f32) [4]u16 {
 fn specialRectHalf4(kind: SpecialLayerKind, values: [4]f32) [4]u16 {
     return switch (kind) {
         .path => rectHalf4(values),
-        .hinted_text => rectHalf4(values),
+        .tt_hinted_text => rectHalf4(values),
         .autohint => rectHalf4(values),
         .colr => half4(values),
     };
@@ -322,7 +322,7 @@ pub fn generatePathRecordVerticesTinted(
 }
 
 /// Generate instance data for a tinted hinted text layer-info record.
-pub fn generateHintedTextVerticesTinted(
+pub fn generateTtHintedTextVerticesTinted(
     buf: []u32,
     x: f32,
     y: f32,
@@ -335,7 +335,7 @@ pub fn generateHintedTextVerticesTinted(
     tint: [4]f32,
     atlas_layer: u8,
 ) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .hinted_text);
+    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .tt_hinted_text);
 }
 
 fn generateSpecialLayerVerticesTinted(
@@ -411,7 +411,7 @@ pub fn generatePathRecordVerticesTransformedTinted(
 }
 
 /// Generate instance data for a tinted transformed hinted text layer-info record.
-pub fn generateHintedTextVerticesTransformedTinted(
+pub fn generateTtHintedTextVerticesTransformedTinted(
     buf: []u32,
     bbox: BBox,
     info_x: u16,
@@ -422,7 +422,7 @@ pub fn generateHintedTextVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
-    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .hinted_text);
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .tt_hinted_text);
 }
 
 pub fn generateAutohintVerticesTransformedTinted(
@@ -563,11 +563,11 @@ test "hinted text instance uses hinted special kind" {
         .max = Vec2.new(0.6, 0.8),
     };
 
-    generateHintedTextVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+    generateTtHintedTextVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
-    try std.testing.expectEqual(SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
+    try std.testing.expectEqual(SpecialLayerKind.tt_hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
 test "autohint instance carries all seven policy words" {

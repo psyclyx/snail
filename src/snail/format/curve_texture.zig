@@ -291,7 +291,7 @@ pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
 /// Allocate and direct-encode a single glyph's prepared curves into a
 /// `prepared.len * SEGMENT_TEXELS * 4` u16 buffer. Skips the
 /// `buildCurveTexture` TEX_WIDTH-row padding — for single-glyph callers
-/// (`font.extractCurves`, hinted snapshots), the padding is pure waste.
+/// (`font.extractCurves`, TT-hinted snapshots), the padding is pure waste.
 pub fn encodeDirectSingleGlyphCurves(
     allocator: std.mem.Allocator,
     prepared: []const CurveSegment,

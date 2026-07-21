@@ -49,7 +49,7 @@ pub const Gles30TextState = struct {
     text_program: ProgramState = .{},
     colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
-    hinted_text_program: ProgramState = .{},
+    tt_hinted_text_program: ProgramState = .{},
     autohint_program: ProgramState = .{},
     linear_resolve: LinearResolveState = .{},
     vao: gl.GLuint = 0,
@@ -67,7 +67,7 @@ pub const Gles30TextState = struct {
         self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
         self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
         self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
-        self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
+        self.tt_hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
         self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
         try self.linear_resolve.init();
 
@@ -99,7 +99,7 @@ pub const Gles30TextState = struct {
         deleteProgramState(&self.text_program);
         deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
-        deleteProgramState(&self.hinted_text_program);
+        deleteProgramState(&self.tt_hinted_text_program);
         deleteProgramState(&self.autohint_program);
         self.linear_resolve.deinit();
         if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
@@ -163,7 +163,7 @@ pub const Gles30TextState = struct {
             .regular => &self.text_program,
             .colr => self.ensureColrProgram(),
             .path => self.ensurePathProgram(),
-            .hinted_text => self.ensureHintedTextProgram(),
+            .tt_hinted_text => self.ensureTtHintedTextProgram(),
             .autohint => self.ensureAutohintProgram(),
         };
         self.bindProgramState(cache, prog_state, draw_state, run_mode);
@@ -228,9 +228,9 @@ pub const Gles30TextState = struct {
         return &self.path_program;
     }
 
-    fn ensureHintedTextProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.hinted_text_program.handle != 0);
-        return &self.hinted_text_program;
+    fn ensureTtHintedTextProgram(self: *Gles30TextState) *const ProgramState {
+        std.debug.assert(self.tt_hinted_text_program.handle != 0);
+        return &self.tt_hinted_text_program;
     }
 
     fn ensureAutohintProgram(self: *Gles30TextState) *const ProgramState {

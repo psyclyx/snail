@@ -1,7 +1,7 @@
-//! Per-(ppem, glyph_id) memoization of `HintVm.hintGlyph` and
-//! `HintVm.hintedAdvance`.
+//! Per-(ppem, glyph_id) memoization of `TtHintVm.hintGlyph` and
+//! `TtHintVm.hintedAdvance`.
 //!
-//! `HintVm` runs the TT VM and packs curves; this cache stores the
+//! `TtHintVm` runs the TT VM and packs curves; this cache stores the
 //! results so repeat queries at the same size return without touching
 //! the VM. The cache owns the `GlyphCurves` it stores and frees them
 //! on `evictPpem` / `clear` / `deinit`.
@@ -13,13 +13,13 @@
 const std = @import("std");
 const text = @import("../text.zig");
 const font = @import("../font.zig");
-const hint_vm = @import("../font/hint_vm.zig");
+const tt_hint_vm = @import("../font/tt_hint_vm.zig");
 const curves_mod = @import("../atlas/curves.zig");
 
 const Allocator = std.mem.Allocator;
-const HintVm = hint_vm.HintVm;
-const HintPpem = hint_vm.HintPpem;
-const HintError = hint_vm.HintError;
+const TtHintVm = tt_hint_vm.TtHintVm;
+const TtHintPpem = tt_hint_vm.TtHintPpem;
+const TtHintError = tt_hint_vm.TtHintError;
 const GlyphCurves = curves_mod.GlyphCurves;
 
 const Key = struct {
@@ -28,7 +28,7 @@ const Key = struct {
     glyph_id: u16,
 };
 
-inline fn keyFor(ppem: HintPpem, glyph_id: u16) Key {
+inline fn keyFor(ppem: TtHintPpem, glyph_id: u16) Key {
     return .{
         .ppem_x_26_6 = ppem.x_26_6,
         .ppem_y_26_6 = ppem.y_26_6,
@@ -36,18 +36,18 @@ inline fn keyFor(ppem: HintPpem, glyph_id: u16) Key {
     };
 }
 
-pub const HintedGlyphCache = struct {
+pub const TtHintedGlyphCache = struct {
     allocator: Allocator,
-    vm: *HintVm,
+    vm: *TtHintVm,
     /// The font_id this cache covers. AdvanceProvider's `covers`
     /// callback uses it to gate per-face attach in shape().
     font_id: u32,
     curves: std.AutoHashMapUnmanaged(Key, GlyphCurves),
     advances: std.AutoHashMapUnmanaged(Key, i32),
-    /// Per-ppem `Prepared` (the fpgm/prep result) that the pure `HintVm`
+    /// Per-ppem `Prepared` (the fpgm/prep result) that the pure `TtHintVm`
     /// hints from. Cached here — the VM itself is stateless — so `fpgm`/`prep`
     /// runs once per size, amortized across every glyph and every frame.
-    prepareds: std.AutoHashMapUnmanaged(HintPpem, HintVm.Prepared),
+    prepareds: std.AutoHashMapUnmanaged(TtHintPpem, TtHintVm.Prepared),
 
     pub const Stats = struct {
         glyph_count: u32,
@@ -56,7 +56,7 @@ pub const HintedGlyphCache = struct {
         band_bytes: usize,
     };
 
-    pub fn init(allocator: Allocator, vm: *HintVm, font_id: u32) HintedGlyphCache {
+    pub fn init(allocator: Allocator, vm: *TtHintVm, font_id: u32) TtHintedGlyphCache {
         return .{
             .allocator = allocator,
             .vm = vm,
@@ -67,7 +67,7 @@ pub const HintedGlyphCache = struct {
         };
     }
 
-    pub fn deinit(self: *HintedGlyphCache) void {
+    pub fn deinit(self: *TtHintedGlyphCache) void {
         var it = self.curves.valueIterator();
         while (it.next()) |c| c.deinit();
         self.curves.deinit(self.allocator);
@@ -79,7 +79,7 @@ pub const HintedGlyphCache = struct {
     }
 
     /// The cached `Prepared` for `ppem`, running fpgm/prep on first use.
-    fn preparedFor(self: *HintedGlyphCache, ppem: HintPpem) HintError!*const HintVm.Prepared {
+    fn preparedFor(self: *TtHintedGlyphCache, ppem: TtHintPpem) TtHintError!*const TtHintVm.Prepared {
         const gop = try self.prepareds.getOrPut(self.allocator, ppem);
         if (!gop.found_existing) {
             errdefer _ = self.prepareds.remove(ppem);
@@ -93,12 +93,12 @@ pub const HintedGlyphCache = struct {
     /// `allocator` owns the stored curves; `scratch` is used only during
     /// the call and is freed before this returns.
     pub fn getOrInsertCurves(
-        self: *HintedGlyphCache,
+        self: *TtHintedGlyphCache,
         allocator: Allocator,
         scratch: Allocator,
         glyph_id: u16,
-        ppem: HintPpem,
-    ) HintError!*const GlyphCurves {
+        ppem: TtHintPpem,
+    ) TtHintError!*const GlyphCurves {
         const key = keyFor(ppem, glyph_id);
         const gop = try self.curves.getOrPut(self.allocator, key);
         if (!gop.found_existing) {
@@ -111,10 +111,10 @@ pub const HintedGlyphCache = struct {
 
     /// Hinted advance for `(glyph_id, ppem)`. Cached on first use.
     pub fn advance(
-        self: *HintedGlyphCache,
+        self: *TtHintedGlyphCache,
         glyph_id: u16,
-        ppem: HintPpem,
-    ) HintError!i32 {
+        ppem: TtHintPpem,
+    ) TtHintError!i32 {
         const key = keyFor(ppem, glyph_id);
         if (self.advances.get(key)) |a| return a;
         const prepared = try self.preparedFor(ppem);
@@ -125,7 +125,7 @@ pub const HintedGlyphCache = struct {
 
     /// Drop every cached curve and advance for `ppem`. Optionally drops
     /// the VM machine for the same ppem via `vm.evictPpem`.
-    pub fn evictPpem(self: *HintedGlyphCache, ppem: HintPpem) void {
+    pub fn evictPpem(self: *TtHintedGlyphCache, ppem: TtHintPpem) void {
         var dropped_curves: std.ArrayListUnmanaged(Key) = .empty;
         defer dropped_curves.deinit(self.allocator);
         var it = self.curves.iterator();
@@ -160,7 +160,7 @@ pub const HintedGlyphCache = struct {
     }
 
     /// Drop every cached curve, advance, and Prepared, regardless of ppem.
-    pub fn clear(self: *HintedGlyphCache) void {
+    pub fn clear(self: *TtHintedGlyphCache) void {
         var it = self.curves.valueIterator();
         while (it.next()) |c| c.deinit();
         self.curves.clearRetainingCapacity();
@@ -172,13 +172,13 @@ pub const HintedGlyphCache = struct {
 
     /// Closure adapter: returns an `AdvanceProvider` whose
     /// `get_advance` walks this cache, falling back to the underlying
-    /// `HintVm.hintedAdvance` (and caching the result) on miss.
+    /// `TtHintVm.hintedAdvance` (and caching the result) on miss.
     /// `covers` returns true only for the `font_id` this cache was
     /// built for; shape() uses it to skip attach on other faces.
     ///
     /// The returned provider borrows `self`; both must outlive any
     /// shape call passed `opts.advance_provider = provider`.
-    pub fn asAdvanceProvider(self: *HintedGlyphCache) text.AdvanceProvider {
+    pub fn asAdvanceProvider(self: *TtHintedGlyphCache) text.AdvanceProvider {
         return .{
             .context = @ptrCast(self),
             .covers = advanceProviderCovers,
@@ -186,7 +186,7 @@ pub const HintedGlyphCache = struct {
         };
     }
 
-    pub fn stats(self: *const HintedGlyphCache) Stats {
+    pub fn stats(self: *const TtHintedGlyphCache) Stats {
         var curve_bytes: usize = 0;
         var band_bytes: usize = 0;
         var it = self.curves.valueIterator();
@@ -204,29 +204,29 @@ pub const HintedGlyphCache = struct {
 };
 
 fn advanceProviderCovers(context: *anyopaque, font_id: u32) bool {
-    const self: *HintedGlyphCache = @ptrCast(@alignCast(context));
+    const self: *TtHintedGlyphCache = @ptrCast(@alignCast(context));
     return font_id == self.font_id;
 }
 
-fn advanceProviderTrampoline(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: HintPpem) i32 {
+fn advanceProviderTrampoline(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: TtHintPpem) i32 {
     _ = font_id;
-    const self: *HintedGlyphCache = @ptrCast(@alignCast(context));
+    const self: *TtHintedGlyphCache = @ptrCast(@alignCast(context));
     return self.advance(glyph_id, ppem) catch 0;
 }
 
 const testing = std.testing;
 const assets = @import("assets");
 
-test "HintedGlyphCache memoizes curves across repeated lookups" {
+test "TtHintedGlyphCache memoizes curves across repeated lookups" {
     var test_font = try font.Font.init(assets.noto_sans_regular);
 
-    var vm = try HintVm.init(testing.allocator, &test_font);
+    var vm = try TtHintVm.init(testing.allocator, &test_font);
     defer vm.deinit();
 
-    var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
+    var cache = TtHintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
-    const ppem = HintPpem.uniform(13 * 64);
+    const ppem = TtHintPpem.uniform(13 * 64);
     const gid = try test_font.glyphIndex('A');
 
     const first = try cache.getOrInsertCurves(testing.allocator, testing.allocator, gid, ppem);
@@ -238,16 +238,16 @@ test "HintedGlyphCache memoizes curves across repeated lookups" {
     try testing.expectEqual(@as(u32, 0), cache.stats().glyph_count);
 }
 
-test "HintedGlyphCache.advance caches hinted advance" {
+test "TtHintedGlyphCache.advance caches hinted advance" {
     var test_font = try font.Font.init(assets.noto_sans_regular);
 
-    var vm = try HintVm.init(testing.allocator, &test_font);
+    var vm = try TtHintVm.init(testing.allocator, &test_font);
     defer vm.deinit();
 
-    var cache = HintedGlyphCache.init(testing.allocator, &vm, 0);
+    var cache = TtHintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
 
-    const ppem = HintPpem.uniform(13 * 64);
+    const ppem = TtHintPpem.uniform(13 * 64);
     const gid = try test_font.glyphIndex('A');
 
     const first = try cache.advance(gid, ppem);

@@ -30,7 +30,7 @@ const embeddable = @import("resources.zig");
 pub const cachePipelineShape = embeddable.cachePipelineShape;
 pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
 
-const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .hinted_text, .autohint };
+const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .tt_hinted_text, .autohint };
 
 pub const Renderer = struct {
     device: vk.VkDevice,

@@ -125,8 +125,8 @@ pub fn emit(
                 final_transform,
                 packed_policy,
             );
-        } else if (atlas.lookupHintedRecord(shape.key)) |hinted_info| {
-            try cur.appendHintedTextTransformedTinted(
+        } else if (atlas.lookupTtHintedRecord(shape.key)) |hinted_info| {
+            try cur.appendTtHintedTextTransformedTinted(
                 rec.bbox,
                 hinted_info.info_x,
                 try addRowBase(hinted_info.info_y, binding.info_row_base),
@@ -540,7 +540,7 @@ test "emit splits contiguous shapes into exact semantic segments" {
     const regular_key = record_key_mod.unhintedGlyph(0, 1);
     const colr_key = record_key_mod.unhintedGlyph(1, 2);
     const path_key = record_key_mod.RecordKey{ .namespace = record_key_mod.ns.path_fill, .a = 1 };
-    const hinted_key = record_key_mod.hintedGlyph(0, 3, 16 * 64);
+    const hinted_key = record_key_mod.ttHintedGlyph(0, 3, 16 * 64);
     var atlas = try Atlas.from(testing.allocator, pool, &.{
         .{ .key = regular_key, .curves = regular_curves },
         .{ .key = colr_key, .curves = regular_curves, .paint = .{ .solid = .{ 1, 0, 0, 1 } } },
@@ -567,7 +567,7 @@ test "emit splits contiguous shapes into exact semantic segments" {
     try testing.expectEqual(draw_records.ShapeKind.regular, segments[0].kind);
     try testing.expectEqual(draw_records.ShapeKind.colr, segments[1].kind);
     try testing.expectEqual(draw_records.ShapeKind.path, segments[2].kind);
-    try testing.expectEqual(draw_records.ShapeKind.hinted_text, segments[3].kind);
+    try testing.expectEqual(draw_records.ShapeKind.tt_hinted_text, segments[3].kind);
     try testing.expectEqual(draw_records.ShapeKind.regular, segments[4].kind);
     for (segments) |segment| {
         try testing.expectEqual(@as(u32, 1), segment.shape_count);

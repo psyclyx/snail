@@ -1,6 +1,6 @@
 //! TT bytecode hinting wrapped as a `GlyphCurves` producer.
 //!
-//! `HintVm` is a PURE producer over an immutable per-ppem state:
+//! `TtHintVm` is a PURE producer over an immutable per-ppem state:
 //!
 //!   var prepared = try vm.prepare(ppem);   // runs fpgm/prep once (expensive)
 //!   const curves = try vm.hintGlyph(alloc, scratch, &prepared, glyph_id);
@@ -8,18 +8,18 @@
 //! `hintGlyph` is a function of `(prepared, glyph_id)` — a glyph program's
 //! rare CVT/storage write is copy-on-write-scoped to the call, so `prepared`
 //! is never mutated. That makes the output safe to memoize and lets the caller
-//! own the `Prepared`-per-ppem cache (see `snail.HintedGlyphCache`). The VM
+//! own the `Prepared`-per-ppem cache (see `snail.TtHintedGlyphCache`). The VM
 //! itself holds no per-ppem state — only reusable per-font scratch and a
 //! ppem-independent parsed-outline cache, both created lazily. This is the
 //! deliberate absence of the "one justified exception" cache: hinting stays
 //! pure, and the state that used to live here is now an explicit value.
 //!
-//! `HintVmStats` reports just the reusable scratch footprint + parsed-outline
+//! `TtHintVmStats` reports just the reusable scratch footprint + parsed-outline
 //! count; per-ppem accounting belongs to whoever caches the `Prepared`s.
 //!
 //! Thread safety: not thread-safe (the reusable scratch is shared across
-//! calls). Construct one `HintVm` per thread; `Prepared` values are immutable
-//! and safe to hold, but hinting from one requires that thread's `HintVm`.
+//! calls). Construct one `TtHintVm` per thread; `Prepared` values are immutable
+//! and safe to hold, but hinting from one requires that thread's `TtHintVm`.
 
 const std = @import("std");
 const tt_vm = @import("truetype/vm.zig");
@@ -33,11 +33,11 @@ const curve_tex = @import("../format/curve_texture.zig");
 const band_tex = @import("../format/band_texture.zig");
 
 pub const Font = font_mod.Font;
-pub const HintPpem = struct {
+pub const TtHintPpem = struct {
     x_26_6: u32,
     y_26_6: u32,
 
-    pub fn uniform(ppem_26_6: u32) HintPpem {
+    pub fn uniform(ppem_26_6: u32) TtHintPpem {
         return .{ .x_26_6 = ppem_26_6, .y_26_6 = ppem_26_6 };
     }
 
@@ -45,25 +45,25 @@ pub const HintPpem = struct {
     /// axes share a 16-bit slot apiece; this is enough range for the
     /// ppem values used in practice (well under 1024 px even at extreme
     /// zoom) given the 26.6 scaling factor of 64×.
-    pub fn packed26Dot6(self: HintPpem) u32 {
+    pub fn packed26Dot6(self: TtHintPpem) u32 {
         const x: u32 = @min(self.x_26_6, 0xFFFF);
         const y: u32 = @min(self.y_26_6, 0xFFFF);
         return (y << 16) | x;
     }
 };
 
-pub const HintVmStats = struct {
+pub const TtHintVmStats = struct {
     /// Bytes held by the reusable per-font scratch (0 until first use).
     scratch_bytes: usize,
     /// Parsed glyph-outline entries in the ppem-independent topology cache.
     topology_glyph_count: u32,
 };
 
-/// Failures returned by `HintVm` operations. Spelled out explicitly so a
+/// Failures returned by `TtHintVm` operations. Spelled out explicitly so a
 /// new opcode or table-parse variant in the underlying TT VM doesn't
 /// silently widen the public surface.
-pub const HintError = error{
-    // HintVm-specific.
+pub const TtHintError = error{
+    // TtHintVm-specific.
     NoHinting,
     GlyphTopologyChanged,
     InvalidStorageSnapshot,
@@ -96,24 +96,24 @@ pub const HintError = error{
 comptime {
     @setEvalBranchQuota(5000);
     // Compile-time guard so adding a variant to one of the underlying
-    // error sets surfaces here instead of silently widening HintError.
+    // error sets surfaces here instead of silently widening TtHintError.
     const expected = error{
         NoHinting,
         GlyphTopologyChanged,
         InvalidStorageSnapshot,
     } || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
-    assertErrorSetsMatch(HintError, expected);
+    assertErrorSetsMatch(TtHintError, expected);
 }
 
 fn assertErrorSetsMatch(comptime A: type, comptime B: type) void {
     for (@typeInfo(A).error_set.?) |e| {
         if (!isInErrorSet(B, e.name)) {
-            @compileError("HintError has extra variant '" ++ e.name ++ "' not in underlying sets");
+            @compileError("TtHintError has extra variant '" ++ e.name ++ "' not in underlying sets");
         }
     }
     for (@typeInfo(B).error_set.?) |e| {
         if (!isInErrorSet(A, e.name)) {
-            @compileError("HintError missing variant '" ++ e.name ++ "' from underlying sets");
+            @compileError("TtHintError missing variant '" ++ e.name ++ "' from underlying sets");
         }
     }
 }
@@ -125,7 +125,7 @@ fn isInErrorSet(comptime S: type, comptime name: []const u8) bool {
     return false;
 }
 
-pub const HintVm = struct {
+pub const TtHintVm = struct {
     allocator: std.mem.Allocator,
     program: tt_vm.Program,
     /// Per-font reusable scratch + parsed-outline cache. Created lazily so the
@@ -142,7 +142,7 @@ pub const HintVm = struct {
     /// Inspect a font for hinting support. Returns `error.NoHinting` if the
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
     /// back to `font.extractCurves`.
-    pub fn init(allocator: std.mem.Allocator, font: *const Font) !HintVm {
+    pub fn init(allocator: std.mem.Allocator, font: *const Font) !TtHintVm {
         // The bytecode interpreter consumes unvaried `glyf` topology. Using it
         // on CFF or a selected variable instance would hint the wrong points.
         if (font.inner.outline_format != .truetype or font.variations.len != 0) return error.NoHinting;
@@ -150,7 +150,7 @@ pub const HintVm = struct {
         return .{ .allocator = allocator, .program = program };
     }
 
-    pub fn deinit(self: *HintVm) void {
+    pub fn deinit(self: *TtHintVm) void {
         if (self.topology) |t| {
             t.deinit();
             self.allocator.destroy(t);
@@ -162,7 +162,7 @@ pub const HintVm = struct {
         self.* = undefined;
     }
 
-    fn ensureScratch(self: *HintVm) HintError!void {
+    fn ensureScratch(self: *TtHintVm) TtHintError!void {
         if (self.machine != null) return;
         const m = try self.allocator.create(tt_hint.HintMachine);
         errdefer self.allocator.destroy(m);
@@ -177,14 +177,14 @@ pub const HintVm = struct {
 
     /// Run fpgm/prep at `ppem` and return the immutable per-ppem state. The
     /// caller owns it — cache it and `deinit` it. Expensive (thousands of
-    /// cycles); amortize by caching per ppem (see `snail.HintedGlyphCache`).
-    pub fn prepare(self: *HintVm, ppem: HintPpem) HintError!Prepared {
+    /// cycles); amortize by caching per ppem (see `snail.TtHintedGlyphCache`).
+    pub fn prepare(self: *TtHintVm, ppem: TtHintPpem) TtHintError!Prepared {
         try self.ensureScratch();
         return self.machine.?.prepare(self.allocator, .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 }, .{});
     }
 
     /// Hinted horizontal advance (26.6 px) for `glyph_id` from `prepared`.
-    pub fn hintedAdvance(self: *HintVm, prepared: *const Prepared, glyph_id: u16) HintError!i32 {
+    pub fn hintedAdvance(self: *TtHintVm, prepared: *const Prepared, glyph_id: u16) TtHintError!i32 {
         try self.ensureScratch();
         return self.machine.?.glyphAdvanceX26Dot6(prepared, self.topology.?, glyph_id);
     }
@@ -196,12 +196,12 @@ pub const HintVm = struct {
     /// outlive the call. The returned `GlyphCurves` is allocated from
     /// `allocator`.
     pub fn hintGlyph(
-        self: *HintVm,
+        self: *TtHintVm,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
         prepared: *const Prepared,
         glyph_id: u16,
-    ) HintError!curves_mod.GlyphCurves {
+    ) TtHintError!curves_mod.GlyphCurves {
         try self.ensureScratch();
         const executed = try self.machine.?.executeCachedGlyph(prepared, self.topology.?, glyph_id);
         var hint_value = try self.machine.?.buildGlyphHint(scratch, glyph_id, executed);
@@ -256,7 +256,7 @@ pub const HintVm = struct {
 
     /// Footprint of the reusable scratch + parsed-outline cache (not the
     /// caller-owned `Prepared`s). For memory budgeting.
-    pub fn stats(self: *const HintVm) HintVmStats {
+    pub fn stats(self: *const TtHintVm) TtHintVmStats {
         return .{
             .scratch_bytes = if (self.machine) |m| m.byteSize() else 0,
             .topology_glyph_count = if (self.topology) |t| @intCast(t.map.count()) else 0,
@@ -266,17 +266,17 @@ pub const HintVm = struct {
 
 const testing = std.testing;
 
-test "HintVm hints DejaVu digits and letters across small ppems" {
+test "TtHintVm hints DejaVu digits and letters across small ppems" {
     // Regression net for two TT-interpreter bugs that only surfaced on real
     // fonts at small sizes: SLOOP-0 handling (DejaVu '2' -> StackUnderflow at
     // every size) and DELTAP/DELTAC pop order (DejaVu 'a','m','r','0' ->
     // InvalidPoint below ~12px, where the delta exceptions fire).
     const font_data = @import("assets").dejavu_sans_mono;
     var font = try Font.init(font_data);
-    var hinter = try HintVm.init(testing.allocator, &font);
+    var hinter = try TtHintVm.init(testing.allocator, &font);
     defer hinter.deinit();
     for ([_]u32{ 8, 9, 10, 11, 12, 16 }) |px| {
-        var prepared = try hinter.prepare(HintPpem.uniform(px * 64));
+        var prepared = try hinter.prepare(TtHintPpem.uniform(px * 64));
         defer prepared.deinit();
         for ("2amr0Hngoe13") |ch| {
             const gid = try font.glyphIndex(ch);
@@ -286,30 +286,30 @@ test "HintVm hints DejaVu digits and letters across small ppems" {
     }
 }
 
-test "HintVm init fails cleanly on fonts without hinting" {
+test "TtHintVm init fails cleanly on fonts without hinting" {
     var font = Font.init(&[_]u8{ 0, 0, 0, 0 }) catch |e| {
         try testing.expect(e == error.InvalidFont or e == error.UnexpectedEof);
         return;
     };
-    const res = HintVm.init(testing.allocator, &font);
+    const res = TtHintVm.init(testing.allocator, &font);
     try testing.expectError(error.NoHinting, res);
 }
 
-test "HintVm rejects selected variable instances" {
+test "TtHintVm rejects selected variable instances" {
     const coordinates = [_]font_mod.Variation{.{ .tag = "wght".*, .value = 700 }};
     var font = try Font.initWithOptions(
         @import("assets").noto_sans_mono,
         .{ .variations = &coordinates },
     );
-    try testing.expectError(error.NoHinting, HintVm.init(testing.allocator, &font));
+    try testing.expectError(error.NoHinting, TtHintVm.init(testing.allocator, &font));
 }
 
-test "HintVm executes the selected TrueType collection face" {
+test "TtHintVm executes the selected TrueType collection face" {
     const collection = @import("assets").test_truetype_collection;
     var font = try Font.initFace(collection, 1);
-    var hinter = try HintVm.init(testing.allocator, &font);
+    var hinter = try TtHintVm.init(testing.allocator, &font);
     defer hinter.deinit();
-    var prepared = try hinter.prepare(HintPpem.uniform(16 * 64));
+    var prepared = try hinter.prepare(TtHintPpem.uniform(16 * 64));
     defer prepared.deinit();
     var curves = try hinter.hintGlyph(
         testing.allocator,
@@ -321,14 +321,14 @@ test "HintVm executes the selected TrueType collection face" {
     try testing.expect(curves.curve_count > 0);
 }
 
-test "HintVm produces GlyphCurves for a hinted glyph" {
+test "TtHintVm produces GlyphCurves for a hinted glyph" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try HintVm.init(testing.allocator, &font);
+    var hinter = try TtHintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
-    const ppem = HintPpem.uniform(16 * 64);
+    const ppem = TtHintPpem.uniform(16 * 64);
     const glyph_id = try font.glyphIndex('A');
 
     var prepared = try hinter.prepare(ppem);
@@ -342,14 +342,14 @@ test "HintVm produces GlyphCurves for a hinted glyph" {
     try testing.expect(curves.h_band_count > 0);
 }
 
-test "HintVm is pure: one Prepared hints many glyphs, output is stable" {
+test "TtHintVm is pure: one Prepared hints many glyphs, output is stable" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try HintVm.init(testing.allocator, &font);
+    var hinter = try TtHintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
-    var prepared = try hinter.prepare(HintPpem.uniform(12 * 64));
+    var prepared = try hinter.prepare(TtHintPpem.uniform(12 * 64));
     defer prepared.deinit();
 
     // Hinting 'A' then 'B' then 'A' again from the SAME const Prepared must be
@@ -370,14 +370,14 @@ test "HintVm is pure: one Prepared hints many glyphs, output is stable" {
     try testing.expect(hinter.stats().scratch_bytes > 0);
 }
 
-test "HintVm hint output round-trips through an atlas" {
+test "TtHintVm hint output round-trips through an atlas" {
     const atlas_mod = @import("../atlas.zig");
     const record_key_mod = @import("../atlas/record_key.zig");
 
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
-    var hinter = try HintVm.init(testing.allocator, &font);
+    var hinter = try TtHintVm.init(testing.allocator, &font);
     defer hinter.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
@@ -387,14 +387,14 @@ test "HintVm hint output round-trips through an atlas" {
     });
     defer pool.deinit();
 
-    const ppem = HintPpem.uniform(18 * 64);
+    const ppem = TtHintPpem.uniform(18 * 64);
     const gid = try font.glyphIndex('M');
     var prepared = try hinter.prepare(ppem);
     defer prepared.deinit();
     var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, gid);
     defer curves.deinit();
 
-    const key = record_key_mod.hintedGlyph(0, gid, ppem.packed26Dot6());
+    const key = record_key_mod.ttHintedGlyph(0, gid, ppem.packed26Dot6());
     var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, &.{
         .{ .key = key, .curves = curves },
     });

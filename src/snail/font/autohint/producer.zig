@@ -21,7 +21,7 @@ const Vec2 = @import("../../math/vec.zig").Vec2;
 
 /// Owns the ppem-independent analysis inputs for one font: the parsed
 /// program (outlines) and the derived blue zones. Cheap to keep alongside a
-/// font; not thread-safe (mirrors `HintVm`).
+/// font; not thread-safe (mirrors `TtHintVm`).
 pub const FeatureEdge = analysis.FeatureEdge;
 
 pub const GlyphFeatures = struct {

@@ -104,11 +104,11 @@ pub const InstanceProfileEntry = struct {
     pixel_h: u32,
 };
 
-pub const InstanceProfileBuf = struct {
+pub const InstanceProfileBuffer = struct {
     entries: []InstanceProfileEntry,
     count: usize = 0,
 
-    pub fn reset(self: *InstanceProfileBuf) void {
+    pub fn reset(self: *InstanceProfileBuffer) void {
         self.count = 0;
     }
 };
@@ -155,7 +155,7 @@ pub const Renderer = struct {
     /// so independent renderers on separate threads profile independently.
     /// Only the serial `drawBatchInstances` path records; wire a buffer in to
     /// start, clear to stop. The caller owns the buffer's storage/lifetime.
-    instance_profile: ?*InstanceProfileBuf = null,
+    instance_profile: ?*InstanceProfileBuffer = null,
 
     pub const TILE_ROWS: u32 = 2;
 
@@ -590,8 +590,8 @@ pub const Renderer = struct {
         const resolved = prepared.resolveLayerInfo(info_y) orelse return;
         const entry = resolved.entry;
         const special_kind = render_abi.specialGlyphWordKind(gw) orelse .colr;
-        if (special_kind == .hinted_text) {
-            self.renderHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
+        if (special_kind == .tt_hinted_text) {
+            self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
             return;
         }
         if (special_kind == .autohint) {
@@ -606,7 +606,7 @@ pub const Renderer = struct {
         }
     }
 
-    fn renderHintedTextBatchInstance(
+    fn renderTtHintedTextBatchInstance(
         self: *Renderer,
         prepared: *const PreparedResources,
         decoded: BatchInstance,

@@ -33,6 +33,6 @@ layout(location = 0) out vec4 frag_color;
 #include "snail_coverage_common.glsl"
 #include "snail_color_common.glsl"
 #include "snail_text_frag_body.glsl"
-#include "snail_hinted_text_frag_body.glsl"
+#include "snail_tt_hinted_text_frag_body.glsl"
 
-void main() { snailHintedTextFragment(); }
+void main() { snailTtHintedTextFragment(); }

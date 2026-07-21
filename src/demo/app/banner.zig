@@ -202,7 +202,7 @@ const ContentCache = struct {
         if (self.content) |*old| old.deinit();
         self.content = null;
 
-        const hint_opts: demo_banner.HintOptions = .{
+        const tt_hint_opts: demo_banner.TtHintOptions = .{
             .enabled = hint_active,
             .ppem_scale = hint_ppem_scale,
         };
@@ -213,7 +213,7 @@ const ContentCache = struct {
             @floatFromInt(width),
             @floatFromInt(height),
             .{ .x = 1, .y = 1 },
-            hint_opts,
+            tt_hint_opts,
         );
         self.last_size = .{ width, height };
         self.last_hint_active = hint_active;
@@ -415,7 +415,7 @@ const FrameSampleSums = struct {
 /// printed pixel_w × pixel_h is the post-transform screen bbox, which
 /// makes huge fills (background, cards) easy to identify by area
 /// without needing to know the picture's instance order.
-fn printInstanceProfileTopK(snap: *const raster.InstanceProfileBuf, k: usize) void {
+fn printInstanceProfileTopK(snap: *const raster.InstanceProfileBuffer, k: usize) void {
     if (snap.count == 0) {
         std.debug.print(
             "[timing] no per-instance profile captured this window — switch to cpu_unthreaded backend (press C)\n",
@@ -627,10 +627,10 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
     const profile_cap: usize = 8192;
     const profile_entries = try allocator.alloc(raster.InstanceProfileEntry, profile_cap);
     defer allocator.free(profile_entries);
-    var profile_live: raster.InstanceProfileBuf = .{ .entries = profile_entries };
+    var profile_live: raster.InstanceProfileBuffer = .{ .entries = profile_entries };
     const snap_entries = try allocator.alloc(raster.InstanceProfileEntry, profile_cap);
     defer allocator.free(snap_entries);
-    var profile_snap: raster.InstanceProfileBuf = .{ .entries = snap_entries };
+    var profile_snap: raster.InstanceProfileBuffer = .{ .entries = snap_entries };
     var profile_snap_render_us: f64 = 0;
 
     var angle: f32 = 0.0;

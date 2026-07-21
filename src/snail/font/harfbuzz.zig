@@ -5,7 +5,7 @@
 //! Each `HarfBuzzShaper` carries an em-scale font (`hb_font_em`, default OT
 //! funcs, scale = upem) used for normal shaping. When an `AdvanceProvider`
 //! is attached via `attachAdvanceProvider`, a lazily-created sub-font
-//! (`hb_font_hinted`) is given a single overridden font-func —
+//! (`hb_font_tt_hinted`) is given a single overridden font-func —
 //! `glyph_h_advance` — that routes through the provider closure. Hinted
 //! shape calls set the sub-font's scale to `ppem_26_6` so HB's advances
 //! land in 26.6-pixel units; the caller divides them back to em-space and
@@ -22,7 +22,7 @@ pub const Feature = hb.hb_feature_t;
 pub const FEATURE_GLOBAL_START: c_uint = 0;
 pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
 
-pub const HintPpem = text_types.HintPpem;
+pub const TtHintPpem = text_types.TtHintPpem;
 pub const AdvanceProvider = text_types.AdvanceProvider;
 
 pub fn makeTag(tag: [4]u8) u32 {
@@ -32,7 +32,7 @@ pub fn makeTag(tag: [4]u8) u32 {
 
 /// What backs the `glyph_h_advance` font_func. `shape(faces, ...)`
 /// attaches a closure that typically routes into a
-/// `snail.HintedGlyphCache`.
+/// `snail.TtHintedGlyphCache`.
 const AdvanceSource = union(enum) {
     none,
     provider: struct { provider: AdvanceProvider, font_id: u32 },
@@ -54,8 +54,8 @@ pub const HarfBuzzShaper = struct {
     /// by `attachAdvanceProvider`. Inherits parent's OT defaults for
     /// everything except `glyph_h_advance`, which routes through the
     /// attached `AdvanceProvider`.
-    hb_font_hinted: ?*hb.hb_font_t,
-    hb_funcs_hinted: ?*hb.hb_font_funcs_t,
+    hb_font_tt_hinted: ?*hb.hb_font_t,
+    hb_funcs_tt_hinted: ?*hb.hb_font_funcs_t,
     hb_buffer: *hb.hb_buffer_t,
     units_per_em: u16,
     hooks: ?*HintHooks,
@@ -109,8 +109,8 @@ pub const HarfBuzzShaper = struct {
         return .{
             .hb_face = face,
             .hb_font_em = font,
-            .hb_font_hinted = null,
-            .hb_funcs_hinted = null,
+            .hb_font_tt_hinted = null,
+            .hb_funcs_tt_hinted = null,
             .hb_buffer = buffer,
             .units_per_em = units_per_em,
             .hooks = null,
@@ -120,8 +120,8 @@ pub const HarfBuzzShaper = struct {
 
     pub fn deinit(self: *HarfBuzzShaper) void {
         hb.hb_buffer_destroy(self.hb_buffer);
-        if (self.hb_font_hinted) |f| hb.hb_font_destroy(f);
-        if (self.hb_funcs_hinted) |f| hb.hb_font_funcs_destroy(f);
+        if (self.hb_font_tt_hinted) |f| hb.hb_font_destroy(f);
+        if (self.hb_funcs_tt_hinted) |f| hb.hb_font_funcs_destroy(f);
         hb.hb_font_destroy(self.hb_font_em);
         hb.hb_face_destroy(self.hb_face);
         if (self.hooks) |h| if (self.hooks_allocator) |a| a.destroy(h);
@@ -162,8 +162,8 @@ pub const HarfBuzzShaper = struct {
         hb.hb_font_funcs_make_immutable(funcs);
         hb.hb_font_set_funcs(sub_font, funcs, hooks, null);
 
-        self.hb_font_hinted = sub_font;
-        self.hb_funcs_hinted = funcs;
+        self.hb_font_tt_hinted = sub_font;
+        self.hb_funcs_tt_hinted = funcs;
         self.hooks = hooks;
         self.hooks_allocator = allocator;
     }
@@ -195,9 +195,9 @@ pub const HarfBuzzShaper = struct {
         self: *const HarfBuzzShaper,
         text: []const u8,
         features: []const hb.hb_feature_t,
-        ppem: HintPpem,
+        ppem: TtHintPpem,
     ) ShapedRaw {
-        const font = self.hb_font_hinted orelse return self.shapeTextWithFeatures(text, features);
+        const font = self.hb_font_tt_hinted orelse return self.shapeTextWithFeatures(text, features);
         if (self.hooks) |h| {
             if (h.source != .provider) return self.shapeTextWithFeatures(text, features);
             h.ppem_x_26_6 = ppem.x_26_6;
@@ -269,7 +269,7 @@ fn hbGetGlyphHAdvance(
     _ = font_data;
     const hooks: *HintHooks = @ptrCast(@alignCast(user_data orelse return 0));
     const gid: u16 = @intCast(glyph & 0xFFFF);
-    const ppem = HintPpem{ .x_26_6 = hooks.ppem_x_26_6, .y_26_6 = hooks.ppem_y_26_6 };
+    const ppem = TtHintPpem{ .x_26_6 = hooks.ppem_x_26_6, .y_26_6 = hooks.ppem_y_26_6 };
     const adv = switch (hooks.source) {
         .none => return 0,
         .provider => |p| p.provider.get_advance(p.provider.context, p.font_id, gid, ppem),

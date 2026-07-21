@@ -54,7 +54,7 @@ pub const Builder = struct {
     layer_info_texels: u32,
     paint_lookup: PaintLookup,
     autohint_lookup: PaintLookup,
-    hinted_lookup: PaintLookup,
+    tt_hinted_lookup: PaintLookup,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
@@ -69,7 +69,7 @@ pub const Builder = struct {
             .layer_info_texels = 0,
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
-            .hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
             .paint_image_records = .empty,
         };
     }
@@ -91,7 +91,7 @@ pub const Builder = struct {
             .layer_info_texels = 0,
             .paint_lookup = base.paint_lookup.clone(),
             .autohint_lookup = base.autohint_lookup.clone(),
-            .hinted_lookup = base.hinted_lookup.clone(),
+            .tt_hinted_lookup = base.tt_hinted_lookup.clone(),
             .paint_image_records = .empty,
         };
         errdefer b.abort();
@@ -120,7 +120,7 @@ pub const Builder = struct {
         self.layer_info_buf.deinit(self.allocator);
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
-        self.hinted_lookup.deinit();
+        self.tt_hinted_lookup.deinit();
         self.paint_image_records.deinit(self.allocator);
     }
 
@@ -146,16 +146,16 @@ pub const Builder = struct {
         self.autohint_lookup = next;
     }
 
-    fn hintedLookupPut(self: *Builder, key: RecordKey, value: PaintRecordInfo) !void {
-        const next = try self.hinted_lookup.put(key, value);
-        self.hinted_lookup.deinit();
-        self.hinted_lookup = next;
+    fn ttHintedLookupPut(self: *Builder, key: RecordKey, value: PaintRecordInfo) !void {
+        const next = try self.tt_hinted_lookup.put(key, value);
+        self.tt_hinted_lookup.deinit();
+        self.tt_hinted_lookup = next;
     }
 
-    /// Write the two texels a hinted-text instance needs to resolve the
+    /// Write the two texels a TT-hinted-text instance needs to resolve the
     /// baked glyph's ordinary band record. Curves are not duplicated into
-    /// layer-info: HintVm already produced direct-encoded hinted curves.
-    fn insertHintedRecord(self: *Builder, key: RecordKey, bands: GlyphBandEntry) InsertError!void {
+    /// layer-info: TtHintVm already produced direct-encoded hinted curves.
+    fn insertTtHintedRecord(self: *Builder, key: RecordKey, bands: GlyphBandEntry) InsertError!void {
         std.debug.assert(bands.h_band_count > 0 and bands.v_band_count > 0);
         const texel_offset = self.layer_info_texels;
         const new_texels = std.math.add(u32, texel_offset, 2) catch return error.LayerInfoTooLarge;
@@ -178,7 +178,7 @@ pub const Builder = struct {
             bands.band_offset_x,
             bands.band_offset_y,
         });
-        try self.hintedLookupPut(key, .{
+        try self.ttHintedLookupPut(key, .{
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
             .layer_count = 1,
@@ -276,7 +276,7 @@ pub const Builder = struct {
             .layer_info_height = layer_info_height,
             .paint_lookup = self.paint_lookup,
             .autohint_lookup = self.autohint_lookup,
-            .hinted_lookup = self.hinted_lookup,
+            .tt_hinted_lookup = self.tt_hinted_lookup,
             .paint_image_records = paint_image_records_out,
         };
     }
@@ -463,7 +463,7 @@ pub const Builder = struct {
 
         // Aliased autohint: reuse an already-inserted base glyph's placement
         // and bands, placing no curves of our own. A target-free analysis
-        // cannot define a static hinted-space expansion, so retain the base
+        // cannot define a static TT-hinted-space expansion, so retain the base
         // bbox; emit expands device bounds when fitting is applied.
         if (entry.autohint) |analysis| {
             if (entry.autohint_base) |base_key| {
@@ -532,8 +532,8 @@ pub const Builder = struct {
 
         try self.lookupPut(entry.key, record);
 
-        if (entry.key.namespace == record_key_mod.ns.hinted_glyph) {
-            try self.insertHintedRecord(entry.key, base_placement.bands);
+        if (entry.key.namespace == record_key_mod.ns.tt_hinted_glyph) {
+            try self.insertTtHintedRecord(entry.key, base_placement.bands);
         }
 
         // Autohint: immutable analysis over the shared base glyph.

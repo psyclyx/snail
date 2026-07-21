@@ -153,7 +153,7 @@ pub const Atlas = struct {
     /// glyph band records. The hinted outline itself remains in the ordinary
     /// curve/band atlas; this small record lets the hinted-text instance ABI
     /// address it while retaining a distinct shader/program family.
-    hinted_lookup: PaintLookup,
+    tt_hinted_lookup: PaintLookup,
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
     /// to `null`. The software renderer's `BackendCache.upload`
@@ -172,7 +172,7 @@ pub const Atlas = struct {
             .lookup = RecordLookup.init(allocator, .{}),
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
-            .hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 
@@ -196,7 +196,7 @@ pub const Atlas = struct {
         if (self.paint_image_records) |records| self.allocator.free(records);
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
-        self.hinted_lookup.deinit();
+        self.tt_hinted_lookup.deinit();
         self.lookup.deinit();
         self.* = undefined;
     }
@@ -214,8 +214,8 @@ pub const Atlas = struct {
     }
 
     /// Look up the band record for a baked per-PPEM TT-hinted glyph.
-    pub fn lookupHintedRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
-        return self.hinted_lookup.get(key);
+    pub fn lookupTtHintedRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
+        return self.tt_hinted_lookup.get(key);
     }
 
     pub fn contains(self: *const Atlas, key: RecordKey) bool {
@@ -354,7 +354,7 @@ pub const Atlas = struct {
             .lookup = lookup,
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
-            .hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
         };
     }
 

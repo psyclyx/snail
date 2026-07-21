@@ -60,7 +60,7 @@ fn TextStateFor(comptime backend: Backend) type {
         text_subpixel_dual_program: ProgramState = .{},
         colr_program: ProgramState = .{},
         path_program: ProgramState = .{},
-        hinted_text_program: ProgramState = .{},
+        tt_hinted_text_program: ProgramState = .{},
         autohint_program: ProgramState = .{},
         linear_resolve: LinearResolveState = .{},
         vao: gl.GLuint = 0,
@@ -115,7 +115,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
             self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
             self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
-            self.hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_hinted_text, false);
+            self.tt_hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
             self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
             if (self.supports_dual_source_blend) {
                 self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
@@ -189,7 +189,7 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.text_subpixel_dual_program);
             deleteProgramState(&self.colr_program);
             deleteProgramState(&self.path_program);
-            deleteProgramState(&self.hinted_text_program);
+            deleteProgramState(&self.tt_hinted_text_program);
             deleteProgramState(&self.autohint_program);
             self.linear_resolve.deinit();
             if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
@@ -317,7 +317,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 },
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
-                .hinted_text => self.ensureHintedTextProgram(),
+                .tt_hinted_text => self.ensureTtHintedTextProgram(),
                 .autohint => self.ensureAutohintProgram(),
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
@@ -487,9 +487,9 @@ fn TextStateFor(comptime backend: Backend) type {
             return &self.path_program;
         }
 
-        fn ensureHintedTextProgram(self: *GlTextState) *const ProgramState {
-            std.debug.assert(self.hinted_text_program.handle != 0);
-            return &self.hinted_text_program;
+        fn ensureTtHintedTextProgram(self: *GlTextState) *const ProgramState {
+            std.debug.assert(self.tt_hinted_text_program.handle != 0);
+            return &self.tt_hinted_text_program;
         }
 
         fn ensureAutohintProgram(self: *GlTextState) *const ProgramState {

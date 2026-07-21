@@ -159,7 +159,7 @@ pub const Driver = union(Kind) {
 
     /// Wire the per-instance timing sink on the CPU renderer (no-op for GPU
     /// backends, which don't run the serial CPU instance loop).
-    pub fn setInstanceProfile(self: *Driver, profile: ?*raster.InstanceProfileBuf) void {
+    pub fn setInstanceProfile(self: *Driver, profile: ?*raster.InstanceProfileBuffer) void {
         switch (self.*) {
             .cpu, .cpu_less_threaded, .cpu_unthreaded => |*d| d.renderer_state.instance_profile = profile,
             else => {},

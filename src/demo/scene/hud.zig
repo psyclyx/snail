@@ -214,7 +214,7 @@ pub const Overlay = struct {
             // will then surface MissingRecord rather than us silently
             // dropping the glyph.
             if (g.font_id != self.font_id) continue;
-            const key = snail.recordKey.unhintedGlyph(g.font_id, g.glyph_id);
+            const key = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id);
             if (self.atlas.contains(key)) continue;
             // Avoid duplicating within this same call.
             if (containsKey(entries_buf[0..n], key)) continue;
@@ -248,7 +248,7 @@ pub const Overlay = struct {
 /// background and the game demo's darker scenes alike.
 const hud_color = [4]f32{ 0.06, 0.07, 0.09, 0.85 };
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

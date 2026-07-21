@@ -17,7 +17,7 @@ pub const ShapeKind = enum {
     regular,
     colr,
     path,
-    hinted_text,
+    tt_hinted_text,
     autohint,
 };
 
@@ -82,7 +82,7 @@ pub fn shapeKind(words: []const u32, shape_index: usize) ShapeKind {
     return switch (abi_mod.specialGlyphWordKind(packed_word) orelse .colr) {
         .colr => .colr,
         .path => .path,
-        .hinted_text => .hinted_text,
+        .tt_hinted_text => .tt_hinted_text,
         .autohint => .autohint,
     };
 }

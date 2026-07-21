@@ -135,7 +135,7 @@ pub const PassBuilder = struct {
             return;
         }
         try self.path_curves_owned.append(self.allocator, curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
@@ -159,7 +159,7 @@ pub const PassBuilder = struct {
             return;
         }
         try self.path_curves_owned.append(self.allocator, curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = self.next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_stroke, .a = self.next_path_id };
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
@@ -194,7 +194,7 @@ pub const PassBuilder = struct {
         const stroke_curves = try prepared.strokeCurves(self.allocator, self.allocator, stroke);
         if (stroke_curves.isEmpty()) {
             try self.path_curves_owned.append(self.allocator, fill_curves);
-            const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+            const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
             self.next_path_id += 1;
             try self.path_entries.append(self.allocator, .{
                 .key = key,
@@ -221,7 +221,7 @@ pub const PassBuilder = struct {
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
@@ -280,7 +280,7 @@ pub const PassBuilder = struct {
             return;
         }
         try self.path_curves_owned.append(self.allocator, fill_curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
@@ -410,7 +410,7 @@ pub const PassBuilder = struct {
             const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
             try self.path_curves_owned.append(self.allocator, curves);
 
-            const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+            const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
             self.next_path_id += 1;
             try self.path_entries.append(self.allocator, .{
                 .key = key,
@@ -431,7 +431,7 @@ pub const PassBuilder = struct {
             if (face_index_int >= self.fonts.faces.faceCount()) continue;
             const fid = g.font_id;
             const font_ref = &self.fonts.fonts[fid];
-            const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
+            const key = snail.record_key.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
             const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
             try self.text_curves_owned.append(self.allocator, curves);
@@ -470,7 +470,7 @@ pub const PassBuilder = struct {
     }
 };
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

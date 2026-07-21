@@ -39,7 +39,6 @@ pub const OpenTypeFeature = text_mod.OpenTypeFeature;
 pub const ShapeOptions = text_mod.ShapeOptions;
 pub const AdvanceProvider = text_mod.AdvanceProvider;
 pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
-pub const isRenderableTextCodepoint = text_mod.isRenderableTextCodepoint;
 
 const run_placement = @import("text/run_placement.zig");
 pub const HintMode = run_placement.HintMode;
@@ -51,7 +50,7 @@ pub const placedRunShapeCount = run_placement.placedRunShapeCount;
 pub const placeRun = run_placement.placeRun;
 pub const placeRunAlloc = run_placement.placeRunAlloc;
 
-pub const HintedGlyphCache = @import("text/hinted_glyph_cache.zig").HintedGlyphCache;
+pub const TtHintedGlyphCache = @import("text/tt_hinted_glyph_cache.zig").TtHintedGlyphCache;
 pub const UnhintedGlyphCache = @import("text/unhinted_glyph_cache.zig").UnhintedGlyphCache;
 
 pub const Font = font.Font;
@@ -77,7 +76,7 @@ pub const Image = image_mod.Image;
 
 // ── Record keys / atlas ──
 
-pub const recordKey = record_key_mod;
+pub const record_key = record_key_mod;
 
 pub const GlyphCurves = @import("atlas/curves.zig").GlyphCurves;
 pub const PagePool = @import("atlas/page_pool.zig").PagePool;
@@ -125,10 +124,10 @@ pub const autohint = struct {
     pub const FeatureEdge = analysis.FeatureEdge;
 };
 
-pub const HintVm = @import("font/hint_vm.zig").HintVm;
-pub const HintPpem = @import("font/hint_vm.zig").HintPpem;
-pub const HintVmStats = @import("font/hint_vm.zig").HintVmStats;
-pub const HintError = @import("font/hint_vm.zig").HintError;
+pub const TtHintVm = @import("font/tt_hint_vm.zig").TtHintVm;
+pub const TtHintPpem = @import("font/tt_hint_vm.zig").TtHintPpem;
+pub const TtHintVmStats = @import("font/tt_hint_vm.zig").TtHintVmStats;
+pub const TtHintError = @import("font/tt_hint_vm.zig").TtHintError;
 
 pub const Path = @import("path.zig").Path;
 pub const PreparedPath = @import("path.zig").PreparedPath;
@@ -159,7 +158,7 @@ test {
     _ = atlas_mod;
     _ = @import("path.zig");
     _ = @import("path_pack.zig");
-    _ = @import("font/hint_vm.zig");
+    _ = @import("font/tt_hint_vm.zig");
     _ = @import("font/autohint/policy.zig");
     _ = @import("font/autohint/analysis.zig");
     _ = @import("font/autohint/warp.zig");
@@ -169,7 +168,7 @@ test {
     _ = @import("format/abi.zig");
     _ = @import("text/faces.zig");
     _ = @import("text/run_placement.zig");
-    _ = @import("text/hinted_glyph_cache.zig");
+    _ = @import("text/tt_hinted_glyph_cache.zig");
     _ = @import("text/unhinted_glyph_cache.zig");
     _ = shape_mod;
     _ = @import("draw/records.zig");

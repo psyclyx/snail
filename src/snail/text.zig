@@ -8,10 +8,10 @@
 
 const std = @import("std");
 
-const hinter_mod = @import("font/hint_vm.zig");
+const hinter_mod = @import("font/tt_hint_vm.zig");
 
-pub const HintVm = hinter_mod.HintVm;
-pub const HintPpem = hinter_mod.HintPpem;
+pub const TtHintVm = hinter_mod.TtHintVm;
+pub const TtHintPpem = hinter_mod.TtHintPpem;
 
 const Allocator = std.mem.Allocator;
 
@@ -51,8 +51,8 @@ pub const ShapeOptions = struct {
     /// pixel positions exactly).
     ///
     /// A typical caller wires this to
-    /// `snail.HintedGlyphCache.asAdvanceProvider()` so HB lookups hit
-    /// the cache, falling back to the underlying `HintVm` on miss.
+    /// `snail.TtHintedGlyphCache.asAdvanceProvider()` so HB lookups hit
+    /// the cache, falling back to the underlying `TtHintVm` on miss.
     advance_provider: ?AdvanceProvider = null,
     /// Ppem to shape at. Two roles, both shape-time:
     ///   1. HB's sub-font scale is set to this so positions come back
@@ -63,11 +63,11 @@ pub const ShapeOptions = struct {
     /// The provider does *not* carry its own ppem — it's a pure
     /// `(font_id, glyph_id, ppem) → advance` function. Required
     /// whenever `advance_provider` is non-null; ignored otherwise.
-    target_ppem: ?HintPpem = null,
+    target_ppem: ?TtHintPpem = null,
 };
 
 /// Closure handed to `ShapeOptions.advance_provider` so the shaping
-/// callback can route through caller-owned state (a `HintedGlyphCache`,
+/// callback can route through caller-owned state (a `TtHintedGlyphCache`,
 /// a debug hook, a synthetic-metric source — anything that yields a
 /// 26.6 advance for `(font_id, glyph_id)` and a ppem).
 ///
@@ -79,7 +79,7 @@ pub const ShapeOptions = struct {
 pub const AdvanceProvider = struct {
     context: *anyopaque,
     covers: *const fn (context: *anyopaque, font_id: u32) bool,
-    get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: HintPpem) i32,
+    get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: TtHintPpem) i32,
 };
 
 pub const FontWeight = enum(u4) {
@@ -149,11 +149,3 @@ pub const ShapedText = struct {
         self.* = undefined;
     }
 };
-
-pub fn isRenderableTextCodepoint(codepoint: u32) bool {
-    if (codepoint > std.math.maxInt(u21)) return false;
-    if (!std.unicode.utf8ValidCodepoint(@intCast(codepoint))) return false;
-    if (codepoint < 0x20) return false;
-    if (codepoint >= 0x7F and codepoint < 0xA0) return false;
-    return true;
-}

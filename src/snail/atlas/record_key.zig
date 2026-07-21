@@ -44,7 +44,7 @@ pub const ns = struct {
     /// Unhinted glyph: a=font_id, b=glyph_id, c=0.
     pub const unhinted_glyph: u32 = 1;
     /// Hinted glyph at a specific ppem: a=font_id, b=glyph_id, c=ppem_26_6.
-    pub const hinted_glyph: u32 = 2;
+    pub const tt_hinted_glyph: u32 = 2;
     /// Filled path shape: caller-chosen a, b, c.
     pub const path_fill: u32 = 3;
     /// Stroked path shape: caller-chosen a, b, c.
@@ -52,7 +52,7 @@ pub const ns = struct {
     /// Paint record (gradient, image): caller-chosen a, b, c.
     pub const paint_record: u32 = 5;
     /// Immutable auto-light analysis: a=font_id, b=glyph_id, c=0. Distinct
-    /// from `hinted_glyph`; one analysis serves every PPEM and policy.
+    /// from `tt_hinted_glyph`; one analysis serves every PPEM and policy.
     pub const autohint_glyph: u32 = 6;
 
     /// First namespace reserved for caller use.
@@ -63,8 +63,8 @@ pub fn unhintedGlyph(font_id: u32, glyph_id: u16) RecordKey {
     return .{ .namespace = ns.unhinted_glyph, .a = font_id, .b = @intCast(glyph_id) };
 }
 
-pub fn hintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
-    return .{ .namespace = ns.hinted_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
+pub fn ttHintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
+    return .{ .namespace = ns.tt_hinted_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
 }
 
 /// Key for an immutable auto-light glyph analysis. Size and fitting policy
@@ -87,7 +87,7 @@ test "user namespaces start at 1024" {
 }
 
 test "autohint and tt-hint keys of the same glyph never collide" {
-    const tt = hintedGlyph(3, 42, 12 * 64);
+    const tt = ttHintedGlyph(3, 42, 12 * 64);
     const au = autohintGlyph(3, 42);
     try std.testing.expect(!tt.eql(au));
     try std.testing.expect(tt.hash() != au.hash());

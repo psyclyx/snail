@@ -66,8 +66,8 @@ const tt_hint_fragment_source: [:0]const u8 =
     glsl.source(.coverage_common) ++ "\n" ++
     glsl.source(.color_common) ++ "\n" ++
     glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.hinted_text_body) ++ "\n" ++
-    "void main() { snailHintedTextFragment(); }\n";
+    glsl.source(.tt_hinted_text_body) ++ "\n" ++
+    "void main() { snailTtHintedTextFragment(); }\n";
 const path_fragment_source: [:0]const u8 =
     "#version 330 core\n" ++
     glsl.source(.render_fragment_interface) ++ "\n" ++
@@ -116,7 +116,7 @@ const Programs = struct {
         return switch (kind) {
             .regular => self.regular,
             .autohint => self.autohint,
-            .hinted_text => self.tt_hint,
+            .tt_hinted_text => self.tt_hint,
             .path => self.path,
             .colr => self.colr,
         };
@@ -285,9 +285,9 @@ pub fn main() !void {
     // Round 4: extend once more with per-PPEM TT-hinted curves, filled and
     // stroked paths, and one composite COLR glyph. The core helpers own all
     // temporary font-atlas packing; only path construction remains local.
-    var hint_vm = try snail.HintVm.init(allocator, &font);
-    defer hint_vm.deinit();
-    var hint_cache = snail.HintedGlyphCache.init(allocator, &hint_vm, font_id);
+    var tt_hint_vm = try snail.TtHintVm.init(allocator, &font);
+    defer tt_hint_vm.deinit();
+    var hint_cache = snail.TtHintedGlyphCache.init(allocator, &tt_hint_vm, font_id);
     defer hint_cache.deinit();
     try snail.extendTtHintRun(&atlas, allocator, &hint_cache, &shaped, ppem);
     const path_shapes = try extendWithPaths(allocator, &atlas);
@@ -355,18 +355,18 @@ pub fn main() !void {
     var seen = struct {
         regular: bool = false,
         autohint: bool = false,
-        hinted_text: bool = false,
+        tt_hinted_text: bool = false,
         colr: bool = false,
         path_shapes: u32 = 0,
     }{};
     for (segments[0..segment_len]) |segment| switch (segment.kind) {
         .regular => seen.regular = true,
         .autohint => seen.autohint = true,
-        .hinted_text => seen.hinted_text = true,
+        .tt_hinted_text => seen.tt_hinted_text = true,
         .colr => seen.colr = true,
         .path => seen.path_shapes += segment.shape_count,
     };
-    std.debug.assert(seen.regular and seen.autohint and seen.hinted_text and seen.colr and seen.path_shapes == 2);
+    std.debug.assert(seen.regular and seen.autohint and seen.tt_hinted_text and seen.colr and seen.path_shapes == 2);
 
     var target = try RenderTarget.init();
     defer target.deinit();
@@ -412,7 +412,7 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
     var fill_curves = try prepared_fill.fillCurves(allocator, scratch.allocator());
     defer fill_curves.deinit();
     _ = scratch.reset(.retain_capacity);
-    const fill_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = 1 };
+    const fill_key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = 1 };
 
     // Stroked path. `strokeCurves` outlines the source-space stroke before
     // packing it, so the same path program consumes the resulting geometry.
@@ -431,7 +431,7 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
     var stroke_curves = try prepared_stroke.strokeCurves(allocator, scratch.allocator(), stroke_style);
     defer stroke_curves.deinit();
     _ = scratch.reset(.retain_capacity);
-    const stroke_key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = 1 };
+    const stroke_key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_stroke, .a = 1 };
 
     try atlas.extendInPlace(allocator, &.{
         .{

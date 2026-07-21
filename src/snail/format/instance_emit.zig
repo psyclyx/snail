@@ -110,7 +110,7 @@ pub const Cursor = struct {
         self.commit();
     }
 
-    pub fn appendHintedTextTransformedTinted(
+    pub fn appendTtHintedTextTransformedTinted(
         self: Cursor,
         bbox: BBox,
         info_x: u16,
@@ -122,7 +122,7 @@ pub const Cursor = struct {
         transform: Transform2D,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
-        if (!vertex.generateHintedTextVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
+        if (!vertex.generateTtHintedTextVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
             return error.InvalidTransform;
         self.commit();
     }

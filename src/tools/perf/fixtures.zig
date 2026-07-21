@@ -15,7 +15,7 @@ pub const multiscript = paragraph ++
 
 pub const SceneKind = enum {
     regular,
-    hinted,
+    tt_hinted,
     autohint,
     colr,
     path,
@@ -96,7 +96,7 @@ const SceneBuild = struct {
         _ = self.scratch_arena.reset(.retain_capacity);
     }
 
-    fn addCurves(self: *SceneBuild, key: snail.recordKey.RecordKey, curves: snail.GlyphCurves) !void {
+    fn addCurves(self: *SceneBuild, key: snail.record_key.RecordKey, curves: snail.GlyphCurves) !void {
         try self.owned_curves.append(self.allocator, curves);
         try self.entries.append(self.allocator, .{
             .key = key,
@@ -208,7 +208,7 @@ pub fn buildScene(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: Sce
             defer fonts.deinit();
             switch (kind) {
                 .regular => try addRegularText(&build, &fonts),
-                .hinted => try addHintedText(&build, &fonts),
+                .tt_hinted => try addTtHintedText(&build, &fonts),
                 .autohint => try addAutohintText(&build, &fonts),
                 .mixed => {
                     try addPaths(&build);
@@ -224,14 +224,14 @@ pub fn buildScene(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: Sce
     return .{ .build = build, .atlas = atlas };
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |entry| if (entry.key.eql(key)) return true;
     return false;
 }
 
 fn ensureUnhinted(build: *SceneBuild, fonts: *FontSet, shaped: *const snail.ShapedText) !void {
     for (shaped.glyphs) |glyph| {
-        const key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+        const key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
         const curves = try fonts.fonts[glyph.font_id].extractCurves(build.allocator, build.scratch(), glyph.glyph_id);
         build.resetScratch();
@@ -260,16 +260,16 @@ fn addRegularText(build: *SceneBuild, fonts: *FontSet) !void {
     }
 }
 
-fn addHintedText(build: *SceneBuild, fonts: *FontSet) !void {
+fn addTtHintedText(build: *SceneBuild, fonts: *FontSet) !void {
     const ppem_26_6: u32 = 20 * 64;
-    var vm = try snail.HintVm.init(build.allocator, &fonts.fonts[0]);
+    var vm = try snail.TtHintVm.init(build.allocator, &fonts.fonts[0]);
     defer vm.deinit();
-    var prepared = try vm.prepare(snail.HintPpem.uniform(ppem_26_6));
+    var prepared = try vm.prepare(snail.TtHintPpem.uniform(ppem_26_6));
     defer prepared.deinit();
-    var shaped = try snail.shape(build.allocator, &fonts.faces, paragraph, .{ .target_ppem = snail.HintPpem.uniform(ppem_26_6) });
+    var shaped = try snail.shape(build.allocator, &fonts.faces, paragraph, .{ .target_ppem = snail.TtHintPpem.uniform(ppem_26_6) });
     defer shaped.deinit();
     for (shaped.glyphs) |glyph| {
-        const key = snail.recordKey.hintedGlyph(glyph.font_id, glyph.glyph_id, ppem_26_6);
+        const key = snail.record_key.ttHintedGlyph(glyph.font_id, glyph.glyph_id, ppem_26_6);
         if (containsKey(build.entries.items, key)) continue;
         const curves = try vm.hintGlyph(build.allocator, build.scratch(), &prepared, glyph.glyph_id);
         build.resetScratch();
@@ -295,9 +295,9 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
     const analyzer = &build.autohint_analyzer.?;
 
     for (shaped.glyphs) |glyph| {
-        const key = snail.recordKey.autohintGlyph(glyph.font_id, glyph.glyph_id);
+        const key = snail.record_key.autohintGlyph(glyph.font_id, glyph.glyph_id);
         if (containsKey(build.entries.items, key)) continue;
-        const base_key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+        const base_key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
         const base = for (build.entries.items) |entry| {
             if (entry.key.eql(base_key)) break entry.curves;
         } else continue;
@@ -326,9 +326,9 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
         });
         defer build.allocator.free(placed);
         for (shaped.glyphs, placed) |glyph, *shape| {
-            const key = snail.recordKey.autohintGlyph(glyph.font_id, glyph.glyph_id);
+            const key = snail.record_key.autohintGlyph(glyph.font_id, glyph.glyph_id);
             if (!containsKey(build.entries.items, key)) {
-                shape.key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+                shape.key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
                 shape.autohint_policy = null;
             }
         }
@@ -359,7 +359,7 @@ fn addColr(build: *SceneBuild) !void {
         });
     }
 
-    const key = snail.recordKey.unhintedGlyph(0, glyph_id);
+    const key = snail.record_key.unhintedGlyph(0, glyph_id);
     try build.entries.append(build.allocator, .{
         .key = key,
         .curves = base_curves,
@@ -409,7 +409,7 @@ fn addPaths(build: *SceneBuild) !void {
         defer prepared.deinit();
         const curves = try prepared.fillCurves(build.allocator, build.scratch());
         build.resetScratch();
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = build.next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = build.next_path_id };
         build.next_path_id += 1;
         try build.owned_curves.append(build.allocator, curves);
         try build.entries.append(build.allocator, .{

@@ -18,8 +18,8 @@ test "external renderers need only the public snail api" {
         if (@hasDecl(snail, "WORDS_PER_INSTANCE")) @compileError("renderer ABI belongs under snail.render.records");
         if (@hasDecl(snail, "DrawSegment")) @compileError("draw records belong under snail.render.records");
         if (@hasDecl(snail, "Binding")) @compileError("draw records belong under snail.render.records");
-        if (@hasDecl(snail, "RecordKey")) @compileError("record-key names belong under snail.recordKey");
-        if (@hasDecl(snail, "ns")) @compileError("record-key names belong under snail.recordKey");
+        if (@hasDecl(snail, "RecordKey")) @compileError("record-key names belong under snail.record_key");
+        if (@hasDecl(snail, "ns")) @compileError("record-key names belong under snail.record_key");
 
         _ = snail.render.records.abi_version;
         _ = snail.render.records.WORDS_PER_INSTANCE;

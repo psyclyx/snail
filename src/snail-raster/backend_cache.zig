@@ -565,7 +565,7 @@ test "cache init allocates fixed-capacity buffers" {
 }
 
 test "release returns range to free list and allows reuse" {
-    const record_key_mod = @import("snail").recordKey;
+    const record_key_mod = @import("snail").record_key;
     const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
@@ -632,7 +632,7 @@ test "release returns range to free list and allows reuse" {
 }
 
 test "uploadDelta errors for unknown pool" {
-    const record_key_mod = @import("snail").recordKey;
+    const record_key_mod = @import("snail").record_key;
     const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
@@ -671,7 +671,7 @@ test "uploadDelta errors for unknown pool" {
 }
 
 test "uploadDelta errors for released binding" {
-    const record_key_mod = @import("snail").recordKey;
+    const record_key_mod = @import("snail").record_key;
     const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;
@@ -707,7 +707,7 @@ test "uploadDelta accepts a different atlas on the same pool" {
     // affected pages. This is correct, just less efficient than a
     // true extension would be. Lock that in so future "tighten the
     // contract" rewrites don't accidentally make it an error.
-    const record_key_mod = @import("snail").recordKey;
+    const record_key_mod = @import("snail").record_key;
     const font_mod = @import("snail").font;
 
     const font_data = @import("assets").noto_sans_regular;

@@ -7,8 +7,8 @@
 const std = @import("std");
 const atlas_mod = @import("../atlas.zig");
 const font_mod = @import("../font.zig");
-const hint_vm_mod = @import("../font/hint_vm.zig");
-const hinted_cache_mod = @import("../text/hinted_glyph_cache.zig");
+const hint_vm_mod = @import("../font/tt_hint_vm.zig");
+const hinted_cache_mod = @import("../text/tt_hinted_glyph_cache.zig");
 const autohint_mod = @import("../font/autohint/producer.zig");
 const autohint_warp = @import("../font/autohint/warp.zig");
 const faces_mod = @import("../text/faces.zig");
@@ -215,14 +215,14 @@ pub fn extendAutohintRun(
 pub fn extendTtHintRun(
     atlas: *Atlas,
     allocator: Allocator,
-    cache: *hinted_cache_mod.HintedGlyphCache,
+    cache: *hinted_cache_mod.TtHintedGlyphCache,
     shaped: *const text_mod.ShapedText,
     ppem_26_6: u32,
 ) !void {
     var has_missing = false;
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != cache.font_id) continue;
-        const key = record_key.hintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
+        const key = record_key.ttHintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
         if (!atlas.contains(key)) {
             has_missing = true;
             break;
@@ -233,11 +233,11 @@ pub fn extendTtHintRun(
 
     var batch = Batch.init(allocator);
     defer batch.deinit();
-    const ppem = hint_vm_mod.HintPpem.uniform(ppem_26_6);
+    const ppem = hint_vm_mod.TtHintPpem.uniform(ppem_26_6);
 
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != cache.font_id) continue;
-        const key = record_key.hintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
+        const key = record_key.ttHintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
         if (!try batch.shouldInsert(atlas, key)) continue;
         const curves = try cache.getOrInsertCurves(allocator, batch.scratch.allocator(), glyph.glyph_id, ppem);
         _ = batch.scratch.reset(.retain_capacity);
@@ -301,15 +301,15 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
     defer analyzer.deinit();
     try extendAutohintRun(&atlas, testing.allocator, &analyzer, 0, &shaped);
 
-    var vm = try hint_vm_mod.HintVm.init(testing.allocator, &font);
+    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
     defer vm.deinit();
-    var cache = hinted_cache_mod.HintedGlyphCache.init(testing.allocator, &vm, 0);
+    var cache = hinted_cache_mod.TtHintedGlyphCache.init(testing.allocator, &vm, 0);
     defer cache.deinit();
     const ppem_26_6: u32 = 16 * 64;
     try extendTtHintRun(&atlas, testing.allocator, &cache, &shaped, ppem_26_6);
 
     for (shaped.glyphs) |glyph| {
         try testing.expect(atlas.contains(record_key.autohintGlyph(0, glyph.glyph_id)));
-        try testing.expect(atlas.contains(record_key.hintedGlyph(0, glyph.glyph_id, ppem_26_6)));
+        try testing.expect(atlas.contains(record_key.ttHintedGlyph(0, glyph.glyph_id, ppem_26_6)));
     }
 }

@@ -9,9 +9,9 @@
 //!
 //! Layout and palette are byte-identical to the legacy banner — the new
 //! pipeline is purely about how the entries/shapes are constructed.
-//! Hinting is opt-in via `HintOptions`: when enabled, every Latin run is
-//! ppem-scaled, hinted via `HintVm.hint`, and emitted under
-//! `recordKey.hintedGlyph` keys; non-Latin runs fall back to unhinted
+//! Hinting is opt-in via `TtHintOptions`: when enabled, every Latin run is
+//! ppem-scaled, hinted via `TtHintVm.hint`, and emitted under
+//! `record_key.ttHintedGlyph` keys; non-Latin runs fall back to unhinted
 //! glyphs. Per-glyph paint (gradient wordmarks, image-painted "image"
 //! word) goes through the path namespace with `mapPaintToLocal` baking
 //! the world paint into glyph-local coordinates, the same trick
@@ -49,7 +49,7 @@ const shape_gap = layout_mod.shape_gap;
 
 // ── Public API ──
 
-pub const HintOptions = struct {
+pub const TtHintOptions = struct {
     enabled: bool = false,
     /// Scales the font-size em to a hinter ppem. Legacy banner used 1.0;
     /// pass values >1.0 for super-sampled hinting.
@@ -137,7 +137,7 @@ pub const Content = struct {
                 };
                 const origin = if (world_to_pixel) |w2p| snail.snap.origin(world, w2p) else world;
                 buf[cursor] = .{
-                    .key = snail.recordKey.hintedGlyph(g.font_id, g.glyph_id, run.ppem_26_6),
+                    .key = snail.record_key.ttHintedGlyph(g.font_id, g.glyph_id, run.ppem_26_6),
                     .local_transform = .{
                         .xx = scale,
                         .xy = 0,
@@ -168,13 +168,13 @@ pub const Assets = struct {
     /// would dangle the moment init returned.
     fonts: []snail.Font,
     paint_image: snail.Image,
-    /// HintVm + cache for face 0 (the regular face). Heap-allocated so
-    /// the cache's stable `*HintVm` survives the `init` return-by-value.
+    /// TtHintVm + cache for face 0 (the regular face). Heap-allocated so
+    /// the cache's stable `*TtHintVm` survives the `init` return-by-value.
     /// `hinted_cache.asAdvanceProvider()` is the right provider to hand
     /// `snail.shape` for hinted runs; the same VM produces curves for
     /// the render path via `tryEmitHintedRun`.
-    hint_vm: ?*snail.HintVm,
-    hinted_cache: ?snail.HintedGlyphCache,
+    tt_hint_vm: ?*snail.TtHintVm,
+    hinted_cache: ?snail.TtHintedGlyphCache,
     /// Whether face 0 has hinting available. `false` means the regular
     /// font lacked `fpgm`/`prep`/`cvt` and shape() falls through to
     /// em-space.
@@ -227,18 +227,18 @@ pub const Assets = struct {
             img.deinit();
         }
 
-        // Hint face 0 (regular). Heap-allocate the HintVm so
-        // hinted_cache's `*HintVm` stays valid across the move return.
-        const hint_vm: ?*snail.HintVm = blk: {
-            const vm_ptr = allocator.create(snail.HintVm) catch break :blk null;
-            vm_ptr.* = snail.HintVm.init(allocator, &fonts[0]) catch {
+        // Hint face 0 (regular). Heap-allocate the TtHintVm so
+        // hinted_cache's `*TtHintVm` stays valid across the move return.
+        const tt_hint_vm: ?*snail.TtHintVm = blk: {
+            const vm_ptr = allocator.create(snail.TtHintVm) catch break :blk null;
+            vm_ptr.* = snail.TtHintVm.init(allocator, &fonts[0]) catch {
                 allocator.destroy(vm_ptr);
                 break :blk null;
             };
             break :blk vm_ptr;
         };
-        const hinted_cache: ?snail.HintedGlyphCache = if (hint_vm) |vm_ptr|
-            snail.HintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
+        const hinted_cache: ?snail.TtHintedGlyphCache = if (tt_hint_vm) |vm_ptr|
+            snail.TtHintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
         else
             null;
 
@@ -247,15 +247,15 @@ pub const Assets = struct {
             .faces = faces,
             .fonts = fonts,
             .paint_image = paint_image,
-            .hint_vm = hint_vm,
+            .tt_hint_vm = tt_hint_vm,
             .hinted_cache = hinted_cache,
-            .has_regular_hinter = hint_vm != null,
+            .has_regular_hinter = tt_hint_vm != null,
         };
     }
 
     pub fn deinit(self: *Assets) void {
         if (self.hinted_cache) |*c| c.deinit();
-        if (self.hint_vm) |vm| {
+        if (self.tt_hint_vm) |vm| {
             vm.deinit();
             self.allocator.destroy(vm);
         }
@@ -329,11 +329,11 @@ pub fn build(
     width: f32,
     height: f32,
     snap_step: snail.Vec2,
-    hint_opts: HintOptions,
+    tt_hint_opts: TtHintOptions,
 ) !Content {
     const layout = buildLayout(width, height);
 
-    var builder = try BannerBuilder.init(allocator, assets, &layout, snap_step, hint_opts);
+    var builder = try BannerBuilder.init(allocator, assets, &layout, snap_step, tt_hint_opts);
     defer builder.deinit();
 
     // ── Text pass: shape every run, populate text-atlas entries, collect
@@ -396,7 +396,7 @@ const BannerBuilder = struct {
     assets: *Assets,
     layout: *const Layout,
     snap_step: snail.Vec2,
-    hint_opts: HintOptions,
+    tt_hint_opts: TtHintOptions,
 
     // Path-namespace entries (cards, decorations, primitives, snail).
     path_curves_owned: std.ArrayList(snail.GlyphCurves),
@@ -437,14 +437,14 @@ const BannerBuilder = struct {
         assets: *Assets,
         layout: *const Layout,
         snap_step: snail.Vec2,
-        hint_opts: HintOptions,
+        tt_hint_opts: TtHintOptions,
     ) !BannerBuilder {
         return .{
             .allocator = allocator,
             .assets = assets,
             .layout = layout,
             .snap_step = snap_step,
-            .hint_opts = hint_opts,
+            .tt_hint_opts = tt_hint_opts,
             .path_curves_owned = .empty,
             .path_entries = .empty,
             .path_shapes = .empty,
@@ -1017,9 +1017,9 @@ const BannerBuilder = struct {
         // returned `ShapedText` is em-space — the hinted path bakes in
         // hint quantization that `placement.size * advance` recovers as
         // exact 26.6 pixel positions.
-        const target_ppem: ?snail.HintPpem = if (self.hint_opts.enabled) blk: {
-            const ppem_26_6 = hintPpem26_6(placement.size, self.hint_opts.ppem_scale) catch break :blk null;
-            break :blk snail.HintPpem.uniform(ppem_26_6);
+        const target_ppem: ?snail.TtHintPpem = if (self.tt_hint_opts.enabled) blk: {
+            const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch break :blk null;
+            break :blk snail.TtHintPpem.uniform(ppem_26_6);
         } else null;
         const provider = if (target_ppem != null) self.assets.advanceProvider() else null;
         var shaped = try snail.shape(self.allocator, &self.assets.faces, string, .{
@@ -1038,7 +1038,7 @@ const BannerBuilder = struct {
 
         switch (paint) {
             .solid => |color| {
-                if (self.hint_opts.enabled and self.allRunGlyphsHintable(&shaped)) {
+                if (self.tt_hint_opts.enabled and self.allRunGlyphsHintable(&shaped)) {
                     if (try self.tryEmitHintedRun(&shaped, placement, color)) {
                         return .{ .advance_x = advance_x, .missing = missing_in_run };
                     }
@@ -1216,7 +1216,7 @@ const BannerBuilder = struct {
             _ = self.scratch_arena.reset(.retain_capacity);
             try self.path_curves_owned.append(self.allocator, curves);
 
-            const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = self.next_path_id };
+            const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = self.next_path_id };
             self.next_path_id += 1;
             try self.painted_text_entries.append(self.allocator, .{
                 .key = key,
@@ -1241,16 +1241,16 @@ const BannerBuilder = struct {
         color: [4]f32,
     ) !bool {
         const cache = if (self.assets.hinted_cache) |*c| c else return false;
-        const ppem_26_6 = hintPpem26_6(placement.size, self.hint_opts.ppem_scale) catch return false;
-        const ppem = snail.HintPpem.uniform(ppem_26_6);
+        const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch return false;
+        const ppem = snail.TtHintPpem.uniform(ppem_26_6);
 
         // Insert curves for every glyph in the run before emitting shapes,
         // so a mid-run failure leaves the atlas state clean. Curves come
-        // from `HintedGlyphCache`, which memoizes per (glyph_id, ppem) —
+        // from `TtHintedGlyphCache`, which memoizes per (glyph_id, ppem) —
         // per-frame rebuilds at the same zoom hit the cache and skip the
         // TT VM entirely.
         for (shaped.glyphs) |g| {
-            const key = snail.recordKey.hintedGlyph(0, g.glyph_id, ppem_26_6);
+            const key = snail.record_key.ttHintedGlyph(0, g.glyph_id, ppem_26_6);
             if (containsKey(self.text_entries.items, key)) continue;
             const curves_ptr = cache.getOrInsertCurves(
                 self.allocator,
@@ -1288,7 +1288,7 @@ const BannerBuilder = struct {
             var iter = font_ref.colrLayers(g.glyph_id);
             if (iter.count() > 0) {
                 while (iter.next()) |layer| {
-                    const layer_key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
+                    const layer_key = snail.record_key.unhintedGlyph(fid, layer.glyph_id);
                     if (containsKey(self.text_entries.items, layer_key)) continue;
                     const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), layer.glyph_id);
                     _ = self.scratch_arena.reset(.retain_capacity);
@@ -1299,7 +1299,7 @@ const BannerBuilder = struct {
                     });
                 }
             }
-            const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
+            const key = snail.record_key.unhintedGlyph(fid, g.glyph_id);
             if (containsKey(self.text_entries.items, key)) continue;
             const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), g.glyph_id);
             _ = self.scratch_arena.reset(.retain_capacity);
@@ -1332,7 +1332,7 @@ fn addRoundedCard(
     try builder.addPathFillAndStroke(&p, fill, unit_stroke, demo_support.placeRectUniform(rect));
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

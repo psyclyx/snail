@@ -21,7 +21,7 @@ pub const resolveRect = target.resolveRect;
 
 pub const Renderer = renderer.Renderer;
 pub const InstanceProfileEntry = renderer.InstanceProfileEntry;
-pub const InstanceProfileBuf = renderer.InstanceProfileBuf;
+pub const InstanceProfileBuffer = renderer.InstanceProfileBuffer;
 pub const BackendCache = backend_cache.BackendCache;
 pub const CacheOptions = backend_cache.CacheOptions;
 pub const UploadError = backend_cache.UploadError;

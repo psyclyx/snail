@@ -160,7 +160,7 @@ fn renderCharacter(
     if (mode == .autohint) {
         const shapes = @constCast(pic.shapes);
         for (shaped.glyphs, shapes) |glyph, *shape| {
-            const base_key = snail.recordKey.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+            const base_key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
             const base = atlas.lookupRecord(base_key) orelse return error.MissingRecord;
             if (base.curve_count == 0) {
                 shape.key = base_key;

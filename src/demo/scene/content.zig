@@ -35,13 +35,13 @@ pub const Content = struct {
     }
 };
 
-pub const HintOptions = struct {
+pub const TtHintOptions = struct {
     /// When non-null, the tagline + sample row are placed under hinted-glyph
-    /// keys (`recordKey.hintedGlyph(font_id, glyph_id, ppem_26_6)`) and the
-    /// hinted curves are inserted into `text_atlas`. The HintVm must outlive
+    /// keys (`record_key.ttHintedGlyph(font_id, glyph_id, ppem_26_6)`) and the
+    /// hinted curves are inserted into `text_atlas`. The TtHintVm must outlive
     /// `Content`.
-    hinter: ?*snail.HintVm = null,
-    /// HintVm face index (face_to_font_id slot) the HintVm was built for.
+    hinter: ?*snail.TtHintVm = null,
+    /// TtHintVm face index (face_to_font_id slot) the TtHintVm was built for.
     /// Only one face is hinted; other glyphs in those runs fall back to
     /// unhinted entries.
     hint_face_index: u32 = 0,
@@ -53,7 +53,7 @@ pub fn build(allocator: Allocator, width: u32, height: u32) !Content {
     return buildWithOptions(allocator, width, height, .{});
 }
 
-pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts: HintOptions) !Content {
+pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_opts: TtHintOptions) !Content {
     var font_regular = try snail.Font.init(assets_data.noto_sans_regular);
     var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
     var font_arabic = try snail.Font.init(assets_data.noto_sans_arabic);
@@ -116,7 +116,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
 
     for (shaped_tagline.glyphs) |g| {
         const fid = g.font_id;
-        const key = snail.recordKey.unhintedGlyph(fid, g.glyph_id);
+        const key = snail.record_key.unhintedGlyph(fid, g.glyph_id);
         if (containsKey(text_entries.items, key)) continue;
         const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
         _ = scratch_arena.reset(.retain_capacity);
@@ -167,7 +167,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -187,7 +187,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
             .width = demo_support.unitStrokeWidth(card_rect, 1.5),
         };
         try path_curves_owned.append(allocator, try prepared.strokeCurves(allocator, allocator, stroke));
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_stroke, .a = next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_stroke, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -205,7 +205,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         try path_curves_owned.append(allocator, try prepared.fillCurves(allocator, allocator));
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         const paint = snail.Paint{ .conic_gradient = .{
             .center = .{ .x = 0.5, .y = 0.5 },
@@ -271,7 +271,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
         _ = scratch_arena.reset(.retain_capacity);
         try path_curves_owned.append(allocator, curves);
-        const key = snail.recordKey.RecordKey{ .namespace = snail.recordKey.ns.path_fill, .a = next_path_id };
+        const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = next_path_id };
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
@@ -291,11 +291,11 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     errdefer paths_picture.deinit();
 
     // When hinting is requested, push hinted-glyph entries for the tagline
-    // (Latin only) under `hintedGlyph` keys before sealing the atlas.
-    const hinted_tagline_active = if (hint_opts.hinter) |hinter_ptr| blk: {
-        const ppem_26_6: u32 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0));
-        const hint_ppem = snail.HintPpem.uniform(ppem_26_6);
-        const hint_fid: u32 = hint_opts.hint_face_index;
+    // (Latin only) under `ttHintedGlyph` keys before sealing the atlas.
+    const hinted_tagline_active = if (tt_hint_opts.hinter) |hinter_ptr| blk: {
+        const ppem_26_6: u32 = @intFromFloat(@round(tt_hint_opts.hint_ppem_px * 64.0));
+        const hint_ppem = snail.TtHintPpem.uniform(ppem_26_6);
+        const hint_fid: u32 = tt_hint_opts.hint_face_index;
         // Run fpgm/prep once for this ppem, then hint each glyph off it.
         var prepared = hinter_ptr.prepare(hint_ppem) catch |err| switch (err) {
             error.NoHinting => break :blk false,
@@ -304,7 +304,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
         defer prepared.deinit();
         for (shaped_tagline.glyphs) |g| {
             if (g.face_index != hint_fid) continue;
-            const key = snail.recordKey.hintedGlyph(hint_fid, g.glyph_id, ppem_26_6);
+            const key = snail.record_key.ttHintedGlyph(hint_fid, g.glyph_id, ppem_26_6);
             if (containsKey(text_entries.items, key)) continue;
             const curves = hinter_ptr.hintGlyph(allocator, allocator, &prepared, g.glyph_id) catch |err| switch (err) {
                 error.NoHinting, error.GlyphTopologyChanged => continue,
@@ -323,9 +323,9 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     var tagline_pic = if (hinted_tagline_active)
         try demo_support.placeRun(allocator, &shaped_tagline, null, .{
             .baseline = .{ .x = left_pad, .y = tagline_baseline },
-            .em = hint_opts.hint_ppem_px,
+            .em = tt_hint_opts.hint_ppem_px,
             .color = tagline_color,
-            .mode = .{ .tt_hint = .{ .ppem_26_6 = @intFromFloat(@round(hint_opts.hint_ppem_px * 64.0)) } },
+            .mode = .{ .tt_hint = .{ .ppem_26_6 = @intFromFloat(@round(tt_hint_opts.hint_ppem_px * 64.0)) } },
         })
     else
         try demo_support.placeRun(allocator, &shaped_tagline, &faces, .{
@@ -383,7 +383,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, hint_opts
     };
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.recordKey.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -400,7 +400,7 @@ fn ensureGlyphOrColrLayers(
     var iter = font.colrLayers(glyph_id);
     if (iter.count() > 0) {
         while (iter.next()) |layer| {
-            const key = snail.recordKey.unhintedGlyph(fid, layer.glyph_id);
+            const key = snail.record_key.unhintedGlyph(fid, layer.glyph_id);
             if (containsKey(entries.items, key)) continue;
             const curves = try font.extractCurves(allocator, scratch_arena.allocator(), layer.glyph_id);
             _ = scratch_arena.reset(.retain_capacity);
@@ -409,7 +409,7 @@ fn ensureGlyphOrColrLayers(
         }
         return;
     }
-    const key = snail.recordKey.unhintedGlyph(fid, glyph_id);
+    const key = snail.record_key.unhintedGlyph(fid, glyph_id);
     if (containsKey(entries.items, key)) return;
     const curves = try font.extractCurves(allocator, scratch_arena.allocator(), glyph_id);
     _ = scratch_arena.reset(.retain_capacity);

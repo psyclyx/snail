@@ -22,7 +22,7 @@ pub const Fragment = enum {
     regular_text_body,
     colr_body,
     path_body,
-    hinted_text_body,
+    tt_hinted_text_body,
     autohint_warp,
     autohint_fast_body,
     text_subpixel_body,
@@ -50,7 +50,7 @@ pub fn source(comptime fragment: Fragment) [:0]const u8 {
         .regular_text_body => @embedFile("glsl/snail_text_main.glsl"),
         .colr_body => @embedFile("glsl/snail_colr_frag_body.glsl"),
         .path_body => @embedFile("glsl/snail_path_frag_body.glsl"),
-        .hinted_text_body => @embedFile("glsl/snail_hinted_text_frag_body.glsl"),
+        .tt_hinted_text_body => @embedFile("glsl/snail_tt_hinted_text_frag_body.glsl"),
         .autohint_warp => @embedFile("glsl/snail_autohint_warp.glsl"),
         .autohint_fast_body => @embedFile("glsl/snail_autohint_fast_main.glsl"),
         .text_subpixel_body => @embedFile("glsl/snail_text_subpixel_body.glsl"),
@@ -79,7 +79,7 @@ pub fn fileName(fragment: Fragment) []const u8 {
         .regular_text_body => "snail_text_main.glsl",
         .colr_body => "snail_colr_frag_body.glsl",
         .path_body => "snail_path_frag_body.glsl",
-        .hinted_text_body => "snail_hinted_text_frag_body.glsl",
+        .tt_hinted_text_body => "snail_tt_hinted_text_frag_body.glsl",
         .autohint_warp => "snail_autohint_warp.glsl",
         .autohint_fast_body => "snail_autohint_fast_main.glsl",
         .text_subpixel_body => "snail_text_subpixel_body.glsl",
@@ -97,7 +97,7 @@ pub const dependencies = struct {
     pub const regular_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .regular_text_body };
     pub const colr = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body, .colr_body };
     pub const path = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body };
-    pub const hinted_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .hinted_text_body };
+    pub const tt_hinted_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .tt_hinted_text_body };
     pub const autohint_vertex = [_]Fragment{ .color_common, .autohint_warp, .vertex_body, .autohint_vertex_body };
     pub const autohint_fast = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_fast_body };
     pub const text_subpixel = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_subpixel_body };

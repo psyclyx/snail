@@ -89,7 +89,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args.case, "atlas-build-text")) {
         try atlasBuildCase(allocator, args, .regular);
     } else if (std.mem.eql(u8, args.case, "atlas-build-tt-hint")) {
-        try atlasBuildCase(allocator, args, .hinted);
+        try atlasBuildCase(allocator, args, .tt_hinted);
     } else if (std.mem.eql(u8, args.case, "atlas-build-autohint")) {
         try atlasBuildCase(allocator, args, .autohint);
     } else if (std.mem.eql(u8, args.case, "atlas-build-path")) {
@@ -103,7 +103,7 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args.case, "emit-text")) {
         try emitCase(allocator, args, .regular);
     } else if (std.mem.eql(u8, args.case, "emit-tt-hint")) {
-        try emitCase(allocator, args, .hinted);
+        try emitCase(allocator, args, .tt_hinted);
     } else if (std.mem.eql(u8, args.case, "emit-autohint")) {
         try emitCase(allocator, args, .autohint);
     } else if (std.mem.eql(u8, args.case, "emit-path")) {
@@ -302,9 +302,9 @@ const TtHintPrepareContext = struct {
     checksum: u64 = 14695981039346656037,
 
     pub fn run(self: *TtHintPrepareContext) !void {
-        var vm = try snail.HintVm.init(self.allocator, self.font);
+        var vm = try snail.TtHintVm.init(self.allocator, self.font);
         defer vm.deinit();
-        var prepared = try vm.prepare(snail.HintPpem.uniform(20 * 64));
+        var prepared = try vm.prepare(snail.TtHintPpem.uniform(20 * 64));
         defer prepared.deinit();
         common.hashValue(&self.checksum, @as(u32, 20 * 64));
     }
@@ -319,8 +319,8 @@ fn ttHintPrepareCase(allocator: std.mem.Allocator, args: common.Args) !void {
 
 const TtHintCurvesContext = struct {
     allocator: std.mem.Allocator,
-    vm: *snail.HintVm,
-    prepared: *const snail.HintVm.Prepared,
+    vm: *snail.TtHintVm,
+    prepared: *const snail.TtHintVm.Prepared,
     glyphs: *const [94]u16,
     scratch: *std.heap.ArenaAllocator,
     checksum: u64 = 14695981039346656037,
@@ -339,9 +339,9 @@ fn ttHintCurvesCase(allocator: std.mem.Allocator, args: common.Args) !void {
     var font = try snail.Font.init(assets.noto_sans_regular);
     var glyphs: [94]u16 = undefined;
     try asciiGlyphs(&font, &glyphs);
-    var vm = try snail.HintVm.init(allocator, &font);
+    var vm = try snail.TtHintVm.init(allocator, &font);
     defer vm.deinit();
-    var prepared = try vm.prepare(snail.HintPpem.uniform(20 * 64));
+    var prepared = try vm.prepare(snail.TtHintPpem.uniform(20 * 64));
     defer prepared.deinit();
     var scratch = std.heap.ArenaAllocator.init(allocator);
     defer scratch.deinit();

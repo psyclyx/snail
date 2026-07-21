@@ -20,7 +20,7 @@
 //!
 //! The cache key does **not** include the `Faces` value or the
 //! `advance_provider`. If the caller mutates the face chain or swaps
-//! the provider's underlying data (e.g. a different `HintedGlyphCache`
+//! the provider's underlying data (e.g. a different `TtHintedGlyphCache`
 //! for a different VM), they must `clear()` the cache — otherwise
 //! returned `ShapedText` values reflect the old shaping and would not
 //! re-shape until the entry naturally evicts.

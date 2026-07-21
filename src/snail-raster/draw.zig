@@ -146,7 +146,7 @@ test "draw autohint fits per size without mutating atlas resources" {
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
     const atlas_mod = @import("snail");
-    const record_key_mod = @import("snail").recordKey;
+    const record_key_mod = @import("snail").record_key;
     const shape_mod = @import("snail");
     const emit_mod = @import("snail").emit;
 
@@ -212,7 +212,7 @@ test "draw autohint fits per size without mutating atlas resources" {
             pixels: []u8,
             px_size: f32,
             policy: snail.autohint.AutohintPolicy,
-            shape_key: atlas_mod.recordKey.RecordKey,
+            shape_key: atlas_mod.record_key.RecordKey,
             binding: Binding,
             atlas_ptr: *const atlas_mod.Atlas,
             cache_ptr: *const BackendCache,
@@ -291,7 +291,7 @@ test "draw renders a small Picture into non-zero pixels" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+    const key = @import("snail").record_key.unhintedGlyph(0, gid);
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
@@ -365,7 +365,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+    const key = @import("snail").record_key.unhintedGlyph(0, gid);
 
     // Linear gradient running across the glyph's local-em width.
     const gradient = snail.LinearGradient{
@@ -469,8 +469,8 @@ test "draw renders image-painted shape through special-layer path" {
     var path_curves = try prepared_path.fillCurves(allocator, allocator);
     defer path_curves.deinit();
 
-    const key = @import("snail").recordKey.RecordKey{
-        .namespace = @import("snail").recordKey.ns.path_fill,
+    const key = @import("snail").record_key.RecordKey{
+        .namespace = @import("snail").record_key.ns.path_fill,
         .a = 0,
     };
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
@@ -566,7 +566,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     var pen_x: f32 = 4;
     for (glyphs) |c| {
         const gid = try font.glyphIndex(c);
-        const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+        const key = @import("snail").record_key.unhintedGlyph(0, gid);
         if (!containsEntryKey(entries.items, key)) {
             const curves = try font.extractCurves(allocator, allocator, gid);
             try owned.append(allocator, curves);
@@ -617,7 +617,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("snail").AtlasEntry, key: @import("snail").recordKey.RecordKey) bool {
+fn containsEntryKey(entries: []const @import("snail").AtlasEntry, key: @import("snail").record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -652,8 +652,8 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").recordKey.RecordKey{
-        .namespace = @import("snail").recordKey.ns.path_fill,
+    const key = @import("snail").record_key.RecordKey{
+        .namespace = @import("snail").record_key.ns.path_fill,
         .a = 0,
     };
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
@@ -741,8 +741,8 @@ test "cubic stroke has no detached coverage island near its start cap" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").recordKey.RecordKey{
-        .namespace = @import("snail").recordKey.ns.path_stroke,
+    const key = @import("snail").record_key.RecordKey{
+        .namespace = @import("snail").record_key.ns.path_stroke,
         .a = 0,
     };
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
@@ -824,7 +824,7 @@ test "draw scissor_rect clips writes to the rect" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    const key = @import("snail").recordKey.unhintedGlyph(0, gid);
+    const key = @import("snail").record_key.unhintedGlyph(0, gid);
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
