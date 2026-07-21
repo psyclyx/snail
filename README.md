@@ -2,7 +2,7 @@
 
 Text and vector rendering via direct Bezier curve evaluation, built to embed in your engine.
 
-<img src="assets/demo_screenshot.png?raw=true" alt="snail demo scene">
+<img src="assets/banner.png?raw=true" alt="snail banner scene: styled and decorated text, complex-script shaping, vector primitives, gradients, and image paints">
 
 snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform.
 
