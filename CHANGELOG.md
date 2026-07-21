@@ -54,6 +54,13 @@ Treat this as a from-scratch migration.
 - `snail-raster`: optional software renderer consuming only the public API
   (`Renderer`, `DeviceAtlas`, `draw`), with explicit target encodings and
   linear-light blending.
+- `shader.wgsl`: generated complete per-family WGSL shaders for WebGPU
+  hosts (all eight families, including dual-source subpixel), compiled
+  from the GLSL catalog through Slang → SPIR-V → naga and checked in as
+  artifacts — consumers never need the Slang toolchain. Validated by the
+  headless `run-minimal-wgpu` wgpu-native example against the GL
+  reference. The build's Vulkan SPIR-V also compiles through `slangc`
+  now (replacing `glslc`; GLSL sources unchanged).
 
 ### Changed
 

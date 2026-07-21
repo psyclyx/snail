@@ -534,8 +534,11 @@ float wrapPaintT(float t, float extendMode) {
 
 vec4 sampleImagePaintTex(vec2 uv, int layer, int filterMode) {
     if (filterMode == 1) {
-        ivec3 size = textureSize(u_image_tex, 0);
-        ivec2 texel = clamp(ivec2(uv * vec2(size.xy)), ivec2(0), size.xy - ivec2(1));
+        // `.xy` directly on the query (never materializing the ivec3): the
+        // arrayed size query's layer component trips naga's SPIR-V front end
+        // during WGSL generation, and only the extent is wanted here anyway.
+        ivec2 size = textureSize(u_image_tex, 0).xy;
+        ivec2 texel = clamp(ivec2(uv * vec2(size)), ivec2(0), size - ivec2(1));
         return texelFetch(u_image_tex, ivec3(texel, layer), 0);
     }
     return texture(u_image_tex, vec3(uv, float(layer)));

@@ -178,6 +178,15 @@ sRGB texture format for sRGB bytes, or a UNORM/float format for
 pre-linearized data. `snail-raster` documents its own device format: 4
 bytes/texel RGBA, sRGB-encoded, straight alpha.
 
+**Shader targets.** The hand-written GLSL fragment catalog (`shader.glsl`)
+is the source of truth and the composition surface for GL/GLES/Vulkan
+hosts. Everything else is compiled from it through Slang: the build's
+Vulkan SPIR-V, and a checked-in generated WGSL catalog (`shader.wgsl` —
+complete per-family shaders, entry points included) for WebGPU hosts,
+validated by the `run-minimal-wgpu` example against the GL reference.
+Regeneration is a maintainer step (`gen-wgsl`); consumers never need the
+Slang toolchain.
+
 **Texture ABI.** Curves RGBA16F, bands RG16UI, layer-info RGBA32F, plus the
 host-formatted image array. Layouts are stable and documented in
 `snail.render` (byte-layout contract for caller-owned renderers) and
@@ -243,13 +252,15 @@ which compile-errors if internals leak.
 
 Requires [Zig 0.16](https://ziglang.org/download/) and HarfBuzz (via
 pkg-config). The demos additionally need Wayland + EGL, Vulkan headers/loader,
-and `glslc`.
+and `slangc` (shader-slang).
 
 ```sh
 zig build test                    # unit tests (includes shader-parity and public-API gates)
 zig build run                     # interactive Wayland banner demo (C cycles backends)
 zig build run-game                # interactive 3D scene: world-space text, custom material shader
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
+zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
+zig build gen-wgsl                # regenerate the checked-in WGSL catalog (maintainers; needs slang+naga)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate

@@ -1,5 +1,6 @@
 const std = @import("std");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
+const wgsl_shaders = @import("build/wgsl_shaders.zig");
 
 const version = "0.12.1";
 
@@ -880,8 +881,8 @@ fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
         .glsl = b.path("src/snail/shader/glsl"),
     };
     const game_glsl = [_]std.Build.LazyPath{b.path("src/demo/game/glsl")};
-    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "-fshader-stage=vert", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
-    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "-fshader-stage=frag", "game_material.frag.spv", &.{}, snail_includes, &game_glsl);
+    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "vertex", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
+    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "fragment", "game_material.frag.spv", &.{}, snail_includes, &game_glsl);
     mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = vert });
     mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = frag });
 }
@@ -959,9 +960,40 @@ fn addMinimalGlStep(
     step.dependOn(&run.step);
 }
 
+fn addMinimalWgpuStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/app/minimal_wgpu.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = modules.snail },
+        },
+    });
+    // wgpu-native ships no pkg-config file; the nix shell exports the split
+    // dev/lib outputs (see shell.nix). Fall back to plain system linking when
+    // the variables are absent.
+    if (b.graph.environ_map.get("WGPU_NATIVE_INCLUDE")) |include_dir| {
+        mod.addIncludePath(.{ .cwd_relative = include_dir });
+    }
+    if (b.graph.environ_map.get("WGPU_NATIVE_LIB")) |lib_dir| {
+        mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+    }
+    mod.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
+    const exe = b.addExecutable(.{ .name = "snail-minimal-wgpu", .root_module = mod });
+    const run = b.addRunArtifact(exe);
+    const step = b.step("run-minimal-wgpu", "Render the one-file public-API WebGPU example to zig-out/minimal-wgpu.tga");
+    step.dependOn(&run.step);
+}
+
 pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
-    // Consumers use `dependency.namedLazyPath(...)` for glslc `-I` arguments;
+    // Consumers use `dependency.namedLazyPath(...)` for slangc `-I` arguments;
     // the paths stay dependency-relative instead of assuming their build root.
     b.addNamedLazyPath("snail_glsl", b.path("src/snail/shader/glsl"));
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
@@ -987,7 +1019,9 @@ pub fn build(b: *std.Build) void {
     addInteractiveDemoStep(b, config, modules);
     addGameDemoStep(b, config, modules);
     addMinimalGlStep(b, config, modules);
+    addMinimalWgpuStep(b, config, modules);
     addPerfSteps(b, config, modules);
+    wgsl_shaders.addGenWgslStep(b);
 }
 
 fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) void {

@@ -30,7 +30,13 @@ struct SnailAutohintPolicy {
     float overshootMinPx;
 };
 
+#ifdef SNAIL_WGSL
+// WGSL has no isnan/isinf (NaN semantics are implementation-defined there); an
+// abs() range check classifies NaN (any comparison is false) and ±inf alike.
+bool snailAhFinite(float v) { return abs(v) <= 3.402823e38; }
+#else
 bool snailAhFinite(float v) { return !isnan(v) && !isinf(v); }
+#endif
 
 bool snailAhCount(float encoded, out int count) {
     if (!snailAhFinite(encoded) || encoded < 0.0 || encoded > float(SNAIL_AH_MAX_KNOTS) || floor(encoded) != encoded) {

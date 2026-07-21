@@ -147,10 +147,13 @@ pub const snap = @import("snap.zig");
 /// Stable byte-layout contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
-/// Entry-point-free shader fragments and resource contracts. Callers compose
-/// these into shaders owned by their rendering engine.
+/// Entry-point-free shader fragments and resource contracts (`glsl`), plus
+/// the generated complete per-family WGSL catalog (`wgsl`). Callers compose
+/// the GLSL fragments into shaders owned by their rendering engine; the WGSL
+/// modules are finished shaders for WebGPU pipelines.
 pub const shader = struct {
     pub const glsl = @import("shader/glsl.zig");
+    pub const wgsl = @import("shader/wgsl.zig");
 };
 
 test {
@@ -187,4 +190,6 @@ test {
     _ = @import("util/hamt.zig");
     _ = render;
     _ = shader;
+    _ = shader.glsl;
+    _ = shader.wgsl;
 }

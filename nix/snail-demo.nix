@@ -6,7 +6,7 @@
 , harfbuzz
 , vulkan-loader
 , vulkan-headers
-, shaderc
+, shader-slang
 , wayland
 , wayland-protocols
 , src ? ../.
@@ -25,7 +25,7 @@ stdenv.mkDerivation {
   nativeBuildInputs = [
     zig.hook
     pkg-config
-    shaderc
+    shader-slang
   ];
 
   buildInputs = [

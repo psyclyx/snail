@@ -1,5 +1,5 @@
 //! SPIR-V shader bytecode for the reference Vulkan renderer.
-//! The .spv files are compiled from GLSL 450 sources at build time via glslc
+//! The .spv files are compiled from GLSL 450 sources at build time via slangc
 //! and injected as anonymous imports by the build system.
 //! Data is forced to 4-byte alignment as required by VkShaderModuleCreateInfo.pCode.
 

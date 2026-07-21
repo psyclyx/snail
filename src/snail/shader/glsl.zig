@@ -115,7 +115,7 @@ pub const gles_records_texture_width: u32 = 1024;
 
 test "catalog sources and filenames describe the same atomic fragments" {
     const std = @import("std");
-    inline for (std.meta.tags(Fragment)) |fragment| {
+    inline for (comptime std.meta.tags(Fragment)) |fragment| {
         try std.testing.expect(source(fragment).len != 0);
         try std.testing.expect(std.mem.endsWith(u8, fileName(fragment), ".glsl"));
         try std.testing.expect(std.mem.indexOf(u8, source(fragment), "void main") == null);

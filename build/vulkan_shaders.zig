@@ -5,7 +5,7 @@ fn appendBytes(dest: []u8, offset: *usize, bytes: []const u8) void {
     offset.* += bytes.len;
 }
 
-fn assembledGlslSource(
+pub fn assembledGlslSource(
     allocator: std.mem.Allocator,
     comptime wrapper_path: []const u8,
     comptime include_directive: []const u8,
@@ -31,7 +31,29 @@ fn assembledGlslSource(
     return result;
 }
 
-fn compile(
+/// Common slangc invocation prefix for GLSL-ingestion SPIR-V compiles.
+/// `-profile spirv_1_3` caps the binary at SPIR-V 1.3 — the demos create
+/// Vulkan 1.1 devices and slangc's default (SPIR-V 1.5) trips
+/// VUID-VkShaderModuleCreateInfo-pCode-08737. `-matrix-layout-row-major`
+/// preserves GLSL matrix semantics: the flag names Slang's *logical*
+/// convention, which maps inverted onto the SPIR-V decoration — row-major
+/// here emits `ColMajor` + literal `M*v` codegen, matching how the CPU side
+/// writes the push-constant `mvp` (GLSL column-major bytes). The default
+/// (and `-matrix-layout-column-major`) emits `RowMajor`, silently transposing
+/// every matrix. Warnings 41018 (out-param not
+/// initialized on early `return false` — GLSL out-params are allowed to stay
+/// unwritten) and 39001 (dual-source outputs sharing location 0, which is
+/// exactly what `index = 1` is for) fire on valid GLSL; disable just those two.
+pub fn slangcCommand(b: *std.Build, stage: []const u8) *std.Build.Step.Run {
+    return b.addSystemCommand(&.{
+        "slangc",                   "-lang",             "glsl",
+        "-stage",                   stage,               "-entry",
+        "main",                     "-profile",          "spirv_1_3",
+        "-matrix-layout-row-major", "-warnings-disable", "39001,41018",
+    });
+}
+
+pub fn compile(
     b: *std.Build,
     generated_shaders: *std.Build.Step.WriteFile,
     shader_dir: std.Build.LazyPath,
@@ -40,7 +62,7 @@ fn compile(
     comptime wrapper_path: []const u8,
     comptime include_directive: []const u8,
     comptime source_paths: []const []const u8,
-    stage_arg: []const u8,
+    stage: []const u8,
     output_name: []const u8,
     extra_args: []const []const u8,
 ) std.Build.LazyPath {
@@ -51,14 +73,14 @@ fn compile(
         source_paths,
     ));
 
-    const compile_step = b.addSystemCommand(&.{ "glslc", stage_arg });
+    const compile_step = slangcCommand(b, stage);
     for (extra_args) |arg| compile_step.addArg(arg);
     compile_step.addArg("-I");
     compile_step.addDirectoryArg(shader_dir);
     compile_step.addArg("-I");
     compile_step.addDirectoryArg(shared_shader_dir);
     compile_step.addFileArg(generated_source);
-    compile_step.addArg("-o");
+    compile_step.addArgs(&.{ "-target", "spirv", "-o" });
     return compile_step.addOutputFileArg(output_name);
 }
 
@@ -70,22 +92,23 @@ pub const IncludeDirs = struct {
 };
 
 /// Compile a caller-authored GLSL shader to SPIR-V with snail's include dirs on
-/// the glslc `-I` path. This is the build-time analog of the GL family's
+/// the slangc `-I` path. This is the build-time analog of the GL family's
 /// runtime source injection: the caller `#include`s snail's shipped `.glsl`
 /// (the coverage math + the Vulkan records interface) and compiles their own
-/// combined material shader. `defines` carries any `-D` macros (e.g. the
-/// per-instance word stride). Returns the compiled `.spv` LazyPath, suitable
-/// for `module.addAnonymousImport`.
+/// combined material shader. `stage` is a slangc stage name (`vertex`,
+/// `fragment`); `defines` carries any `-D` macros (e.g. the per-instance word
+/// stride). Returns the compiled `.spv` LazyPath, suitable for
+/// `module.addAnonymousImport`.
 pub fn compileCallerShader(
     b: *std.Build,
     source: std.Build.LazyPath,
-    stage_arg: []const u8,
+    stage: []const u8,
     output_name: []const u8,
     defines: []const []const u8,
     snail_include_dirs: IncludeDirs,
     extra_include_dirs: []const std.Build.LazyPath,
 ) std.Build.LazyPath {
-    const compile_step = b.addSystemCommand(&.{ "glslc", stage_arg });
+    const compile_step = slangcCommand(b, stage);
     for (defines) |d| compile_step.addArg(d);
     for (extra_include_dirs) |dir| {
         compile_step.addArg("-I");
@@ -94,19 +117,23 @@ pub fn compileCallerShader(
     compile_step.addArg("-I");
     compile_step.addDirectoryArg(snail_include_dirs.glsl);
     compile_step.addFileArg(source);
-    compile_step.addArg("-o");
+    compile_step.addArgs(&.{ "-target", "spirv", "-o" });
     return compile_step.addOutputFileArg(output_name);
 }
 
-const ShaderSpec = struct {
+pub const ShaderSpec = struct {
     import_name: []const u8,
     generated_source_path: []const u8,
     wrapper_path: []const u8,
     include_directive: []const u8,
     source_paths: []const []const u8,
-    stage_arg: []const u8,
+    stage: []const u8,
     output_name: []const u8,
     extra_args: []const []const u8 = &.{},
+    /// slangc's GLSL frontend drops `layout(..., index = 1)` on fragment
+    /// outputs; run the spv patch tool to restore the dual-source Index
+    /// decoration the source declares (see build/spv_patch_dual_source.zig).
+    patch_dual_source_index: bool = false,
 };
 
 const fragment_common_includes =
@@ -114,14 +141,14 @@ const fragment_common_includes =
     "#include \"snail_coverage_common.glsl\"\n" ++
     "#include \"snail_color_common.glsl\"\n";
 
-const shader_specs = [_]ShaderSpec{
+pub const shader_specs = [_]ShaderSpec{
     .{
         .import_name = "snail.vert.spv",
         .generated_source_path = "vulkan-generated/snail.vert",
         .wrapper_path = "../src/demo/render/vulkan/glsl/snail.vert",
         .include_directive = "#include \"snail_vert_body.glsl\"",
         .source_paths = &.{"../src/snail/shader/glsl/snail_vert_body.glsl"},
-        .stage_arg = "-fshader-stage=vert",
+        .stage = "vertex",
         .output_name = "snail.vert.spv",
     },
     .{
@@ -138,7 +165,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_vert_body.glsl",
             "../src/snail/shader/glsl/snail_autohint_vert_body.glsl",
         },
-        .stage_arg = "-fshader-stage=vert",
+        .stage = "vertex",
         .output_name = "snail_autohint.vert.spv",
     },
     .{
@@ -155,7 +182,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_text_frag_body.glsl",
             "../src/snail/shader/glsl/snail_text_main.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_text.frag.spv",
     },
     .{
@@ -170,7 +197,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_path_frag_body.glsl",
             "../src/snail/shader/glsl/snail_colr_frag_body.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_colr.frag.spv",
     },
     .{
@@ -184,7 +211,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_color_common.glsl",
             "../src/snail/shader/glsl/snail_path_frag_body.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_path.frag.spv",
     },
     .{
@@ -199,7 +226,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_text_frag_body.glsl",
             "../src/snail/shader/glsl/snail_tt_hinted_text_frag_body.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_tt_hinted_text.frag.spv",
     },
     .{
@@ -218,7 +245,7 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_autohint_warp.glsl",
             "../src/snail/shader/glsl/snail_autohint_fast_main.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_autohint.frag.spv",
     },
     .{
@@ -232,11 +259,40 @@ const shader_specs = [_]ShaderSpec{
             "../src/snail/shader/glsl/snail_color_common.glsl",
             "../src/snail/shader/glsl/snail_text_subpixel_body.glsl",
         },
-        .stage_arg = "-fshader-stage=frag",
+        .stage = "fragment",
         .output_name = "snail_text_subpixel_dual.frag.spv",
         .extra_args = &.{"-DSNAIL_DUAL_SOURCE=1"},
+        .patch_dual_source_index = true,
     },
 };
+
+/// Restore the `Index 1` decoration on the `frag_blend` dual-source output
+/// that slangc's GLSL frontend drops (see ShaderSpec.patch_dual_source_index).
+pub fn createDualSourcePatchTool(b: *std.Build) *std.Build.Step.Compile {
+    return b.addExecutable(.{
+        .name = "spv-patch-dual-source",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/spv_patch_dual_source.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+}
+
+pub fn patchDualSourceIndex(
+    b: *std.Build,
+    patch_tool: *std.Build.Step.Compile,
+    input: std.Build.LazyPath,
+    output_name: []const u8,
+) std.Build.LazyPath {
+    const run = b.addRunArtifact(patch_tool);
+    run.addFileArg(input);
+    const patched = run.addOutputFileArg(output_name);
+    // Vulkan needs only `frag_blend Index 1`; the explicit `frag_color Index 0`
+    // is harmless there and required by naga when generating the WGSL catalog.
+    run.addArgs(&.{ "frag_blend", "1", "frag_color", "0" });
+    return patched;
+}
 
 pub fn createModule(b: *std.Build) *std.Build.Module {
     const shader_dir = b.path("src/demo/render/vulkan/glsl");
@@ -244,6 +300,8 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
     // live in the library include directory and stay independently includable.
     const shared_shader_dir = b.path("src/snail/shader/glsl");
     const generated_shaders = b.addWriteFiles();
+
+    const patch_tool = createDualSourcePatchTool(b);
 
     var spv_outputs: [shader_specs.len]std.Build.LazyPath = undefined;
     inline for (shader_specs, 0..) |spec, i| {
@@ -256,10 +314,13 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
             spec.wrapper_path,
             spec.include_directive,
             spec.source_paths,
-            spec.stage_arg,
+            spec.stage,
             spec.output_name,
             spec.extra_args,
         );
+        if (spec.patch_dual_source_index) {
+            spv_outputs[i] = patchDualSourceIndex(b, patch_tool, spv_outputs[i], spec.output_name);
+        }
     }
 
     const mod = b.createModule(.{
