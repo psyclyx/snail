@@ -44,7 +44,7 @@ pub const VkSceneRenderer = struct {
     ctx: embed_vulkan.VulkanContext,
     layout: embed_vulkan.VulkanResourceLayout,
     transfer_pool: vk.VkCommandPool,
-    cache: embed_vulkan.VulkanBackendCache,
+    cache: embed_vulkan.VulkanDeviceAtlas,
     caller: embed_vulkan.Renderer,
 
     material_pipeline: vk.VkPipeline = null,

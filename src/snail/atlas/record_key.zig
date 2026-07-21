@@ -54,6 +54,10 @@ pub const ns = struct {
     /// Immutable auto-light analysis: a=font_id, b=glyph_id, c=0. Distinct
     /// from `tt_hinted_glyph`; one analysis serves every PPEM and policy.
     pub const autohint_glyph: u32 = 6;
+    /// TT-hinted horizontal advance: a=font_id, b=glyph_id,
+    /// c=`TtHintPpem.packed26Dot6()`. A CPU-only value record (26.6 px, no
+    /// geometry) — never uploaded; read at shape time by advance providers.
+    pub const tt_advance: u32 = 7;
 
     /// First namespace reserved for caller use.
     pub const user_base: u32 = 1024;
@@ -71,6 +75,13 @@ pub fn ttHintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
 /// are draw-time inputs and therefore do not participate in atlas identity.
 pub fn autohintGlyph(font_id: u32, glyph_id: u16) RecordKey {
     return .{ .namespace = ns.autohint_glyph, .a = font_id, .b = @intCast(glyph_id), .c = 0 };
+}
+
+/// Key for a TT-hinted horizontal advance. `ppem_packed_26_6` is
+/// `TtHintPpem.packed26Dot6()` — both axes, so non-square ppems get
+/// distinct records.
+pub fn ttAdvance(font_id: u32, glyph_id: u16, ppem_packed_26_6: u32) RecordKey {
+    return .{ .namespace = ns.tt_advance, .a = font_id, .b = @intCast(glyph_id), .c = ppem_packed_26_6 };
 }
 
 test "record key equality and hash" {

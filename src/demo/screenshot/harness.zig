@@ -135,7 +135,7 @@ pub fn renderCpuToPixelsFmt(
     errdefer allocator.free(pixels);
     @memset(pixels, 0);
 
-    var cache = try raster.BackendCache.init(allocator, scene.pool, .{
+    var cache = try raster.DeviceAtlas.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,
@@ -177,7 +177,7 @@ pub fn renderCpuToPixels(
     errdefer allocator.free(pixels);
     fillBgRgba8(pixels);
 
-    var cache = try raster.BackendCache.init(allocator, scene.pool, .{
+    var cache = try raster.DeviceAtlas.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,
@@ -303,8 +303,8 @@ pub fn renderGlToPixels(
         .gles30 => embed_gl.Gles30Renderer,
     };
     const CacheT = switch (backend) {
-        .gl33 => embed_gl.Gl33BackendCache,
-        .gles30 => embed_gl.Gles30BackendCache,
+        .gl33 => embed_gl.Gl33DeviceAtlas,
+        .gles30 => embed_gl.Gles30DeviceAtlas,
     };
 
     var renderer = try RendererT.init(allocator);
@@ -346,7 +346,7 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
     const embed_gl = @import("embed_gl");
     var renderer = try embed_gl.Gl33Renderer.init(allocator);
     defer renderer.deinit();
-    var cache = try embed_gl.Gl33BackendCache.init(allocator, scene.pool, .{
+    var cache = try embed_gl.Gl33DeviceAtlas.init(allocator, scene.pool, .{
         .max_bindings = opts.max_bindings,
         .layer_info_height = opts.layer_info_height,
         .max_images = opts.max_images,

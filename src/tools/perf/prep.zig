@@ -320,7 +320,7 @@ fn ttHintPrepareCase(allocator: std.mem.Allocator, args: common.Args) !void {
 const TtHintCurvesContext = struct {
     allocator: std.mem.Allocator,
     vm: *snail.TtHintVm,
-    prepared: *const snail.TtHintVm.Prepared,
+    prepared: *const snail.TtHintVm.PreparedPpem,
     glyphs: *const [94]u16,
     scratch: *std.heap.ArenaAllocator,
     checksum: u64 = 14695981039346656037,

@@ -1,5 +1,5 @@
 //! Cross-backend driver for the interactive demo. Wraps each backend's
-//! `Renderer` + `BackendCache` cache + new-API `emit`/`draw` glue into a
+//! `Renderer` + `DeviceAtlas` cache + new-API `emit`/`draw` glue into a
 //! single tagged union so `main.zig` can cycle between backends with the
 //! 'C' key without knowing each backend's idiom.
 //!
@@ -324,7 +324,7 @@ const VulkanDriver = struct {
     layout: embed_vulkan.VulkanResourceLayout,
     transfer_pool: embed_vulkan.vk.VkCommandPool,
     caller: embed_vulkan.Renderer,
-    cache: ?embed_vulkan.VulkanBackendCache = null,
+    cache: ?embed_vulkan.VulkanDeviceAtlas = null,
     cache_pool: ?*const anyopaque = null, // PagePool pointer to detect content swap
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -372,7 +372,7 @@ const VulkanDriver = struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try embed_vulkan.VulkanBackendCache.init(self.allocator, pool, embed_vulkan.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
+            self.cache = try embed_vulkan.VulkanDeviceAtlas.init(self.allocator, pool, embed_vulkan.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -385,7 +385,7 @@ const VulkanDriver = struct {
         }
 
         const sync_t0 = wayland.getTime();
-        try syncPassBindings(embed_vulkan.VulkanBackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        try syncPassBindings(embed_vulkan.VulkanDeviceAtlas, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
         self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;
@@ -445,7 +445,7 @@ const VulkanDriver = struct {
 const Gl44Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gl44Renderer,
-    cache: ?embed_gl.Gl44BackendCache = null,
+    cache: ?embed_gl.Gl44DeviceAtlas = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -473,14 +473,14 @@ const Gl44Driver = struct {
     }
 
     fn renderFrame(self: *Gl44Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, embed_gl.Gl44BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gl44DeviceAtlas, allocator, passes, clear_srgb, &self.last_timings);
     }
 };
 
 const Gl33Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gl33Renderer,
-    cache: ?embed_gl.Gl33BackendCache = null,
+    cache: ?embed_gl.Gl33DeviceAtlas = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -508,14 +508,14 @@ const Gl33Driver = struct {
     }
 
     fn renderFrame(self: *Gl33Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, embed_gl.Gl33BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gl33DeviceAtlas, allocator, passes, clear_srgb, &self.last_timings);
     }
 };
 
 const Gles30Driver = struct {
     allocator: std.mem.Allocator,
     renderer_state: embed_gl.Gles30Renderer,
-    cache: ?embed_gl.Gles30BackendCache = null,
+    cache: ?embed_gl.Gles30DeviceAtlas = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -541,7 +541,7 @@ const Gles30Driver = struct {
     }
 
     fn renderFrame(self: *Gles30Driver, allocator: std.mem.Allocator, passes: []const Pass, clear_srgb: [4]f32) !bool {
-        return glRender(@TypeOf(self.*), self, embed_gl.Gles30BackendCache, allocator, passes, clear_srgb, &self.last_timings);
+        return glRender(@TypeOf(self.*), self, embed_gl.Gles30DeviceAtlas, allocator, passes, clear_srgb, &self.last_timings);
     }
 };
 
@@ -655,7 +655,7 @@ const CpuDriver = struct {
     allocator: std.mem.Allocator,
     renderer_state: raster.Renderer,
     pool: ?*raster.ThreadPool = null,
-    cache: ?raster.BackendCache = null,
+    cache: ?raster.DeviceAtlas = null,
     cache_pool: ?*const anyopaque = null,
     scratch: ScratchBuf,
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
@@ -752,7 +752,7 @@ const CpuDriver = struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try raster.BackendCache.init(self.allocator, pool, .{
+            self.cache = try raster.DeviceAtlas.init(self.allocator, pool, .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -763,7 +763,7 @@ const CpuDriver = struct {
         }
 
         const sync_t0 = wayland.getTime();
-        try syncPassBindings(raster.BackendCache, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        try syncPassBindings(raster.DeviceAtlas, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
         self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;

@@ -14,7 +14,6 @@ const assets = @import("assets");
 
 const Allocator = std.mem.Allocator;
 const ShapedRunCache = demo_support.ShapedRunCache;
-const UnhintedGlyphCache = snail.UnhintedGlyphCache;
 const warp = snail.autohint.warp;
 const testing = std.testing;
 
@@ -166,7 +165,6 @@ pub const Compare = struct {
     proportional: bool = false,
 
     shape_cache: ShapedRunCache,
-    glyph_cache: UnhintedGlyphCache,
     atlas: snail.Atlas,
 
     pub fn init(allocator: Allocator, pool: *snail.PagePool) !Compare {
@@ -200,7 +198,6 @@ pub const Compare = struct {
             .label = label,
             .proportional = proportional,
             .shape_cache = ShapedRunCache.init(allocator),
-            .glyph_cache = UnhintedGlyphCache.init(allocator, font),
             .atlas = snail.Atlas.empty(allocator),
         };
     }
@@ -208,7 +205,6 @@ pub const Compare = struct {
     pub fn deinit(self: *Compare) void {
         self.atlas.deinit();
         if (self.tt) |*vm| vm.deinit();
-        self.glyph_cache.deinit();
         self.shape_cache.deinit();
         self.auto.deinit();
         self.faces.deinit();
@@ -347,7 +343,9 @@ pub const Compare = struct {
         if (mode == .autohint) {
             const shapes = @constCast(picture.shapes);
             for (shaped.glyphs, shapes) |glyph, *shape| {
-                const base = try self.glyph_cache.getOrInsert(self.allocator, frame_alloc, glyph.glyph_id);
+                // `ensureAll` has already recorded every sample glyph's base
+                // curves, so the store answers the emptiness question.
+                const base = self.atlas.lookupRecord(snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)) orelse continue;
                 if (base.curve_count == 0) {
                     shape.key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
                     shape.autohint_policy = null;
@@ -370,8 +368,8 @@ pub const Compare = struct {
                 if (g.font_id != self.font_id) continue;
                 const key = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id);
                 if (self.atlas.contains(key) or hasKey(entries.items, key)) continue;
-                const c = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
-                try entries.append(scratch, .{ .key = key, .curves = c.* });
+                const c = try self.font.extractCurves(scratch, scratch, g.glyph_id);
+                try entries.append(scratch, .{ .key = key, .curves = c });
             }
         }
 
@@ -385,7 +383,7 @@ pub const Compare = struct {
             const key_a = autoKey(g.font_id, g.glyph_id);
             if (self.atlas.contains(key_a) or hasKey(entries.items, key_a)) continue;
             // Whitespace has no bands for an autohint record to alias.
-            const base = try self.glyph_cache.getOrInsert(self.allocator, scratch, g.glyph_id);
+            const base = try self.font.extractCurves(scratch, scratch, g.glyph_id);
             if (base.curve_count == 0) continue;
 
             const x_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
@@ -403,7 +401,7 @@ pub const Compare = struct {
         for (grid_ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             // Run fpgm/prep once for this size; every glyph hints from it.
-            var tt_prepared: ?snail.TtHintVm.Prepared = if (self.tt) |*vm|
+            var tt_prepared: ?snail.TtHintVm.PreparedPpem = if (self.tt) |*vm|
                 (vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch null)
             else
                 null;
@@ -486,7 +484,7 @@ test "comparison setup reuses autohint analysis across grid PPEMs" {
     defer sample_glyphs.deinit();
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != compare.font_id) continue;
-        const base = try compare.glyph_cache.getOrInsert(testing.allocator, scratch.allocator(), glyph.glyph_id);
+        const base = compare.atlas.lookupRecord(snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)).?;
         if (base.curve_count != 0) try sample_glyphs.put(glyph.glyph_id, {});
     }
 
@@ -528,7 +526,7 @@ test "empty outlines remain shared unhinted no-op shapes" {
 
     var empty_index: ?usize = null;
     for (shaped.glyphs, 0..) |glyph, i| {
-        const base = try compare.glyph_cache.getOrInsert(testing.allocator, scratch.allocator(), glyph.glyph_id);
+        const base = compare.atlas.lookupRecord(snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)) orelse continue;
         if (base.curve_count == 0) {
             empty_index = i;
             break;

@@ -51,8 +51,8 @@ pub const ShapeOptions = struct {
     /// pixel positions exactly).
     ///
     /// A typical caller wires this to
-    /// `snail.TtHintedGlyphCache.asAdvanceProvider()` so HB lookups hit
-    /// the cache, falling back to the underlying `TtHintVm` on miss.
+    /// `snail.TtAdvanceSource.advanceProvider()` so HB lookups hit
+    /// recorded `ns.tt_advance` values, falling back to the pure VM on miss.
     advance_provider: ?AdvanceProvider = null,
     /// Ppem to shape at. Two roles, both shape-time:
     ///   1. HB's sub-font scale is set to this so positions come back
@@ -67,7 +67,7 @@ pub const ShapeOptions = struct {
 };
 
 /// Closure handed to `ShapeOptions.advance_provider` so the shaping
-/// callback can route through caller-owned state (a `TtHintedGlyphCache`,
+/// callback can route through caller-owned state (a `TtAdvanceSource`,
 /// a debug hook, a synthetic-metric source — anything that yields a
 /// 26.6 advance for `(font_id, glyph_id)` and a ppem).
 ///

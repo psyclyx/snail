@@ -69,7 +69,7 @@ fn buildPanel(allocator: std.mem.Allocator, fonts: *passes.Fonts, mode: Mode) !p
 
 const Panel = struct {
     pass: passes.PreparedPass,
-    cache: embed_gl.Gl44BackendCache,
+    cache: embed_gl.Gl44DeviceAtlas,
     binding: snail.render.records.Binding,
     instances: []snail.render.records.Instance,
     batches: []snail.render.records.DrawBatch,
@@ -80,7 +80,7 @@ const Panel = struct {
         var pass = try buildPanel(allocator, fonts, mode);
         errdefer pass.deinit();
 
-        var cache = try embed_gl.Gl44BackendCache.init(allocator, fonts.pool, .{
+        var cache = try embed_gl.Gl44DeviceAtlas.init(allocator, fonts.pool, .{
             .max_bindings = 2,
             .layer_info_height = 128,
             .max_images = 1,

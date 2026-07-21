@@ -9,20 +9,20 @@
 //! Lives in the caller-owned Vulkan reference module so all `vk`-typed code
 //! stays in the backend that owns it; the facade only re-exports this.
 
-const backend_cache = @import("cache.zig");
+const device_atlas = @import("device_atlas.zig");
 const resource_layout = @import("layout.zig");
 
-pub const vk = backend_cache.vk;
-pub const VulkanBackendCache = backend_cache.VulkanBackendCache;
-pub const VulkanContext = backend_cache.VulkanContext;
-pub const PipelineShape = backend_cache.PipelineShape;
+pub const vk = device_atlas.vk;
+pub const VulkanDeviceAtlas = device_atlas.VulkanDeviceAtlas;
+pub const VulkanContext = device_atlas.VulkanContext;
+pub const PipelineShape = device_atlas.PipelineShape;
 pub const VulkanResourceLayout = resource_layout.VulkanResourceLayout;
 
 /// Build the cache's `PipelineShape` from a standalone `VulkanResourceLayout`
 /// plus a caller-owned transfer command pool — no all-in-one `VulkanRenderer`
 /// needed. This is how an embeddable consumer constructs a
-/// `VulkanBackendCache`: create a resource layout, a transfer command pool on
-/// the graphics queue family, then `VulkanBackendCache.init(alloc, pool,
+/// `VulkanDeviceAtlas`: create a resource layout, a transfer command pool on
+/// the graphics queue family, then `VulkanDeviceAtlas.init(alloc, pool,
 /// cachePipelineShape(ctx, &layout, transfer_pool), opts)`.
 ///
 /// `scheduled_resource_upload_cmd` is left null, so uploads allocate a one-shot
@@ -66,9 +66,9 @@ pub fn cachePipelineShapeCallerUpload(
 pub const Backend = struct {
     const Self = @This();
 
-    cache: *const VulkanBackendCache,
+    cache: *const VulkanDeviceAtlas,
 
-    pub fn from(cache: *const VulkanBackendCache) Self {
+    pub fn from(cache: *const VulkanDeviceAtlas) Self {
         return .{ .cache = cache };
     }
 

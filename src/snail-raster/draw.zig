@@ -1,8 +1,8 @@
 //! Public draw entry for the software rasterizer.
 //!
 //! Walks batches, resolves each batch's `Binding.pool` to a
-//! `BackendCache` cache (caller-supplied), validates the binding's
-//! generation against the cache's last upload, then dispatches per-instance
+//! `DeviceAtlas` (caller-supplied), validates the binding's
+//! generation against its last upload, then dispatches per-instance
 //! into the CPU rasterizer via `Renderer.drawBatch`.
 //!
 
@@ -12,14 +12,14 @@ const snail = @import("snail");
 const render_state = @import("render-state");
 const math = @import("snail");
 const draw_records = snail.render.records;
-const backend_cache_mod = @import("backend_cache.zig");
+const device_atlas_mod = @import("device_atlas.zig");
 const resources_mod = @import("resources.zig");
 const vertex = @import("snail").render.records;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
 
 pub const DrawRecords = draw_records.DrawRecords;
 
-pub const BackendCache = backend_cache_mod.BackendCache;
+pub const DeviceAtlas = device_atlas_mod.DeviceAtlas;
 pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
@@ -34,7 +34,7 @@ pub const DrawError = error{
 
 const RendererPtr = *@import("renderer.zig").Renderer;
 
-/// Render `records` into `renderer`'s pixel buffer. `caches` provides the
+/// Render `records` into `renderer`'s pixel buffer. `device_atlases` provides the
 /// CPU-side prepared data for the pools referenced by `records.batches`.
 ///
 /// `thread_pool` is the per-call work-distribution policy: pass a non-null
@@ -46,7 +46,7 @@ pub fn draw(
     renderer: RendererPtr,
     state: render_state.DrawState,
     records: DrawRecords,
-    caches: []const *const BackendCache,
+    caches: []const *const DeviceAtlas,
     thread_pool: ?*ThreadPool,
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
@@ -87,9 +87,9 @@ pub fn draw(
 }
 
 fn findCache(
-    caches: []const *const BackendCache,
-    pool: *backend_cache_mod.PagePool,
-) ?*const BackendCache {
+    caches: []const *const DeviceAtlas,
+    pool: *device_atlas_mod.PagePool,
+) ?*const DeviceAtlas {
     for (caches) |c| {
         if (c.pool == pool) return c;
     }
@@ -122,7 +122,7 @@ test "draw MissingBinding when no cache covers the binding's pool" {
     });
     defer pool_b.deinit();
 
-    var cache_a = try BackendCache.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache_a = try DeviceAtlas.init(allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
@@ -182,7 +182,7 @@ test "draw autohint fits per size without mutating atlas resources" {
     });
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -212,7 +212,7 @@ test "draw autohint fits per size without mutating atlas resources" {
             shape_key: atlas_mod.record_key.RecordKey,
             binding: Binding,
             atlas_ptr: *const atlas_mod.Atlas,
-            cache_ptr: *const BackendCache,
+            cache_ptr: *const DeviceAtlas,
         ) !void {
             @memset(pixels, 0);
             const shape = shape_mod.Shape{
@@ -292,7 +292,7 @@ test "draw renders a small Picture into non-zero pixels" {
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -380,7 +380,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
 
     try testing.expect(atlas.lookupPaintRecord(key) != null);
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -484,7 +484,7 @@ test "draw renders image-painted shape through special-layer path" {
     try testing.expect(atlas.paint_image_records.?[0] != null);
     try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -579,7 +579,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
 
     var atlas = try @import("snail").Atlas.from(allocator, pool, entries.items);
     defer atlas.deinit();
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -660,7 +660,7 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     }});
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -749,7 +749,7 @@ test "cubic stroke has no detached coverage island near its start cap" {
     }});
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);
@@ -825,7 +825,7 @@ test "draw scissor_rect clips writes to the rect" {
     var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
     var bindings: [1]Binding = undefined;
     try cache.upload(allocator, &.{&atlas}, &bindings);

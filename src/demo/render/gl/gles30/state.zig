@@ -2,7 +2,7 @@ const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_backend = @import("detect.zig");
 const gl_programs = @import("programs.zig");
-const gles30_upload = @import("../cache.zig");
+const gles30_upload = @import("../device_atlas.zig");
 const gl_common = @import("../common.zig");
 const linear_resolve = @import("../linear_resolve.zig");
 const draw_records_mod = @import("snail").render.records;
@@ -130,7 +130,7 @@ pub const Gles30TextState = struct {
     } || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
-    /// `Gles30BackendCache` cache, dispatch the encoded instances
+    /// `Gles30DeviceAtlas` cache, dispatch the encoded instances
     /// through the existing program set. GLES3 has no dual-source
     /// blend, so subpixel runs fall back to grayscale.
     pub fn draw(
@@ -138,7 +138,7 @@ pub const Gles30TextState = struct {
         scratch: std.mem.Allocator,
         draw_state: DrawState,
         records: draw_records_mod.DrawRecords,
-        caches: []const *const gles30_upload.Gles30BackendCache,
+        caches: []const *const gles30_upload.Gles30DeviceAtlas,
     ) DrawError!void {
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
@@ -153,7 +153,7 @@ pub const Gles30TextState = struct {
         }
     }
 
-    fn drawBatch(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, instances: []const vertex.Instance, kind: draw_records_mod.ShapeKind) DrawError!void {
+    fn drawBatch(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: draw_records_mod.ShapeKind) DrawError!void {
         const total_glyphs = instances.len;
         if (total_glyphs == 0) return;
 
@@ -170,7 +170,7 @@ pub const Gles30TextState = struct {
         self.drawGlyphRange(instances, 0, total_glyphs);
     }
 
-    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
+    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);

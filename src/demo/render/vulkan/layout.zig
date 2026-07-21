@@ -8,7 +8,7 @@
 //! The layout owns two immutable samplers (nearest for the curve/band/
 //! layer-info textures, linear for the image array) baked into a 4-binding
 //! combined-image-sampler descriptor-set layout (see `contract.zig` for the
-//! binding order). A `VulkanBackendCache` is fed this layout's handles via
+//! binding order). A `VulkanDeviceAtlas` is fed this layout's handles via
 //! `PipelineShape` to allocate + write its descriptor set.
 
 const std = @import("std");

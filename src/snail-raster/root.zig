@@ -4,7 +4,7 @@
 //! that only use the GPU shader contracts do not compile the rasterizer.
 
 const renderer = @import("renderer.zig");
-const backend_cache = @import("backend_cache.zig");
+const device_atlas = @import("device_atlas.zig");
 const target = @import("render-state");
 
 pub const SubpixelOrder = target.SubpixelOrder;
@@ -22,10 +22,10 @@ pub const resolveRect = target.resolveRect;
 pub const Renderer = renderer.Renderer;
 pub const InstanceProfileEntry = renderer.InstanceProfileEntry;
 pub const InstanceProfileBuffer = renderer.InstanceProfileBuffer;
-pub const BackendCache = backend_cache.BackendCache;
-pub const CacheOptions = backend_cache.CacheOptions;
-pub const UploadError = backend_cache.UploadError;
-pub const ResizeError = backend_cache.ResizeError;
+pub const DeviceAtlas = device_atlas.DeviceAtlas;
+pub const DeviceAtlasOptions = device_atlas.DeviceAtlasOptions;
+pub const UploadError = device_atlas.UploadError;
+pub const ResizeError = device_atlas.ResizeError;
 pub const ThreadPool = @import("thread_pool.zig").ThreadPool;
 const draw_mod = @import("draw.zig");
 pub const DrawRecords = draw_mod.DrawRecords;
@@ -34,7 +34,7 @@ pub const draw = draw_mod.draw;
 
 test {
     _ = renderer;
-    _ = backend_cache;
+    _ = device_atlas;
     _ = @import("thread_pool.zig");
     _ = @import("draw.zig");
 }

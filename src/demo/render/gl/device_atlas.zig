@@ -1,6 +1,6 @@
 //! GL / GLES3 persistent prepared-pages cache for snail.
 //!
-//! Mirrors `snail-raster.BackendCache`: caller-sized capacity, slot
+//! Mirrors `snail-raster.DeviceAtlas`: caller-sized capacity, slot
 //! allocation via free-list, explicit `release(binding)`, no auto-grow.
 //!
 //! Per-cache resident state:
@@ -59,7 +59,7 @@ const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
-pub const CacheOptions = struct {
+pub const DeviceAtlasOptions = struct {
     max_bindings: u32 = 16,
     layer_info_height: u32 = 64,
     max_images: u32 = 16,
@@ -70,14 +70,14 @@ pub const CacheOptions = struct {
 pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{ImageTooLarge};
 pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{ActiveBindingsPreventResize};
 
-pub fn GlBackendCacheFor(comptime variant: Variant) type {
+pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
     const gl = bindingsFor(variant).gl;
     return struct {
         const Self = @This();
 
         allocator: std.mem.Allocator,
         pool: *PagePool,
-        options: CacheOptions,
+        options: DeviceAtlasOptions,
 
         // Pool-wide resident curve/band texture arrays.
         curve_array: gl.GLuint = 0,
@@ -111,7 +111,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
         // planner-driven upload paths; never affects texel output.
         upload_generation: u32 = 0,
 
-        fn plannerOptions(options: CacheOptions) upload_plan.Options {
+        fn plannerOptions(options: DeviceAtlasOptions) upload_plan.Options {
             return .{
                 .max_bindings = options.max_bindings,
                 .layer_info_height = options.layer_info_height,
@@ -121,7 +121,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
             };
         }
 
-        pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !Self {
+        pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !Self {
             const opts = plannerOptions(options);
             const sz = upload_plan.sizes(pool, opts);
 
@@ -208,7 +208,7 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
 
         // ── Persistent resource lifecycle ──
 
-        pub fn resize(self: *Self, options: CacheOptions) ResizeError!void {
+        pub fn resize(self: *Self, options: DeviceAtlasOptions) ResizeError!void {
             if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
             self.destroyTextures();
             self.options = options;
@@ -488,15 +488,15 @@ pub fn GlBackendCacheFor(comptime variant: Variant) type {
     };
 }
 
-pub const Gl33BackendCache = GlBackendCacheFor(.gl33);
-pub const Gl44BackendCache = GlBackendCacheFor(.gl44);
-pub const Gles30BackendCache = GlBackendCacheFor(.gles30);
+pub const Gl33DeviceAtlas = GlDeviceAtlasFor(.gl33);
+pub const Gl44DeviceAtlas = GlDeviceAtlasFor(.gl44);
+pub const Gles30DeviceAtlas = GlDeviceAtlasFor(.gles30);
 
 // ── Tests (data only — no GL calls) ──
 
 const testing = std.testing;
 
-test "GlBackendCache init allocates fixed-capacity slots" {
+test "GlDeviceAtlas init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 2,
@@ -504,7 +504,7 @@ test "GlBackendCache init allocates fixed-capacity slots" {
     });
     defer pool.deinit();
 
-    var cache = try Gl33BackendCache.init(testing.allocator, pool, .{
+    var cache = try Gl33DeviceAtlas.init(testing.allocator, pool, .{
         .max_bindings = 3,
         .layer_info_height = 8,
         .max_images = 2,

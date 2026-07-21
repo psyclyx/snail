@@ -38,6 +38,7 @@ const PaintImageRecord = atlas_mod.PaintImageRecord;
 const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 const RecordLookup = atlas_mod.RecordLookup;
 const PaintLookup = atlas_mod.PaintLookup;
+const TtAdvanceLookup = atlas_mod.TtAdvanceLookup;
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
 const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
@@ -55,6 +56,7 @@ pub const Builder = struct {
     paint_lookup: PaintLookup,
     autohint_lookup: PaintLookup,
     tt_hinted_lookup: PaintLookup,
+    tt_advance_lookup: TtAdvanceLookup,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
@@ -70,6 +72,7 @@ pub const Builder = struct {
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
             .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_advance_lookup = TtAdvanceLookup.init(allocator, .{}),
             .paint_image_records = .empty,
         };
     }
@@ -92,6 +95,7 @@ pub const Builder = struct {
             .paint_lookup = base.paint_lookup.clone(),
             .autohint_lookup = base.autohint_lookup.clone(),
             .tt_hinted_lookup = base.tt_hinted_lookup.clone(),
+            .tt_advance_lookup = base.tt_advance_lookup.clone(),
             .paint_image_records = .empty,
         };
         errdefer b.abort();
@@ -121,6 +125,7 @@ pub const Builder = struct {
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
         self.tt_hinted_lookup.deinit();
+        self.tt_advance_lookup.deinit();
         self.paint_image_records.deinit(self.allocator);
     }
 
@@ -277,6 +282,7 @@ pub const Builder = struct {
             .paint_lookup = self.paint_lookup,
             .autohint_lookup = self.autohint_lookup,
             .tt_hinted_lookup = self.tt_hinted_lookup,
+            .tt_advance_lookup = self.tt_advance_lookup,
             .paint_image_records = paint_image_records_out,
         };
     }

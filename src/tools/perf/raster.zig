@@ -58,7 +58,7 @@ pub fn main(init: std.process.Init) !void {
     var scene = try fixtures.buildScene(allocator, pool, kind);
     defer scene.deinit();
 
-    var cache = try raster.BackendCache.init(allocator, pool, .{
+    var cache = try raster.DeviceAtlas.init(allocator, pool, .{
         .max_bindings = 1,
         .layer_info_height = 64,
         .max_images = 0,
@@ -158,7 +158,7 @@ const RasterContext = struct {
     renderer: *raster.Renderer,
     state: raster.DrawState,
     records: snail.render.records.DrawRecords,
-    cache: *const raster.BackendCache,
+    cache: *const raster.DeviceAtlas,
     worker_pool: ?*raster.ThreadPool,
     pixels: []u8,
 

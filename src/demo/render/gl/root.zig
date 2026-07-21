@@ -8,7 +8,7 @@
 //!
 //! This module is the worked example integrators copy. It bundles:
 //!   - `Gl{33,44}Renderer` / `Gles30Renderer` — the all-in-one text renderers.
-//!   - `Gl{33,44,Gles30}BackendCache` — the GL atlas cache (planner-driven).
+//!   - `Gl{33,44,Gles30}DeviceAtlas` — the GL atlas cache (planner-driven).
 //!   - `linear_resolve` — the fp16-intermediate + encode pass for correct
 //!     linear-space AA. Exposed because GLES 3.0 integrators typically can't
 //!     get an sRGB default framebuffer and won't reinvent it; it's a
@@ -17,15 +17,15 @@
 
 const state = @import("desktop/state.zig");
 const gles30_state = @import("gles30/state.zig");
-const cache = @import("cache.zig");
+const cache = @import("device_atlas.zig");
 
 pub const Gl33Renderer = state.Gl33Renderer;
 pub const Gl44Renderer = state.Gl44Renderer;
 pub const Gles30Renderer = gles30_state.Gles30Renderer;
 
-pub const Gl33BackendCache = cache.Gl33BackendCache;
-pub const Gl44BackendCache = cache.Gl44BackendCache;
-pub const Gles30BackendCache = cache.Gles30BackendCache;
+pub const Gl33DeviceAtlas = cache.Gl33DeviceAtlas;
+pub const Gl44DeviceAtlas = cache.Gl44DeviceAtlas;
+pub const Gles30DeviceAtlas = cache.Gles30DeviceAtlas;
 
 pub const linear_resolve = @import("linear_resolve.zig");
 

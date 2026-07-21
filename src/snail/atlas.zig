@@ -30,6 +30,7 @@ const RecordKeyContext = struct {
 
 pub const RecordLookup = hamt_mod.Hamt(RecordKey, AtlasRecord, RecordKeyContext);
 pub const PaintLookup = hamt_mod.Hamt(RecordKey, PaintRecordInfo, RecordKeyContext);
+pub const TtAdvanceLookup = hamt_mod.Hamt(RecordKey, i32, RecordKeyContext);
 
 pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
@@ -154,9 +155,13 @@ pub const Atlas = struct {
     /// curve/band atlas; this small record lets the hinted-text instance ABI
     /// address it while retaining a distinct shader/program family.
     tt_hinted_lookup: PaintLookup,
+    /// Per-key TT-hinted horizontal advances (26.6 px), `ns.tt_advance`.
+    /// CPU-only value records: read at shape time by advance providers,
+    /// never uploaded. Written by `recordTtHintRun` / `recordTtAdvanceRun`.
+    tt_advance_lookup: TtAdvanceLookup,
     /// One slot per emitted paint record (in insertion order). The slot
     /// is populated only for `.image` paints — gradient/solid records map
-    /// to `null`. The software renderer's `BackendCache.upload`
+    /// to `null`. The software renderer's `DeviceAtlas.upload`
     /// hands this to `preparePathLayerInfoRecords`; the GPU upload path
     /// patches the matching layer-info texel in place. Images themselves
     /// are caller-owned references; the atlas only borrows.
@@ -173,6 +178,7 @@ pub const Atlas = struct {
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
             .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_advance_lookup = TtAdvanceLookup.init(allocator, .{}),
         };
     }
 
@@ -197,6 +203,7 @@ pub const Atlas = struct {
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
         self.tt_hinted_lookup.deinit();
+        self.tt_advance_lookup.deinit();
         self.lookup.deinit();
         self.* = undefined;
     }
@@ -216,6 +223,25 @@ pub const Atlas = struct {
     /// Look up the band record for a baked per-PPEM TT-hinted glyph.
     pub fn lookupTtHintedRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
         return self.tt_hinted_lookup.get(key);
+    }
+
+    /// Look up a recorded TT-hinted horizontal advance (26.6 px) for a
+    /// `ns.tt_advance` key.
+    pub fn lookupTtAdvance(self: *const Atlas, key: RecordKey) ?i32 {
+        return self.tt_advance_lookup.get(key);
+    }
+
+    /// Record a TT-hinted horizontal advance under a `ns.tt_advance` key.
+    /// Idempotent: an existing record wins (advances are pure in the key).
+    pub fn recordTtAdvance(self: *Atlas, key: RecordKey, advance_26_6: i32) std.mem.Allocator.Error!void {
+        if (self.tt_advance_lookup.contains(key)) return;
+        const next = try self.tt_advance_lookup.put(key, advance_26_6);
+        self.tt_advance_lookup.deinit();
+        self.tt_advance_lookup = next;
+    }
+
+    pub fn ttAdvanceCount(self: *const Atlas) u32 {
+        return self.tt_advance_lookup.count();
     }
 
     pub fn contains(self: *const Atlas, key: RecordKey) bool {
@@ -355,6 +381,7 @@ pub const Atlas = struct {
             .paint_lookup = PaintLookup.init(allocator, .{}),
             .autohint_lookup = PaintLookup.init(allocator, .{}),
             .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
+            .tt_advance_lookup = TtAdvanceLookup.init(allocator, .{}),
         };
     }
 

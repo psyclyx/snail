@@ -1,14 +1,16 @@
-//! Focused font-to-atlas population helpers.
+//! Record shaped runs into an `Atlas`.
 //!
-//! These functions own the temporary `GlyphCurves` / `AtlasEntry` storage,
-//! deduplicate against both the atlas and the current batch, and commit with
-//! `Atlas.extendInPlace`. They do not shape or place text.
+//! The atlas is the store of prepared glyph records; these functions run the
+//! per-mode producers (`Faces`, `AutohintAnalyzer`, `TtHintVm`) for every
+//! glyph the store doesn't already have and commit the results with
+//! `Atlas.extendInPlace`. Recording is idempotent — existing keys are
+//! skipped — so repeat calls over the same run are cheap. They do not shape
+//! or place text.
 
 const std = @import("std");
 const atlas_mod = @import("../atlas.zig");
 const font_mod = @import("../font.zig");
 const hint_vm_mod = @import("../font/tt_hint_vm.zig");
-const hinted_cache_mod = @import("../text/tt_hinted_glyph_cache.zig");
 const autohint_mod = @import("../font/autohint/producer.zig");
 const autohint_warp = @import("../font/autohint/warp.zig");
 const faces_mod = @import("../text/faces.zig");
@@ -140,10 +142,10 @@ fn appendUnhintedGlyph(
     try batch.layer_storage.append(batch.allocator, layers);
 }
 
-/// Extend `atlas` with every missing unhinted glyph referenced by `shaped`.
+/// Record every missing unhinted glyph referenced by `shaped`.
 /// COLRv0 glyphs are packed by default, so ordinary `placeRun` emits one COLR
 /// instance for each base glyph without caller-side layer assembly.
-pub fn extendUnhintedRun(
+pub fn recordUnhintedRun(
     atlas: *Atlas,
     allocator: Allocator,
     faces: *const faces_mod.Faces,
@@ -170,10 +172,10 @@ pub fn extendUnhintedRun(
     try batch.apply(atlas);
 }
 
-/// Extend `atlas` with immutable autohint analysis for every matching glyph.
+/// Record immutable autohint analysis for every matching glyph.
 /// Missing base glyphs are rejected; empty base glyphs get empty records so
 /// callers can place a whole run without patching whitespace afterward.
-pub fn extendAutohintRun(
+pub fn recordAutohintRun(
     atlas: *Atlas,
     allocator: Allocator,
     analyzer: *autohint_mod.AutohintAnalyzer,
@@ -210,44 +212,120 @@ pub fn extendAutohintRun(
     try batch.apply(atlas);
 }
 
-/// Extend `atlas` with per-PPEM TT-hinted curves for every glyph covered by
-/// `cache`. The cache amortizes VM preparation across calls at the same PPEM.
-pub fn extendTtHintRun(
+fn ppemOf(prepared: *const hint_vm_mod.TtHintVm.PreparedPpem) hint_vm_mod.TtHintPpem {
+    return .{ .x_26_6 = prepared.size.request.ppem_x_26_6, .y_26_6 = prepared.size.request.ppem_y_26_6 };
+}
+
+/// Record per-PPEM TT-hinted curves *and* horizontal advances for every
+/// glyph in `shaped` matching `font_id`. The ppem comes from `prepared`
+/// (the caller-owned result of `vm.prepare`); the advance is a byproduct
+/// of the same glyph-program execution, so it is recorded for free.
+pub fn recordTtHintRun(
     atlas: *Atlas,
     allocator: Allocator,
-    cache: *hinted_cache_mod.TtHintedGlyphCache,
+    vm: *hint_vm_mod.TtHintVm,
+    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
+    font_id: u32,
     shaped: *const text_mod.ShapedText,
-    ppem_26_6: u32,
 ) !void {
+    const ppem = ppemOf(prepared);
+    // Curve record keys use the uniform-ppem convention shared with
+    // `HintMode.tt_hint` and `record_key.ttHintedGlyph`.
+    std.debug.assert(ppem.x_26_6 == ppem.y_26_6);
+    const ppem_26_6 = ppem.x_26_6;
+
+    try recordTtAdvanceRun(atlas, vm, prepared, font_id, shaped);
+
     var has_missing = false;
     for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != cache.font_id) continue;
-        const key = record_key.ttHintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
+        if (glyph.font_id != font_id) continue;
+        const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
         if (!atlas.contains(key)) {
             has_missing = true;
             break;
         }
     }
-    // Keep repeat population calls cheap when this atlas contains the run.
+    // Keep repeat recording calls cheap when the store contains the run.
     if (!has_missing) return;
 
     var batch = Batch.init(allocator);
     defer batch.deinit();
-    const ppem = hint_vm_mod.TtHintPpem.uniform(ppem_26_6);
 
     for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != cache.font_id) continue;
-        const key = record_key.ttHintedGlyph(cache.font_id, glyph.glyph_id, ppem_26_6);
+        if (glyph.font_id != font_id) continue;
+        const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
         if (!try batch.shouldInsert(atlas, key)) continue;
-        const curves = try cache.getOrInsertCurves(allocator, batch.scratch.allocator(), glyph.glyph_id, ppem);
+        var curves = try vm.hintGlyph(allocator, batch.scratch.allocator(), prepared, glyph.glyph_id);
+        errdefer curves.deinit();
         _ = batch.scratch.reset(.retain_capacity);
+        try batch.curves.append(batch.allocator, curves);
         try batch.entries.append(allocator, .{
             .key = key,
-            .curves = curves.*,
+            .curves = batch.curves.items[batch.curves.items.len - 1],
         });
     }
     try batch.apply(atlas);
 }
+
+/// Record TT-hinted horizontal advances (`ns.tt_advance`) for every glyph
+/// in `shaped` matching `font_id`. Touches no curve pages — this is the
+/// cheap path for measurement-only runs (line breaking, width queries)
+/// whose glyphs may never be drawn.
+pub fn recordTtAdvanceRun(
+    atlas: *Atlas,
+    vm: *hint_vm_mod.TtHintVm,
+    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
+    font_id: u32,
+    shaped: *const text_mod.ShapedText,
+) !void {
+    const packed_ppem = ppemOf(prepared).packed26Dot6();
+    for (shaped.glyphs) |glyph| {
+        if (glyph.font_id != font_id) continue;
+        const key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
+        if (atlas.lookupTtAdvance(key) != null) continue;
+        const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
+        try atlas.recordTtAdvance(key, advance);
+    }
+}
+
+/// Read-side `AdvanceProvider` over recorded `ns.tt_advance` values,
+/// falling back to the pure VM for glyphs not yet recorded. Read-only
+/// over `atlas` — `shape()` never mutates the store; recording happens
+/// in `recordTtHintRun` / `recordTtAdvanceRun`.
+///
+/// The VM fallback requires the shape call's `target_ppem` to match
+/// `prepared`'s ppem — both come from the caller, so a mismatch is a
+/// programmer error (asserted in debug).
+pub const TtAdvanceSource = struct {
+    atlas: *const Atlas,
+    vm: *hint_vm_mod.TtHintVm,
+    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
+    font_id: u32,
+
+    /// The returned provider borrows `self`; both must outlive any
+    /// `shape` call passed `opts.advance_provider = provider`.
+    pub fn advanceProvider(self: *TtAdvanceSource) text_mod.AdvanceProvider {
+        return .{
+            .context = @ptrCast(self),
+            .covers = covers,
+            .get_advance = getAdvance,
+        };
+    }
+
+    fn covers(context: *anyopaque, font_id: u32) bool {
+        const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
+        return font_id == self.font_id;
+    }
+
+    fn getAdvance(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: hint_vm_mod.TtHintPpem) i32 {
+        const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
+        const key = record_key.ttAdvance(font_id, glyph_id, ppem.packed26Dot6());
+        if (self.atlas.lookupTtAdvance(key)) |advance| return advance;
+        const prepared_ppem = ppemOf(self.prepared);
+        std.debug.assert(ppem.x_26_6 == prepared_ppem.x_26_6 and ppem.y_26_6 == prepared_ppem.y_26_6);
+        return self.vm.hintedAdvance(self.prepared, glyph_id) catch 0;
+    }
+};
 
 const testing = std.testing;
 
@@ -271,12 +349,12 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     var atlas = Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
-    try extendUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
     const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
     const info = atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)).?;
     try testing.expect(info.layer_count > 1);
 
-    try extendUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
 }
 
 test "autohint and TT-hint run helpers cover empty and visible glyphs" {
@@ -295,21 +373,68 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
     defer pool.deinit();
     var atlas = Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
-    try extendUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
 
     var analyzer = try autohint_mod.AutohintAnalyzer.init(testing.allocator, bytes);
     defer analyzer.deinit();
-    try extendAutohintRun(&atlas, testing.allocator, &analyzer, 0, &shaped);
+    try recordAutohintRun(&atlas, testing.allocator, &analyzer, 0, &shaped);
 
     var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
     defer vm.deinit();
-    var cache = hinted_cache_mod.TtHintedGlyphCache.init(testing.allocator, &vm, 0);
-    defer cache.deinit();
     const ppem_26_6: u32 = 16 * 64;
-    try extendTtHintRun(&atlas, testing.allocator, &cache, &shaped, ppem_26_6);
+    var prepared = try vm.prepare(hint_vm_mod.TtHintPpem.uniform(ppem_26_6));
+    defer prepared.deinit();
+    try recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped);
 
+    const packed_ppem = hint_vm_mod.TtHintPpem.uniform(ppem_26_6).packed26Dot6();
     for (shaped.glyphs) |glyph| {
         try testing.expect(atlas.contains(record_key.autohintGlyph(0, glyph.glyph_id)));
         try testing.expect(atlas.contains(record_key.ttHintedGlyph(0, glyph.glyph_id, ppem_26_6)));
+        try testing.expect(atlas.lookupTtAdvance(record_key.ttAdvance(0, glyph.glyph_id, packed_ppem)) != null);
     }
+
+    // Recording is idempotent and survives snapshot extension.
+    const advance_count = atlas.ttAdvanceCount();
+    try recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped);
+    try testing.expectEqual(advance_count, atlas.ttAdvanceCount());
+}
+
+test "TtAdvanceSource reads recorded advances and falls back to the VM" {
+    const bytes = @import("assets").dejavu_sans_mono;
+    var font = try Font.init(bytes);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font }});
+    defer faces.deinit();
+    var shaped = try faces_mod.shape(testing.allocator, &faces, "Ab", .{});
+    defer shaped.deinit();
+
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+
+    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
+    defer vm.deinit();
+    const ppem = hint_vm_mod.TtHintPpem.uniform(13 * 64);
+    var prepared = try vm.prepare(ppem);
+    defer prepared.deinit();
+
+    var source = TtAdvanceSource{ .atlas = &atlas, .vm = &vm, .prepared = &prepared, .font_id = 0 };
+    const provider = source.advanceProvider();
+    try testing.expect(provider.covers(provider.context, 0));
+    try testing.expect(!provider.covers(provider.context, 1));
+
+    // Store miss: falls back to the pure VM.
+    const gid = shaped.glyphs[0].glyph_id;
+    const from_vm = provider.get_advance(provider.context, 0, gid, ppem);
+    try testing.expect(from_vm > 0);
+
+    // Advance-only recording stores the same value without touching pages.
+    try recordTtAdvanceRun(&atlas, &vm, &prepared, 0, &shaped);
+    try testing.expectEqual(@as(usize, 0), atlas.pageCount());
+    const from_store = provider.get_advance(provider.context, 0, gid, ppem);
+    try testing.expectEqual(from_vm, from_store);
 }

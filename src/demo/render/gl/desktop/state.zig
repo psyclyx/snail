@@ -2,7 +2,7 @@ const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_backend = @import("detect.zig");
 const gl_programs = @import("programs.zig");
-const gl_upload = @import("../cache.zig");
+const gl_upload = @import("../device_atlas.zig");
 const ring_buffer_mod = @import("ring_buffer.zig");
 const RingBuffer = ring_buffer_mod.RingBuffer;
 const gl_common = @import("../common.zig");
@@ -81,7 +81,7 @@ fn TextStateFor(comptime backend: Backend) type {
         // glUniform* calls whose value matches what the program already
         // holds. The shadow is invalidated on program creation/reload
         // and (defensively) when the bound cache changes.
-        active_cache: ?*const GlBackendCache = null,
+        active_cache: ?*const GlDeviceAtlas = null,
         program_cache_count: usize = 0,
         program_uniform_caches: [6]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 6,
         // Per-draw GL state shadows.
@@ -228,7 +228,7 @@ fn TextStateFor(comptime backend: Backend) type {
             .gl33 => .gl33,
             .gl44 => .gl44,
         };
-        const GlBackendCache = gl_upload.GlBackendCacheFor(gl_upload_variant);
+        const GlDeviceAtlas = gl_upload.GlDeviceAtlasFor(gl_upload_variant);
 
         pub const DrawError = error{
             MissingBinding,
@@ -237,14 +237,14 @@ fn TextStateFor(comptime backend: Backend) type {
         } || std.mem.Allocator.Error;
 
         /// Walk `DrawRecords.batches`, bind each batch's matching
-        /// `GlBackendCache` cache, dispatch the encoded instances through
+        /// `GlDeviceAtlas` cache, dispatch the encoded instances through
         /// the existing program set.
         pub fn draw(
             self: *GlTextState,
             scratch: std.mem.Allocator,
             draw_state: DrawState,
             records: draw_records_mod.DrawRecords,
-            caches: []const *const GlBackendCache,
+            caches: []const *const GlDeviceAtlas,
         ) DrawError!void {
             // Apply `draw_state.scissor_rect` via `GL_SCISSOR_TEST`. We
             // save / restore both the enable flag and the rect so a
@@ -296,7 +296,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.cached_heterogeneous_vao_bound = true;
         }
 
-        fn drawBatch(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, instances: []const vertex.Instance, kind: ShapeKind) DrawError!void {
+        fn drawBatch(self: *GlTextState, cache: *const GlDeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: ShapeKind) DrawError!void {
             const total_glyphs = instances.len;
             if (total_glyphs == 0) return;
             self.ensureHeterogeneousVaoBound();
@@ -324,13 +324,13 @@ fn TextStateFor(comptime backend: Backend) type {
             self.drawGlyphRange(instances, 0, total_glyphs);
         }
 
-        /// Bind one GlBackendCache' texture set + uniforms. Texture-unit
+        /// Bind one GlDeviceAtlas' texture set + uniforms. Texture-unit
         /// sampler bindings and `u_layer_base` are set once at program
         /// load (see programs.zig) and never need to be re-set here. The
         /// per-call uniforms (mvp/viewport/subpixel_order/output_srgb/
         /// coverage_exponent) are shadow-cached per program so steady-
         /// state frames upload only what actually changed.
-        fn bindProgramState(self: *GlTextState, cache: *const GlBackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
+        fn bindProgramState(self: *GlTextState, cache: *const GlDeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);

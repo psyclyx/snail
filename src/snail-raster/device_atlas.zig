@@ -1,23 +1,22 @@
-//! Prepared-pages cache for the software rasterizer.
-//!
-//! Holds resident CPU-side resources for one `PagePool` and exposes
-//! caller-controlled lifecycle primitives:
+//! The software rasterizer's device-side atlas: resident CPU copies of
+//! uploaded atlas records for one `PagePool`, with caller-controlled
+//! lifecycle primitives:
 //!
 //! - `init(allocator, pool, options)` allocates fixed-capacity storage
 //!   for `max_bindings`, `layer_info_height` rows of paint records, and
 //!   `max_images` image references. The caller decides how much is
-//!   enough; the cache never auto-grows.
-//! - `upload(scratch, atlases)` finds a free slot in the cache's
-//!   persistent storage, writes each atlas's curve/band into the
-//!   pool's prepared pages, and lays each atlas's layer-info into the
-//!   shared buffer. Returns one `Binding` per atlas. Errors with
+//!   enough; a `DeviceAtlas` never auto-grows.
+//! - `upload(scratch, atlases)` finds a free slot in the persistent
+//!   storage, writes each atlas's curve/band into the pool's prepared
+//!   pages, and lays each atlas's layer-info into the shared buffer.
+//!   Returns one `Binding` per atlas. Errors with
 //!   `error.NoFreeBinding` / `error.NoFreeLayerInfoRows` /
 //!   `error.NoFreeImageLayers` if capacity is exceeded — the caller
 //!   handles by releasing retired bindings or calling `resize`.
 //! - `release(binding)` returns the slot's storage to the free list.
 //!   The next upload can reuse the same row_base / image_layer_base
 //!   range.
-//! - `resize(options)` reshapes the cache. Errors if there are active
+//! - `resize(options)` reshapes the storage. Errors if there are active
 //!   bindings.
 
 const std = @import("std");
@@ -56,7 +55,7 @@ fn patchImagePaintRecord(data: []f32, row_base: u32, texel_offset: u32, layer: u
     data[record_base + 5 * 4 + 1] = 1.0;
 }
 
-pub const CacheOptions = struct {
+pub const DeviceAtlasOptions = struct {
     max_bindings: u32 = 16,
     layer_info_height: u32 = 64,
     max_images: u32 = 16,
@@ -72,10 +71,10 @@ pub const UploadError = error{
 } || std.mem.Allocator.Error;
 pub const ResizeError = error{ActiveBindingsPreventResize} || std.mem.Allocator.Error;
 
-pub const BackendCache = struct {
+pub const DeviceAtlas = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
-    options: CacheOptions,
+    options: DeviceAtlasOptions,
 
     // Per-layer prepared atlas pages (one per pool layer, indexed by
     // AtlasPage.layer_index).
@@ -117,7 +116,7 @@ pub const BackendCache = struct {
         paint_image_records: ?[]?PaintImageRecord = null,
     };
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: CacheOptions) !BackendCache {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !DeviceAtlas {
         const max_layers = pool.options.max_layers;
 
         const prepared = try allocator.alloc(?PreparedAtlasPage, max_layers);
@@ -171,7 +170,7 @@ pub const BackendCache = struct {
         };
     }
 
-    pub fn deinit(self: *BackendCache) void {
+    pub fn deinit(self: *DeviceAtlas) void {
         for (self.prepared) |*slot| {
             if (slot.*) |*p| p.deinit(self.allocator);
         }
@@ -188,7 +187,7 @@ pub const BackendCache = struct {
         self.* = undefined;
     }
 
-    fn freeBindingState(self: *BackendCache, slot: *BindingSlot) void {
+    fn freeBindingState(self: *DeviceAtlas, slot: *BindingSlot) void {
         if (slot.path_records.len > 0) self.allocator.free(slot.path_records);
         if (slot.path_layers.len > 0) self.allocator.free(slot.path_layers);
         if (slot.paint_image_records) |r| self.allocator.free(r);
@@ -199,7 +198,7 @@ pub const BackendCache = struct {
 
     /// Reshape the cache. Errors if any binding is active — caller must
     /// release retired bindings first.
-    pub fn resize(self: *BackendCache, options: CacheOptions) ResizeError!void {
+    pub fn resize(self: *DeviceAtlas, options: DeviceAtlasOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
         self.options = options;
 
@@ -229,7 +228,7 @@ pub const BackendCache = struct {
     /// Upload one or more atlases into the cache and return one
     /// `Binding` per atlas. Errors if capacity is exceeded.
     pub fn upload(
-        self: *BackendCache,
+        self: *DeviceAtlas,
         scratch: std.mem.Allocator,
         atlases: []const *const Atlas,
         out_bindings: []Binding,
@@ -307,12 +306,12 @@ pub const BackendCache = struct {
     }
 
     /// Incrementally update `prev_binding`'s slot with `atlas`'s
-    /// current state. See `GlBackendCache.uploadDelta` for the
+    /// current state. See `GlDeviceAtlas.uploadDelta` for the
     /// contract; the CPU implementation re-runs `writeBindingData`
     /// which natively walks per-page watermarks under the hood, so
     /// pages whose contents haven't grown emit no copy traffic.
     pub fn uploadDelta(
-        self: *BackendCache,
+        self: *DeviceAtlas,
         scratch: std.mem.Allocator,
         prev_binding: Binding,
         atlas: *const Atlas,
@@ -342,7 +341,7 @@ pub const BackendCache = struct {
 
     /// Release a binding's storage. Idempotent: releasing the same
     /// binding twice is a no-op after the first.
-    pub fn release(self: *BackendCache, binding: Binding) void {
+    pub fn release(self: *DeviceAtlas, binding: Binding) void {
         const slot_index = self.findSlotByGeneration(binding.generation) orelse return;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return;
@@ -367,7 +366,7 @@ pub const BackendCache = struct {
     /// is where this slot sits in the global info_y space and is the value
     /// emit added to `Instance.info_y`. Path records' `texel_offset` is
     /// already slot-relative (matches `layer_info_data`).
-    pub fn snapshotFor(self: *const BackendCache, generation: u32) ?Snapshot {
+    pub fn snapshotFor(self: *const DeviceAtlas, generation: u32) ?Snapshot {
         const slot_index = self.findSlotByGeneration(generation) orelse return null;
         const slot = &self.bindings[slot_index];
         if (!slot.active) return null;
@@ -394,7 +393,7 @@ pub const BackendCache = struct {
         paint_image_records: ?[]const ?PaintImageRecord,
     };
 
-    pub fn page(self: *const BackendCache, layer: u32) ?*const PreparedAtlasPage {
+    pub fn page(self: *const DeviceAtlas, layer: u32) ?*const PreparedAtlasPage {
         if (layer >= self.prepared.len) return null;
         if (self.prepared[layer]) |*p| return p;
         return null;
@@ -402,21 +401,21 @@ pub const BackendCache = struct {
 
     // ── Internal ──
 
-    fn findFreeBinding(self: *BackendCache) ?u32 {
+    fn findFreeBinding(self: *DeviceAtlas) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (!slot.active) return @intCast(i);
         }
         return null;
     }
 
-    fn findSlotByGeneration(self: *const BackendCache, generation: u32) ?u32 {
+    fn findSlotByGeneration(self: *const DeviceAtlas, generation: u32) ?u32 {
         for (self.bindings, 0..) |*slot, i| {
             if (slot.active and slot.generation == generation) return @intCast(i);
         }
         return null;
     }
 
-    fn writeBindingData(self: *BackendCache, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
+    fn writeBindingData(self: *DeviceAtlas, atlas: *const Atlas, slot: *BindingSlot) UploadError!void {
         // Push each page in the atlas into its layer (rebuild if stale).
         for (atlas.pages) |p| {
             const layer = p.layer_index;
@@ -552,7 +551,7 @@ test "cache init allocates fixed-capacity buffers" {
     });
     defer pool.deinit();
 
-    var cache = try BackendCache.init(testing.allocator, pool, .{
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 8,
         .max_images = 2,
@@ -581,7 +580,7 @@ test "release returns range to free list and allows reuse" {
     });
     defer pool.deinit();
 
-    var cache = try BackendCache.init(testing.allocator, pool, .{
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{
         .max_bindings = 4,
         .layer_info_height = 2,
         .max_images = 0,
@@ -662,7 +661,7 @@ test "uploadDelta errors for unknown pool" {
     var atlas_b = try Atlas.from(testing.allocator, pool_b, &.{.{ .key = key, .curves = curves2 }});
     defer atlas_b.deinit();
 
-    var cache = try BackendCache.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try DeviceAtlas.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas_a}, &binding);
@@ -691,7 +690,7 @@ test "uploadDelta errors for released binding" {
     var atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
     defer atlas.deinit();
 
-    var cache = try BackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas}, &binding);
@@ -701,7 +700,7 @@ test "uploadDelta errors for released binding" {
 }
 
 test "uploadDelta accepts a different atlas on the same pool" {
-    // Per the contract docstring on GlBackendCache.uploadDelta: a
+    // Per the contract docstring on GlDeviceAtlas.uploadDelta: a
     // different atlas on the same pool is permitted — the cache's
     // per-layer page tracking notices the change and re-uploads
     // affected pages. This is correct, just less efficient than a
@@ -733,7 +732,7 @@ test "uploadDelta accepts a different atlas on the same pool" {
     var atlas_b = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_b, .curves = curves_b }});
     defer atlas_b.deinit();
 
-    var cache = try BackendCache.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
     defer cache.deinit();
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas_a}, &binding);

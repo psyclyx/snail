@@ -63,7 +63,7 @@ pub fn main() !void {
     const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
     defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
 
-    var cache = try embed_vulkan.VulkanBackendCache.init(allocator, scene.pool, embed_vulkan.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
+    var cache = try embed_vulkan.VulkanDeviceAtlas.init(allocator, scene.pool, embed_vulkan.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
         .max_bindings = 4,
         .layer_info_height = 256,
         .max_images = 8,

@@ -268,30 +268,31 @@ pub fn main() !void {
     // Round 1: seed a new atlas with the first part of the unhinted run.
     var atlas = snail.Atlas.init(allocator, pool);
     defer atlas.deinit();
-    try snail.extendUnhintedRun(&atlas, allocator, &faces, &seed, .{});
+    try snail.recordUnhintedRun(&atlas, allocator, &faces, &seed, .{});
     try gpu.upload(&atlas);
 
     // Round 2: extend it with the remaining unhinted glyphs. This is the
     // ordinary hot path: `planDelta` keeps the binding and uploads new pages.
-    try snail.extendUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
+    try snail.recordUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
     try gpu.upload(&atlas);
 
     // Round 3: extend the same atlas with immutable autohint analysis.
     var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, assets.dejavu_sans_mono);
     defer analyzer.deinit();
-    try snail.extendAutohintRun(&atlas, allocator, &analyzer, font_id, &shaped);
+    try snail.recordAutohintRun(&atlas, allocator, &analyzer, font_id, &shaped);
     try gpu.upload(&atlas);
 
-    // Round 4: extend once more with per-PPEM TT-hinted curves, filled and
-    // stroked paths, and one composite COLR glyph. The core helpers own all
-    // temporary font-atlas packing; only path construction remains local.
+    // Round 4: record per-PPEM TT-hinted curves (advances come along for
+    // free), filled and stroked paths, and one composite COLR glyph. The
+    // core helpers own all temporary font-atlas packing; only path
+    // construction remains local.
     var tt_hint_vm = try snail.TtHintVm.init(allocator, &font);
     defer tt_hint_vm.deinit();
-    var hint_cache = snail.TtHintedGlyphCache.init(allocator, &tt_hint_vm, font_id);
-    defer hint_cache.deinit();
-    try snail.extendTtHintRun(&atlas, allocator, &hint_cache, &shaped, ppem);
+    var prepared = try tt_hint_vm.prepare(snail.TtHintPpem.uniform(ppem));
+    defer prepared.deinit();
+    try snail.recordTtHintRun(&atlas, allocator, &tt_hint_vm, &prepared, font_id, &shaped);
     const path_shapes = try extendWithPaths(allocator, &atlas);
-    try snail.extendUnhintedRun(&atlas, allocator, &faces, &emoji, .{
+    try snail.recordUnhintedRun(&atlas, allocator, &faces, &emoji, .{
         .colr_foreground = .{ 0.18, 0.35, 0.70, 1.0 },
     });
     const colr = try snail.placeRunAlloc(allocator, &emoji, null, .{

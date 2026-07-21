@@ -9,7 +9,7 @@
 //! desktop GL, a 2D `GL_R32UI` texture on GLES 3.0 (no buffer textures there).
 //!
 //! The atlas plane (curve/band arrays) is bound off the same
-//! `*BackendCache` the standard snail passes use, via `embed_gl.*Backend`.
+//! `*DeviceAtlas` the standard snail passes use, via `embed_gl.*Backend`.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -45,9 +45,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             .gles30 => gles_gl,
         };
         pub const Cache = switch (variant) {
-            .gl33 => embed_gl.Gl33BackendCache,
-            .gl44 => embed_gl.Gl44BackendCache,
-            .gles30 => embed_gl.Gles30BackendCache,
+            .gl33 => embed_gl.Gl33DeviceAtlas,
+            .gl44 => embed_gl.Gl44DeviceAtlas,
+            .gles30 => embed_gl.Gles30DeviceAtlas,
         };
         const Backend = switch (variant) {
             .gl33 => embed_gl.Gl33Backend,

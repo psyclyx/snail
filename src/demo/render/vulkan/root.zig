@@ -10,7 +10,7 @@
 //!
 //! It renders into a caller-provided command buffer + render pass; the caller
 //! owns the offscreen/swapchain target, the descriptor set (from
-//! `VulkanBackendCache`), and frame synchronization.
+//! `VulkanDeviceAtlas`), and frame synchronization.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -23,8 +23,8 @@ pub const VulkanContext = @import("vulkan_types").VulkanContext;
 // The caller-side atlas cache + resource layout used to live in Snail's Vulkan module;
 // they're generic GPU machinery, so they're demo (caller) code now. Re-export
 // them so consumers reach the whole embeddable surface via `embed_vulkan`.
-pub const VulkanBackendCache = @import("cache.zig").VulkanBackendCache;
-pub const CacheOptions = @import("cache.zig").CacheOptions;
+pub const VulkanDeviceAtlas = @import("device_atlas.zig").VulkanDeviceAtlas;
+pub const DeviceAtlasOptions = @import("device_atlas.zig").DeviceAtlasOptions;
 pub const VulkanResourceLayout = @import("layout.zig").VulkanResourceLayout;
 const embeddable = @import("resources.zig");
 pub const cachePipelineShape = embeddable.cachePipelineShape;
@@ -175,7 +175,7 @@ pub const Renderer = struct {
     }
 };
 
-/// Create a `VulkanBackendCache` and upload `atlases` via a caller-owned
+/// Create a `VulkanDeviceAtlas` and upload `atlases` via a caller-owned
 /// command buffer submitted on the caller's queue — the §6 queue-decoupled
 /// path. snail only RECORDS the copies (`cachePipelineShapeCallerUpload`); this
 /// helper (the caller) allocates a transient command buffer, ends + submits it
@@ -188,8 +188,8 @@ pub fn cacheWithDecoupledUpload(
     layout: *const VulkanResourceLayout,
     atlases: []const *const snail.Atlas,
     bindings: []snail.render.records.Binding,
-    cache_opts: CacheOptions,
-) !VulkanBackendCache {
+    cache_opts: DeviceAtlasOptions,
+) !VulkanDeviceAtlas {
     const pool = try createTransferPool(ctx);
     defer vk.vkDestroyCommandPool(ctx.device, pool, null);
 
@@ -207,7 +207,7 @@ pub fn cacheWithDecoupledUpload(
     });
     try check(vk.vkBeginCommandBuffer(upload_cmd, &bi));
 
-    var cache = try VulkanBackendCache.init(allocator, page_pool, cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
+    var cache = try VulkanDeviceAtlas.init(allocator, page_pool, cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
     errdefer cache.deinit();
     try cache.upload(allocator, atlases, bindings); // records copies into upload_cmd — no submit
 
@@ -231,7 +231,7 @@ pub fn cacheWithDecoupledUpload(
 }
 
 /// Build a transfer command pool on the graphics queue family — what a
-/// standalone `VulkanBackendCache` needs (see `embeddable.cachePipelineShape`).
+/// standalone `VulkanDeviceAtlas` needs (see `embeddable.cachePipelineShape`).
 pub fn createTransferPool(ctx: VulkanContext) !vk.VkCommandPool {
     const ci = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,

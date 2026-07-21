@@ -1,6 +1,6 @@
 //! Vulkan persistent prepared-pages cache for snail.
 //!
-//! Mirrors `snail-raster.BackendCache` and `GlBackendCache`:
+//! Mirrors `snail-raster.DeviceAtlas` and `GlDeviceAtlas`:
 //! caller-sized capacity, slot allocation via free-list, explicit
 //! `release(binding)`, no auto-grow.
 //!
@@ -51,7 +51,7 @@ const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
 const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
 
-pub const CacheOptions = struct {
+pub const DeviceAtlasOptions = struct {
     max_bindings: u32 = 16,
     layer_info_height: u32 = 64,
     max_images: u32 = 16,
@@ -82,12 +82,12 @@ pub const PipelineShape = struct {
     desc_set_layout: vk.VkDescriptorSetLayout,
 };
 
-pub const VulkanBackendCache = struct {
+pub const VulkanDeviceAtlas = struct {
     const Self = @This();
 
     allocator: std.mem.Allocator,
     pool: *PagePool,
-    options: CacheOptions,
+    options: DeviceAtlasOptions,
     pipeline: PipelineShape,
 
     // Pool-wide resident images.
@@ -147,7 +147,7 @@ pub const VulkanBackendCache = struct {
         memory: vk.VkDeviceMemory,
     };
 
-    fn plannerOptions(options: CacheOptions) upload_plan.Options {
+    fn plannerOptions(options: DeviceAtlasOptions) upload_plan.Options {
         return .{
             .max_bindings = options.max_bindings,
             .layer_info_height = options.layer_info_height,
@@ -157,7 +157,7 @@ pub const VulkanBackendCache = struct {
         };
     }
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: CacheOptions) !Self {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: DeviceAtlasOptions) !Self {
         const opts = plannerOptions(options);
         const sz = upload_plan.sizes(pool, opts);
 
@@ -273,7 +273,7 @@ pub const VulkanBackendCache = struct {
         self.image_array_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
-    pub fn resize(self: *Self, options: CacheOptions) ResizeError!void {
+    pub fn resize(self: *Self, options: DeviceAtlasOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
         self.destroyGpuResources();
         self.options = options;
@@ -349,7 +349,7 @@ pub const VulkanBackendCache = struct {
     }
 
     /// Incrementally update `prev_binding`'s slot with `atlas`'s
-    /// current state. See `GlBackendCache.uploadDelta` for the
+    /// current state. See `GlDeviceAtlas.uploadDelta` for the
     /// contract; this Vulkan implementation queues only the changed
     /// curve / band / layer-info / image regions into a single
     /// `UploadBatch` that's flushed before returning.
@@ -638,7 +638,7 @@ const UploadBatch = struct {
 
 const testing = std.testing;
 
-test "VulkanBackendCache init allocates fixed-capacity slots" {
+test "VulkanDeviceAtlas init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 4,
@@ -654,7 +654,7 @@ test "VulkanBackendCache init allocates fixed-capacity slots" {
         .sampler_linear = null,
         .desc_set_layout = null,
     };
-    var cache = try VulkanBackendCache.init(testing.allocator, pool, zero_pipeline, .{
+    var cache = try VulkanDeviceAtlas.init(testing.allocator, pool, zero_pipeline, .{
         .max_bindings = 3,
         .layer_info_height = 8,
         .max_images = 2,

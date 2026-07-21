@@ -1,6 +1,6 @@
 //! Vulkan counterpart to `screenshot.zig`. Renders the demo scene through the
 //! *embeddable* path — a caller-owned pipeline (`embed_vulkan.Renderer`)
-//! over a standalone `VulkanBackendCache`, with no all-in-one `VulkanRenderer`.
+//! over a standalone `VulkanDeviceAtlas`, with no all-in-one `VulkanRenderer`.
 //! Vulkan-specific orchestration (offscreen frame begin/end) stays here so the
 //! harness module doesn't pull the Vulkan platform import into non-Vulkan builds.
 

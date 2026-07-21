@@ -50,9 +50,6 @@ pub const placedRunShapeCount = run_placement.placedRunShapeCount;
 pub const placeRun = run_placement.placeRun;
 pub const placeRunAlloc = run_placement.placeRunAlloc;
 
-pub const TtHintedGlyphCache = @import("text/tt_hinted_glyph_cache.zig").TtHintedGlyphCache;
-pub const UnhintedGlyphCache = @import("text/unhinted_glyph_cache.zig").UnhintedGlyphCache;
-
 pub const Font = font.Font;
 pub const tt = font.tt;
 
@@ -101,9 +98,11 @@ pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 
 const atlas_populate = @import("atlas/populate.zig");
 pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
-pub const extendUnhintedRun = atlas_populate.extendUnhintedRun;
-pub const extendAutohintRun = atlas_populate.extendAutohintRun;
-pub const extendTtHintRun = atlas_populate.extendTtHintRun;
+pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
+pub const recordAutohintRun = atlas_populate.recordAutohintRun;
+pub const recordTtHintRun = atlas_populate.recordTtHintRun;
+pub const recordTtAdvanceRun = atlas_populate.recordTtAdvanceRun;
+pub const TtAdvanceSource = atlas_populate.TtAdvanceSource;
 
 const shape_mod = @import("draw/shape.zig");
 pub const Shape = shape_mod.Shape;
@@ -168,8 +167,6 @@ test {
     _ = @import("format/abi.zig");
     _ = @import("text/faces.zig");
     _ = @import("text/run_placement.zig");
-    _ = @import("text/tt_hinted_glyph_cache.zig");
-    _ = @import("text/unhinted_glyph_cache.zig");
     _ = shape_mod;
     _ = @import("draw/records.zig");
     _ = @import("draw/emit.zig");

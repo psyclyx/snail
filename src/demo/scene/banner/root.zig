@@ -168,13 +168,25 @@ pub const Assets = struct {
     /// would dangle the moment init returned.
     fonts: []snail.Font,
     paint_image: snail.Image,
-    /// TtHintVm + cache for face 0 (the regular face). Heap-allocated so
-    /// the cache's stable `*TtHintVm` survives the `init` return-by-value.
-    /// `hinted_cache.asAdvanceProvider()` is the right provider to hand
-    /// `snail.shape` for hinted runs; the same VM produces curves for
-    /// the render path via `tryEmitHintedRun`.
+    /// TtHintVm for face 0 (the regular face). Heap-allocated so the
+    /// stable `*TtHintVm` survives the `init` return-by-value. The VM
+    /// produces curves for the render path via `tryEmitHintedRun`; hinted
+    /// shaping advances flow through `advanceProvider()`.
     tt_hint_vm: ?*snail.TtHintVm,
-    hinted_cache: ?snail.TtHintedGlyphCache,
+    /// Font id of face 0, the only hinted face.
+    hint_font_id: u32,
+    /// One `PreparedPpem` per size the banner has hinted at. Caller-owned
+    /// per-ppem VM state; ppems come and go with zoom, so entries are
+    /// created on demand and live until deinit.
+    tt_prepareds: std.AutoHashMapUnmanaged(u32, snail.TtHintVm.PreparedPpem),
+    /// Pool-less record store holding only `ns.tt_advance` values: the
+    /// shaping-time advance memo. `advanceProvider()` reads it and
+    /// `recordShapedAdvances` records into it — measurement records
+    /// without curve pages, exactly the `recordTtAdvanceRun` use case.
+    advance_store: snail.Atlas,
+    /// Scratch slot backing the most recent `advanceProvider()` closure;
+    /// valid until the next call (shape calls are sequential here).
+    advance_source: snail.TtAdvanceSource,
     /// Whether face 0 has hinting available. `false` means the regular
     /// font lacked `fpgm`/`prep`/`cvt` and shape() falls through to
     /// em-space.
@@ -228,7 +240,7 @@ pub const Assets = struct {
         }
 
         // Hint face 0 (regular). Heap-allocate the TtHintVm so
-        // hinted_cache's `*TtHintVm` stays valid across the move return.
+        // the stable `*TtHintVm` survives the move return.
         const tt_hint_vm: ?*snail.TtHintVm = blk: {
             const vm_ptr = allocator.create(snail.TtHintVm) catch break :blk null;
             vm_ptr.* = snail.TtHintVm.init(allocator, &fonts[0]) catch {
@@ -237,24 +249,25 @@ pub const Assets = struct {
             };
             break :blk vm_ptr;
         };
-        const hinted_cache: ?snail.TtHintedGlyphCache = if (tt_hint_vm) |vm_ptr|
-            snail.TtHintedGlyphCache.init(allocator, vm_ptr, faces.fontIdForFace(0))
-        else
-            null;
-
         return .{
             .allocator = allocator,
             .faces = faces,
             .fonts = fonts,
             .paint_image = paint_image,
             .tt_hint_vm = tt_hint_vm,
-            .hinted_cache = hinted_cache,
+            .hint_font_id = faces.fontIdForFace(0),
+            .tt_prepareds = .empty,
+            .advance_store = snail.Atlas.empty(allocator),
+            .advance_source = undefined,
             .has_regular_hinter = tt_hint_vm != null,
         };
     }
 
     pub fn deinit(self: *Assets) void {
-        if (self.hinted_cache) |*c| c.deinit();
+        self.advance_store.deinit();
+        var it = self.tt_prepareds.valueIterator();
+        while (it.next()) |p| p.deinit();
+        self.tt_prepareds.deinit(self.allocator);
         if (self.tt_hint_vm) |vm| {
             vm.deinit();
             self.allocator.destroy(vm);
@@ -265,9 +278,33 @@ pub const Assets = struct {
         self.* = undefined;
     }
 
-    fn advanceProvider(self: *Assets) ?snail.AdvanceProvider {
-        if (self.hinted_cache) |*c| return c.asAdvanceProvider();
-        return null;
+    /// The caller-owned `PreparedPpem` for `ppem_26_6`, running fpgm/prep
+    /// on first use. Null when the font has no hinting or prep fails.
+    fn preparedFor(self: *Assets, ppem_26_6: u32) ?*const snail.TtHintVm.PreparedPpem {
+        const vm = self.tt_hint_vm orelse return null;
+        const gop = self.tt_prepareds.getOrPut(self.allocator, ppem_26_6) catch return null;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch {
+                _ = self.tt_prepareds.remove(ppem_26_6);
+                return null;
+            };
+        }
+        return gop.value_ptr;
+    }
+
+    /// Advance provider for shaping at `ppem_26_6`: reads the assets'
+    /// `ns.tt_advance` store, falling back to the pure VM for glyphs
+    /// not yet recorded.
+    fn advanceProvider(self: *Assets, ppem_26_6: u32) ?snail.AdvanceProvider {
+        const vm = self.tt_hint_vm orelse return null;
+        const prepared = self.preparedFor(ppem_26_6) orelse return null;
+        self.advance_source = .{
+            .atlas = &self.advance_store,
+            .vm = vm,
+            .prepared = prepared,
+            .font_id = self.hint_font_id,
+        };
+        return self.advance_source.advanceProvider();
     }
 
     /// COLR fanout helper: the shaper's fallback faces (arabic..emoji)
@@ -1021,13 +1058,23 @@ const BannerBuilder = struct {
             const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch break :blk null;
             break :blk snail.TtHintPpem.uniform(ppem_26_6);
         } else null;
-        const provider = if (target_ppem != null) self.assets.advanceProvider() else null;
+        const provider = if (target_ppem) |tp| self.assets.advanceProvider(tp.x_26_6) else null;
         var shaped = try snail.shape(self.allocator, &self.assets.faces, string, .{
             .style = style,
             .target_ppem = target_ppem,
             .advance_provider = provider,
         });
         defer shaped.deinit();
+
+        // Record the run's hinted advances into the assets' store so the
+        // next build's shaping reads them instead of re-running the VM.
+        if (target_ppem) |tp| {
+            if (self.assets.tt_hint_vm) |vm| {
+                if (self.assets.preparedFor(tp.x_26_6)) |prepared| {
+                    snail.recordTtAdvanceRun(&self.assets.advance_store, vm, prepared, self.assets.hint_font_id, &shaped) catch {};
+                }
+            }
+        }
 
         var missing_in_run = false;
         for (shaped.glyphs) |g| {
@@ -1240,28 +1287,30 @@ const BannerBuilder = struct {
         placement: Placement,
         color: [4]f32,
     ) !bool {
-        const cache = if (self.assets.hinted_cache) |*c| c else return false;
+        const vm = self.assets.tt_hint_vm orelse return false;
         const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch return false;
-        const ppem = snail.TtHintPpem.uniform(ppem_26_6);
+        const prepared = self.assets.preparedFor(ppem_26_6) orelse return false;
 
-        // Insert curves for every glyph in the run before emitting shapes,
-        // so a mid-run failure leaves the atlas state clean. Curves come
-        // from `TtHintedGlyphCache`, which memoizes per (glyph_id, ppem) —
-        // per-frame rebuilds at the same zoom hit the cache and skip the
-        // TT VM entirely.
+        // Hint curves for every glyph in the run before emitting shapes,
+        // so a mid-run failure leaves the atlas state clean. The batch's
+        // `text_entries` dedup is the only memo needed: builds happen on
+        // invalidation (zoom changes the ppem anyway), and within a build
+        // each (glyph, ppem) hints once.
         for (shaped.glyphs) |g| {
             const key = snail.record_key.ttHintedGlyph(0, g.glyph_id, ppem_26_6);
             if (containsKey(self.text_entries.items, key)) continue;
-            const curves_ptr = cache.getOrInsertCurves(
+            var curves = vm.hintGlyph(
                 self.allocator,
                 self.scratch_arena.allocator(),
+                prepared,
                 g.glyph_id,
-                ppem,
             ) catch return false;
+            errdefer curves.deinit();
             _ = self.scratch_arena.reset(.retain_capacity);
+            try self.text_curves_owned.append(self.allocator, curves);
             try self.text_entries.append(self.allocator, .{
                 .key = key,
-                .curves = curves_ptr.*,
+                .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
             });
         }
 

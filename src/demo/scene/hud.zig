@@ -12,8 +12,9 @@
 //!     encountered (a digit's first appearance) and never resets.
 //!     `Atlas.extend` is HAMT-backed (O(log32 N) per new entry), so
 //!     each frame's extension is cheap.
-//!   - `UnhintedGlyphCache` memoises curve extraction per glyph so a
-//!     digit's curves are decoded once per session.
+//!   - The atlas is also the extraction memo: a glyph is decoded only
+//!     the first time it is missing (extraction lands on the frame
+//!     arena; the atlas copies what it keeps).
 //!   - `ShapedRunCache` memoises `snail.shape` per text string so
 //!     repeat-frame text re-uses the cached `ShapedText`.
 //!   - Per-frame `Picture` building uses the caller-provided frame
@@ -32,7 +33,6 @@ const demo_support = @import("support");
 const Allocator = std.mem.Allocator;
 
 const ShapedRunCache = demo_support.ShapedRunCache;
-const UnhintedGlyphCache = snail.UnhintedGlyphCache;
 
 /// Live state the HUD reads each frame. Strings the caller already
 /// has (backend name, AA label, hint label) come through by slice;
@@ -60,7 +60,7 @@ pub const State = struct {
     stage_loop: []const u8 = "",
 };
 
-/// Long-lived HUD-side resources. The `BackendCache` (per-backend GPU
+/// Long-lived HUD-side resources. The `DeviceAtlas` (per-backend GPU
 /// upload state) is owned by the renderer driver, not here — keeps the
 /// HUD backend-agnostic.
 pub const Overlay = struct {
@@ -74,7 +74,6 @@ pub const Overlay = struct {
     font: *const snail.Font,
 
     shape_cache: ShapedRunCache,
-    glyph_cache: UnhintedGlyphCache,
     atlas: snail.Atlas,
     /// Buffer reused for FPS string formatting (avoids alloc).
     fps_buf: [16]u8,
@@ -95,7 +94,6 @@ pub const Overlay = struct {
             .font_id = font_id,
             .font = face.font,
             .shape_cache = ShapedRunCache.init(allocator),
-            .glyph_cache = UnhintedGlyphCache.init(allocator, face.font),
             .atlas = snail.Atlas.empty(allocator),
             .fps_buf = undefined,
         };
@@ -103,7 +101,6 @@ pub const Overlay = struct {
 
     pub fn deinit(self: *Overlay) void {
         self.atlas.deinit();
-        self.glyph_cache.deinit();
         self.shape_cache.deinit();
         self.* = undefined;
     }
@@ -112,7 +109,7 @@ pub const Overlay = struct {
     ///
     /// On return:
     ///   - `self.atlas` has been extended with any glyphs the picture
-    ///     needs. Caller passes `self.atlas` to its `BackendCache` and
+    ///     needs. Caller passes `self.atlas` to its `DeviceAtlas` and
     ///     emits against the returned `Picture`.
     ///   - The returned `Picture` is owned by `frame_alloc`. Caller
     ///     calls `picture.deinit()` when done with the frame.
@@ -220,8 +217,7 @@ pub const Overlay = struct {
             if (containsKey(entries_buf[0..n], key)) continue;
             if (n >= max_new) break;
 
-            const curves_cached = try self.glyph_cache.getOrInsert(self.allocator, scratch_alloc, g.glyph_id);
-            curves_buf[n] = curves_cached.*;
+            curves_buf[n] = try self.font.extractCurves(scratch_alloc, scratch_alloc, g.glyph_id);
             entries_buf[n] = .{ .key = key, .curves = curves_buf[n] };
             n += 1;
         }

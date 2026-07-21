@@ -8,17 +8,17 @@
 //! `hintGlyph` is a function of `(prepared, glyph_id)` — a glyph program's
 //! rare CVT/storage write is copy-on-write-scoped to the call, so `prepared`
 //! is never mutated. That makes the output safe to memoize and lets the caller
-//! own the `Prepared`-per-ppem cache (see `snail.TtHintedGlyphCache`). The VM
+//! own the `PreparedPpem`s (a map of them, or just one for a single active size). The VM
 //! itself holds no per-ppem state — only reusable per-font scratch and a
 //! ppem-independent parsed-outline cache, both created lazily. This is the
 //! deliberate absence of the "one justified exception" cache: hinting stays
 //! pure, and the state that used to live here is now an explicit value.
 //!
 //! `TtHintVmStats` reports just the reusable scratch footprint + parsed-outline
-//! count; per-ppem accounting belongs to whoever caches the `Prepared`s.
+//! count; per-ppem accounting belongs to whoever caches the `PreparedPpem`s.
 //!
 //! Thread safety: not thread-safe (the reusable scratch is shared across
-//! calls). Construct one `TtHintVm` per thread; `Prepared` values are immutable
+//! calls). Construct one `TtHintVm` per thread; `PreparedPpem` values are immutable
 //! and safe to hold, but hinting from one requires that thread's `TtHintVm`.
 
 const std = @import("std");
@@ -130,14 +130,14 @@ pub const TtHintVm = struct {
     program: tt_vm.Program,
     /// Per-font reusable scratch + parsed-outline cache. Created lazily so the
     /// internal `*Program` binds to a stable `&self.program`. No per-ppem state
-    /// lives here — that's `Prepared`, produced by `prepare` and owned (and
+    /// lives here — that's `PreparedPpem`, produced by `prepare` and owned (and
     /// cached) by the caller. So the VM is pure: `hintGlyph` is a function of
     /// `(prepared, glyph_id)`, and its output is safe to memoize.
     machine: ?*tt_hint.HintMachine = null,
     topology: ?*tt_hint.GlyphTopologyCache = null,
 
     /// Immutable per-ppem state (the fpgm/prep result). Cache one per ppem.
-    pub const Prepared = tt_hint.Prepared;
+    pub const PreparedPpem = tt_hint.Prepared;
 
     /// Inspect a font for hinting support. Returns `error.NoHinting` if the
     /// font has no `fpgm`/`prep`/`cvt` bytecode tables — the caller falls
@@ -177,14 +177,14 @@ pub const TtHintVm = struct {
 
     /// Run fpgm/prep at `ppem` and return the immutable per-ppem state. The
     /// caller owns it — cache it and `deinit` it. Expensive (thousands of
-    /// cycles); amortize by caching per ppem (see `snail.TtHintedGlyphCache`).
-    pub fn prepare(self: *TtHintVm, ppem: TtHintPpem) TtHintError!Prepared {
+    /// cycles); amortize by holding one per active ppem.
+    pub fn prepare(self: *TtHintVm, ppem: TtHintPpem) TtHintError!PreparedPpem {
         try self.ensureScratch();
         return self.machine.?.prepare(self.allocator, .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 }, .{});
     }
 
     /// Hinted horizontal advance (26.6 px) for `glyph_id` from `prepared`.
-    pub fn hintedAdvance(self: *TtHintVm, prepared: *const Prepared, glyph_id: u16) TtHintError!i32 {
+    pub fn hintedAdvance(self: *TtHintVm, prepared: *const PreparedPpem, glyph_id: u16) TtHintError!i32 {
         try self.ensureScratch();
         return self.machine.?.glyphAdvanceX26Dot6(prepared, self.topology.?, glyph_id);
     }
@@ -199,7 +199,7 @@ pub const TtHintVm = struct {
         self: *TtHintVm,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
-        prepared: *const Prepared,
+        prepared: *const PreparedPpem,
         glyph_id: u16,
     ) TtHintError!curves_mod.GlyphCurves {
         try self.ensureScratch();
@@ -255,7 +255,7 @@ pub const TtHintVm = struct {
     }
 
     /// Footprint of the reusable scratch + parsed-outline cache (not the
-    /// caller-owned `Prepared`s). For memory budgeting.
+    /// caller-owned `PreparedPpem`s). For memory budgeting.
     pub fn stats(self: *const TtHintVm) TtHintVmStats {
         return .{
             .scratch_bytes = if (self.machine) |m| m.byteSize() else 0,
@@ -342,7 +342,7 @@ test "TtHintVm produces GlyphCurves for a hinted glyph" {
     try testing.expect(curves.h_band_count > 0);
 }
 
-test "TtHintVm is pure: one Prepared hints many glyphs, output is stable" {
+test "TtHintVm is pure: one PreparedPpem hints many glyphs, output is stable" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
@@ -352,7 +352,7 @@ test "TtHintVm is pure: one Prepared hints many glyphs, output is stable" {
     var prepared = try hinter.prepare(TtHintPpem.uniform(12 * 64));
     defer prepared.deinit();
 
-    // Hinting 'A' then 'B' then 'A' again from the SAME const Prepared must be
+    // Hinting 'A' then 'B' then 'A' again from the SAME const PreparedPpem must be
     // deterministic — the second 'A' matches the first, proving no cross-glyph
     // state leaked (which is what makes the output safe to cache).
     var a0 = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, try font.glyphIndex('A'));

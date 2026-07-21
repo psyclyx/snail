@@ -34,8 +34,8 @@ test "external renderers need only the public snail api" {
         if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
 
         _ = raster.Renderer;
-        _ = raster.BackendCache;
-        _ = raster.CacheOptions;
+        _ = raster.DeviceAtlas;
+        _ = raster.DeviceAtlasOptions;
         _ = raster.UploadError;
         _ = raster.ResizeError;
         _ = raster.ThreadPool;
