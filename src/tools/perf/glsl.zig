@@ -544,12 +544,12 @@ const GpuAtlas = struct {
             .curve => {
                 c.glActiveTexture(c.GL_TEXTURE0);
                 c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, 0, @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RGBA, c.GL_HALF_FLOAT, region.src.ptr);
+                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RGBA, c.GL_HALF_FLOAT, region.src.ptr);
             },
             .band => {
                 c.glActiveTexture(c.GL_TEXTURE1);
                 c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, 0, @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, region.src.ptr);
+                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, region.src.ptr);
             },
             .layer_info => {
                 c.glActiveTexture(c.GL_TEXTURE2);

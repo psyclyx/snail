@@ -30,15 +30,17 @@ pub const INFO_WIDTH: u32 = paint_records.info_width;
 pub const Target = enum { curve, band, layer_info, image };
 
 /// One texel copy the caller must apply to its own texture. `src` are the
-/// source bytes (curve/band: whole rows of the page plane; layer_info: the
-/// f32 slab as bytes; image: RGBA8 pixels). `layer` is the destination
-/// array layer (curve/band/image). `row_base` is the destination y row:
-/// page-local for curve/band (deltas re-upload only the grown row band of
-/// an append-only page), absolute (the binding's slot) for layer_info.
+/// packed source bytes for exactly `width * height` texels. `layer` is the
+/// destination array layer (curve/band/image). `(col_base, row_base)` is
+/// the destination texel origin: page-local for curve/band (deltas
+/// re-upload only the grown texel span of an append-only page, split into
+/// at most a partial head row, full middle rows, and a partial tail row),
+/// absolute (the binding's slot rows) for layer_info.
 pub const Region = struct {
     target: Target,
     layer: u32 = 0,
     row_base: u32 = 0,
+    col_base: u32 = 0,
     src: []const u8,
     width: u32,
     height: u32,
@@ -96,7 +98,9 @@ pub fn sizes(pool: *const PagePool, opts: Options) Sizes {
         // First-fit free-list fragments to at most one span per binding, +1.
         .info_free = opts.max_bindings + 1,
         .image_free = opts.max_bindings + 1,
-        .regions = @as(usize, pool.options.max_layers) * 2 + 1 + opts.max_images,
+        // Up to 3 regions per plane per page (partial head row, full middle
+        // rows, partial tail row).
+        .regions = @as(usize, pool.options.max_layers) * 6 + 1 + opts.max_images,
         // layer_info is RGBA32F — 4 f32 per INFO_WIDTH texel. `layer_info_data`
         // is `INFO_WIDTH * height * 4` floats, and `plan` memcpys the whole slab
         // into this scratch, so it must be 4× the texel count (not ×1).
@@ -180,6 +184,10 @@ pub const Slot = struct {
     info_height: u32 = 0,
     image_layer_base: u32 = 0,
     image_count: u32 = 0,
+    /// Layer-info rows already uploaded for this binding. The slab is
+    /// append-only and row-aligned across `Atlas.extend` (each snapshot
+    /// pads to whole rows), so deltas upload only rows past this mark.
+    uploaded_info_rows: u32 = 0,
 };
 
 /// Caller-owned planning state. Backing slices are the caller's; `Planner` never
@@ -316,6 +324,7 @@ pub const Planner = struct {
         @memset(self.prepared_generation, 0);
         @memset(self.prepared_curve_words, 0);
         @memset(self.prepared_band_words, 0);
+        for (self.bindings) |*slot| slot.uploaded_info_rows = 0;
     }
 
     fn queue(self: *Planner, atlas: *const Atlas, slot: *Slot, out: []Region, out_len: *usize, layer_info_scratch: []f32) Error!void {
@@ -329,7 +338,7 @@ pub const Planner = struct {
             const stale = self.prepared_generation[layer] != p.currentGeneration() or
                 p.curve.usedWords() != self.prepared_curve_words[layer] or
                 p.band.usedWords() != self.prepared_band_words[layer];
-            if (stale) region_count += 2;
+            if (stale) region_count += 6;
         }
         if (atlas.paint_image_records) |records| {
             for (records, 0..) |maybe_rec, i| {
@@ -354,15 +363,15 @@ pub const Planner = struct {
             if (!stale) continue;
             self.prepared_generation[layer] = cur_gen;
 
-            // Pages are append-only, so within a generation only the rows
-            // from the previous watermark onward can have changed; a
-            // generation change (fresh or reused page) re-uploads from row
-            // zero. The watermark's boundary row re-uploads whole — its
-            // prefix is immutable, so rewriting it is redundant, never wrong.
+            // Pages are append-only, so within a generation only the words
+            // past the previous watermark can have changed; a generation
+            // change (fresh or reused page) re-uploads from word zero. The
+            // watermark's boundary texel re-uploads whole — its prefix is
+            // immutable, so rewriting it is redundant, never wrong.
             const curve_from: u32 = if (gen_match) @min(self.prepared_curve_words[layer], cur_curve) else 0;
             const band_from: u32 = if (gen_match) @min(self.prepared_band_words[layer], cur_band) else 0;
-            try emitPageTail(out, out_len, .curve, layer, p.curve.data, CURVE_TEX_WIDTH * 4, CURVE_TEX_WIDTH, curve_from, cur_curve);
-            try emitPageTail(out, out_len, .band, layer, p.band.data, BAND_TEX_WIDTH * 2, BAND_TEX_WIDTH, band_from, cur_band);
+            try emitPlaneTail(out, out_len, .curve, layer, p.curve.data, 4, CURVE_TEX_WIDTH, curve_from, cur_curve);
+            try emitPlaneTail(out, out_len, .band, layer, p.band.data, 2, BAND_TEX_WIDTH, band_from, cur_band);
             self.prepared_curve_words[layer] = cur_curve;
             self.prepared_band_words[layer] = cur_band;
         }
@@ -395,38 +404,87 @@ pub const Planner = struct {
         }
 
         if (atlas.layer_info_height > 0) {
-            const info_bytes = info_dst.len * @sizeOf(f32);
-            try emitRegion(out, out_len, .{ .target = .layer_info, .row_base = slot.info_row_base, .src = @as([*]const u8, @ptrCast(info_dst.ptr))[0..info_bytes], .width = INFO_WIDTH, .height = atlas.layer_info_height });
+            // The slab is append-only and row-aligned across `Atlas.extend`
+            // (snapshots pad to whole rows), so re-upload only rows past
+            // this binding's watermark. A shrunken slab means the binding
+            // was replanned against a different lineage: upload everything.
+            const from_row = if (slot.uploaded_info_rows <= atlas.layer_info_height) slot.uploaded_info_rows else 0;
+            if (atlas.layer_info_height > from_row) {
+                const row_floats = @as(usize, INFO_WIDTH) * 4;
+                const src_floats = info_dst[from_row * row_floats .. @as(usize, atlas.layer_info_height) * row_floats];
+                try emitRegion(out, out_len, .{
+                    .target = .layer_info,
+                    .row_base = slot.info_row_base + from_row,
+                    .src = @as([*]const u8, @ptrCast(src_floats.ptr))[0 .. src_floats.len * @sizeOf(f32)],
+                    .width = INFO_WIDTH,
+                    .height = atlas.layer_info_height - from_row,
+                });
+            }
+            slot.uploaded_info_rows = atlas.layer_info_height;
         }
     }
 
-    /// Emit the changed row band of one append-only page plane: the rows
-    /// spanning words `[from, to)`. No-op when the plane hasn't grown
-    /// (e.g. only the sibling plane changed).
-    fn emitPageTail(
+    /// Emit the changed texel span of one append-only page plane — words
+    /// `[from, to)` rounded out to whole texels — as at most three packed
+    /// regions: a partial head row, full middle rows, and a partial tail
+    /// row. No-op when the plane hasn't grown (e.g. only the sibling plane
+    /// changed).
+    fn emitPlaneTail(
         out: []Region,
         out_len: *usize,
         target: Target,
         layer: u32,
         data: []const page_mod.Word,
-        row_words: u32,
-        width: u32,
+        words_per_texel: u32,
+        tex_width: u32,
         from: u32,
         to: u32,
     ) Error!void {
         if (to <= from) return;
-        const row_base = from / row_words;
-        const row_end = (to + row_words - 1) / row_words;
-        const byte_base = @as(usize, row_base) * row_words * @sizeOf(page_mod.Word);
-        const byte_end = @as(usize, row_end) * row_words * @sizeOf(page_mod.Word);
-        try emitRegion(out, out_len, .{
-            .target = target,
-            .layer = layer,
-            .row_base = row_base,
-            .src = @as([*]const u8, @ptrCast(data.ptr))[byte_base..byte_end],
-            .width = width,
-            .height = row_end - row_base,
-        });
+        const texel_from = from / words_per_texel;
+        const texel_to = (to + words_per_texel - 1) / words_per_texel;
+
+        const emitSpan = struct {
+            fn f(o: []Region, len: *usize, t: Target, l: u32, d: []const page_mod.Word, wpt: u32, first: u32, count_texels: u32, col: u32, row: u32, w: u32, h: u32) Error!void {
+                const byte_base = @as(usize, first) * wpt * @sizeOf(page_mod.Word);
+                const byte_len = @as(usize, count_texels) * wpt * @sizeOf(page_mod.Word);
+                try emitRegion(o, len, .{
+                    .target = t,
+                    .layer = l,
+                    .row_base = row,
+                    .col_base = col,
+                    .src = @as([*]const u8, @ptrCast(d.ptr))[byte_base .. byte_base + byte_len],
+                    .width = w,
+                    .height = h,
+                });
+            }
+        }.f;
+
+        const first_row = texel_from / tex_width;
+        const last_row = (texel_to - 1) / tex_width;
+        const col0 = texel_from % tex_width;
+
+        if (first_row == last_row) {
+            try emitSpan(out, out_len, target, layer, data, words_per_texel, texel_from, texel_to - texel_from, col0, first_row, texel_to - texel_from, 1);
+            return;
+        }
+
+        var mid_start_row = first_row;
+        if (col0 != 0) {
+            const head_texels = tex_width - col0;
+            try emitSpan(out, out_len, target, layer, data, words_per_texel, texel_from, head_texels, col0, first_row, head_texels, 1);
+            mid_start_row += 1;
+        }
+        const tail_texels = texel_to - last_row * tex_width;
+        const mid_end_row = if (tail_texels == tex_width) last_row + 1 else last_row;
+        if (mid_end_row > mid_start_row) {
+            const mid_first = mid_start_row * tex_width;
+            const mid_count = (mid_end_row - mid_start_row) * tex_width;
+            try emitSpan(out, out_len, target, layer, data, words_per_texel, mid_first, mid_count, 0, mid_start_row, tex_width, mid_end_row - mid_start_row);
+        }
+        if (tail_texels != tex_width) {
+            try emitSpan(out, out_len, target, layer, data, words_per_texel, last_row * tex_width, tail_texels, 0, last_row, tail_texels, 1);
+        }
     }
 
     fn findFreeBinding(self: *Planner) ?u32 {
@@ -748,22 +806,34 @@ test "planDelta uploads only the grown row band of an append-only page" {
     });
     defer planner.deinit();
 
-    // Fresh plan: curve upload starts at row 0 and covers both used rows.
+    // Fresh plan: the big glyph spans a full first row plus a partial
+    // second row — one full-width region and one partial tail row.
     const first = try planner.plan(&atlas);
-    var found_curve = false;
+    var full_rows: usize = 0;
+    var tails: usize = 0;
     for (first.regions) |r| {
         if (r.target != .curve) continue;
-        found_curve = true;
-        try std.testing.expectEqual(@as(u32, 0), r.row_base);
-        try std.testing.expectEqual(@as(u32, 2), r.height);
+        if (r.width == CURVE_TEX_WIDTH) {
+            full_rows += 1;
+            try std.testing.expectEqual(@as(u32, 0), r.row_base);
+            try std.testing.expectEqual(@as(u32, 0), r.col_base);
+            try std.testing.expectEqual(@as(u32, 1), r.height);
+        } else {
+            tails += 1;
+            try std.testing.expectEqual(@as(u32, 1), r.row_base);
+            try std.testing.expectEqual(@as(u32, 0), r.col_base);
+            try std.testing.expectEqual(@as(u32, 128 * 4), r.width); // 128 segments * 4 texels
+        }
     }
-    try std.testing.expect(found_curve);
+    try std.testing.expectEqual(@as(usize, 1), full_rows);
+    try std.testing.expectEqual(@as(usize, 1), tails);
 
     // Unchanged replan: nothing to upload.
     const unchanged = try planner.planDelta(first.binding, &atlas);
     try std.testing.expectEqual(@as(usize, 0), unchanged.regions.len);
 
-    // Append a small glyph: only the boundary row re-uploads, not the page.
+    // Append a small glyph: only its texel span re-uploads — a sub-row
+    // rectangle, not the page and not even a full row.
     var small = try Synthetic.curves(allocator, 8);
     defer small.deinit();
     try atlas.extendInPlace(allocator, &.{
@@ -776,17 +846,87 @@ test "planDelta uploads only the grown row band of an append-only page" {
             .curve => {
                 curve_regions += 1;
                 try std.testing.expectEqual(@as(u32, 1), r.row_base);
+                try std.testing.expectEqual(@as(u32, 128 * 4), r.col_base);
+                try std.testing.expectEqual(@as(u32, 8 * 4), r.width); // 8 segments
                 try std.testing.expectEqual(@as(u32, 1), r.height);
-                try std.testing.expectEqual(@as(usize, curve_row_words) * 2, r.src.len);
+                try std.testing.expectEqual(@as(usize, 8 * 4 * 4) * 2, r.src.len);
             },
             .band => {
-                // Band watermark is still inside row 0.
+                // Band watermark: 8 words already resident, 8 appended.
                 try std.testing.expectEqual(@as(u32, 0), r.row_base);
+                try std.testing.expectEqual(@as(u32, 4), r.col_base);
+                try std.testing.expectEqual(@as(u32, 4), r.width);
                 try std.testing.expectEqual(@as(u32, 1), r.height);
             },
             else => {},
         }
     }
     try std.testing.expectEqual(@as(usize, 1), curve_regions);
+    try std.testing.expect(planner.release(first.binding));
+}
+
+test "planDelta uploads only appended layer-info rows" {
+    const allocator = std.testing.allocator;
+    var pool = try PagePool.init(allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = CURVE_TEX_WIDTH * 4,
+        .band_words_per_page = BAND_TEX_WIDTH * 2,
+    });
+    defer pool.deinit();
+
+    const path_mod = @import("../path.zig");
+    var path = path_mod.Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = 0, .y = 0, .w = 1, .h = 1 });
+    var prepared_path = try path.prepare(allocator);
+    defer prepared_path.deinit();
+    var curves = try prepared_path.fillCurves(allocator, allocator);
+    defer curves.deinit();
+
+    const record_key = @import("record_key.zig");
+    var atlas = try Atlas.from(allocator, pool, &.{.{
+        .key = .{ .namespace = record_key.ns.path_fill, .a = 1 },
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 0, 0, 1 } },
+    }});
+    defer atlas.deinit();
+
+    var planner = try OwnedPlanner.init(allocator, pool, .{
+        .max_bindings = 1,
+        .layer_info_height = 4,
+        .max_images = 0,
+        .max_image_width = 0,
+        .max_image_height = 0,
+    });
+    defer planner.deinit();
+
+    const first = try planner.plan(&atlas);
+    var info_rows_first: u32 = 0;
+    for (first.regions) |r| {
+        if (r.target == .layer_info) {
+            try std.testing.expectEqual(@as(u32, 0), r.row_base);
+            info_rows_first = r.height;
+        }
+    }
+    try std.testing.expectEqual(@as(u32, 1), info_rows_first);
+
+    // Page growth without new side records: the resident layer-info rows
+    // are past the binding's watermark, so no info region is emitted at
+    // all (previously every delta re-uploaded the whole slab). Info
+    // *growth* exceeds the slot's exact-size reservation and still takes
+    // the documented release + replan path.
+    var more = try prepared_path.fillCurves(allocator, allocator);
+    defer more.deinit();
+    try atlas.extendInPlace(allocator, &.{.{
+        .key = record_key.unhintedGlyph(0, 7),
+        .curves = more,
+    }});
+    const delta = try planner.planDelta(first.binding, &atlas);
+    var saw_pages = false;
+    for (delta.regions) |r| {
+        try std.testing.expect(r.target != .layer_info);
+        if (r.target == .curve or r.target == .band) saw_pages = true;
+    }
+    try std.testing.expect(saw_pages);
     try std.testing.expect(planner.release(first.binding));
 }

@@ -488,8 +488,8 @@ pub const VulkanDeviceAtlas = struct {
 
     fn appendRegions(scratch: std.mem.Allocator, batch: *UploadBatch, regions: []const upload_plan.Region) UploadError!void {
         for (regions) |r| switch (r.target) {
-            .curve => try batch.curve_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .row_base = r.row_base, .width = r.width, .height = r.height }),
-            .band => try batch.band_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .row_base = r.row_base, .width = r.width, .height = r.height }),
+            .curve => try batch.curve_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
+            .band => try batch.band_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
             .image => try batch.image_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .width = r.width, .height = r.height }),
             .layer_info => try batch.layer_info_ops.append(scratch, .{ .src = r.src, .row_base = r.row_base, .width = r.width, .height = r.height }),
         };
@@ -546,7 +546,7 @@ pub const VulkanDeviceAtlas = struct {
             const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
                 .bufferOffset = @as(vk.VkDeviceSize, @intCast(op.staging_offset)),
                 .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = op.layer, .layerCount = 1 },
-                .imageOffset = vk.VkOffset3D{ .x = 0, .y = @intCast(op.row_base), .z = 0 },
+                .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
                 .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
             });
             vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -555,7 +555,7 @@ pub const VulkanDeviceAtlas = struct {
             const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
                 .bufferOffset = @as(vk.VkDeviceSize, @intCast(op.staging_offset)),
                 .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = op.layer, .layerCount = 1 },
-                .imageOffset = vk.VkOffset3D{ .x = 0, .y = @intCast(op.row_base), .z = 0 },
+                .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
                 .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
             });
             vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -572,7 +572,7 @@ pub const VulkanDeviceAtlas = struct {
             const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
                 .bufferOffset = @as(vk.VkDeviceSize, @intCast(op.staging_offset)),
                 .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = 0, .layerCount = 1 },
-                .imageOffset = vk.VkOffset3D{ .x = 0, .y = @intCast(op.row_base), .z = 0 },
+                .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
                 .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
             });
             vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.layer_info_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
@@ -612,6 +612,7 @@ const ArrayCopyOp = struct {
     src: []const u8,
     layer: u32,
     row_base: u32 = 0,
+    col_base: u32 = 0,
     width: u32,
     height: u32,
     staging_offset: usize = 0,
@@ -620,6 +621,7 @@ const ArrayCopyOp = struct {
 const LayerInfoCopyOp = struct {
     src: []const u8,
     row_base: u32,
+    col_base: u32 = 0,
     width: u32,
     height: u32,
     staging_offset: usize = 0,
