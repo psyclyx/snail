@@ -95,6 +95,7 @@ pub const AtlasLayer = atlas_mod.Layer;
 pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
+pub const RecordFilter = atlas_mod.RecordFilter;
 
 const atlas_populate = @import("atlas/populate.zig");
 pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;

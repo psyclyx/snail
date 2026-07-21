@@ -6,6 +6,10 @@
 //! `Atlas.extendInPlace`. Recording is idempotent — existing keys are
 //! skipped — so repeat calls over the same run are cheap. They do not shape
 //! or place text.
+//!
+//! Recording fails with `error.OutOfLayers` when the `PagePool` budget is
+//! exhausted — see the capacity model notes on `Atlas` for the eviction
+//! recipe (`compact` + `RecordFilter`).
 
 const std = @import("std");
 const atlas_mod = @import("../atlas.zig");

@@ -789,6 +789,131 @@ test "cubic stroke has no detached coverage island near its start cap" {
     try testing.expect(worst < 0.01);
 }
 
+test "compact preserves rendering byte-for-byte across record kinds" {
+    const allocator = testing.allocator;
+    const emit_mod = @import("snail").emit;
+    const record_key_mod = @import("snail").record_key;
+
+    const W: u32 = 128;
+    const H: u32 = 48;
+    const STRIDE: u32 = W * 4;
+
+    var font = try snail.Font.init(@import("assets").dejavu_sans_mono);
+    var emoji_font = try snail.Font.init(@import("assets").twemoji_mozilla);
+    var faces = try snail.Faces.build(allocator, &.{
+        .{ .font = &font },
+        .{ .font = &emoji_font, .fallback = true },
+    });
+    defer faces.deinit();
+    var shaped = try snail.shape(allocator, &faces, "Ab\xf0\x9f\x8c\x8d", .{});
+    var shaped_latin = try snail.shape(allocator, &faces, "Ab", .{});
+    defer shaped.deinit();
+    defer shaped_latin.deinit();
+
+    var pool = try @import("snail").PagePool.init(allocator, .{
+        .max_layers = 8,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    // Record every kind: unhinted + COLR, autohint analysis, TT-hinted
+    // curves + advances.
+    var atlas = @import("snail").Atlas.init(allocator, pool);
+    defer atlas.deinit();
+    try @import("snail").recordUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
+    var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, @import("assets").dejavu_sans_mono);
+    defer analyzer.deinit();
+    try @import("snail").recordAutohintRun(&atlas, allocator, &analyzer, 0, &shaped_latin);
+    var vm = try snail.TtHintVm.init(allocator, &font);
+    defer vm.deinit();
+    var prepared = try vm.prepare(snail.TtHintPpem.uniform(13 * 64));
+    defer prepared.deinit();
+    try @import("snail").recordTtHintRun(&atlas, allocator, &vm, &prepared, 0, &shaped_latin);
+
+    const policy: snail.autohint.AutohintPolicy = .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones },
+    };
+    const unhinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
+        .baseline = .{ .x = 4, .y = 16 },
+        .em = 13,
+        .color = .{ 1, 1, 1, 1 },
+        .mode = .unhinted,
+    });
+    defer allocator.free(unhinted);
+    const autohinted = try snail.placeRunAlloc(allocator, &shaped_latin, null, .{
+        .baseline = .{ .x = 4, .y = 30 },
+        .em = 13,
+        .color = .{ 1, 1, 0.5, 1 },
+        .mode = .{ .autohint = policy },
+    });
+    defer allocator.free(autohinted);
+    const tt_hinted = try snail.placeRunAlloc(allocator, &shaped_latin, null, .{
+        .baseline = .{ .x = 4, .y = 44 },
+        .em = 13,
+        .color = .{ 0.5, 1, 1, 1 },
+        .mode = .{ .tt_hint = .{ .ppem_26_6 = 13 * 64 } },
+    });
+    defer allocator.free(tt_hinted);
+    _ = record_key_mod;
+
+    const Render = struct {
+        fn frame(
+            alloc: std.mem.Allocator,
+            target_pool: *@import("snail").PagePool,
+            target_atlas: *const @import("snail").Atlas,
+            shape_runs: []const []const @import("snail").Shape,
+            pixels: []u8,
+        ) !void {
+            var cache = try DeviceAtlas.init(alloc, target_pool, .{ .max_bindings = 1, .layer_info_height = 32, .max_images = 0 });
+            defer cache.deinit();
+            var bindings: [1]Binding = undefined;
+            try cache.upload(alloc, &.{target_atlas}, &bindings);
+
+            var total: usize = 0;
+            for (shape_runs) |run| total += run.len;
+            const instances = try alloc.alloc(vertex.Instance, total);
+            defer alloc.free(instances);
+            const batches = try alloc.alloc(draw_records.DrawBatch, total);
+            defer alloc.free(batches);
+            var ilen: usize = 0;
+            var blen: usize = 0;
+            for (shape_runs) |run| {
+                _ = try emit_mod.emit(instances, batches, &ilen, &blen, bindings[0], target_atlas, run, .identity, .{ 1, 1, 1, 1 });
+            }
+
+            @memset(pixels, 0);
+            var renderer = @import("renderer.zig").Renderer.init(pixels.ptr, 128, 48, 128 * 4);
+            try draw(&renderer, makeIdentityState(128, 48), .{
+                .instances = instances[0..ilen],
+                .batches = batches[0..blen],
+            }, &.{&cache}, null);
+        }
+    };
+
+    const runs = [_][]const @import("snail").Shape{ unhinted, autohinted, tt_hinted };
+    const pixels_before = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(pixels_before);
+    try Render.frame(allocator, pool, &atlas, &runs, pixels_before);
+
+    var compacted = try atlas.compact(allocator, allocator, null);
+    defer compacted.deinit();
+    const pixels_after = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(pixels_after);
+    try Render.frame(allocator, pool, &compacted, &runs, pixels_after);
+
+    var any_drawn = false;
+    for (pixels_before) |b| {
+        if (b != 0) {
+            any_drawn = true;
+            break;
+        }
+    }
+    try testing.expect(any_drawn);
+    try testing.expectEqualSlices(u8, pixels_before, pixels_after);
+}
+
 fn makeIdentityState(w: u32, h: u32) render_state.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);

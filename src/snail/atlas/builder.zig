@@ -571,7 +571,257 @@ pub const Builder = struct {
             total_layers,
         );
     }
+
+    // ── Byte-exact record copy (compaction) ──────────────────────────────
+    //
+    // `Atlas.compact` re-inserts records from an existing atlas. Payloads
+    // (paint texels, autohint features, curve/band bytes) are carried
+    // bit-for-bit; only placement-dependent band locations are rewritten.
+    // Nothing is decoded back to caller types — paint colors are already
+    // stored linear, so a decode/re-encode round trip would drift.
+
+    /// Copy `key`'s record (geometry + any side records) from `src` into
+    /// this builder with full fidelity. A kept autohint record copies its
+    /// base glyph implicitly (dependency closure) and re-aliases it rather
+    /// than duplicating curves. Idempotent per key.
+    pub fn insertCopied(
+        self: *Builder,
+        src: *const Atlas,
+        key: RecordKey,
+        scratch: std.mem.Allocator,
+    ) InsertError!void {
+        if (self.lookup.contains(key)) return;
+        const rec = src.lookup.get(key) orelse return;
+
+        // Aliased autohint analysis: bring the base along, re-alias, and
+        // re-encode the analysis read straight off the source slab (the
+        // read/write pair is a bit-exact round trip).
+        if (key.namespace == record_key_mod.ns.autohint_glyph) {
+            if (src.autohint_lookup.get(key)) |info| {
+                const base_key = record_key_mod.unhintedGlyph(key.a, @intCast(key.b));
+                try self.insertCopied(src, base_key, scratch);
+                const base_rec = self.lookup.get(base_key) orelse return error.MissingAutohintBase;
+                try self.lookupPut(key, base_rec);
+                const slab = src.layer_info_data.?;
+                const off = (@as(usize, info.info_y) * paint_records.info_width + info.info_x) * 4;
+                try self.insertAutohintRecord(key, base_rec.bands, .{
+                    .font = autohint_format.fontFeatures(slab, off),
+                    .glyph = .{
+                        .x = autohint_format.xFeatures(slab, off),
+                        .y = autohint_format.yFeatures(slab, off),
+                        .left = autohint_format.glyphLeft(slab, off),
+                    },
+                });
+                return;
+            }
+            // Empty autohint record (whitespace): plain empty-record copy.
+        }
+
+        if (rec.curve_count == 0) {
+            try self.lookupPut(key, rec);
+            return;
+        }
+
+        const src_page = src.pages[rec.page_index];
+        const placement = try self.repackRecordGeometry(src_page, rec, scratch);
+        var new_rec = rec;
+        new_rec.page_index = placement.page_index;
+        new_rec.page_generation = placement.page_generation;
+        new_rec.curve_texel = placement.curve_texel;
+        new_rec.bands = placement.bands;
+        try self.lookupPut(key, new_rec);
+
+        if (key.namespace == record_key_mod.ns.tt_hinted_glyph) {
+            try self.insertTtHintedRecord(key, placement.bands);
+        }
+
+        if (src.paint_lookup.get(key)) |paint_info| {
+            try self.copyPaintSide(src, src_page, key, paint_info, placement.bands, scratch);
+        }
+    }
+
+    /// Extract one record's curve/band bytes from its source page and
+    /// place them on this builder's pages.
+    fn repackRecordGeometry(
+        self: *Builder,
+        src_page: *const AtlasPage,
+        rec: AtlasRecord,
+        scratch: std.mem.Allocator,
+    ) InsertError!Placement {
+        const band_words_total = bandWordsForRecordIncludingRefs(src_page, rec);
+        const local_band = try scratch.alloc(u16, band_words_total);
+        defer scratch.free(local_band);
+        extractAndLocalizeBand(src_page, rec, local_band);
+
+        const curve_words: u32 = @as(u32, rec.curve_count) * CURVE_SEGMENT_WORDS;
+        return self.placeCurves(.{
+            .allocator = scratch,
+            .curve_bytes = src_page.curve.data[rec.curve_texel * 4 ..][0..curve_words],
+            .band_bytes = local_band,
+            .curve_count = rec.curve_count,
+            .h_band_count = rec.bands.h_band_count,
+            .v_band_count = rec.bands.v_band_count,
+            .band_scale_x = rec.bands.band_scale_x,
+            .band_scale_y = rec.bands.band_scale_y,
+            .band_offset_x = rec.bands.band_offset_x,
+            .band_offset_y = rec.bands.band_offset_y,
+            .bbox = rec.bbox,
+        });
+    }
+
+    /// Copy a record's paint texels verbatim, repacking each extra layer's
+    /// geometry and patching only the per-layer placement texel.
+    fn copyPaintSide(
+        self: *Builder,
+        src: *const Atlas,
+        src_page: *const AtlasPage,
+        key: RecordKey,
+        paint_info: PaintRecordInfo,
+        new_base_bands: GlyphBandEntry,
+        scratch: std.mem.Allocator,
+    ) InsertError!void {
+        const slab = src.layer_info_data.?;
+        const width = paint_records.info_width;
+        const src_texel: u32 = @as(u32, paint_info.info_y) * width + paint_info.info_x;
+        const layer_count: u32 = paint_info.layer_count;
+        const is_composite = layer_count > 1;
+        const total_texels: u32 = if (is_composite)
+            1 + layer_count * paint_records.texels_per_record
+        else
+            paint_records.texels_per_record;
+
+        const dst_texel = self.layer_info_texels;
+        const new_texels = std.math.add(u32, dst_texel, total_texels) catch return error.LayerInfoTooLarge;
+        const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        if (new_texels > max_texels) return error.LayerInfoTooLarge;
+        const need_floats = @as(usize, new_texels) * 4;
+        if (self.layer_info_buf.items.len < need_floats) {
+            try self.layer_info_buf.resize(self.allocator, need_floats);
+        }
+        @memcpy(
+            self.layer_info_buf.items[@as(usize, dst_texel) * 4 .. need_floats],
+            slab[@as(usize, src_texel) * 4 ..][0 .. @as(usize, total_texels) * 4],
+        );
+
+        // Mirror `insert`'s image-slot pattern: composites carry a null
+        // header slot, then one slot per layer record.
+        if (is_composite) try self.paint_image_records.append(self.allocator, null);
+
+        var layer_index: u32 = 0;
+        while (layer_index < layer_count) : (layer_index += 1) {
+            const layer_offset: u32 = if (is_composite)
+                1 + layer_index * paint_records.texels_per_record
+            else
+                0;
+            const src_layer_texel = src_texel + layer_offset;
+            const dst_layer_texel = dst_texel + layer_offset;
+            const t0 = paint_records.readTexel(slab, width, src_layer_texel);
+            const t1 = paint_records.readTexel(slab, width, src_layer_texel + 1);
+            const gx_raw: u16 = @intFromFloat(t0[0]);
+            const fill_bit: u16 = gx_raw & paint_records.FILL_RULE_BIT;
+
+            const new_bands: GlyphBandEntry = if (layer_index == 0)
+                new_base_bands
+            else blk: {
+                // Recover the layer's curve block from its band refs, then
+                // repack it like any other geometry.
+                const counts = render_abi.unpackBandCounts(@bitCast(t0[2]));
+                const src_bands = GlyphBandEntry{
+                    .glyph_x = gx_raw & (paint_records.FILL_RULE_BIT - 1),
+                    .glyph_y = @intFromFloat(t0[1]),
+                    .h_band_count = counts.h,
+                    .v_band_count = counts.v,
+                    .band_scale_x = t1[0],
+                    .band_scale_y = t1[1],
+                    .band_offset_x = t1[2],
+                    .band_offset_y = t1[3],
+                };
+                const range = curveRangeForBands(src_page, src_bands) orelse break :blk src_bands;
+                const layer_placement = try self.repackRecordGeometry(src_page, .{
+                    .page_index = 0,
+                    .page_generation = 0,
+                    .curve_texel = range.texel,
+                    .curve_count = range.count,
+                    .bands = src_bands,
+                    .bbox = .{ .min = .zero, .max = .zero },
+                }, scratch);
+                break :blk layer_placement.bands;
+            };
+
+            // Patch the placement texel: location changes; band counts,
+            // scales/offsets, tag, and fill rule copy through.
+            paint_records.setTexel(self.layer_info_buf.items, width, dst_layer_texel, .{
+                @floatFromInt(new_bands.glyph_x | fill_bit),
+                @floatFromInt(new_bands.glyph_y),
+                t0[2],
+                t0[3],
+            });
+
+            const is_image = t0[3] == paint_records.tag_image;
+            // An image-tagged layer always has a slot (insert appends one
+            // per image paint), so a miss is an internal invariant break.
+            try self.paint_image_records.append(self.allocator, if (is_image)
+                .{ .image = findSourceImage(src, src_layer_texel) orelse unreachable, .texel_offset = dst_layer_texel }
+            else
+                null);
+        }
+
+        try self.paintLookupPut(key, .{
+            .info_x = @intCast(dst_texel % width),
+            .info_y = @intCast(dst_texel / width),
+            .layer_count = @intCast(layer_count),
+        });
+        self.layer_info_texels = new_texels;
+    }
+
+    /// Carry one `ns.tt_advance` value into the rebuilt store.
+    pub fn putTtAdvance(self: *Builder, key: RecordKey, advance_26_6: i32) std.mem.Allocator.Error!void {
+        if (self.tt_advance_lookup.contains(key)) return;
+        const next = try self.tt_advance_lookup.put(key, advance_26_6);
+        self.tt_advance_lookup.deinit();
+        self.tt_advance_lookup = next;
+    }
 };
+
+/// The image reference behind an image-paint layer, located by the layer's
+/// texel offset (each `PaintImageRecord` is self-describing).
+fn findSourceImage(src: *const Atlas, layer_texel: u32) ?*const @import("../image.zig").Image {
+    const slots = src.paint_image_records orelse return null;
+    for (slots) |maybe_slot| {
+        const slot = maybe_slot orelse continue;
+        if (slot.texel_offset == layer_texel) return slot.image;
+    }
+    return null;
+}
+
+/// The contiguous curve block a set of bands references: minimum and
+/// maximum referenced segment, recovered by walking the band refs (refs
+/// store absolute page texels). Null when the bands reference no curves.
+fn curveRangeForBands(src_page: *const AtlasPage, bands: GlyphBandEntry) ?struct { texel: u32, count: u16 } {
+    const headers: usize = @as(usize, bands.h_band_count) + @as(usize, bands.v_band_count);
+    if (headers == 0) return null;
+    const band_word_offset: usize = (@as(usize, bands.glyph_y) * BAND_TEX_WIDTH_USIZE + @as(usize, bands.glyph_x)) * 2;
+
+    var total_refs: u32 = 0;
+    for (0..headers) |bi| total_refs += src_page.band.data[band_word_offset + bi * 2];
+    if (total_refs == 0) return null;
+
+    var min_texel: u32 = std.math.maxInt(u32);
+    var max_texel: u32 = 0;
+    const refs = src_page.band.data[band_word_offset + headers * 2 ..][0 .. @as(usize, total_refs) * 2];
+    var j: usize = 0;
+    while (j + 1 < refs.len) : (j += 2) {
+        const cx: u32 = refs[j] & CURVE_LOC_X_MASK;
+        const cy: u32 = refs[j + 1];
+        const abs_texel = cy * CURVE_TEX_WIDTH + cx;
+        min_texel = @min(min_texel, abs_texel);
+        max_texel = @max(max_texel, abs_texel);
+    }
+    return .{
+        .texel = min_texel,
+        .count = @intCast((max_texel - min_texel) / CURVE_SEGMENT_TEXELS + 1),
+    };
+}
 
 fn bandToTexFormat(b: GlyphBandEntry) band_tex_format.GlyphBandEntry {
     return .{

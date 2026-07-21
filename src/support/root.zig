@@ -6,6 +6,7 @@ pub const gl = @import("gl.zig").gl;
 
 pub const Picture = @import("picture.zig").Picture;
 pub const ShapedRunCache = @import("shaped_run_cache.zig").ShapedRunCache;
+pub const WorkingSet = @import("working_set.zig").WorkingSet;
 
 const path_shape = @import("path_shape.zig");
 pub const placeRect = path_shape.placeRect;
@@ -32,4 +33,5 @@ test {
     _ = @import("picture.zig");
     _ = @import("path_shape.zig");
     _ = @import("shaped_run_cache.zig");
+    _ = @import("working_set.zig");
 }

@@ -1,6 +1,29 @@
-//! Value-typed atlas. Holds refcounted page references plus a key→record
-//! lookup table. Construction and update operations return new atlases,
-//! leaving the input atlas untouched.
+//! Value-typed atlas: the store of prepared glyph records. Holds
+//! refcounted page references plus a key→record lookup table.
+//! Construction and update operations return new atlases, leaving the
+//! input atlas untouched.
+//!
+//! ## Capacity model
+//!
+//! The `PagePool` is the caller's residency budget: `max_layers` pages of
+//! fixed curve/band capacity, sized once at init. Recording is incremental
+//! and idempotent — an app can add glyphs for its whole lifetime and each
+//! `record*Run` costs only the genuinely new records — but nothing is ever
+//! evicted implicitly. When the pool is exhausted, recording fails with
+//! `error.OutOfLayers`; that error is the caller's eviction moment, not a
+//! bug. The recovery primitive is `compact` with a `RecordFilter`: rebuild
+//! the store keeping only the working set (an LRU over touched keys, a
+//! frame-tag sweep — retention policy is the caller's). Because compacting
+//! acquires new pages before the old atlas releases its own, keep headroom:
+//! trigger eviction while the pool still has at least the compacted
+//! result's page count free, rather than at hard exhaustion.
+//!
+//! Two record kinds change the budget math: autohint records are
+//! resolution-independent (one per glyph, ever — the mode to prefer under
+//! continuous zoom), while TT-hinted records are per (glyph, ppem) and
+//! accumulate with every distinct size (`ns.tt_advance` values are
+//! page-free and never pressure the pool). `src/support/working_set.zig`
+//! is the worked example of a bounded-residency policy over this model.
 //!
 //! See `docs/rewrite/02-atlas-and-pages.md` for the design rationale.
 
@@ -385,51 +408,70 @@ pub const Atlas = struct {
         };
     }
 
-    /// Rebuild the atlas with the same keys but freshly packed into the
-    /// minimum number of pages. Decodes each record's curve+band bytes from
-    /// its source page, re-encodes them on new pages from the same pool.
+    /// Rebuild the store, freshly packed into the minimum number of pages.
+    /// Every record kind is carried with full fidelity: geometry is
+    /// repacked, paint layers and autohint analyses are copied
+    /// byte-for-byte (only placement locations are rewritten), TT-hinted
+    /// band records are regenerated, and `ns.tt_advance` values are cloned.
+    ///
+    /// `filter` selects which records survive — this is the eviction
+    /// primitive: `null` keeps everything (pure defragmentation); a filter
+    /// rebuilds only the working set. Dependencies close automatically: a
+    /// kept autohint record brings its base glyph even if the filter
+    /// dropped it. Page-free records (`ns.tt_advance`) pass through the
+    /// filter too but cost no pages either way.
+    ///
+    /// Needs headroom: new pages are acquired from the same pool *before*
+    /// the original atlas releases its own, so compacting requires at
+    /// least the compacted result's page count free. Budget the pool with
+    /// a reserve (see the capacity model notes on `PagePool`), or compact
+    /// before the pool is fully exhausted.
+    ///
     /// The original atlas is unaffected and continues to work.
     pub fn compact(
         self: *const Atlas,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
+        filter: ?RecordFilter,
     ) InsertError!Atlas {
         const pool = self.pool orelse return Atlas.empty(allocator);
         var builder = Builder.init(allocator, pool);
         errdefer builder.abort();
 
+        // Two passes: autohint records re-alias their base glyphs, so the
+        // bases must be placed first.
         var it = self.lookup.iterator();
         while (it.next()) |kv| {
-            const rec = kv.value_ptr.*;
-            const src_page = self.pages[rec.page_index];
-            // Decode the band bytes from the page back to glyph-local form.
-            const band_words_total = atlas_builder.bandWordsForRecordIncludingRefs(src_page, rec);
-            const local_band = try scratch.alloc(u16, band_words_total);
-            defer scratch.free(local_band);
-            atlas_builder.extractAndLocalizeBand(src_page, rec, local_band);
+            if (kv.key_ptr.namespace == record_key_mod.ns.autohint_glyph) continue;
+            if (filter) |f| if (!f.keeps(kv.key_ptr.*)) continue;
+            try builder.insertCopied(self, kv.key_ptr.*, scratch);
+        }
+        it = self.lookup.iterator();
+        while (it.next()) |kv| {
+            if (kv.key_ptr.namespace != record_key_mod.ns.autohint_glyph) continue;
+            if (filter) |f| if (!f.keeps(kv.key_ptr.*)) continue;
+            try builder.insertCopied(self, kv.key_ptr.*, scratch);
+        }
 
-            const curve_word_offset = rec.curve_texel * 4;
-            const curve_words_total: u32 = @as(u32, rec.curve_count) * CURVE_SEGMENT_WORDS;
-            const local_curves = src_page.curve.data[curve_word_offset..][0..curve_words_total];
-
-            const curves_value = GlyphCurves{
-                .allocator = scratch,
-                .curve_bytes = local_curves,
-                .band_bytes = local_band,
-                .curve_count = rec.curve_count,
-                .h_band_count = rec.bands.h_band_count,
-                .v_band_count = rec.bands.v_band_count,
-                .band_scale_x = rec.bands.band_scale_x,
-                .band_scale_y = rec.bands.band_scale_y,
-                .band_offset_x = rec.bands.band_offset_x,
-                .band_offset_y = rec.bands.band_offset_y,
-                .bbox = rec.bbox,
-            };
-
-            try builder.insert(.{ .key = kv.key_ptr.*, .curves = curves_value });
+        var advances = self.tt_advance_lookup.iterator();
+        while (advances.next()) |kv| {
+            if (filter) |f| if (!f.keeps(kv.key_ptr.*)) continue;
+            try builder.putTtAdvance(kv.key_ptr.*, kv.value_ptr.*);
         }
 
         return builder.finish();
+    }
+};
+
+/// Record-selection closure for `Atlas.compact` — the eviction hook. The
+/// filter sees every record key (geometry namespaces and `ns.tt_advance`);
+/// return true to carry the record into the rebuilt store.
+pub const RecordFilter = struct {
+    context: *anyopaque,
+    keep: *const fn (context: *anyopaque, key: RecordKey) bool,
+
+    pub fn keeps(self: RecordFilter, key: RecordKey) bool {
+        return self.keep(self.context, key);
     }
 };
 
@@ -867,7 +909,7 @@ test "compact preserves keys" {
     });
     defer original.deinit();
 
-    var compacted = try original.compact(testing.allocator, testing.allocator);
+    var compacted = try original.compact(testing.allocator, testing.allocator, null);
     defer compacted.deinit();
 
     try testing.expectEqual(original.recordCount(), compacted.recordCount());
@@ -881,4 +923,154 @@ test "compact preserves keys" {
     try testing.expectEqual(orig_r0.curve_count, comp_r0.curve_count);
     try testing.expectEqual(orig_r0.bands.h_band_count, comp_r0.bands.h_band_count);
     try testing.expectEqual(orig_r0.bands.v_band_count, comp_r0.bands.v_band_count);
+}
+
+test "compact carries paint layers, autohint analyses, and advances byte-for-byte" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var base_curves = try makeTestCurves(testing.allocator);
+    defer base_curves.deinit();
+    var layer_curves = try makeTestCurves(testing.allocator);
+    defer layer_curves.deinit();
+
+    const base_key = record_key_mod.unhintedGlyph(0, 1);
+    const colr_key = record_key_mod.unhintedGlyph(0, 2);
+    const auto_key = record_key_mod.autohintGlyph(0, 1);
+    const tt_key = record_key_mod.ttHintedGlyph(0, 1, 13 * 64);
+    const advance_key = record_key_mod.ttAdvance(0, 1, 13 * 64);
+
+    const x_edges = [_]autohint.FeatureEdge{.{
+        .pos = 0.25,
+        .width = 0.1,
+        .stem = -1,
+        .blue = -1,
+        .flags = .{ .round = true },
+    }};
+    var original = try Atlas.from(testing.allocator, pool, &.{
+        .{ .key = base_key, .curves = base_curves },
+        .{
+            .key = colr_key,
+            .curves = base_curves,
+            .paint = .{ .solid = .{ 1, 0, 0, 1 } },
+            .extra_layers = &.{.{ .curves = layer_curves, .paint = .{ .solid = .{ 0, 1, 0, 0.5 } } }},
+        },
+        .{
+            .key = auto_key,
+            .curves = GlyphCurves.empty(testing.allocator),
+            .autohint = .{
+                .font = .{ .blues = &.{}, .std_x = 0.08, .std_y = 0.09 },
+                .glyph = .{ .x = &x_edges, .y = &.{}, .left = 0.02 },
+            },
+            .autohint_base = base_key,
+        },
+        .{ .key = tt_key, .curves = base_curves },
+    });
+    defer original.deinit();
+    try original.recordTtAdvance(advance_key, 7 * 64);
+
+    var compacted = try original.compact(testing.allocator, testing.allocator, null);
+    defer compacted.deinit();
+
+    // Composite paint: layer count and the placement-independent payload
+    // texels (paint colors, tags) survive verbatim.
+    const orig_paint = original.lookupPaintRecord(colr_key).?;
+    const comp_paint = compacted.lookupPaintRecord(colr_key).?;
+    try testing.expectEqual(orig_paint.layer_count, comp_paint.layer_count);
+    const texels_per = 6;
+    const orig_slab = original.layer_info_data.?;
+    const comp_slab = compacted.layer_info_data.?;
+    const orig_base_texel = (@as(usize, orig_paint.info_y) * original.layer_info_width + orig_paint.info_x);
+    const comp_base_texel = (@as(usize, comp_paint.info_y) * compacted.layer_info_width + comp_paint.info_x);
+    var layer: usize = 0;
+    while (layer < orig_paint.layer_count) : (layer += 1) {
+        // Composite header + per-layer records: payload texels 2..6.
+        const orig_layer = orig_base_texel + 1 + layer * texels_per;
+        const comp_layer = comp_base_texel + 1 + layer * texels_per;
+        try testing.expectEqualSlices(
+            f32,
+            orig_slab[(orig_layer + 2) * 4 .. (orig_layer + texels_per) * 4],
+            comp_slab[(comp_layer + 2) * 4 .. (comp_layer + texels_per) * 4],
+        );
+    }
+
+    // Autohint: record survives, aliases the base (no duplicated curves),
+    // and the feature payload round-trips exactly.
+    try testing.expect(compacted.lookupAutohintRecord(auto_key) != null);
+    const comp_auto_rec = compacted.lookupRecord(auto_key).?;
+    const comp_base_rec = compacted.lookupRecord(base_key).?;
+    try testing.expectEqual(comp_base_rec.curve_texel, comp_auto_rec.curve_texel);
+    const auto_info = compacted.lookupAutohintRecord(auto_key).?;
+    const auto_off = (@as(usize, auto_info.info_y) * compacted.layer_info_width + auto_info.info_x) * 4;
+    const comp_x = @import("format/autohint_record.zig").xFeatures(comp_slab, auto_off);
+    try testing.expectEqual(@as(usize, 1), comp_x.len);
+    try testing.expectEqual(x_edges[0].pos, comp_x[0].pos);
+    try testing.expectEqual(x_edges[0].width, comp_x[0].width);
+
+    // TT-hinted band record and the advance value both survive.
+    try testing.expect(compacted.lookupTtHintedRecord(tt_key) != null);
+    try testing.expectEqual(@as(?i32, 7 * 64), compacted.lookupTtAdvance(advance_key));
+}
+
+test "filtered compact evicts records and closes dependencies" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var c0 = try makeTestCurves(testing.allocator);
+    defer c0.deinit();
+    var c1 = try makeTestCurves(testing.allocator);
+    defer c1.deinit();
+
+    const keep_base = record_key_mod.unhintedGlyph(0, 1);
+    const drop_key = record_key_mod.unhintedGlyph(0, 2);
+    const keep_auto = record_key_mod.autohintGlyph(0, 1);
+    const keep_advance = record_key_mod.ttAdvance(0, 1, 13 * 64);
+    const drop_advance = record_key_mod.ttAdvance(0, 2, 13 * 64);
+
+    var original = try Atlas.from(testing.allocator, pool, &.{
+        .{ .key = keep_base, .curves = c0 },
+        .{ .key = drop_key, .curves = c1 },
+        .{
+            .key = keep_auto,
+            .curves = GlyphCurves.empty(testing.allocator),
+            .autohint = .{
+                .font = .{ .blues = &.{}, .std_x = 0.1, .std_y = 0 },
+                .glyph = .{ .x = &.{}, .y = &.{}, .left = 0 },
+            },
+            .autohint_base = keep_base,
+        },
+    });
+    defer original.deinit();
+    try original.recordTtAdvance(keep_advance, 6 * 64);
+    try original.recordTtAdvance(drop_advance, 6 * 64);
+
+    // Keep only the autohint record and one advance: the base glyph must
+    // come along via dependency closure; everything else is evicted.
+    const Keeps = struct {
+        fn keep(_: *anyopaque, key: RecordKey) bool {
+            return key.namespace == record_key_mod.ns.autohint_glyph or
+                (key.namespace == record_key_mod.ns.tt_advance and key.b == 1);
+        }
+    };
+    var ctx: u8 = 0;
+    var compacted = try original.compact(testing.allocator, testing.allocator, .{
+        .context = @ptrCast(&ctx),
+        .keep = Keeps.keep,
+    });
+    defer compacted.deinit();
+
+    try testing.expect(compacted.contains(keep_auto));
+    try testing.expect(compacted.contains(keep_base));
+    try testing.expect(!compacted.contains(drop_key));
+    try testing.expectEqual(@as(?i32, 6 * 64), compacted.lookupTtAdvance(keep_advance));
+    try testing.expect(compacted.lookupTtAdvance(drop_advance) == null);
+    try testing.expectEqual(@as(u32, 1), compacted.ttAdvanceCount());
 }

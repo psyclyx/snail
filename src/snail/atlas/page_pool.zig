@@ -1,9 +1,18 @@
-//! Fixed-capacity bag of pages.
+//! Fixed-capacity bag of pages — the caller's residency budget.
 //!
 //! The pool owns its pages for its whole lifetime. Pages move between two
 //! states: "in the free list" and "checked out (refcount >= 1)". Acquiring
 //! a page pulls one off the free list; releasing one (refcount → 0) pushes
 //! it back. The pool never deallocates a page; it just shuffles ownership.
+//!
+//! `max_layers` bounds the *resident* record set, not the total glyphs an
+//! app may ever touch: `error.OutOfLayers` from a record call is the
+//! signal to evict via `Atlas.compact` with a `RecordFilter` (see the
+//! capacity model notes on `Atlas`). `free_count` is the headroom gauge —
+//! evict while it is still above the expected compacted page count, since
+//! compaction acquires its pages before the old atlas releases any. The
+//! pool's `max_layers` also fixes the depth of the backend's curve/band
+//! texture arrays, so growing the budget means recreating those textures.
 //!
 //! The pool does *not* own GPU resources — that lives in the backend-side
 //! `Binding` returned by `upload`. This file is pure CPU-side bookkeeping.
