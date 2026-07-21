@@ -549,13 +549,13 @@ test "empty outlines remain shared unhinted no-op shapes" {
     try testing.expect(shape.key.eql(base_key));
     try testing.expectEqual(@as(?snail.autohint.AutohintPolicy, null), shape.autohint_policy);
 
-    var words: [snail.render.records.WORDS_PER_INSTANCE]u32 = undefined;
-    var segments: [1]snail.render.records.DrawSegment = undefined;
-    var word_len: usize = 0;
-    var segment_len: usize = 0;
-    _ = try snail.emit.emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &compare.atlas, &.{shape}, .identity, .{ 1, 1, 1, 1 });
-    try testing.expectEqual(@as(usize, 0), word_len);
-    try testing.expectEqual(@as(usize, 0), segment_len);
+    var instances: [1]snail.render.records.Instance = undefined;
+    var batches: [1]snail.render.records.DrawBatch = undefined;
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+    _ = try snail.emit.emit(&instances, &batches, &instance_len, &batch_len, .{ .pool = pool }, &compare.atlas, &.{shape}, .identity, .{ 1, 1, 1, 1 });
+    try testing.expectEqual(@as(usize, 0), instance_len);
+    try testing.expectEqual(@as(usize, 0), batch_len);
 }
 
 fn countAutohintRecords(compare: *const Compare, shaped: *const snail.ShapedText) u32 {

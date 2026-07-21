@@ -298,7 +298,7 @@ pub const Renderer = struct {
         }
     }
 
-    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
+    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -334,14 +334,14 @@ pub const Renderer = struct {
             return error.NonAffineMvp;
         if (thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
-                self.drawBatchInstancesParallel(pool, prepared, vertices, scene, texture_layer_base, true);
+                self.drawBatchInstancesParallel(pool, prepared, instances, scene, texture_layer_base, true);
                 return;
             }
         }
         // Serial path: enable the profile hook if the caller has wired
         // up `instance_profile`. The threaded path above skips it
         // intentionally — see `instance_profile` docs.
-        self.drawBatchInstances(prepared, vertices, scene, texture_layer_base, true, true);
+        self.drawBatchInstances(prepared, instances, scene, texture_layer_base, true, true);
     }
 
     const ClipSave = struct {
@@ -386,13 +386,10 @@ pub const Renderer = struct {
         return "CPU";
     }
 
-    fn drawBatchInstances(self: *Renderer, prepared: *const PreparedResources, vertices: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
-        const WORDS = vertex.WORDS_PER_INSTANCE;
+    fn drawBatchInstances(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
         const profile = if (profile_enabled) self.instance_profile else null;
-        var i: usize = 0;
         var idx: u32 = 0;
-        while (i + WORDS <= vertices.len) : (i += WORDS) {
-            const inst = vertices[i..][0..WORDS];
+        for (instances) |*inst| {
             if (profile) |p| {
                 const start_ns = monotonicNanos();
                 self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
@@ -421,7 +418,7 @@ pub const Renderer = struct {
     const TileCtx = struct {
         base: *const Renderer,
         prepared: *const PreparedResources,
-        vertices: []const u32,
+        instances: []const vertex.Instance,
         scene_to_pixel: Transform2D,
         texture_layer_base: u32,
         allow_subpixel: bool,
@@ -439,14 +436,14 @@ pub const Renderer = struct {
         var worker = ctx.base.*;
         worker.row_clip_min = strip_y0;
         worker.row_clip_max = strip_y1;
-        worker.drawBatchInstances(ctx.prepared, ctx.vertices, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel, false);
+        worker.drawBatchInstances(ctx.prepared, ctx.instances, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel, false);
     }
 
     fn drawBatchInstancesParallel(
         self: *Renderer,
         pool: *ThreadPool,
         prepared: *const PreparedResources,
-        vertices: []const u32,
+        instances: []const vertex.Instance,
         scene_to_pixel: Transform2D,
         texture_layer_base: u32,
         allow_subpixel: bool,
@@ -457,7 +454,7 @@ pub const Renderer = struct {
         // batch that only covers the top 100 rows would otherwise spawn
         // hundreds of empty tiles and let thread-pool barrier overhead
         // dominate the real rasterization.
-        const dispatch_range = batchPixelRowRange(vertices, scene_to_pixel, self.subpixel_order, allow_subpixel);
+        const dispatch_range = batchPixelRowRange(instances, scene_to_pixel, self.subpixel_order, allow_subpixel);
         const y0 = @max(self.row_clip_min, dispatch_range.min);
         const y1 = @min(self.row_clip_max, dispatch_range.max);
         if (y1 <= y0) return;
@@ -466,7 +463,7 @@ pub const Renderer = struct {
         var ctx = TileCtx{
             .base = self,
             .prepared = prepared,
-            .vertices = vertices,
+            .instances = instances,
             .scene_to_pixel = scene_to_pixel,
             .texture_layer_base = texture_layer_base,
             .allow_subpixel = allow_subpixel,
@@ -480,16 +477,12 @@ pub const Renderer = struct {
     /// Union of every instance's pixel-Y bounds, clamped to u32 row
     /// indices. Returns the full possible range on an empty batch so
     /// the caller's row_clip intersection short-circuits naturally.
-    fn batchPixelRowRange(vertices: []const u32, scene_to_pixel: Transform2D, subpixel_order: SubpixelOrder, allow_subpixel: bool) struct { min: u32, max: u32 } {
-        const WORDS = vertex.WORDS_PER_INSTANCE;
-        if (vertices.len < WORDS) return .{ .min = 0, .max = 0 };
-
+    fn batchPixelRowRange(instances: []const vertex.Instance, scene_to_pixel: Transform2D, subpixel_order: SubpixelOrder, allow_subpixel: bool) struct { min: u32, max: u32 } {
         var min_y: f32 = std.math.floatMax(f32);
         var max_y: f32 = -std.math.floatMax(f32);
 
-        var i: usize = 0;
-        while (i + WORDS <= vertices.len) : (i += WORDS) {
-            const decoded = decodeBatchInstance(vertices[i..][0..WORDS], scene_to_pixel);
+        for (instances) |*inst| {
+            const decoded = decodeBatchInstance(inst, scene_to_pixel);
             var bounds = geometry_mod.transformedGlyphBounds(decoded.bbox, decoded.transform);
             geometry_mod.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
             if (decoded.isAutohint()) expandDeviceBounds(&bounds, 2.0);
@@ -526,8 +519,8 @@ pub const Renderer = struct {
         }
     };
 
-    fn decodeBatchInstance(inst: []const u32, scene_to_pixel: Transform2D) BatchInstance {
-        const encoded = vertex.instanceAt(inst, 0);
+    fn decodeBatchInstance(inst: *const vertex.Instance, scene_to_pixel: Transform2D) BatchInstance {
+        const encoded = inst;
         const instance_transform = Transform2D{
             .xx = encoded.xform[0],
             .xy = encoded.xform[1],
@@ -552,7 +545,7 @@ pub const Renderer = struct {
         };
     }
 
-    fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: []const u32, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: *const vertex.Instance, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const decoded = decodeBatchInstance(inst, scene_to_pixel);
         if (decoded.isSpecialLayer()) {
             self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base);

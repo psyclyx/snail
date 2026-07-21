@@ -1,7 +1,7 @@
 //! Reference caller renderer for the Vulkan embeddable path.
 //!
 //! This is the worked example an integrator copies: snail owns the font data
-//! (atlas, cache, descriptor set, `emit` words) and hands over the public
+//! (atlas, cache, descriptor set, `emit` instances) and hands over the public
 //! the includable snail shader pieces; this owns the complete shaders,
 //! pipelines, and draw. It builds one
 //! pipeline per shape family, walks the emit stream's glyph runs, and binds the
@@ -54,7 +54,7 @@ pub const Renderer = struct {
     /// supports dual-source blend) against `ctx.render_pass`, plus a quad index
     /// buffer and a `slot_bytes`×`num_slots` vertex ring. Use `num_slots` = the
     /// caller's frames-in-flight (1 if it waits idle each frame); `slot_bytes`
-    /// must fit the largest frame's `emit` words.
+    /// must fit the largest frame's `emit` instances.
     /// `depth_test` makes the pipelines depth-test (LESS_OR_EQUAL, write off) so
     /// a caller rendering into a render pass with a depth attachment can have
     /// snail passes occluded by prior opaque geometry. Pass `false` for the
@@ -121,14 +121,14 @@ pub const Renderer = struct {
         cmd: vk.VkCommandBuffer,
         desc_set: vk.VkDescriptorSet,
         draw_state: render_state.DrawState,
-        words: []const u32,
-        segments: []const snail.render.records.DrawSegment,
+        instances: []const snail.render.records.Instance,
+        batches: []const snail.render.records.DrawBatch,
     ) void {
-        const words_bytes = words.len * @sizeOf(u32);
-        std.debug.assert(self.cursor + words_bytes <= self.slot_bytes);
+        const instance_bytes = std.mem.sliceAsBytes(instances);
+        std.debug.assert(self.cursor + instance_bytes.len <= self.slot_bytes);
         const base = self.cur_slot_base + self.cursor;
-        @memcpy(self.vbo.bytes()[base..][0..words_bytes], std.mem.sliceAsBytes(words));
-        defer self.cursor += words_bytes;
+        @memcpy(self.vbo.bytes()[base..][0..instance_bytes.len], instance_bytes);
+        defer self.cursor += instance_bytes.len;
 
         vk.vkCmdBindIndexBuffer(cmd, self.ibo.buffer, 0, vk.VK_INDEX_TYPE_UINT32);
 
@@ -146,23 +146,22 @@ pub const Renderer = struct {
         var set = desc_set;
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &set, 0, null);
 
-        for (segments) |seg| {
-            const seg_words = words[seg.words_offset..][0..seg.words_len];
-            std.debug.assert(seg_words.len == @as(usize, seg.shape_count) * snail.render.records.WORDS_PER_INSTANCE);
-            const mode: contract.TextRenderMode = if (seg.kind == .regular)
+        for (batches) |batch| {
+            std.debug.assert(@as(usize, batch.first_instance) + batch.instance_count <= instances.len);
+            const mode: contract.TextRenderMode = if (batch.kind == .regular)
                 contract.textRenderMode(draw_state, self.supports_dual_src)
             else
                 .grayscale;
-            const family = contract.familyForKind(seg.kind, mode);
+            const family = contract.familyForKind(batch.kind, mode);
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
 
             var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
             var buf = self.vbo.buffer;
-            const offset: vk.VkDeviceSize = @intCast(base + seg.words_offset * @sizeOf(u32));
+            const offset: vk.VkDeviceSize = @intCast(base + batch.first_instance * snail.render.records.BYTES_PER_INSTANCE);
             vk.vkCmdBindVertexBuffers(cmd, 0, 1, &buf, &offset);
-            vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, seg.shape_count, 0, 0, 0);
+            vk.vkCmdDrawIndexed(cmd, contract.INDICES_PER_GLYPH, batch.instance_count, 0, 0, 0);
         }
     }
 

@@ -103,8 +103,8 @@ pub fn main(init: std.process.Init) !void {
 
     var checksum: u64 = 14695981039346656037;
     common.hashBytes(&checksum, pixels);
-    common.hashValue(&checksum, emitted.word_len);
-    const instance_count = emitted.word_len / snail.render.records.WORDS_PER_INSTANCE;
+    common.hashValue(&checksum, emitted.instance_len);
+    const instance_count = emitted.instance_len;
     const thread_count = if (worker_pool_ptr) |p| p.threads.len + 1 else 1;
     const has_text = switch (kind) {
         .regular, .tt_hinted, .autohint, .mixed => true,
@@ -133,8 +133,8 @@ pub fn main(init: std.process.Init) !void {
         &.{
             .{ .name = "source_shapes", .value = scene.shapes().len },
             .{ .name = "instances", .value = instance_count },
-            .{ .name = "record_bytes", .value = emitted.word_len * @sizeOf(u32) },
-            .{ .name = "segments", .value = emitted.segment_len },
+            .{ .name = "record_bytes", .value = emitted.instance_len * @sizeOf(snail.render.records.Instance) },
+            .{ .name = "batches", .value = emitted.batch_len },
             .{ .name = "atlas_records", .value = scene.atlas.recordCount() },
             .{ .name = "atlas_pages", .value = scene.atlas.pageCount() },
             .{ .name = "text_rows", .value = if (has_text) 6 else 0 },

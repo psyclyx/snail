@@ -76,7 +76,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
         const records_width = glsl.gles_records_texture_width;
         const record_stride = std.fmt.comptimePrint(
             "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH {d}\n",
-            .{snail.render.records.WORDS_PER_INSTANCE},
+            .{snail.render.records.BYTES_PER_INSTANCE / @sizeOf(u32)},
         );
         const coverage_resources =
             \\uniform sampler2DArray u_curve_tex;
@@ -174,16 +174,17 @@ pub fn GlMaterial(comptime variant: Variant) type {
             try cache.upload(allocator, &.{&material_pass.text_atlas}, &binding);
 
             const shapes = material_pass.text_picture.shapes;
-            const word_budget = snail.emit.wordBudget(shapes.len);
-            const words = try allocator.alloc(u32, word_budget);
-            defer allocator.free(words);
-            var segs: [4]snail.render.records.DrawSegment = undefined;
-            var wlen: usize = 0;
-            var slen: usize = 0;
-            _ = try snail.emit.emit(words, &segs, &wlen, &slen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
+            const instances = try allocator.alloc(snail.render.records.Instance, shapes.len);
+            defer allocator.free(instances);
+            var segs: [4]snail.render.records.DrawBatch = undefined;
+            var ilen: usize = 0;
+            var blen: usize = 0;
+            _ = try snail.emit.emit(instances, &segs, &ilen, &blen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
 
-            if (wlen % snail.render.records.WORDS_PER_INSTANCE != 0) return error.InvalidEmitRecordLength;
-            self.glyph_count = @intCast(wlen / snail.render.records.WORDS_PER_INSTANCE);
+            self.glyph_count = @intCast(ilen);
+            // The sample shader reads the packed instances as R32UI texels.
+            const words: []const u32 = @ptrCast(std.mem.sliceAsBytes(instances[0..ilen]));
+            const wlen = words.len;
 
             switch (variant) {
                 .gl33, .gl44 => {

@@ -233,10 +233,10 @@ fn TextStateFor(comptime backend: Backend) type {
         pub const DrawError = error{
             MissingBinding,
             StaleBinding,
-            MalformedSegment,
+            MalformedBatch,
         } || std.mem.Allocator.Error;
 
-        /// Walk `DrawRecords.segments`, bind each segment's matching
+        /// Walk `DrawRecords.batches`, bind each batch's matching
         /// `GlBackendCache` cache, dispatch the encoded instances through
         /// the existing program set.
         pub fn draw(
@@ -258,13 +258,13 @@ fn TextStateFor(comptime backend: Backend) type {
                 null;
             defer if (scissor_restore) |r| r.restore();
 
-            for (records.segments) |seg| {
-                const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
-                if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
-                const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-                if (seg_words.len != @as(usize, seg.shape_count) * vertex.WORDS_PER_INSTANCE) return error.MalformedSegment;
+            for (records.batches) |batch| {
+                const cache = findCache(caches, batch.binding.pool) orelse return error.MissingBinding;
+                if (batch.binding.generation != 0 and cache.upload_generation < batch.binding.generation) return error.StaleBinding;
+                if (@as(usize, batch.first_instance) + batch.instance_count > records.instances.len) return error.MalformedBatch;
+                const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
                 _ = scratch;
-                try self.drawSegment(cache, draw_state, seg_words, seg.kind);
+                try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
             }
         }
 
@@ -296,8 +296,8 @@ fn TextStateFor(comptime backend: Backend) type {
             self.cached_heterogeneous_vao_bound = true;
         }
 
-        fn drawSegment(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, vertices: []const u32, kind: ShapeKind) DrawError!void {
-            const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
+        fn drawBatch(self: *GlTextState, cache: *const GlBackendCache, draw_state: DrawState, instances: []const vertex.Instance, kind: ShapeKind) DrawError!void {
+            const total_glyphs = instances.len;
             if (total_glyphs == 0) return;
             self.ensureHeterogeneousVaoBound();
 
@@ -321,7 +321,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 .autohint => self.ensureAutohintProgram(),
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
-            self.drawGlyphRange(vertices, 0, total_glyphs);
+            self.drawGlyphRange(instances, 0, total_glyphs);
         }
 
         /// Bind one GlBackendCache' texture set + uniforms. Texture-unit
@@ -497,13 +497,13 @@ fn TextStateFor(comptime backend: Backend) type {
             return &self.autohint_program;
         }
 
-        fn drawGlyphRange(self: *GlTextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
+        fn drawGlyphRange(self: *GlTextState, instances: []const vertex.Instance, glyph_offset: usize, glyph_count: usize) void {
             var glyphs_drawn: usize = 0;
             while (glyphs_drawn < glyph_count) {
-                const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
+                const instance_offset = glyph_offset + glyphs_drawn;
                 const remaining = glyph_count - glyphs_drawn;
                 const max_byte_size = @min(remaining, MAX_GLYPHS_PER_SEGMENT) * BYTES_PER_GLYPH;
-                const src: [*]const u8 = @ptrCast(vertices[word_offset..].ptr);
+                const src: [*]const u8 = @ptrCast(instances[instance_offset..].ptr);
 
                 var byte_size: usize = max_byte_size;
                 if (comptime backend == .gl44) {

@@ -13,19 +13,18 @@ const band_texture_mod = @import("format/band_texture.zig");
 const autohint_record_mod = @import("format/autohint_record.zig");
 const curve_mod = @import("math/bezier.zig");
 
-/// Emitted instance words, segment metadata, and symbolic record decoders.
+/// Emitted packed instances, batch metadata, and symbolic record decoders.
 pub const records = struct {
     pub const abi_version = abi_mod.version;
 
     pub const Instance = vertex_mod.Instance;
-    pub const WORDS_PER_INSTANCE = vertex_mod.WORDS_PER_INSTANCE;
     pub const BYTES_PER_INSTANCE = vertex_mod.BYTES_PER_INSTANCE;
-    pub const instanceAt = vertex_mod.instanceAt;
 
     pub const Binding = draw_mod.Binding;
-    pub const DrawSegment = draw_mod.DrawSegment;
+    pub const DrawBatch = draw_mod.DrawBatch;
     pub const DrawRecords = draw_mod.DrawRecords;
     pub const ShapeKind = draw_mod.ShapeKind;
+    pub const shapeKind = draw_mod.shapeKind;
 
     pub const SpecialLayerKind = abi_mod.SpecialLayerKind;
     pub const PaintRecordKind = abi_mod.PaintRecordKind;

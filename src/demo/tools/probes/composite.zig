@@ -71,10 +71,10 @@ const Panel = struct {
     pass: passes.PreparedPass,
     cache: embed_gl.Gl44BackendCache,
     binding: snail.render.records.Binding,
-    words: []u32,
-    segs: []snail.render.records.DrawSegment,
-    words_len: usize,
-    segs_len: usize,
+    instances: []snail.render.records.Instance,
+    batches: []snail.render.records.DrawBatch,
+    instances_len: usize,
+    batches_len: usize,
 
     fn init(allocator: std.mem.Allocator, fonts: *passes.Fonts, mode: Mode) !Panel {
         var pass = try buildPanel(allocator, fonts, mode);
@@ -89,28 +89,28 @@ const Panel = struct {
         var bindings: [1]snail.render.records.Binding = undefined;
         try cache.upload(allocator, &.{&pass.path_atlas}, &bindings);
 
-        const words = try allocator.alloc(u32, snail.emit.wordBudget(pass.path_picture.shapes.len));
-        errdefer allocator.free(words);
-        const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
-        errdefer allocator.free(segs);
+        const instances = try allocator.alloc(snail.render.records.Instance, pass.path_picture.shapes.len);
+        errdefer allocator.free(instances);
+        const batches = try allocator.alloc(snail.render.records.DrawBatch, @max(pass.path_picture.shapes.len, 4));
+        errdefer allocator.free(batches);
         var wlen: usize = 0;
         var slen: usize = 0;
-        _ = try snail.emit.emit(words, segs, &wlen, &slen, bindings[0], &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+        _ = try snail.emit.emit(instances, batches, &wlen, &slen, bindings[0], &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
 
         return .{
             .pass = pass,
             .cache = cache,
             .binding = bindings[0],
-            .words = words,
-            .segs = segs,
-            .words_len = wlen,
-            .segs_len = slen,
+            .instances = instances,
+            .batches = batches,
+            .instances_len = wlen,
+            .batches_len = slen,
         };
     }
 
     fn deinit(self: *Panel, allocator: std.mem.Allocator) void {
-        allocator.free(self.words);
-        allocator.free(self.segs);
+        allocator.free(self.instances);
+        allocator.free(self.batches);
         self.cache.deinit();
         self.pass.deinit();
     }
@@ -125,7 +125,7 @@ const Panel = struct {
         try renderer.state.draw(
             allocator,
             ds,
-            .{ .words = self.words[0..self.words_len], .segments = self.segs[0..self.segs_len] },
+            .{ .instances = self.instances[0..self.instances_len], .batches = self.batches[0..self.batches_len] },
             &.{&self.cache},
         );
     }

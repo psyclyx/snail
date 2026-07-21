@@ -632,33 +632,33 @@ const EmitContext = struct {
     pool: *snail.PagePool,
     atlas: *const snail.Atlas,
     shapes: []const snail.Shape,
-    words: []u32,
-    segments: []snail.render.records.DrawSegment,
-    output_words: usize = 0,
-    output_segments: usize = 0,
+    instances: []snail.render.records.Instance,
+    batches: []snail.render.records.DrawBatch,
+    output_instances: usize = 0,
+    output_batches: usize = 0,
     checksum: u64 = 14695981039346656037,
 
     pub fn run(self: *EmitContext) !void {
-        var word_len: usize = 0;
-        var segment_len: usize = 0;
+        var instance_len: usize = 0;
+        var batch_len: usize = 0;
         _ = try snail.emit.emit(
-            self.words,
-            self.segments,
-            &word_len,
-            &segment_len,
+            self.instances,
+            self.batches,
+            &instance_len,
+            &batch_len,
             .{ .pool = self.pool },
             self.atlas,
             self.shapes,
             .identity,
             .{ 1, 1, 1, 1 },
         );
-        self.output_words = word_len;
-        self.output_segments = segment_len;
-        std.mem.doNotOptimizeAway(self.words.ptr);
-        std.mem.doNotOptimizeAway(self.segments.ptr);
-        common.hashValue(&self.checksum, word_len);
-        common.hashValue(&self.checksum, segment_len);
-        if (word_len > 0) common.hashValue(&self.checksum, self.words[word_len - 1]);
+        self.output_instances = instance_len;
+        self.output_batches = batch_len;
+        std.mem.doNotOptimizeAway(self.instances.ptr);
+        std.mem.doNotOptimizeAway(self.batches.ptr);
+        common.hashValue(&self.checksum, instance_len);
+        common.hashValue(&self.checksum, batch_len);
+        if (instance_len > 0) common.hashValue(&self.checksum, self.instances[instance_len - 1].glyph[1]);
     }
 };
 
@@ -667,16 +667,16 @@ fn emitCase(allocator: std.mem.Allocator, args: common.Args, kind: fixtures.Scen
     defer pool.deinit();
     var scene = try fixtures.buildScene(allocator, pool, kind);
     defer scene.deinit();
-    const words = try allocator.alloc(u32, snail.emit.wordBudget(scene.shapes().len));
-    defer allocator.free(words);
-    const segments = try allocator.alloc(snail.render.records.DrawSegment, @max(snail.emit.segmentBudget(scene.shapes().len), 1));
-    defer allocator.free(segments);
+    const instances = try allocator.alloc(snail.render.records.Instance, scene.shapes().len);
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, @max(scene.shapes().len, 1));
+    defer allocator.free(batches);
     var context = EmitContext{
         .pool = pool,
         .atlas = &scene.atlas,
         .shapes = scene.shapes(),
-        .words = words,
-        .segments = segments,
+        .instances = instances,
+        .batches = batches,
     };
     const result = try common.measure(allocator, &context, iterations(args, 1024), args.samples);
     reportPrep(
@@ -686,9 +686,9 @@ fn emitCase(allocator: std.mem.Allocator, args: common.Args, kind: fixtures.Scen
         "shape",
         &.{
             .{ .name = "input_shapes", .value = scene.shapes().len },
-            .{ .name = "output_instances", .value = context.output_words / snail.render.records.WORDS_PER_INSTANCE },
-            .{ .name = "output_bytes", .value = context.output_words * @sizeOf(u32) },
-            .{ .name = "segments", .value = context.output_segments },
+            .{ .name = "output_instances", .value = context.output_instances },
+            .{ .name = "output_bytes", .value = context.output_instances * @sizeOf(snail.render.records.Instance) },
+            .{ .name = "batches", .value = context.output_batches },
         },
         context.checksum,
     );

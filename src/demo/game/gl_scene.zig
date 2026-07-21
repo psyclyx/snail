@@ -163,15 +163,15 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
         }
 
         fn drawSnailPass(self: *Self, pass: *const PreparedPass, b: PassBindings, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
-            const needed = snail.emit.wordBudget(pass.path_picture.shapes.len) + snail.emit.wordBudget(pass.text_picture.shapes.len);
-            try self.scratch.ensure(needed, 4);
-            var wlen: usize = 0;
-            var slen: usize = 0;
-            _ = try snail.emit.emit(self.scratch.words, self.scratch.segs, &wlen, &slen, b.path, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-            _ = try snail.emit.emit(self.scratch.words, self.scratch.segs, &wlen, &slen, b.text, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+            const needed = pass.path_picture.shapes.len + pass.text_picture.shapes.len;
+            try self.scratch.ensure(needed, @max(needed, 4));
+            var ilen: usize = 0;
+            var blen: usize = 0;
+            _ = try snail.emit.emit(self.scratch.instances, self.scratch.batches, &ilen, &blen, b.path, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+            _ = try snail.emit.emit(self.scratch.instances, self.scratch.batches, &ilen, &blen, b.text, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
             const ds = @import("snail-raster").DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
             self.renderer.state.beginDraw();
-            try self.renderer.state.draw(self.allocator, ds, .{ .words = self.scratch.words[0..wlen], .segments = self.scratch.segs[0..slen] }, &.{&self.cache});
+            try self.renderer.state.draw(self.allocator, ds, .{ .instances = self.scratch.instances[0..ilen], .batches = self.scratch.batches[0..blen] }, &.{&self.cache});
         }
     };
 }

@@ -74,13 +74,13 @@ pub fn main() !void {
     var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
-    const words = try allocator.alloc(u32, harness.wordBudget(scene));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, 4);
-    defer allocator.free(segs);
-    const e = try harness.emitScene(words, segs, scene, bindings[0], bindings[1]);
+    const instances = try allocator.alloc(snail.render.records.Instance, harness.shapeBudget(scene));
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, @max(harness.shapeBudget(scene), 4));
+    defer allocator.free(batches);
+    const e = try harness.emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.wordBudget(scene) * @sizeOf(u32), 1, false);
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.shapeBudget(scene) * snail.render.records.BYTES_PER_INSTANCE, 1, false);
     defer caller.deinit();
 
     const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{
@@ -90,7 +90,7 @@ pub fn main() !void {
         harness.bg_srgb_f32[3],
     }));
     caller.beginFrame(0);
-    caller.render(cmd, cache.descriptorSet(), harness.drawState(W, H), words[0..e.words_len], segs[0..e.segs_len]);
+    caller.render(cmd, cache.descriptorSet(), harness.drawState(W, H), instances[0..e.instances_len], batches[0..e.batches_len]);
 
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();

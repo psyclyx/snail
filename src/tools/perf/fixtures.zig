@@ -146,21 +146,21 @@ pub fn benchmarkPath(allocator: std.mem.Allocator) !snail.Path {
 
 pub const Emitted = struct {
     allocator: std.mem.Allocator,
-    words: []u32,
-    segments: []snail.render.records.DrawSegment,
-    word_len: usize,
-    segment_len: usize,
+    instances: []snail.render.records.Instance,
+    batches: []snail.render.records.DrawBatch,
+    instance_len: usize,
+    batch_len: usize,
 
     pub fn records(self: *const Emitted) snail.render.records.DrawRecords {
         return .{
-            .words = self.words[0..self.word_len],
-            .segments = self.segments[0..self.segment_len],
+            .instances = self.instances[0..self.instance_len],
+            .batches = self.batches[0..self.batch_len],
         };
     }
 
     pub fn deinit(self: *Emitted) void {
-        self.allocator.free(self.words);
-        self.allocator.free(self.segments);
+        self.allocator.free(self.instances);
+        self.allocator.free(self.batches);
         self.* = undefined;
     }
 };
@@ -170,17 +170,17 @@ pub fn emitScene(
     binding: snail.render.records.Binding,
     scene: *const Scene,
 ) !Emitted {
-    const words = try allocator.alloc(u32, snail.emit.wordBudget(scene.shapes().len));
-    errdefer allocator.free(words);
-    const segments = try allocator.alloc(snail.render.records.DrawSegment, @max(snail.emit.segmentBudget(scene.shapes().len), 1));
-    errdefer allocator.free(segments);
-    var word_len: usize = 0;
-    var segment_len: usize = 0;
+    const instances = try allocator.alloc(snail.render.records.Instance, scene.shapes().len);
+    errdefer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, @max(scene.shapes().len, 1));
+    errdefer allocator.free(batches);
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
     _ = try snail.emit.emit(
-        words,
-        segments,
-        &word_len,
-        &segment_len,
+        instances,
+        batches,
+        &instance_len,
+        &batch_len,
         binding,
         &scene.atlas,
         scene.shapes(),
@@ -189,10 +189,10 @@ pub fn emitScene(
     );
     return .{
         .allocator = allocator,
-        .words = words,
-        .segments = segments,
-        .word_len = word_len,
-        .segment_len = segment_len,
+        .instances = instances,
+        .batches = batches,
+        .instance_len = instance_len,
+        .batch_len = batch_len,
     };
 }
 

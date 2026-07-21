@@ -3,7 +3,7 @@
 //!
 //! These pieces know nothing about a specific backend: a `Pass` is a set of
 //! snail (atlas, picture) pairs sharing one `DrawState`; `emitPasses` turns them
-//! into `emit` words + segments; `syncPassBindings` keeps each pass's cache
+//! into `emit` instances + batches; `syncPassBindings` keeps each pass's cache
 //! bindings live; `FrameTimeStats` is the present/loop-interval ring the HUD
 //! reads. Both drivers reuse them so the standard snail-pass machinery is
 //! written exactly once.
@@ -51,41 +51,41 @@ pub const FrameTimings = struct {
     swap_us: f64 = 0,
 };
 
-// ── Scratch buffer for emitted words + segments ──────────────────────────────
+// ── Scratch buffer for emitted instances + batches ───────────────────────────
 
 /// Owned by a driver, grown on demand each frame.
 pub const ScratchBuf = struct {
     allocator: std.mem.Allocator,
-    words: []u32 = &.{},
-    segs: []snail.render.records.DrawSegment = &.{},
+    instances: []snail.render.records.Instance = &.{},
+    batches: []snail.render.records.DrawBatch = &.{},
 
     pub fn init(allocator: std.mem.Allocator) ScratchBuf {
         return .{ .allocator = allocator };
     }
 
     pub fn deinit(self: *ScratchBuf) void {
-        if (self.words.len > 0) self.allocator.free(self.words);
-        if (self.segs.len > 0) self.allocator.free(self.segs);
+        if (self.instances.len > 0) self.allocator.free(self.instances);
+        if (self.batches.len > 0) self.allocator.free(self.batches);
     }
 
-    pub fn ensure(self: *ScratchBuf, word_count: usize, seg_count: usize) !void {
-        if (self.words.len < word_count) {
-            if (self.words.len > 0) self.allocator.free(self.words);
-            self.words = try self.allocator.alloc(u32, word_count);
+    pub fn ensure(self: *ScratchBuf, instance_count: usize, batch_count: usize) !void {
+        if (self.instances.len < instance_count) {
+            if (self.instances.len > 0) self.allocator.free(self.instances);
+            self.instances = try self.allocator.alloc(snail.render.records.Instance, instance_count);
         }
-        if (self.segs.len < seg_count) {
-            if (self.segs.len > 0) self.allocator.free(self.segs);
-            self.segs = try self.allocator.alloc(snail.render.records.DrawSegment, seg_count);
+        if (self.batches.len < batch_count) {
+            if (self.batches.len > 0) self.allocator.free(self.batches);
+            self.batches = try self.allocator.alloc(snail.render.records.DrawBatch, batch_count);
         }
     }
 };
 
-/// Per-pass view onto the shared scratch buffer. `words` spans the full
-/// emitted range across every pass (segment `words_offset` values index it
-/// directly); `segs` is the pass's own sub-slice of segments.
+/// Per-pass view onto the shared scratch buffer. `instances` spans the full
+/// emitted range across every pass (batch `first_instance` values index it
+/// directly); `batches` is the pass's own sub-slice of batches.
 pub const PassRecords = struct {
-    words: []const u32,
-    segs: []const snail.render.records.DrawSegment,
+    instances: []const snail.render.records.Instance,
+    batches: []const snail.render.records.DrawBatch,
 };
 
 /// Driver-side per-pass binding state. Indexed by pass position; the caller
@@ -96,29 +96,20 @@ pub const PassState = struct {
     initialized: bool = false,
 };
 
-/// Total words needed to emit every picture across every pass.
-pub fn passesWordBudget(passes: []const Pass) usize {
+/// Total instances (and worst-case batches — one per shape, since a picture
+/// can alternate semantic families) needed to emit every picture across
+/// every pass.
+pub fn passesShapeBudget(passes: []const Pass) usize {
     var total: usize = 0;
     for (passes) |pass| {
-        for (pass.pictures) |picture| total += snail.emit.wordBudget(picture.shapes.len);
-    }
-    return total;
-}
-
-/// Conservative segment budget. A picture can alternate semantic families
-/// (for example unhinted/autohint/TT-hint validation rows), so one picture
-/// may emit many segments even though adjacent shapes normally coalesce.
-pub fn passesSegBudget(passes: []const Pass) usize {
-    var total: usize = 0;
-    for (passes) |pass| {
-        for (pass.pictures) |picture| total += snail.emit.segmentBudget(picture.shapes.len);
+        for (pass.pictures) |picture| total += picture.shapes.len;
     }
     return total;
 }
 
 /// Emit every pass into a contiguous scratch run. Every PassRecords shares the
-/// same `words` slice (the full emitted extent) so segment `words_offset`
-/// values keep their absolute meaning; each pass owns only its segment
+/// same `instances` slice (the full emitted extent) so batch `first_instance`
+/// values keep their absolute meaning; each pass owns only its batch
 /// sub-slice.
 pub fn emitPasses(
     scratch: *ScratchBuf,
@@ -127,23 +118,24 @@ pub fn emitPasses(
     out_records: []PassRecords,
 ) !void {
     std.debug.assert(passes.len == out_records.len);
-    try scratch.ensure(passesWordBudget(passes), passesSegBudget(passes));
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    const budget = passesShapeBudget(passes);
+    try scratch.ensure(budget, budget);
+    var ilen: usize = 0;
+    var blen: usize = 0;
     for (passes, pass_states, 0..) |pass, state, i| {
         std.debug.assert(state.initialized);
         std.debug.assert(state.count == pass.atlases.len);
-        const seg_start = slen;
+        const batch_start = blen;
         for (pass.atlases, pass.pictures, state.bindings[0..state.count]) |atlas, picture, binding| {
-            _ = try snail.emit.emit(scratch.words, scratch.segs, &wlen, &slen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
+            _ = try snail.emit.emit(scratch.instances, scratch.batches, &ilen, &blen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
         }
         out_records[i] = .{
-            .words = scratch.words[0..0], // patched below once wlen is final
-            .segs = scratch.segs[seg_start..slen],
+            .instances = scratch.instances[0..0], // patched below once ilen is final
+            .batches = scratch.batches[batch_start..blen],
         };
     }
-    const full_words = scratch.words[0..wlen];
-    for (out_records) |*rec| rec.words = full_words;
+    const full_instances = scratch.instances[0..ilen];
+    for (out_records) |*rec| rec.instances = full_instances;
 }
 
 /// Ensure each pass's bindings are live in `cache`. Releases stale bindings on
@@ -187,7 +179,7 @@ pub fn clearColorForShader(color_srgb: [4]f32, encoding: @import("snail-raster")
     };
 }
 
-test "segment budget covers every shape in mixed pictures" {
+test "shape budget covers every shape in mixed pictures" {
     const shapes_a = [_]snail.Shape{ .{}, .{}, .{} };
     const shapes_b = [_]snail.Shape{ .{}, .{} };
     const picture_a = demo_support.Picture{ .allocator = std.testing.allocator, .shapes = &shapes_a };
@@ -200,7 +192,7 @@ test "segment budget covers every shape in mixed pictures" {
         .dirty = false,
     }};
 
-    try std.testing.expectEqual(@as(usize, shapes_a.len + shapes_b.len), passesSegBudget(&passes));
+    try std.testing.expectEqual(@as(usize, shapes_a.len + shapes_b.len), passesShapeBudget(&passes));
 }
 
 // ── Frame-time stats (HUD) ───────────────────────────────────────────────────

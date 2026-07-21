@@ -64,8 +64,8 @@ pub const VkSceneRenderer = struct {
     hud_path_b: snail.render.records.Binding,
     hud_text_b: snail.render.records.Binding,
 
-    scratch: []u32,
-    segs: [4]snail.render.records.DrawSegment = undefined,
+    scratch: []snail.render.records.Instance,
+    segs: [4]snail.render.records.DrawBatch = undefined,
 
     pub fn init(allocator: std.mem.Allocator, ctx: embed_vulkan.VulkanContext, scene: *Scene, num_slots: u32) !VkSceneRenderer {
         var layout: embed_vulkan.VulkanResourceLayout = undefined;
@@ -112,7 +112,7 @@ pub const VkSceneRenderer = struct {
             .panel_text_b = bindings[4],
             .hud_path_b = bindings[5],
             .hud_text_b = bindings[6],
-            .scratch = try allocator.alloc(u32, maxWordBudget(scene)),
+            .scratch = try allocator.alloc(snail.render.records.Instance, maxShapeBudget(scene)),
         };
         errdefer allocator.free(self.scratch);
 
@@ -142,10 +142,10 @@ pub const VkSceneRenderer = struct {
         self.* = undefined;
     }
 
-    fn maxWordBudget(scene: *Scene) usize {
+    fn maxShapeBudget(scene: *Scene) usize {
         var m: usize = 0;
         for ([_]*const PreparedPass{ &scene.material, &scene.label, &scene.panel, &scene.hud }) |p| {
-            const n = snail.emit.wordBudget(p.path_picture.shapes.len) + snail.emit.wordBudget(p.text_picture.shapes.len);
+            const n = p.path_picture.shapes.len + p.text_picture.shapes.len;
             if (n > m) m = n;
         }
         return @max(m, 1);
@@ -156,9 +156,9 @@ pub const VkSceneRenderer = struct {
         var wlen: usize = 0;
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, self.material_b, &scene.material.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
-        self.glyph_count = @intCast(wlen / snail.render.records.WORDS_PER_INSTANCE);
-        self.records = try embed_vulkan.HostBuffer.init(self.ctx, @max(wlen * @sizeOf(u32), 4), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        @memcpy(self.records.bytes()[0 .. wlen * @sizeOf(u32)], std.mem.sliceAsBytes(self.scratch[0..wlen]));
+        self.glyph_count = @intCast(wlen);
+        self.records = try embed_vulkan.HostBuffer.init(self.ctx, @max(wlen * snail.render.records.BYTES_PER_INSTANCE, 4), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
+        @memcpy(self.records.bytes()[0 .. wlen * snail.render.records.BYTES_PER_INSTANCE], std.mem.sliceAsBytes(self.scratch[0..wlen]));
     }
 
     fn buildQuad(self: *VkSceneRenderer) !void {

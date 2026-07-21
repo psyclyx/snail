@@ -1,6 +1,6 @@
 //! Public draw entry for the software rasterizer.
 //!
-//! Walks segments, resolves each segment's `Binding.pool` to a
+//! Walks batches, resolves each batch's `Binding.pool` to a
 //! `BackendCache` cache (caller-supplied), validates the binding's
 //! generation against the cache's last upload, then dispatches per-instance
 //! into the CPU rasterizer via `Renderer.drawBatch`.
@@ -23,21 +23,19 @@ pub const BackendCache = backend_cache_mod.BackendCache;
 pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
-const WORDS_PER_INSTANCE: usize = vertex.WORDS_PER_INSTANCE;
-
 pub const DrawError = error{
-    /// Segment references a `PagePool` no entry in `caches` covers.
+    /// Batch references a `PagePool` no entry in `caches` covers.
     MissingBinding,
-    /// Segment's binding generation is newer than the cache's last upload.
+    /// Batch's binding generation is newer than the cache's last upload.
     StaleBinding,
-    /// Segment's word range is malformed for its declared shape count.
-    MalformedSegment,
+    /// Batch's instance range falls outside `records.instances`.
+    MalformedBatch,
 };
 
 const RendererPtr = *@import("renderer.zig").Renderer;
 
 /// Render `records` into `renderer`'s pixel buffer. `caches` provides the
-/// CPU-side prepared data for the pools referenced by `records.segments`.
+/// CPU-side prepared data for the pools referenced by `records.batches`.
 ///
 /// `thread_pool` is the per-call work-distribution policy: pass a non-null
 /// pool to fan tile work across its workers, or `null` to rasterize on the
@@ -53,16 +51,16 @@ pub fn draw(
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
 ) (DrawError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
-    for (records.segments) |seg| {
-        const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
-        if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) {
+    for (records.batches) |batch| {
+        const cache = findCache(caches, batch.binding.pool) orelse return error.MissingBinding;
+        if (batch.binding.generation != 0 and cache.upload_generation < batch.binding.generation) {
             return error.StaleBinding;
         }
 
         var layer_info_buf: [1]resources_mod.LayerInfoEntry = undefined;
         var layer_infos_slice: []resources_mod.LayerInfoEntry = &.{};
         var layer_info_count: usize = 0;
-        if (cache.snapshotFor(seg.binding.generation)) |snap| {
+        if (cache.snapshotFor(batch.binding.generation)) |snap| {
             layer_info_buf[0] = .{
                 .data = snap.layer_info_data,
                 .width = snap.layer_info_width,
@@ -81,10 +79,10 @@ pub fn draw(
             .layer_infos = layer_infos_slice,
             .layer_info_count = layer_info_count,
         };
-        const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-
-        if (seg_words.len != @as(usize, seg.shape_count) * WORDS_PER_INSTANCE) return error.MalformedSegment;
-        try renderer.drawBatch(&prepared, seg_words, state, 0, thread_pool);
+        const end = @as(usize, batch.first_instance) + batch.instance_count;
+        if (end > records.instances.len) return error.MalformedBatch;
+        const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
+        try renderer.drawBatch(&prepared, batch_instances, state, 0, thread_pool);
     }
 }
 
@@ -102,7 +100,7 @@ fn findCache(
 // Tests
 //
 // The emit() tests lock down the draw-record layout; these tests verify that
-// the raster entry walks segments, validates bindings, and produces pixels
+// the raster entry walks batches, validates bindings, and produces pixels
 // through `drawBatch`.
 // ---------------------------------------------------------------------------
 
@@ -131,14 +129,13 @@ test "draw MissingBinding when no cache covers the binding's pool" {
     var renderer = @import("renderer.zig").Renderer.init(&pixels, 16, 16, 16 * 4);
     const state = makeIdentityState(16, 16);
 
-    const segments = [_]draw_records.DrawSegment{.{
+    const batches = [_]draw_records.DrawBatch{.{
         .binding = .{ .pool = pool_b, .generation = 0 },
-        .words_offset = 0,
-        .words_len = 0,
-        .shape_count = 0,
+        .first_instance = 0,
+        .instance_count = 0,
         .kind = .regular,
     }};
-    const records = DrawRecords{ .words = &.{}, .segments = &segments };
+    const records = DrawRecords{ .instances = &.{}, .batches = &batches };
     try testing.expectError(error.MissingBinding, draw(&renderer, state, records, &.{&cache_a}, null));
 }
 
@@ -223,13 +220,13 @@ test "draw autohint fits per size without mutating atlas resources" {
                 .local_transform = .{ .xx = px_size, .yy = -px_size, .tx = 10, .ty = 28 },
                 .autohint_policy = policy,
             };
-            var words: [vertex.WORDS_PER_INSTANCE]u32 = undefined;
-            var segs: [1]draw_records.DrawSegment = undefined;
-            var wlen: usize = 0;
-            var slen: usize = 0;
-            _ = try emit_mod.emit(&words, &segs, &wlen, &slen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
+            var instances: [1]vertex.Instance = undefined;
+            var batches: [1]draw_records.DrawBatch = undefined;
+            var ilen: usize = 0;
+            var blen: usize = 0;
+            _ = try emit_mod.emit(&instances, &batches, &ilen, &blen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
             var renderer = @import("renderer.zig").Renderer.init(pixels.ptr, W, H, STRIDE);
-            try draw(&renderer, makeIdentityState(W, H), .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{cache_ptr}, null);
+            try draw(&renderer, makeIdentityState(W, H), .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{cache_ptr}, null);
         }
     };
 
@@ -320,17 +317,17 @@ test "draw renders a small Picture into non-zero pixels" {
     const shapes = [_]@import("snail").Shape{shape};
 
     const emit_mod = @import("snail").emit;
-    const word_need = emit_mod.wordBudget(shapes.len);
-    const words = try allocator.alloc(u32, word_need);
-    defer allocator.free(words);
-    var segs: [2]draw_records.DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const instance_need = shapes.len;
+    const instances = try allocator.alloc(vertex.Instance, instance_need);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
+    const records = DrawRecords{ .instances = instances[0..ilen], .batches = batches[0..blen] };
     try draw(&renderer, state, records, &.{&cache}, null);
 
     // Expect some non-zero pixel coverage from the glyph.
@@ -398,16 +395,16 @@ test "draw renders gradient-painted glyph through special-layer path" {
     const shapes = [_]@import("snail").Shape{shape};
 
     const emit_mod = @import("snail").emit;
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
-    defer allocator.free(words);
-    var segs: [2]draw_records.DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const instances = try allocator.alloc(vertex.Instance, shapes.len);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try draw(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
+    try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
 
     // Scan every drawn pixel; expect both red-dominant (left of the
     // gradient) and blue-dominant (right) coverage somewhere in the
@@ -502,16 +499,16 @@ test "draw renders image-painted shape through special-layer path" {
     const shapes = [_]@import("snail").Shape{shape};
 
     const emit_mod = @import("snail").emit;
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
-    defer allocator.free(words);
-    var segs: [2]draw_records.DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const instances = try allocator.alloc(vertex.Instance, shapes.len);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
     var renderer = @import("renderer.zig").Renderer.init(px.ptr, W, H, STRIDE);
     const state = makeIdentityState(W, H);
-    try draw(&renderer, state, .{ .words = words[0..wlen], .segments = segs[0..slen] }, &.{&cache}, null);
+    try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
 
     var has_red: bool = false;
     var row: u32 = 0;
@@ -588,13 +585,13 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try cache.upload(allocator, &.{&atlas}, &bindings);
 
     const emit_mod = @import("snail").emit;
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.items.len));
-    defer allocator.free(words);
-    var segs: [2]draw_records.DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, shapes.items, .identity, .{ 1, 1, 1, 1 });
-    const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
+    const instances = try allocator.alloc(vertex.Instance, shapes.items.len);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, bindings[0], &atlas, shapes.items, .identity, .{ 1, 1, 1, 1 });
+    const records = DrawRecords{ .instances = instances[0..ilen], .batches = batches[0..blen] };
     const state = makeIdentityState(W, H);
 
     const px_serial = try allocator.alloc(u8, H * STRIDE);
@@ -842,13 +839,13 @@ test "draw scissor_rect clips writes to the rect" {
     const shapes = [_]@import("snail").Shape{shape};
 
     const emit_mod = @import("snail").emit;
-    const words = try allocator.alloc(u32, emit_mod.wordBudget(shapes.len));
-    defer allocator.free(words);
-    var segs: [2]draw_records.DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit_mod.emit(words, segs[0..], &wlen, &slen, bindings[0], &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
-    const records = DrawRecords{ .words = words[0..wlen], .segments = segs[0..slen] };
+    const instances = try allocator.alloc(vertex.Instance, shapes.len);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, bindings[0], &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const records = DrawRecords{ .instances = instances[0..ilen], .batches = batches[0..blen] };
 
     // Render once without scissor — the glyph should populate the
     // left half of the buffer.

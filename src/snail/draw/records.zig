@@ -1,8 +1,8 @@
 //! `DrawRecords`: the output of `emit`.
 //!
 //! Two slices:
-//! - `words` is packed GPU-ready data: one 23-word `Instance` per shape.
-//! - `segments` describes how to bind state and dispatch each draw.
+//! - `instances` is packed GPU-ready data: one `Instance` per shape.
+//! - `batches` describes how to bind state and dispatch each draw.
 //!
 const std = @import("std");
 const page_pool_mod = @import("../atlas/page_pool.zig");
@@ -10,8 +10,9 @@ const abi_mod = @import("../format/abi.zig");
 const vertex_mod = @import("../format/vertex.zig");
 
 pub const PagePool = page_pool_mod.PagePool;
+pub const Instance = vertex_mod.Instance;
 
-/// Semantic family of every instance in a `DrawSegment`. This describes the
+/// Semantic family of every instance in a `DrawBatch`. This describes the
 /// prepared record; callers decide which shader or pipeline consumes it.
 pub const ShapeKind = enum {
     regular,
@@ -41,43 +42,41 @@ pub const Binding = struct {
     }
 };
 
-pub const DrawSegment = struct {
+/// One instanced draw call: a contiguous run of instances sharing a binding
+/// and a semantic family.
+pub const DrawBatch = struct {
     binding: Binding,
-    /// Offset (in `u32` words) into `DrawRecords.words` where this segment starts.
-    words_offset: u32,
-    /// Length (in `u32` words) of this segment's payload in `DrawRecords.words`.
-    words_len: u32,
-    /// Number of instances in this segment.
-    shape_count: u32,
-    /// Exact semantic family shared by every instance in this segment.
+    /// Index into `DrawRecords.instances` of this batch's first instance.
+    first_instance: u32,
+    /// Number of instances in this batch.
+    instance_count: u32,
+    /// Exact semantic family shared by every instance in this batch.
     kind: ShapeKind,
 };
 
 pub const DrawRecords = struct {
-    words: []const u32,
-    segments: []const DrawSegment,
+    instances: []const Instance,
+    batches: []const DrawBatch,
 };
 
-/// Try to merge `next` into the last segment of `segs` if the two are
-/// adjacent in `words` and share a binding and semantic family. Returns true
-/// if merged.
-pub fn mergeIfAdjacent(segs: []DrawSegment, len: *usize, next: DrawSegment) bool {
+/// Try to merge `next` into the last batch of `batches` if the two are
+/// adjacent in `instances` and share a binding and semantic family. Returns
+/// true if merged.
+pub fn mergeIfAdjacent(batches: []DrawBatch, len: *usize, next: DrawBatch) bool {
     if (len.* == 0) return false;
-    const last = &segs[len.* - 1];
+    const last = &batches[len.* - 1];
     if (!last.binding.eql(next.binding)) return false;
     if (last.kind != next.kind) return false;
-    if (last.words_offset + last.words_len != next.words_offset) return false;
-    last.words_len += next.words_len;
-    last.shape_count += next.shape_count;
+    if (last.first_instance + last.instance_count != next.first_instance) return false;
+    last.instance_count += next.instance_count;
     return true;
 }
 
 /// Decode the semantic family encoded in one packed instance. Emit uses this
-/// once while constructing homogeneous segments; it is also useful for ABI
+/// once while constructing homogeneous batches; it is also useful for ABI
 /// validation and diagnostics without imposing renderer dispatch policy.
-pub fn shapeKind(words: []const u32, shape_index: usize) ShapeKind {
-    std.debug.assert(words.len % vertex_mod.WORDS_PER_INSTANCE == 0);
-    const packed_word = vertex_mod.instanceAt(words, shape_index).glyph[1];
+pub fn shapeKind(instance: *const Instance) ShapeKind {
+    const packed_word = instance.glyph[1];
     if (!abi_mod.glyphWordIsSpecial(packed_word)) return .regular;
     return switch (abi_mod.specialGlyphWordKind(packed_word) orelse .colr) {
         .colr => .colr,
@@ -105,7 +104,7 @@ test "binding equality compares pool, generation, and offsets" {
     try std.testing.expect(!b1.eql(b1_other_row));
 }
 
-test "mergeIfAdjacent merges only contiguous homogeneous segments" {
+test "mergeIfAdjacent merges only contiguous homogeneous batches" {
     var pool = try PagePool.init(std.testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 128,
@@ -114,35 +113,31 @@ test "mergeIfAdjacent merges only contiguous homogeneous segments" {
     defer pool.deinit();
 
     const binding = Binding{ .pool = pool, .generation = 0 };
-    var buf: [4]DrawSegment = undefined;
+    var buf: [4]DrawBatch = undefined;
     var len: usize = 0;
 
     buf[len] = .{
         .binding = binding,
-        .words_offset = 0,
-        .words_len = 16,
-        .shape_count = 1,
+        .first_instance = 0,
+        .instance_count = 1,
         .kind = .regular,
     };
     len += 1;
 
-    const next = DrawSegment{
+    const next = DrawBatch{
         .binding = binding,
-        .words_offset = 16,
-        .words_len = 32,
-        .shape_count = 2,
+        .first_instance = 1,
+        .instance_count = 2,
         .kind = .regular,
     };
     try std.testing.expect(mergeIfAdjacent(buf[0..], &len, next));
     try std.testing.expectEqual(@as(usize, 1), len);
-    try std.testing.expectEqual(@as(u32, 48), buf[0].words_len);
-    try std.testing.expectEqual(@as(u32, 3), buf[0].shape_count);
+    try std.testing.expectEqual(@as(u32, 3), buf[0].instance_count);
 
-    const different_kind = DrawSegment{
+    const different_kind = DrawBatch{
         .binding = binding,
-        .words_offset = 48,
-        .words_len = 16,
-        .shape_count = 1,
+        .first_instance = 3,
+        .instance_count = 1,
         .kind = .path,
     };
     try std.testing.expect(!mergeIfAdjacent(buf[0..], &len, different_kind));

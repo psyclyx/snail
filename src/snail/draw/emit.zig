@@ -1,10 +1,15 @@
-//! `emit`: write GPU-ready vertex bytes for a flat shape slice resolved
-//! against an `Atlas`, plus homogeneous `DrawSegment`s describing the binding
+//! `emit`: write GPU-ready `Instance`s for a flat shape slice resolved
+//! against an `Atlas`, plus homogeneous `DrawBatch`es describing the binding
 //! and semantic family of each contiguous instance run.
 //!
-//! `emit` walks shape lists and writes one 23-word `Instance` per shape into
+//! `emit` walks shape lists and writes one packed `Instance` per shape into
 //! caller-provided buffers. Consecutive instances and calls that share a
-//! binding, semantic family, and word contiguity coalesce their segments.
+//! binding, semantic family, and contiguity coalesce their batches.
+//!
+//! Buffer sizing: one emit call writes at most `shapes.len` instances and
+//! `shapes.len` batches past the current lengths. Instances are GPU-bound
+//! bytes (`std.mem.sliceAsBytes` gives the upload view); batches stay on the
+//! CPU, so the two buffers can live in different memory.
 //!
 //! These functions operate on a raw `[]const Shape` directly; whatever
 //! container the caller uses to organize their scene (an owned slice, an
@@ -21,14 +26,14 @@ const draw_records = @import("records.zig");
 const shape_mod = @import("shape.zig");
 
 const InstanceCursor = instance_emit.Cursor;
+const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 
 pub const Transform2D = math.Transform2D;
 pub const Atlas = atlas_mod.Atlas;
 pub const Binding = draw_records.Binding;
-pub const DrawSegment = draw_records.DrawSegment;
+pub const DrawBatch = draw_records.DrawBatch;
+pub const Instance = draw_records.Instance;
 pub const Shape = shape_mod.Shape;
-
-const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 
 pub const EmitError = error{
     /// The shape slice references a key not present in the atlas.
@@ -41,7 +46,7 @@ pub const EmitError = error{
     UnexpectedAutohintPolicy,
     /// The supplied autohint policy failed semantic validation.
     InvalidAutohintPolicy,
-    /// `words_buf` or `segs_buf` ran out of room.
+    /// `instances_buf` or `batches_buf` ran out of room.
     BufferTooSmall,
     /// A page index exceeded the vertex format's u8 `atlas_layer` slot.
     AtlasLayerOverflow,
@@ -58,33 +63,32 @@ fn addRowBase(info_y: u16, row_base: u32) EmitError!u16 {
 }
 
 pub const EmitResult = struct {
-    shape_count: u32,
-    word_count: u32,
-    segment_count: u32,
+    instance_count: u32,
+    batch_count: u32,
 };
 
 /// Heterogeneous emit. One pre-composed `Instance` per shape in `shapes`,
 /// transform composed as `world_xform * shape.local_transform`, color as
 /// `shape.local_color`, tint as `world_tint`.
 pub fn emit(
-    words_buf: []u32,
-    segs_buf: []DrawSegment,
-    word_len: *usize,
-    seg_len: *usize,
+    instances_buf: []Instance,
+    batches_buf: []DrawBatch,
+    instance_len: *usize,
+    batch_len: *usize,
     binding: Binding,
     atlas: *const Atlas,
     shapes: []const Shape,
     world_xform: Transform2D,
     world_tint: [4]f32,
 ) EmitError!EmitResult {
-    const need_words = shapes.len * WORDS_PER_INSTANCE;
-    if (words_buf.len - word_len.* < need_words) return error.BufferTooSmall;
+    if (instances_buf.len - instance_len.* < shapes.len) return error.BufferTooSmall;
 
-    var cursor: usize = word_len.*;
+    const words_buf: []u32 = @ptrCast(std.mem.sliceAsBytes(instances_buf));
+    var cursor: usize = instance_len.* * WORDS_PER_INSTANCE;
     const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var emitted: u32 = 0;
-    var working_seg_len = seg_len.*;
-    var segments_added: u32 = 0;
+    var working_batch_len = batch_len.*;
+    var batches_added: u32 = 0;
 
     for (shapes) |shape| {
         const rec = atlas.lookupRecord(shape.key) orelse {
@@ -180,47 +184,29 @@ pub fn emit(
             );
         }
 
-        const instance_word_offset = cursor - WORDS_PER_INSTANCE;
-        const kind = draw_records.shapeKind(words_buf[0..cursor], instance_word_offset / WORDS_PER_INSTANCE);
-        const segment = DrawSegment{
+        const instance_index = cursor / WORDS_PER_INSTANCE - 1;
+        const batch = DrawBatch{
             .binding = binding,
-            .words_offset = @intCast(instance_word_offset),
-            .words_len = @intCast(WORDS_PER_INSTANCE),
-            .shape_count = 1,
-            .kind = kind,
+            .first_instance = @intCast(instance_index),
+            .instance_count = 1,
+            .kind = draw_records.shapeKind(&instances_buf[instance_index]),
         };
-        if (!draw_records.mergeIfAdjacent(segs_buf, &working_seg_len, segment)) {
-            if (working_seg_len >= segs_buf.len) return error.BufferTooSmall;
-            segs_buf[working_seg_len] = segment;
-            working_seg_len += 1;
-            segments_added += 1;
+        if (!draw_records.mergeIfAdjacent(batches_buf, &working_batch_len, batch)) {
+            if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
+            batches_buf[working_batch_len] = batch;
+            working_batch_len += 1;
+            batches_added += 1;
         }
         emitted += 1;
     }
 
-    const wrote_words: u32 = @intCast(cursor - word_len.*);
-    word_len.* = cursor;
-    seg_len.* = working_seg_len;
-
-    if (emitted == 0) {
-        return .{ .shape_count = 0, .word_count = 0, .segment_count = 0 };
-    }
+    instance_len.* = cursor / WORDS_PER_INSTANCE;
+    batch_len.* = working_batch_len;
 
     return .{
-        .shape_count = emitted,
-        .word_count = wrote_words,
-        .segment_count = segments_added,
+        .instance_count = emitted,
+        .batch_count = batches_added,
     };
-}
-
-/// Conservative upper bound on words written for an `emit` call.
-pub fn wordBudget(shape_count: usize) usize {
-    return shape_count * WORDS_PER_INSTANCE;
-}
-
-/// Conservative upper bound on segments written for one emit call.
-pub fn segmentBudget(shape_count: usize) usize {
-    return shape_count;
 }
 
 // ---------------------------------------------------------------------------
@@ -313,6 +299,11 @@ fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
     return atlas_mod.Atlas.from(testing.allocator, pool, entries.items);
 }
 
+fn instanceWords(instances: []const Instance, index: usize) []const u32 {
+    const words: []const u32 = @ptrCast(std.mem.sliceAsBytes(instances));
+    return words[index * WORDS_PER_INSTANCE ..][0..WORDS_PER_INSTANCE];
+}
+
 test "autohint shapes share lookup data and emit distinct seven-word policies" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,
@@ -335,14 +326,14 @@ test "autohint shapes share lookup data and emit distinct seven-word policies" {
     const slab_ptr = atlas.layer_info_data.?.ptr;
     const slab_len = atlas.layer_info_data.?.len;
 
-    var words: [2 * WORDS_PER_INSTANCE]u32 = undefined;
-    var segs: [1]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
-    _ = try emit(&words, &segs, &wlen, &slen, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    var instances: [2]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit(&instances, &batches, &ilen, &blen, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    const decoded_a = vertex.decodeInstance(words[0..WORDS_PER_INSTANCE]);
-    const decoded_b = vertex.decodeInstance(words[WORDS_PER_INSTANCE..]);
+    const decoded_a = vertex.decodeInstance(instanceWords(&instances, 0));
+    const decoded_b = vertex.decodeInstance(instanceWords(&instances, 1));
     const packed_a = policy_a.pack();
     const packed_b = policy_b.pack();
     try testing.expectEqualSlices(u32, &packed_a, &decoded_a.policy);
@@ -352,7 +343,7 @@ test "autohint shapes share lookup data and emit distinct seven-word policies" {
     try testing.expectEqual(slab_ptr, atlas.layer_info_data.?.ptr);
     try testing.expectEqual(slab_len, atlas.layer_info_data.?.len);
 
-    try testing.expectEqual(draw_records.ShapeKind.autohint, segs[0].kind);
+    try testing.expectEqual(draw_records.ShapeKind.autohint, batches[0].kind);
 }
 
 test "emit enforces autohint policy presence and placement" {
@@ -364,14 +355,14 @@ test "emit enforces autohint policy presence and placement" {
     defer pool.deinit();
     var atlas = try buildAutohintTestAtlas(pool);
     defer atlas.deinit();
-    var words: [WORDS_PER_INSTANCE]u32 = undefined;
-    var segs: [1]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    var instances: [1]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
     const binding = Binding{ .pool = pool };
 
-    try testing.expectError(error.MissingAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.autohintGlyph(0, 1) }}, .identity, .{ 1, 1, 1, 1 }));
-    try testing.expectError(error.UnexpectedAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{ .key = record_key_mod.unhintedGlyph(0, 1), .autohint_policy = .{} }}, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectError(error.MissingAutohintPolicy, emit(&instances, &batches, &ilen, &blen, binding, &atlas, &.{.{ .key = record_key_mod.autohintGlyph(0, 1) }}, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectError(error.UnexpectedAutohintPolicy, emit(&instances, &batches, &ilen, &blen, binding, &atlas, &.{.{ .key = record_key_mod.unhintedGlyph(0, 1), .autohint_policy = .{} }}, .identity, .{ 1, 1, 1, 1 }));
 
     const invalid: autohint_policy.AutohintPolicy = .{
         .y = .{
@@ -379,7 +370,7 @@ test "emit enforces autohint policy presence and placement" {
             .overshoot = .{ .suppress_below_px = std.math.nan(f32) },
         },
     };
-    try testing.expectError(error.InvalidAutohintPolicy, emit(&words, &segs, &wlen, &slen, binding, &atlas, &.{.{
+    try testing.expectError(error.InvalidAutohintPolicy, emit(&instances, &batches, &ilen, &blen, binding, &atlas, &.{.{
         .key = record_key_mod.autohintGlyph(0, 1),
         .autohint_policy = invalid,
     }}, .identity, .{ 1, 1, 1, 1 }));
@@ -400,26 +391,25 @@ test "emit writes one instance per shape" {
         .{ .key = record_key_mod.unhintedGlyph(0, 1), .local_transform = .translate(10, 20) },
         .{ .key = record_key_mod.unhintedGlyph(0, 2), .local_transform = .translate(30, 40) },
     };
-    const need = wordBudget(shapes.len);
-    const words = try testing.allocator.alloc(u32, need);
-    defer testing.allocator.free(words);
-    var segs: [4]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    const instances = try testing.allocator.alloc(Instance, shapes.len);
+    defer testing.allocator.free(instances);
+    var batches: [4]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
 
     const binding = Binding{ .pool = pool };
-    const result = try emit(words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    const result = try emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    try testing.expectEqual(@as(u32, 2), result.shape_count);
-    try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE), result.word_count);
-    try testing.expectEqual(@as(u32, 1), result.segment_count);
-    try testing.expectEqual(@as(usize, 1), slen);
-    try testing.expectEqual(@as(u32, 2), segs[0].shape_count);
-    try testing.expectEqual(@as(u32, 0), segs[0].words_offset);
+    try testing.expectEqual(@as(u32, 2), result.instance_count);
+    try testing.expectEqual(@as(u32, 1), result.batch_count);
+    try testing.expectEqual(@as(usize, 2), ilen);
+    try testing.expectEqual(@as(usize, 1), blen);
+    try testing.expectEqual(@as(u32, 2), batches[0].instance_count);
+    try testing.expectEqual(@as(u32, 0), batches[0].first_instance);
 
     // The composed transform on instance 0 should match the shape's local
     // transform (world is identity).
-    const inst0 = vertex.decodeInstance(words[0..WORDS_PER_INSTANCE]);
+    const inst0 = vertex.decodeInstance(instanceWords(instances, 0));
     try testing.expectApproxEqAbs(@as(f32, 10), inst0.origin[0], 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 20), inst0.origin[1], 1e-5);
 }
@@ -443,12 +433,12 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
 
     const shapes = [_]Shape{.{ .key = key, .local_transform = local_t, .local_color = local_color }};
 
-    var words = [_]u32{0} ** (WORDS_PER_INSTANCE);
-    var segs: [1]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    var instances: [1]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
     const binding = Binding{ .pool = pool };
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes, world_t, world_tint);
+    _ = try emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, world_t, world_tint);
 
     // Now produce the same instance through the existing vertex helper.
     const rec = atlas.lookupRecord(key).?;
@@ -474,7 +464,7 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
         final_t,
     ));
 
-    try testing.expectEqualSlices(u32, &direct, &words);
+    try testing.expectEqualSlices(u32, &direct, instanceWords(&instances, 0));
 }
 
 test "emit reports MissingRecord on unknown key" {
@@ -489,13 +479,13 @@ test "emit reports MissingRecord on unknown key" {
 
     const shapes = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 99) }};
 
-    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
-    var segs: [1]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    var instances: [1]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
 
     const binding = Binding{ .pool = pool };
-    try testing.expectError(EmitError.MissingRecord, emit(&buf, segs[0..], &wlen, &slen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
+    try testing.expectError(EmitError.MissingRecord, emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
 }
 
 test "emit coalesces adjacent same-binding calls" {
@@ -511,21 +501,21 @@ test "emit coalesces adjacent same-binding calls" {
     const shapes_a = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 1) }};
     const shapes_b = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 2) }};
 
-    var words: [4 * WORDS_PER_INSTANCE]u32 = undefined;
-    var segs: [4]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    var instances: [4]Instance = undefined;
+    var batches: [4]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
     const binding = Binding{ .pool = pool };
 
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes_a, .identity, .{ 1, 1, 1, 1 });
-    _ = try emit(&words, segs[0..], &wlen, &slen, binding, &atlas, &shapes_b, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes_a, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes_b, .identity, .{ 1, 1, 1, 1 });
 
-    try testing.expectEqual(@as(usize, 1), slen);
-    try testing.expectEqual(@as(u32, 2), segs[0].shape_count);
-    try testing.expectEqual(@as(u32, 2 * WORDS_PER_INSTANCE), segs[0].words_len);
+    try testing.expectEqual(@as(usize, 1), blen);
+    try testing.expectEqual(@as(u32, 2), batches[0].instance_count);
+    try testing.expectEqual(@as(u32, 0), batches[0].first_instance);
 }
 
-test "emit splits contiguous shapes into exact semantic segments" {
+test "emit splits contiguous shapes into exact semantic batches" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1024,
@@ -556,26 +546,25 @@ test "emit splits contiguous shapes into exact semantic segments" {
         .{ .key = hinted_key },
         .{ .key = regular_key },
     };
-    var words: [5 * WORDS_PER_INSTANCE]u32 = undefined;
-    var segments: [5]DrawSegment = undefined;
-    var word_len: usize = 0;
-    var segment_len: usize = 0;
-    const result = try emit(&words, &segments, &word_len, &segment_len, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+    var instances: [5]Instance = undefined;
+    var batches: [5]DrawBatch = undefined;
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+    const result = try emit(&instances, &batches, &instance_len, &batch_len, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    try testing.expectEqual(@as(u32, 5), result.segment_count);
-    try testing.expectEqual(@as(usize, 5), segment_len);
-    try testing.expectEqual(draw_records.ShapeKind.regular, segments[0].kind);
-    try testing.expectEqual(draw_records.ShapeKind.colr, segments[1].kind);
-    try testing.expectEqual(draw_records.ShapeKind.path, segments[2].kind);
-    try testing.expectEqual(draw_records.ShapeKind.tt_hinted_text, segments[3].kind);
-    try testing.expectEqual(draw_records.ShapeKind.regular, segments[4].kind);
-    for (segments) |segment| {
-        try testing.expectEqual(@as(u32, 1), segment.shape_count);
-        try testing.expectEqual(@as(u32, WORDS_PER_INSTANCE), segment.words_len);
+    try testing.expectEqual(@as(u32, 5), result.batch_count);
+    try testing.expectEqual(@as(usize, 5), batch_len);
+    try testing.expectEqual(draw_records.ShapeKind.regular, batches[0].kind);
+    try testing.expectEqual(draw_records.ShapeKind.colr, batches[1].kind);
+    try testing.expectEqual(draw_records.ShapeKind.path, batches[2].kind);
+    try testing.expectEqual(draw_records.ShapeKind.tt_hinted_text, batches[3].kind);
+    try testing.expectEqual(draw_records.ShapeKind.regular, batches[4].kind);
+    for (batches) |batch| {
+        try testing.expectEqual(@as(u32, 1), batch.instance_count);
     }
 }
 
-test "emit produces separate segments for different bindings" {
+test "emit produces separate batches for different bindings" {
     var pool_a = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 512,
@@ -597,21 +586,15 @@ test "emit produces separate segments for different bindings" {
     const shapes_a = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 1) }};
     const shapes_b = [_]Shape{.{ .key = record_key_mod.unhintedGlyph(0, 2) }};
 
-    var words: [4 * WORDS_PER_INSTANCE]u32 = undefined;
-    var segs: [4]DrawSegment = undefined;
-    var wlen: usize = 0;
-    var slen: usize = 0;
+    var instances: [4]Instance = undefined;
+    var batches: [4]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
 
-    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_a }, &atlas_a, &shapes_a, .identity, .{ 1, 1, 1, 1 });
-    _ = try emit(&words, segs[0..], &wlen, &slen, .{ .pool = pool_b }, &atlas_b, &shapes_b, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&instances, batches[0..], &ilen, &blen, .{ .pool = pool_a }, &atlas_a, &shapes_a, .identity, .{ 1, 1, 1, 1 });
+    _ = try emit(&instances, batches[0..], &ilen, &blen, .{ .pool = pool_b }, &atlas_b, &shapes_b, .identity, .{ 1, 1, 1, 1 });
 
-    try testing.expectEqual(@as(usize, 2), slen);
-    try testing.expect(segs[0].binding.pool == pool_a);
-    try testing.expect(segs[1].binding.pool == pool_b);
-}
-
-test "wordBudget bounds match actual emit output" {
-    const shape_count: usize = 3;
-    try testing.expectEqual(@as(usize, 3 * WORDS_PER_INSTANCE), wordBudget(shape_count));
-    try testing.expectEqual(shape_count, segmentBudget(shape_count));
+    try testing.expectEqual(@as(usize, 2), blen);
+    try testing.expect(batches[0].binding.pool == pool_a);
+    try testing.expect(batches[1].binding.pool == pool_b);
 }

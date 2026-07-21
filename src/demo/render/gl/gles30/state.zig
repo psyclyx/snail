@@ -126,7 +126,7 @@ pub const Gles30TextState = struct {
     pub const DrawError = error{
         MissingBinding,
         StaleBinding,
-        MalformedSegment,
+        MalformedBatch,
     } || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
@@ -143,18 +143,18 @@ pub const Gles30TextState = struct {
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
 
-        for (records.segments) |seg| {
-            const cache = findCache(caches, seg.binding.pool) orelse return error.MissingBinding;
-            if (seg.binding.generation != 0 and cache.upload_generation < seg.binding.generation) return error.StaleBinding;
-            const seg_words = records.words[seg.words_offset..][0..seg.words_len];
-            if (seg_words.len != @as(usize, seg.shape_count) * vertex.WORDS_PER_INSTANCE) return error.MalformedSegment;
+        for (records.batches) |batch| {
+            const cache = findCache(caches, batch.binding.pool) orelse return error.MissingBinding;
+            if (batch.binding.generation != 0 and cache.upload_generation < batch.binding.generation) return error.StaleBinding;
+            if (@as(usize, batch.first_instance) + batch.instance_count > records.instances.len) return error.MalformedBatch;
+            const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
             _ = scratch;
-            try self.drawSegment(cache, draw_state, seg_words, seg.kind);
+            try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
         }
     }
 
-    fn drawSegment(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, vertices: []const u32, kind: draw_records_mod.ShapeKind) DrawError!void {
-        const total_glyphs = vertices.len / vertex.WORDS_PER_INSTANCE;
+    fn drawBatch(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, draw_state: DrawState, instances: []const vertex.Instance, kind: draw_records_mod.ShapeKind) DrawError!void {
+        const total_glyphs = instances.len;
         if (total_glyphs == 0) return;
 
         const run_mode: TextRenderMode = .grayscale;
@@ -167,7 +167,7 @@ pub const Gles30TextState = struct {
             .autohint => self.ensureAutohintProgram(),
         };
         self.bindProgramState(cache, prog_state, draw_state, run_mode);
-        self.drawGlyphRange(vertices, 0, total_glyphs);
+        self.drawGlyphRange(instances, 0, total_glyphs);
     }
 
     fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30BackendCache, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
@@ -238,15 +238,15 @@ pub const Gles30TextState = struct {
         return &self.autohint_program;
     }
 
-    fn drawGlyphRange(self: *Gles30TextState, vertices: []const u32, glyph_offset: usize, glyph_count: usize) void {
+    fn drawGlyphRange(self: *Gles30TextState, instances: []const vertex.Instance, glyph_offset: usize, glyph_count: usize) void {
         _ = self;
         var glyphs_drawn: usize = 0;
         while (glyphs_drawn < glyph_count) {
-            const word_offset = (glyph_offset + glyphs_drawn) * vertex.WORDS_PER_INSTANCE;
+            const instance_offset = glyph_offset + glyphs_drawn;
             const chunk: usize = @min(glyph_count - glyphs_drawn, MAX_GLYPHS_PER_UPLOAD);
             const byte_size = chunk * BYTES_PER_GLYPH;
 
-            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(vertices[word_offset..].ptr));
+            gl.glBufferSubData(gl.GL_ARRAY_BUFFER, 0, @intCast(byte_size), @ptrCast(instances[instance_offset..].ptr));
 
             gl.glDrawElementsInstanced(gl.GL_TRIANGLES, 6, gl.GL_UNSIGNED_INT, null, @intCast(chunk));
 

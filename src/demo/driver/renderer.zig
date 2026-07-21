@@ -419,7 +419,7 @@ const VulkanDriver = struct {
             // reads the timestamp results (= MAX_FRAMES_IN_FLIGHT
             // frames later, when this slot is reused).
             vulkan_platform.beginPassTimestamp(platform_cmd, @intCast(i));
-            self.caller.render(cmd, desc_set, pass.draw_state, rec.words, rec.segs);
+            self.caller.render(cmd, desc_set, pass.draw_state, rec.instances, rec.batches);
             vulkan_platform.endPassTimestamp(platform_cmd, @intCast(i));
         }
 
@@ -624,7 +624,7 @@ fn glRender(
     for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
         if (has_timer) self.gl_timer.beginPass(i);
         const t0 = wayland.getTime();
-        try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?});
+        try self.renderer_state.state.draw(allocator, pass.draw_state, .{ .instances = rec.instances, .batches = rec.batches }, &.{&self.cache.?});
         timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
         if (has_timer) self.gl_timer.endPass(i);
     }
@@ -774,7 +774,7 @@ const CpuDriver = struct {
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             const dispatch_pool: ?*raster.ThreadPool = if (pass.cpu_parallel) self.pool else null;
             const t0 = wayland.getTime();
-            try raster.draw(&self.renderer_state, pass.draw_state, .{ .words = rec.words, .segments = rec.segs }, &.{&self.cache.?}, dispatch_pool);
+            try raster.draw(&self.renderer_state, pass.draw_state, .{ .instances = rec.instances, .batches = rec.batches }, &.{&self.cache.?}, dispatch_pool);
             self.last_timings.pass_us[i] = (wayland.getTime() - t0) * 1_000_000.0;
         }
 

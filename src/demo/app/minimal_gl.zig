@@ -340,17 +340,17 @@ pub fn main() !void {
     defer allocator.free(tt_hinted);
 
     const total_shapes = extras.len + unhinted.len + autohinted.len + tt_hinted.len;
-    const words = try allocator.alloc(u32, snail.emit.wordBudget(total_shapes));
-    defer allocator.free(words);
-    const segments = try allocator.alloc(snail.render.records.DrawSegment, 6);
-    defer allocator.free(segments);
-    var word_len: usize = 0;
-    var segment_len: usize = 0;
+    const instances = try allocator.alloc(snail.render.records.Instance, total_shapes);
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, total_shapes);
+    defer allocator.free(batches);
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
     const binding = gpu.binding.?;
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, &extras, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, unhinted, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, autohinted, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segments, &word_len, &segment_len, binding, &atlas, tt_hinted, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(instances, batches, &instance_len, &batch_len, binding, &atlas, &extras, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(instances, batches, &instance_len, &batch_len, binding, &atlas, unhinted, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(instances, batches, &instance_len, &batch_len, binding, &atlas, autohinted, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(instances, batches, &instance_len, &batch_len, binding, &atlas, tt_hinted, .identity, .{ 1, 1, 1, 1 });
 
     var seen = struct {
         regular: bool = false,
@@ -359,12 +359,12 @@ pub fn main() !void {
         colr: bool = false,
         path_shapes: u32 = 0,
     }{};
-    for (segments[0..segment_len]) |segment| switch (segment.kind) {
+    for (batches[0..batch_len]) |batch| switch (batch.kind) {
         .regular => seen.regular = true,
         .autohint => seen.autohint = true,
         .tt_hinted_text => seen.tt_hinted_text = true,
         .colr => seen.colr = true,
-        .path => seen.path_shapes += segment.shape_count,
+        .path => seen.path_shapes += batch.instance_count,
     };
     std.debug.assert(seen.regular and seen.autohint and seen.tt_hinted_text and seen.colr and seen.path_shapes == 2);
 
@@ -372,7 +372,7 @@ pub fn main() !void {
     defer target.deinit();
     const programs = try Programs.init();
     defer programs.deinit();
-    var geometry = initGeometry(word_len * @sizeOf(u32));
+    var geometry = initGeometry(instance_len * snail.render.records.BYTES_PER_INSTANCE);
     defer geometry.deinit();
 
     target.bind();
@@ -385,14 +385,14 @@ pub fn main() !void {
     gpu.bind();
 
     const projection = snail.Mat4.ortho(0, width, height, 0, -1, 1);
-    const instance_words = words[0..word_len];
-    for (segments[0..segment_len]) |segment| {
-        const run_words = instance_words[segment.words_offset..][0..segment.words_len];
-        const program = programs.forKind(segment.kind);
+    for (batches[0..batch_len]) |batch| {
+        const run = instances[batch.first_instance..][0..batch.instance_count];
+        const run_bytes = std.mem.sliceAsBytes(run);
+        const program = programs.forKind(batch.kind);
         bindProgram(program, projection);
         c.glBindBuffer(c.GL_ARRAY_BUFFER, geometry.vbo);
-        c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @intCast(run_words.len * @sizeOf(u32)), run_words.ptr);
-        c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(segment.shape_count));
+        c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @intCast(run_bytes.len), run_bytes.ptr);
+        c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(batch.instance_count));
     }
     c.glFinish();
     try writeTga(allocator, "zig-out/minimal-gl.tga");

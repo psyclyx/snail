@@ -3,7 +3,7 @@
 //! The seven `screenshot*.zig` / `banner_screenshot*.zig` entry points
 //! all do the same shape: build a `Scene` (one pool + paths+text
 //! atlases + paths+text pictures), upload it to a per-backend cache,
-//! emit two draw segments, run the backend's draw call, capture
+//! emit two draw batches, run the backend's draw call, capture
 //! pixels, and write a TGA. The harness owns the boilerplate; entry
 //! points just wire backend-specific context (CPU pixel buffer, GL FBO,
 //! Vulkan frame) and call the matching helper.
@@ -77,31 +77,28 @@ pub fn drawStateExp(width: u32, height: u32, exponent: f32) @import("snail-raste
     };
 }
 
-/// Sum of the word budgets for both pictures in the scene.
-pub fn wordBudget(scene: Scene) usize {
-    return snail.emit.wordBudget(scene.paths_picture.shapes.len) + snail.emit.wordBudget(scene.text_picture.shapes.len);
+/// Sum of the shape counts for both pictures in the scene.
+pub fn shapeBudget(scene: Scene) usize {
+    return scene.paths_picture.shapes.len + scene.text_picture.shapes.len;
 }
 
-pub fn segmentBudget(scene: Scene) usize {
-    return snail.emit.segmentBudget(scene.paths_picture.shapes.len) + snail.emit.segmentBudget(scene.text_picture.shapes.len);
-}
 
-pub const EmitOut = struct { words_len: usize, segs_len: usize };
+pub const EmitOut = struct { instances_len: usize, batches_len: usize };
 
-/// Emit both atlases' pictures into `words` / `segs`. The buffers must
-/// be large enough — `wordBudget(scene)` words and `segmentBudget(scene)` segments.
+/// Emit both atlases' pictures into `instances` / `batches`. The buffers
+/// must each hold at least `shapeBudget(scene)` items.
 pub fn emitScene(
-    words: []u32,
-    segs: []snail.render.records.DrawSegment,
+    instances: []snail.render.records.Instance,
+    batches: []snail.render.records.DrawBatch,
     scene: Scene,
     paths_binding: snail.render.records.Binding,
     text_binding: snail.render.records.Binding,
 ) !EmitOut {
     var wlen: usize = 0;
     var slen: usize = 0;
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, paths_binding, scene.paths_atlas, scene.paths_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-    _ = try snail.emit.emit(words, segs, &wlen, &slen, text_binding, scene.text_atlas, scene.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-    return .{ .words_len = wlen, .segs_len = slen };
+    _ = try snail.emit.emit(instances, batches, &wlen, &slen, paths_binding, scene.paths_atlas, scene.paths_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+    _ = try snail.emit.emit(instances, batches, &wlen, &slen, text_binding, scene.text_atlas, scene.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+    return .{ .instances_len = wlen, .batches_len = slen };
 }
 
 /// Make `zig-out` and write the buffer as TGA, logging the path.
@@ -147,18 +144,18 @@ pub fn renderCpuToPixelsFmt(
     var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
-    const words = try allocator.alloc(u32, wordBudget(scene));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
-    defer allocator.free(segs);
-    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+    const instances = try allocator.alloc(snail.render.records.Instance, shapeBudget(scene));
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, shapeBudget(scene));
+    defer allocator.free(batches);
+    const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
     var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
     renderer.format = format;
     try raster.draw(
         &renderer,
         drawState(width, height),
-        .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
+        .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
         null,
     );
@@ -189,17 +186,17 @@ pub fn renderCpuToPixels(
     var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
-    const words = try allocator.alloc(u32, wordBudget(scene));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
-    defer allocator.free(segs);
-    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+    const instances = try allocator.alloc(snail.render.records.Instance, shapeBudget(scene));
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, shapeBudget(scene));
+    defer allocator.free(batches);
+    const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
     var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
     try raster.draw(
         &renderer,
         drawStateExp(width, height, opts.coverage_exponent),
-        .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
+        .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
         null,
     );
@@ -324,18 +321,18 @@ pub fn renderGlToPixels(
     var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
-    const words = try allocator.alloc(u32, wordBudget(scene));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
-    defer allocator.free(segs);
-    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+    const instances = try allocator.alloc(snail.render.records.Instance, shapeBudget(scene));
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, shapeBudget(scene));
+    defer allocator.free(batches);
+    const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
     clearGlBg();
     renderer.state.beginDraw();
     try renderer.state.draw(
         allocator,
         drawState(width, height),
-        .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] },
+        .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
     );
 
@@ -360,11 +357,11 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
     var bindings: [2]snail.render.records.Binding = undefined;
     try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
 
-    const words = try allocator.alloc(u32, wordBudget(scene));
-    defer allocator.free(words);
-    const segs = try allocator.alloc(snail.render.records.DrawSegment, segmentBudget(scene));
-    defer allocator.free(segs);
-    const e = try emitScene(words, segs, scene, bindings[0], bindings[1]);
+    const instances = try allocator.alloc(snail.render.records.Instance, shapeBudget(scene));
+    defer allocator.free(instances);
+    const batches = try allocator.alloc(snail.render.records.DrawBatch, shapeBudget(scene));
+    defer allocator.free(batches);
+    const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
     gl.glClearColor(0, 0, 0, 0);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT);
@@ -376,7 +373,7 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
     renderer.state.beginDraw();
-    try renderer.state.draw(allocator, ds, .{ .words = words[0..e.words_len], .segments = segs[0..e.segs_len] }, &.{&cache});
+    try renderer.state.draw(allocator, ds, .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] }, &.{&cache});
 
     const px = try allocator.alloc(u8, @as(usize, width) * height);
     errdefer allocator.free(px);

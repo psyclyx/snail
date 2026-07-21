@@ -205,9 +205,9 @@ pub fn main(init: std.process.Init) !void {
     var sampled_glyphs: usize = 0;
     var record_bytes: usize = 0;
     if (sample_glyphs) |glyph_count_requested| {
-        const glyph_count = @min(glyph_count_requested, emitted.word_len / snail.render.records.WORDS_PER_INSTANCE);
+        const glyph_count = @min(glyph_count_requested, emitted.instance_len);
         program = try linkProgram(sample_vertex_source, sample_fragment_source, false);
-        sample_geometry = initSampleGeometry(emitted.words[0 .. glyph_count * snail.render.records.WORDS_PER_INSTANCE]);
+        sample_geometry = initSampleGeometry(emitted.instances[0..glyph_count]);
         bindSampleProgram(program, glyph_count);
         draw_context = .{ .sample = &sample_geometry.? };
         sampled_glyphs = glyph_count;
@@ -215,7 +215,7 @@ pub fn main(init: std.process.Init) !void {
         work_per_draw = @as(usize, fixtures.width) * fixtures.height * glyph_count;
         work_unit = "fragment_glyph_test";
     } else {
-        if (emitted.segment_len != 1) return error.ExpectedHomogeneousScene;
+        if (emitted.batch_len != 1) return error.ExpectedHomogeneousScene;
         const expected_kind: snail.render.records.ShapeKind = if (std.mem.eql(u8, args.case, "text-tt-hint"))
             .tt_hinted_text
         else if (isAutohintCase(args.case))
@@ -226,7 +226,7 @@ pub fn main(init: std.process.Init) !void {
             .path
         else
             .regular;
-        if (emitted.segments[0].kind != expected_kind) return error.UnexpectedShapeKind;
+        if (emitted.batches[0].kind != expected_kind) return error.UnexpectedShapeKind;
         const fragment_source = if (std.mem.eql(u8, args.case, "text-gray"))
             regular_fragment_source
         else if (std.mem.eql(u8, args.case, "text-lcd"))
@@ -252,17 +252,17 @@ pub fn main(init: std.process.Init) !void {
         else
             vertex_source;
         program = try linkProgram(selected_vertex_source, fragment_source, dual_source);
-        standard_geometry = initGeometry(emitted.words[0..emitted.word_len]);
+        standard_geometry = initGeometry(emitted.instances[0..emitted.instance_len]);
         bindStandardProgram(program, dual_source);
         if (dual_source) {
             c.glBlendFuncSeparate(c.GL_ONE, c.GL_ONE_MINUS_SRC1_COLOR, c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
         }
         draw_context = .{ .standard = .{
             .geometry = &standard_geometry.?,
-            .instances = emitted.segments[0].shape_count,
+            .instances = emitted.batches[0].instance_count,
         } };
-        instance_count = emitted.segments[0].shape_count;
-        record_bytes = emitted.word_len * @sizeOf(u32);
+        instance_count = emitted.batches[0].instance_count;
+        record_bytes = emitted.instance_len * snail.render.records.BYTES_PER_INSTANCE;
         work_per_draw = instance_count;
         work_unit = "instance";
     }
@@ -311,7 +311,7 @@ pub fn main(init: std.process.Init) !void {
     };
     const renderer = glString(c.GL_RENDERER);
     std.debug.print(
-        "benchmark=glsl/{s} median_gpu_ns={d} min_gpu_ns={d} p95_gpu_ns={d} work_per_draw={d} work_unit={s} gpu_ns_per_work={d:.3} draws_per_sample={d} samples={d} source_shapes={d} instances={d} sampled_glyphs={d} record_bytes={d} segments={d} atlas_records={d} atlas_pages={d} colr_layers_per_glyph={d} em_min_px={d} em_max_px={d} width={d} height={d} surface_pixels={d} checksum={x} renderer=\"{s}\"\n",
+        "benchmark=glsl/{s} median_gpu_ns={d} min_gpu_ns={d} p95_gpu_ns={d} work_per_draw={d} work_unit={s} gpu_ns_per_work={d:.3} draws_per_sample={d} samples={d} source_shapes={d} instances={d} sampled_glyphs={d} record_bytes={d} batches={d} atlas_records={d} atlas_pages={d} colr_layers_per_glyph={d} em_min_px={d} em_max_px={d} width={d} height={d} surface_pixels={d} checksum={x} renderer=\"{s}\"\n",
         .{
             args.case,
             median_per_draw,
@@ -326,7 +326,7 @@ pub fn main(init: std.process.Init) !void {
             instance_count,
             sampled_glyphs,
             record_bytes,
-            emitted.segment_len,
+            emitted.batch_len,
             scene.atlas.recordCount(),
             scene.atlas.pageCount(),
             scene.colrLayerCount(),
@@ -582,7 +582,7 @@ const Geometry = struct {
     }
 };
 
-fn initGeometry(words: []const u32) Geometry {
+fn initGeometry(instances: []const snail.render.records.Instance) Geometry {
     const Instance = snail.render.records.Instance;
     var out: Geometry = undefined;
     c.glGenVertexArrays(1, &out.vao);
@@ -590,7 +590,7 @@ fn initGeometry(words: []const u32) Geometry {
     c.glGenBuffers(1, &out.ebo);
     c.glBindVertexArray(out.vao);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, out.vbo);
-    c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(words.len * @sizeOf(u32)), words.ptr, c.GL_STATIC_DRAW);
+    c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(std.mem.sliceAsBytes(instances).len), instances.ptr, c.GL_STATIC_DRAW);
     const indices = [6]u32{ 1, 2, 0, 2, 3, 0 };
     c.glBindBuffer(c.GL_ELEMENT_ARRAY_BUFFER, out.ebo);
     c.glBufferData(c.GL_ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(indices)), &indices, c.GL_STATIC_DRAW);
@@ -622,7 +622,7 @@ const SampleGeometry = struct {
     }
 };
 
-fn initSampleGeometry(words: []const u32) SampleGeometry {
+fn initSampleGeometry(instances: []const snail.render.records.Instance) SampleGeometry {
     var out: SampleGeometry = undefined;
     c.glGenVertexArrays(1, &out.vao);
     c.glGenBuffers(1, &out.ebo);
@@ -632,7 +632,7 @@ fn initSampleGeometry(words: []const u32) SampleGeometry {
     c.glBufferData(c.GL_ELEMENT_ARRAY_BUFFER, @sizeOf(@TypeOf(indices)), &indices, c.GL_STATIC_DRAW);
     c.glGenBuffers(1, &out.records_buffer);
     c.glBindBuffer(c.GL_TEXTURE_BUFFER, out.records_buffer);
-    c.glBufferData(c.GL_TEXTURE_BUFFER, @intCast(words.len * @sizeOf(u32)), words.ptr, c.GL_STATIC_DRAW);
+    c.glBufferData(c.GL_TEXTURE_BUFFER, @intCast(std.mem.sliceAsBytes(instances).len), instances.ptr, c.GL_STATIC_DRAW);
     c.glGenTextures(1, &out.records_texture);
     c.glActiveTexture(c.GL_TEXTURE3);
     c.glBindTexture(c.GL_TEXTURE_BUFFER, out.records_texture);
