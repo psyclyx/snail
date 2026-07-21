@@ -10,6 +10,7 @@ const entry = switch (@import("demo_entry").value) {
     .composite_probe => @import("tools/probes/composite.zig"),
     .coverage_probe => @import("tools/probes/coverage.zig"),
     .gamma_probe => @import("tools/probes/gamma.zig"),
+    .algorithm_diagrams => @import("tools/diagrams/algorithm.zig"),
     .screenshot_cpu => @import("tools/screenshots/cpu.zig"),
     .screenshot_gl => @import("tools/screenshots/gl.zig"),
     .screenshot_gles30 => @import("tools/screenshots/gles30.zig"),

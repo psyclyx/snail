@@ -15,6 +15,7 @@ const DemoEntry = enum {
     composite_probe,
     coverage_probe,
     gamma_probe,
+    algorithm_diagrams,
     screenshot_cpu,
     screenshot_gl,
     screenshot_gles30,
@@ -400,6 +401,25 @@ fn addScreenshotSteps(
     const run_screenshot_cpu = b.addRunArtifact(screenshot_cpu_exe);
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
+
+    // README algorithm diagrams — CPU backend.
+    const algorithm_diagrams_mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/root.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "snail-raster", .module = release_raster_mod },
+            .{ .name = "support", .module = release_support_mod },
+        },
+    });
+    selectDemoEntry(b, algorithm_diagrams_mod, .algorithm_diagrams);
+    const algorithm_diagrams_exe = b.addExecutable(.{ .name = "snail-algorithm-diagrams", .root_module = algorithm_diagrams_mod });
+    const run_algorithm_diagrams = b.addRunArtifact(algorithm_diagrams_exe);
+    const algorithm_diagrams_step = b.step("run-algorithm-diagrams", "Render the README algorithm diagrams through the CPU backend into zig-out/algorithm-*.tga");
+    algorithm_diagrams_step.dependOn(&run_algorithm_diagrams.step);
 
     // Composable autohint policy comparison — CPU backend.
     const autohint_shot_mod = b.createModule(.{
