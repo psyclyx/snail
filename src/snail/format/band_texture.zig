@@ -438,38 +438,6 @@ fn packBandLists(
     };
 }
 
-pub fn buildGlyphBandDataForGlyph(
-    allocator: std.mem.Allocator,
-    scratch: std.mem.Allocator,
-    glyph: curve_tex.GlyphCurves,
-    curve_entry: curve_tex.GlyphCurveEntry,
-) !GlyphBandData {
-    if (glyph.prepared_curves) |prepared_curves| {
-        return buildGlyphBandDataWithPreparedCurves(
-            allocator,
-            scratch,
-            glyph.curves,
-            glyph.logical_curve_count,
-            glyph.bbox,
-            curve_entry,
-            glyph.origin,
-            glyph.prefer_direct_encoding,
-            prepared_curves,
-            null,
-        );
-    }
-    return buildGlyphBandData(
-        allocator,
-        scratch,
-        glyph.curves,
-        glyph.logical_curve_count,
-        glyph.bbox,
-        curve_entry,
-        glyph.origin,
-        glyph.prefer_direct_encoding,
-    );
-}
-
 /// Build band data for a single glyph, referencing the curve texture.
 /// `allocator` owns the returned band data; `scratch` holds the
 /// intermediate prepared curves + working buffers.

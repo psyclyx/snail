@@ -236,8 +236,8 @@ fn preparePathPaintFromLayerInfoOffset(
     switch (tag) {
         1 => return .{ .kind = .solid, .color0 = data0 },
         2 => {
-            // Endpoints are stored linear at upload (paint_records writes them
-            // via srgbToLinearColor), so the sampler interpolates them directly.
+            // Endpoints are linear (API colors are linear and paint_records
+            // stores them verbatim), so the sampler interpolates directly.
             const color0 = fetchLayerInfoTexelOffset(data, texel_offset + 3);
             const color1 = fetchLayerInfoTexelOffset(data, texel_offset + 4);
             const extra = fetchLayerInfoTexelOffset(data, texel_offset + 5);
@@ -338,13 +338,19 @@ fn paintExtendFromFloat(raw: f32) snail.PaintExtend {
     };
 }
 
+/// This renderer's image-format contract (the CPU analog of a GPU host
+/// binding an sRGB texture): 4 bytes/texel, RGBA order, sRGB-encoded RGB
+/// with straight linear alpha, decoded to linear before filtering.
+/// Asserted in debug; other payloads render garbage, exactly as a
+/// mismatched GPU texture format would.
 fn sampleImageTexelLinear(image: *const snail.Image, x: u32, y: u32) [4]f32 {
+    std.debug.assert(image.bytesPerTexel() == 4);
     const idx = (@as(usize, y) * @as(usize, image.width) + @as(usize, x)) * 4;
     return .{
-        srgbToLinear(image.pixels[idx + 0]),
-        srgbToLinear(image.pixels[idx + 1]),
-        srgbToLinear(image.pixels[idx + 2]),
-        @as(f32, @floatFromInt(image.pixels[idx + 3])) / 255.0,
+        srgbToLinear(image.texels[idx + 0]),
+        srgbToLinear(image.texels[idx + 1]),
+        srgbToLinear(image.texels[idx + 2]),
+        @as(f32, @floatFromInt(image.texels[idx + 3])) / 255.0,
     };
 }
 

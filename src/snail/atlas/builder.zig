@@ -759,9 +759,9 @@ pub const Builder = struct {
 
             const is_image = t0[3] == paint_records.tag_image;
             // An image-tagged layer always has a slot (insert appends one
-            // per image paint), so a miss is an internal invariant break.
+            // per image paint); a miss means the source store is corrupt.
             try self.paint_image_records.append(self.allocator, if (is_image)
-                .{ .image = findSourceImage(src, src_layer_texel) orelse unreachable, .texel_offset = dst_layer_texel }
+                .{ .image = findSourceImage(src, src_layer_texel) orelse return error.CorruptPaintRecord, .texel_offset = dst_layer_texel }
             else
                 null);
         }

@@ -29,13 +29,29 @@ const GlyphCurves = atlas_mod.GlyphCurves;
 const Layer = atlas_mod.Layer;
 const RecordKey = record_key.RecordKey;
 
+/// How `recordUnhintedRun` stores COLRv0 glyphs. Each mode pairs with a
+/// placement style; recording and placement must agree.
+pub const ColrHandling = enum {
+    /// Pack all layers into one immutable composite record under the base
+    /// glyph key. Pairs with `RunPlacement.colr = false`: one shape per
+    /// glyph resolves to the composite paint record.
+    composite,
+    /// Record each layer glyph as its own plain unhinted record (non-COLR
+    /// glyphs get their base outline). Pairs with `RunPlacement.colr = true`
+    /// fanout, which emits one shape per layer keyed by layer glyph id and
+    /// resolves layer colors (including the 0xffff foreground) per shape at
+    /// placement time.
+    layers,
+    /// Ignore COLR tables; record base outlines only.
+    outline_only,
+};
+
 pub const UnhintedRunOptions = struct {
-    /// Pack COLRv0 layers into one immutable composite record under the base
-    /// glyph key. When false, the base outline is inserted as a regular glyph.
-    pack_colr: bool = true,
-    /// COLRv0 palette index 0xffff means "use the foreground." The current
-    /// paint-record ABI is immutable, so this color is resolved at population
-    /// time and shared by every draw of the resulting atlas record.
+    colr: ColrHandling = .composite,
+    /// COLRv0 palette index 0xffff means "use the foreground." The paint
+    /// record ABI is immutable, so under `.composite` this color is resolved
+    /// at record time and shared by every draw of the resulting record.
+    /// (`.layers` resolves the foreground at placement time instead.)
     colr_foreground: [4]f32 = .{ 1, 1, 1, 1 },
 };
 
@@ -98,8 +114,7 @@ fn appendRegularGlyph(
     try batch.entries.append(batch.allocator, .{ .key = key, .curves = curves });
 }
 
-/// Append one glyph to `batch`, packing COLRv0 into a single composite when
-/// requested.
+/// Append one glyph to `batch` under the chosen COLR handling.
 fn appendUnhintedGlyph(
     batch: *Batch,
     atlas: *const Atlas,
@@ -108,12 +123,24 @@ fn appendUnhintedGlyph(
     glyph_id: u16,
     options: UnhintedRunOptions,
 ) !void {
+    if (options.colr == .layers) {
+        var layer_iter = font.colrLayers(glyph_id);
+        if (layer_iter.count() > 0) {
+            while (layer_iter.next()) |source| {
+                const layer_key = record_key.unhintedGlyph(font_id, source.glyph_id);
+                if (!try batch.shouldInsert(atlas, layer_key)) continue;
+                try appendRegularGlyph(batch, layer_key, font, source.glyph_id);
+            }
+            return;
+        }
+    }
+
     const key = record_key.unhintedGlyph(font_id, glyph_id);
     if (!try batch.shouldInsert(atlas, key)) return;
 
     var iter = font.colrLayers(glyph_id);
     const layer_count: usize = iter.count();
-    if (!options.pack_colr or layer_count == 0) {
+    if (options.colr != .composite or layer_count == 0) {
         try appendRegularGlyph(batch, key, font, glyph_id);
         return;
     }
@@ -147,8 +174,9 @@ fn appendUnhintedGlyph(
 }
 
 /// Record every missing unhinted glyph referenced by `shaped`.
-/// COLRv0 glyphs are packed by default, so ordinary `placeRun` emits one COLR
-/// instance for each base glyph without caller-side layer assembly.
+/// COLRv0 glyphs are packed into composites by default, so ordinary
+/// `placeRun` (`colr = false`) emits one instance per base glyph without
+/// caller-side layer assembly; see `ColrHandling` for the fanout pairing.
 pub fn recordUnhintedRun(
     atlas: *Atlas,
     allocator: Allocator,
@@ -234,8 +262,9 @@ pub fn recordTtHintRun(
 ) !void {
     const ppem = ppemOf(prepared);
     // Curve record keys use the uniform-ppem convention shared with
-    // `HintMode.tt_hint` and `record_key.ttHintedGlyph`.
-    std.debug.assert(ppem.x_26_6 == ppem.y_26_6);
+    // `HintMode.tt_hint` and `record_key.ttHintedGlyph`; an anisotropic
+    // `prepared` cannot be keyed.
+    if (ppem.x_26_6 != ppem.y_26_6) return error.AnisotropicPpem;
     const ppem_26_6 = ppem.x_26_6;
 
     try recordTtAdvanceRun(atlas, vm, prepared, font_id, shaped);
@@ -299,12 +328,21 @@ pub fn recordTtAdvanceRun(
 ///
 /// The VM fallback requires the shape call's `target_ppem` to match
 /// `prepared`'s ppem — both come from the caller, so a mismatch is a
-/// programmer error (asserted in debug).
+/// programmer error (asserted in debug; in release the provider declines
+/// and shaping uses the font's native advance).
+///
+/// When the VM fails on a glyph the provider declines it (native-advance
+/// fallback) and records the failure in `last_error`/`fallback_count`;
+/// check those after shaping to detect degraded runs.
 pub const TtAdvanceSource = struct {
     atlas: *const Atlas,
     vm: *hint_vm_mod.TtHintVm,
     prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
     font_id: u32,
+    /// Most recent VM failure that forced a native-advance fallback.
+    last_error: ?hint_vm_mod.TtHintError = null,
+    /// Number of glyph advances that fell back since construction.
+    fallback_count: u32 = 0,
 
     /// The returned provider borrows `self`; both must outlive any
     /// `shape` call passed `opts.advance_provider = provider`.
@@ -321,13 +359,18 @@ pub const TtAdvanceSource = struct {
         return font_id == self.font_id;
     }
 
-    fn getAdvance(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: hint_vm_mod.TtHintPpem) i32 {
+    fn getAdvance(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: hint_vm_mod.TtHintPpem) ?i32 {
         const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
         const key = record_key.ttAdvance(font_id, glyph_id, ppem.packed26Dot6());
         if (self.atlas.lookupTtAdvance(key)) |advance| return advance;
         const prepared_ppem = ppemOf(self.prepared);
         std.debug.assert(ppem.x_26_6 == prepared_ppem.x_26_6 and ppem.y_26_6 == prepared_ppem.y_26_6);
-        return self.vm.hintedAdvance(self.prepared, glyph_id) catch 0;
+        if (ppem.x_26_6 != prepared_ppem.x_26_6 or ppem.y_26_6 != prepared_ppem.y_26_6) return null;
+        return self.vm.hintedAdvance(self.prepared, glyph_id) catch |err| {
+            self.last_error = err;
+            self.fallback_count += 1;
+            return null;
+        };
     }
 };
 
@@ -359,6 +402,43 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     try testing.expect(info.layer_count > 1);
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+}
+
+test "layers COLR handling records per-layer glyphs for fanout placement" {
+    var regular = try Font.init(@import("assets").noto_sans_regular);
+    var emoji = try Font.init(@import("assets").twemoji_mozilla);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{
+        .{ .font = &regular },
+        .{ .font = &emoji, .fallback = true },
+    });
+    defer faces.deinit();
+    var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
+    defer shaped.deinit();
+
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+
+    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .layers });
+
+    // Non-COLR glyph: base outline recorded.
+    const a_glyph = shaped.glyphs[0];
+    try testing.expect(atlas.contains(record_key.unhintedGlyph(a_glyph.font_id, a_glyph.glyph_id)));
+
+    // COLR glyph: every layer glyph recorded as a plain record (no
+    // composite under the base key).
+    const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
+    try testing.expect(atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)) == null);
+    var iter = emoji.colrLayers(emoji_glyph.glyph_id);
+    try testing.expect(iter.count() > 1);
+    while (iter.next()) |layer| {
+        try testing.expect(atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, layer.glyph_id)));
+    }
 }
 
 test "autohint and TT-hint run helpers cover empty and visible glyphs" {
@@ -433,12 +513,13 @@ test "TtAdvanceSource reads recorded advances and falls back to the VM" {
 
     // Store miss: falls back to the pure VM.
     const gid = shaped.glyphs[0].glyph_id;
-    const from_vm = provider.get_advance(provider.context, 0, gid, ppem);
+    const from_vm = provider.get_advance(provider.context, 0, gid, ppem).?;
     try testing.expect(from_vm > 0);
 
     // Advance-only recording stores the same value without touching pages.
     try recordTtAdvanceRun(&atlas, &vm, &prepared, 0, &shaped);
     try testing.expectEqual(@as(usize, 0), atlas.pageCount());
-    const from_store = provider.get_advance(provider.context, 0, gid, ppem);
+    const from_store = provider.get_advance(provider.context, 0, gid, ppem).?;
     try testing.expectEqual(from_vm, from_store);
+    try testing.expectEqual(@as(u32, 0), source.fallback_count);
 }

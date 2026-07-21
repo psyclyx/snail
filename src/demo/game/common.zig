@@ -174,20 +174,6 @@ pub fn scale3(x: f32, y: f32, z: f32) snail.Mat4 {
     return m;
 }
 
-pub fn linearColor(r: u8, g: u8, b: u8, a: f32) [4]f32 {
-    return .{
-        srgbToLinear(@as(f32, @floatFromInt(r)) / 255.0),
-        srgbToLinear(@as(f32, @floatFromInt(g)) / 255.0),
-        srgbToLinear(@as(f32, @floatFromInt(b)) / 255.0),
-        a,
-    };
-}
-
-fn srgbToLinear(v: f32) f32 {
-    if (v <= 0.04045) return v / 12.92;
-    return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-}
-
 pub fn compileShader(shader_type: gl.GLenum, source: [:0]const u8) !gl.GLuint {
     const shader = gl.glCreateShader(shader_type);
     var ptr = source.ptr;

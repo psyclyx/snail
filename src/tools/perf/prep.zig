@@ -218,7 +218,7 @@ const PlaceContext = struct {
         const placed = try snail.placeRunAlloc(self.allocator, self.shaped, self.faces, .{
             .baseline = .{ .x = 18, .y = 38 },
             .em = 20,
-            .color = .{ 0.1, 0.3, 0.7, 1.0 },
+            .color = snail.color.srgbToLinearColor(.{ 0.1, 0.3, 0.7, 1.0 }),
         });
         defer self.allocator.free(placed);
         self.output_shapes = placed.len;

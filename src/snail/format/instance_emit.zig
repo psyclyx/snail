@@ -9,8 +9,6 @@ const Transform2D = vec.Transform2D;
 
 pub const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 
-const identity_tint = [4]f32{ 1, 1, 1, 1 };
-
 pub const CursorError = error{
     /// The instance buffer has no room for another instance.
     BufferTooSmall,
@@ -23,8 +21,7 @@ pub const CursorError = error{
 /// Owns the mechanics every instance emitter repeats: the capacity check, the
 /// packed-vertex ABI write (via `vertex.generate*`), and the per-instance
 /// advance. It is layer-policy-agnostic — the caller resolves the atlas layer
-/// (a `u8` texture-array index) and passes it in, so the same writer serves
-/// both the batch `picture.emit` path and immediate-mode callers.
+/// (a `u8` texture-array index) and passes it in.
 pub const Cursor = struct {
     buf: []u32,
     len: *usize,
@@ -40,8 +37,6 @@ pub const Cursor = struct {
     fn commit(self: Cursor) void {
         self.len.* += WORDS_PER_INSTANCE;
     }
-
-    // ── transformed variants (batch + immediate-mode) ────────────────────────
 
     pub fn appendGlyphTransformedTinted(
         self: Cursor,
@@ -127,34 +122,4 @@ pub const Cursor = struct {
         self.commit();
     }
 
-    // ── axis-aligned convenience (immediate-mode) ────────────────────────────
-
-    pub fn appendGlyph(
-        self: Cursor,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: BBox,
-        band_entry: GlyphBandEntry,
-        color: [4]f32,
-        layer: u8,
-    ) CursorError!void {
-        try self.appendGlyphTinted(x, y, font_size, bbox, band_entry, color, identity_tint, layer);
-    }
-
-    pub fn appendGlyphTinted(
-        self: Cursor,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: BBox,
-        band_entry: GlyphBandEntry,
-        color: [4]f32,
-        tint: [4]f32,
-        layer: u8,
-    ) CursorError!void {
-        try self.ensureInstanceCapacity();
-        vertex.generateGlyphVerticesTinted(self.dst(), x, y, font_size, bbox, band_entry, color, tint, layer);
-        self.commit();
-    }
 };

@@ -38,8 +38,8 @@ const stroke_w: f32 = 2.5;
 // Opaque so the readback alpha == coverage with no blend ambiguity. The fill
 // and stroke colors differ so a genuine border/interior mixup would also show
 // up in RGB, but the alpha-hole test is the primary oracle.
-const fill_paint = snail.Paint{ .solid = .{ 0.30, 0.60, 0.95, 1.0 } };
-const stroke_paint = snail.Paint{ .solid = .{ 0.85, 0.95, 1.0, 1.0 } };
+const fill_paint = snail.Paint{ .solid = snail.color.srgbToLinearColor(.{ 0.30, 0.60, 0.95, 1.0 }) };
+const stroke_paint = snail.Paint{ .solid = snail.color.srgbToLinearColor(.{ 0.85, 0.95, 1.0, 1.0 }) };
 
 const Mode = enum { composite, separate, fill_only };
 

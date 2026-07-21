@@ -45,6 +45,10 @@ const HintHooks = struct {
     source: AdvanceSource,
     ppem_x_26_6: u32,
     ppem_y_26_6: u32,
+    /// For the native-advance fallback: the parent em-font's advances are
+    /// font units (scale = upem) and must be rescaled to the sub-font's
+    /// 26.6-pixel space.
+    upem: u32,
 };
 
 pub const HarfBuzzShaper = struct {
@@ -150,6 +154,7 @@ pub const HarfBuzzShaper = struct {
             .source = .none,
             .ppem_x_26_6 = self.units_per_em,
             .ppem_y_26_6 = self.units_per_em,
+            .upem = self.units_per_em,
         };
 
         const sub_font = hb.hb_font_create_sub_font(self.hb_font_em) orelse return error.HarfBuzzInitFailed;
@@ -265,7 +270,6 @@ fn hbGetGlyphHAdvance(
     glyph: hb.hb_codepoint_t,
     user_data: ?*anyopaque,
 ) callconv(.c) hb.hb_position_t {
-    _ = font;
     _ = font_data;
     const hooks: *HintHooks = @ptrCast(@alignCast(user_data orelse return 0));
     const gid: u16 = @intCast(glyph & 0xFFFF);
@@ -273,6 +277,14 @@ fn hbGetGlyphHAdvance(
     const adv = switch (hooks.source) {
         .none => return 0,
         .provider => |p| p.provider.get_advance(p.provider.context, p.font_id, gid, ppem),
+    } orelse {
+        // Provider couldn't supply this glyph: fall back to the parent
+        // em-font's native advance (font units), rescaled into the
+        // sub-font's 26.6-pixel space.
+        const parent = hb.hb_font_get_parent(font);
+        const em_adv: i64 = hb.hb_font_get_glyph_h_advance(parent, glyph);
+        if (hooks.upem == 0) return 0;
+        return @intCast(@divTrunc(em_adv * @as(i64, hooks.ppem_x_26_6), @as(i64, hooks.upem)));
     };
     return @intCast(adv);
 }

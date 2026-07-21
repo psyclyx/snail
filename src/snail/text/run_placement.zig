@@ -102,6 +102,13 @@ pub const RunSnap = enum {
     columns,
 };
 
+/// Scene y-axis direction. Glyph geometry is stored y-up (font units);
+/// placement orients it into the scene. `.down` (the default) suits
+/// top-left-origin UI/framebuffer coordinates; `.up` suits hosts whose
+/// world y grows upward. Coverage and winding are orientation-independent,
+/// so both directions produce identical fills.
+pub const YAxis = enum { down, up };
+
 pub const RunPlacement = struct {
     /// Pen baseline in WORLD coordinates.
     baseline: Vec2,
@@ -110,6 +117,9 @@ pub const RunPlacement = struct {
     color: [4]f32 = .{ 1, 1, 1, 1 },
     mode: HintMode = .unhinted,
     snap: RunSnap = .none,
+    /// Which way scene y grows. Flips the sign of the glyph local
+    /// transform's y column and of shaped vertical offsets.
+    y_axis: YAxis = .down,
     /// world→DEVICE-pixel transform (`mvpToScenePixel(mvp, fb_w, fb_h)`
     /// — the FRAMEBUFFER size, so snapping is HiDPI-correct). Required when
     /// `snap != .none`; ignored otherwise.
@@ -125,9 +135,13 @@ const Placer = struct {
     inv: Transform2D = .{},
     base_dev: Vec2 = .{ .x = 0, .y = 0 },
     dev_adv: f32 = 0,
+    /// +1 for `.down`, -1 for `.up`. Shaped `y_offset`/`y_advance` are
+    /// stored in the y-down convention (`faces.zig` negates HarfBuzz's
+    /// y-up values), so y-up placement flips them back.
+    y_sign: f32 = 1,
 
     fn init(p: RunPlacement, shaped: *const ShapedText) PlaceRunError!Placer {
-        var self = Placer{ .p = p };
+        var self = Placer{ .p = p, .y_sign = if (p.y_axis == .down) 1 else -1 };
         if (p.snap != .none and p.world_to_pixel == null) return error.MissingWorldToPixel;
         if (p.snap != .none) self.inv = p.world_to_pixel.?.inverse() orelse return error.InvalidWorldToPixel;
         if (p.snap == .columns) {
@@ -147,11 +161,11 @@ const Placer = struct {
         return switch (self.p.snap) {
             .none => .{
                 .x = self.p.baseline.x + self.p.em * g.x_offset,
-                .y = self.p.baseline.y + self.p.em * g.y_offset,
+                .y = self.p.baseline.y + self.p.em * g.y_offset * self.y_sign,
             },
             .origins => snap.origin(.{
                 .x = self.p.baseline.x + self.p.em * g.x_offset,
-                .y = self.p.baseline.y + self.p.em * g.y_offset,
+                .y = self.p.baseline.y + self.p.em * g.y_offset * self.y_sign,
             }, self.p.world_to_pixel.?),
             .columns => self.inv.applyPoint(.{
                 .x = self.base_dev.x + @as(f32, @floatFromInt(i)) * self.dev_adv,
@@ -201,7 +215,7 @@ pub fn placeRun(
     // Fast path: one shape per glyph (all modes; COLR is the only fan-out).
     if (!p.colr) {
         for (shaped.glyphs, 0..) |g, i| {
-            out[i] = placedShape(placer.originFor(g, i), scale, p.mode.key(g.font_id, g.glyph_id), p.color, p.mode);
+            out[i] = placedShape(placer.originFor(g, i), scale, placer.y_sign, p.mode.key(g.font_id, g.glyph_id), p.color, p.mode);
         }
         return out[0..shape_count];
     }
@@ -216,11 +230,11 @@ pub fn placeRun(
         if (iter.count() > 0) {
             while (iter.next()) |layer| {
                 const layer_color: [4]f32 = if (layer.color[0] < 0) p.color else layer.color;
-                out[cursor] = placedShape(origin, scale, record_key.unhintedGlyph(g.font_id, layer.glyph_id), layer_color, p.mode);
+                out[cursor] = placedShape(origin, scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, layer.glyph_id), layer_color, p.mode);
                 cursor += 1;
             }
         } else {
-            out[cursor] = placedShape(origin, scale, record_key.unhintedGlyph(g.font_id, g.glyph_id), p.color, p.mode);
+            out[cursor] = placedShape(origin, scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, g.glyph_id), p.color, p.mode);
             cursor += 1;
         }
     }
@@ -240,15 +254,17 @@ pub fn placeRunAlloc(
     return placeRun(out, shaped, faces, p);
 }
 
-inline fn placedShape(origin: Vec2, scale: f32, key: record_key.RecordKey, color: [4]f32, mode: HintMode) Shape {
+inline fn placedShape(origin: Vec2, scale: f32, y_sign: f32, key: record_key.RecordKey, color: [4]f32, mode: HintMode) Shape {
     const policy: ?policy_mod.AutohintPolicy = switch (mode) {
         .autohint => |p| p,
         else => null,
     };
+    // Glyph curves are stored y-up (font units); `.yy = -scale` orients
+    // them into a y-down scene, `+scale` into a y-up one.
     return .{
         .key = key,
         .autohint_policy = policy,
-        .local_transform = .{ .xx = scale, .xy = 0, .tx = origin.x, .yx = 0, .yy = -scale, .ty = origin.y },
+        .local_transform = .{ .xx = scale, .xy = 0, .tx = origin.x, .yx = 0, .yy = -y_sign * scale, .ty = origin.y },
         .local_color = color,
     };
 }
@@ -382,4 +398,41 @@ test "placeRun requires an explicit transform for snapping" {
         .em = 16,
         .snap = .origins,
     }));
+}
+
+test "y-up placement mirrors y-down about the baseline" {
+    const allocator = testing.allocator;
+    var fake_glyphs = [_]ShapedText.Glyph{.{
+        .face_index = 0,
+        .glyph_id = 7,
+        .x_offset = 0.25,
+        .y_offset = -0.5, // "raised" in the stored y-down convention
+        .x_advance = 0.6,
+        .y_advance = 0,
+        .source_start = 0,
+        .source_end = 1,
+    }};
+    const shaped = ShapedText{ .allocator = allocator, .glyphs = fake_glyphs[0..] };
+
+    const down = try placeRunAlloc(allocator, &shaped, null, .{
+        .baseline = .{ .x = 10, .y = 100 },
+        .em = 16,
+    });
+    defer allocator.free(down);
+    const up = try placeRunAlloc(allocator, &shaped, null, .{
+        .baseline = .{ .x = 10, .y = 100 },
+        .em = 16,
+        .y_axis = .up,
+    });
+    defer allocator.free(up);
+
+    // x is unaffected; the y column and vertical offset flip sign.
+    try testing.expectEqual(down[0].local_transform.xx, up[0].local_transform.xx);
+    try testing.expectEqual(down[0].local_transform.tx, up[0].local_transform.tx);
+    try testing.expectEqual(@as(f32, -16), down[0].local_transform.yy);
+    try testing.expectEqual(@as(f32, 16), up[0].local_transform.yy);
+    // Stored y_offset -0.5 raises the glyph: scene y shrinks when y is
+    // down, grows when y is up — mirrored about the baseline.
+    try testing.expectApproxEqAbs(@as(f32, 100 - 8), down[0].local_transform.ty, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 100 + 8), up[0].local_transform.ty, 1e-5);
 }

@@ -19,6 +19,9 @@ const snail = @import("snail");
 const common = @import("common.zig");
 const passes = @import("passes.zig");
 
+/// Pass colors are authored in sRGB; snail's API takes linear light.
+const srgb = snail.color.srgbToLinearColor;
+
 const Fonts = passes.Fonts;
 const PassBuilder = passes.PassBuilder;
 const PreparedPass = passes.PreparedPass;
@@ -265,13 +268,13 @@ fn buildLabel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     const rect = snail.Rect{ .x = 8.0, .y = 8.0, .w = w - 16.0, .h = label_scene_h - 16.0 };
     try b.addRoundedRectFilledStroked(
         rect,
-        .{ .solid = .{ 0.10, 0.13, 0.18, 0.94 } },
-        .{ .solid = .{ 0.30, 0.50, 0.70, 0.85 } },
+        .{ .solid = srgb(.{ 0.10, 0.13, 0.18, 0.94 }) },
+        .{ .solid = srgb(.{ 0.30, 0.50, 0.70, 0.85 }) },
         2.5,
         16.0,
     );
-    _ = try b.appendText(.{ .weight = .bold }, "DEPTH TESTED", 34.0, 116.0, 64.0, .{ 0.72, 0.88, 1.0, 1.0 });
-    _ = try b.appendText(.{}, "world text occluded by the sign", 36.0, 156.0, 19.0, .{ 0.6, 0.78, 0.92, 1.0 });
+    _ = try b.appendText(.{ .weight = .bold }, "DEPTH TESTED", 34.0, 116.0, 64.0, srgb(.{ 0.72, 0.88, 1.0, 1.0 }));
+    _ = try b.appendText(.{}, "world text occluded by the sign", 36.0, 156.0, 19.0, srgb(.{ 0.6, 0.78, 0.92, 1.0 }));
     return b.freeze(fonts.pool);
 }
 
@@ -288,15 +291,15 @@ fn buildPanel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     const rect = snail.Rect{ .x = 16.0, .y = 16.0, .w = w - 32.0, .h = 268.0 };
     try b.addRoundedRectFilledStroked(
         rect,
-        .{ .solid = .{ 0.30, 0.60, 0.95, 0.34 } },
-        .{ .solid = .{ 0.70, 0.90, 1.0, 0.60 } },
+        .{ .solid = srgb(.{ 0.30, 0.60, 0.95, 0.34 }) },
+        .{ .solid = srgb(.{ 0.70, 0.90, 1.0, 0.60 }) },
         2.5,
         22.0,
     );
-    _ = try b.appendText(.{ .weight = .bold }, "TRANSLUCENT", 40.0, 84.0, 40.0, .{ 0.95, 0.99, 1.0, 0.85 });
-    _ = try b.appendText(.{}, "snail's own pipeline,", 40.0, 128.0, 24.0, .{ 0.86, 0.94, 1.0, 0.8 });
-    _ = try b.appendText(.{}, "drawn in painter's order", 40.0, 158.0, 24.0, .{ 0.86, 0.94, 1.0, 0.8 });
-    _ = try b.appendText(.{}, "with depth-write off.", 40.0, 188.0, 24.0, .{ 0.86, 0.94, 1.0, 0.8 });
+    _ = try b.appendText(.{ .weight = .bold }, "TRANSLUCENT", 40.0, 84.0, 40.0, srgb(.{ 0.95, 0.99, 1.0, 0.85 }));
+    _ = try b.appendText(.{}, "snail's own pipeline,", 40.0, 128.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
+    _ = try b.appendText(.{}, "drawn in painter's order", 40.0, 158.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
+    _ = try b.appendText(.{}, "with depth-write off.", 40.0, 188.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
     return b.freeze(fonts.pool);
 }
 
@@ -308,9 +311,9 @@ fn buildHud(allocator: std.mem.Allocator, fonts: *Fonts, window_w: u32, backend:
     var b = PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const x = 30.0;
-    _ = try b.appendText(.{ .weight = .bold }, backend, x, 48.0, 26.0, .{ 0.55, 0.9, 1.0, 1.0 });
+    _ = try b.appendText(.{ .weight = .bold }, backend, x, 48.0, 26.0, srgb(.{ 0.55, 0.9, 1.0, 1.0 }));
     if (perf.len > 0)
-        _ = try b.appendText(.{}, perf, x, 76.0, 17.0, .{ 0.86, 0.92, 0.98, 1.0 });
-    _ = try b.appendText(.{}, "C cycle backend   R toggle spin   Esc quit", x, 100.0, 15.0, .{ 0.7, 0.78, 0.88, 1.0 });
+        _ = try b.appendText(.{}, perf, x, 76.0, 17.0, srgb(.{ 0.86, 0.92, 0.98, 1.0 }));
+    _ = try b.appendText(.{}, "C cycle backend   R toggle spin   Esc quit", x, 100.0, 15.0, srgb(.{ 0.7, 0.78, 0.88, 1.0 }));
     return b.freeze(fonts.pool);
 }

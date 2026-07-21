@@ -445,8 +445,9 @@ fn autoKey(font_id: u32, glyph_id: u16) snail.record_key.RecordKey {
     return snail.record_key.autohintGlyph(font_id, glyph_id);
 }
 
-const text_color = [4]f32{ 0.06, 0.07, 0.09, 1.0 };
-const tag_color = [4]f32{ 0.45, 0.48, 0.55, 1.0 };
+// Authored in sRGB; snail's API takes linear light.
+const text_color = snail.color.srgbToLinearColor(.{ 0.06, 0.07, 0.09, 1.0 });
+const tag_color = snail.color.srgbToLinearColor(.{ 0.45, 0.48, 0.55, 1.0 });
 
 fn hasKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;

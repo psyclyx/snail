@@ -33,12 +33,15 @@ pub const Layout = layout_mod.Layout;
 pub const buildLayout = layout_mod.buildLayout;
 pub const clearColor = layout_mod.clearColor;
 
-const bg = layout_mod.bg;
-const text_color = layout_mod.text_color;
-const muted = layout_mod.muted;
-const accent = layout_mod.accent;
-const surface = layout_mod.surface;
-const border = layout_mod.border;
+// The layout palette (and `clearColor`) stays sRGB-encoded for host-side
+// consumers; snail's API takes linear light, so convert once here.
+const srgb = snail.color.srgbToLinearColor;
+const bg = srgb(layout_mod.bg);
+const text_color = srgb(layout_mod.text_color);
+const muted = srgb(layout_mod.muted);
+const accent = srgb(layout_mod.accent);
+const surface = layout_mod.surface; // all-white: fixed point of the transfer fn
+const border = srgb(layout_mod.border);
 const card_pad = layout_mod.card_pad;
 const heading_size = layout_mod.heading_size;
 const sub_heading_size = layout_mod.sub_heading_size;
@@ -351,7 +354,9 @@ fn initPaintImage(allocator: Allocator) !snail.Image {
             pixels[i + 3] = color[3];
         }
     }
-    return snail.Image.initSrgba8(allocator, 16, 16, &pixels);
+    // sRGBA8 texels: the GL/Vulkan drivers bind the image array as an sRGB
+    // texture format and the CPU renderer's device contract matches.
+    return snail.Image.init(allocator, 16, 16, &pixels);
 }
 
 // ── Build entry point ──
@@ -370,7 +375,7 @@ pub fn build(
 ) !Content {
     const layout = buildLayout(width, height);
 
-    var builder = try BannerBuilder.init(allocator, assets, &layout, snap_step, tt_hint_opts);
+    var builder = try BannerBuilder.init(allocator, pool, assets, &layout, snap_step, tt_hint_opts);
     defer builder.deinit();
 
     // ── Text pass: shape every run, populate text-atlas entries, collect
@@ -391,7 +396,9 @@ pub fn build(
     // ── Seal atlases ──
     var paths_atlas = try snail.Atlas.from(allocator, pool, builder.path_entries.items);
     errdefer paths_atlas.deinit();
-    var text_atlas = try snail.Atlas.from(allocator, pool, builder.text_entries.items);
+    // The text store was recorded in place; ownership moves to Content.
+    var text_atlas = builder.text_atlas;
+    builder.text_atlas = snail.Atlas.empty(allocator);
     errdefer text_atlas.deinit();
 
     // ── Combine pictures ──
@@ -448,9 +455,9 @@ const BannerBuilder = struct {
     painted_text_entries: std.ArrayList(snail.AtlasEntry),
     painted_text_shapes: std.ArrayList(snail.Shape),
 
-    // Text-namespace entries (regular + COLR + hinted glyph curves).
-    text_curves_owned: std.ArrayList(snail.GlyphCurves),
-    text_entries: std.ArrayList(snail.AtlasEntry),
+    // Text-namespace store (regular + COLR-layer + hinted glyph records),
+    // populated via the record* verbs.
+    text_atlas: snail.Atlas,
     text_shapes: std.ArrayList(snail.Shape),
 
     // Hinted runs are collected as descriptors instead of baked into
@@ -471,6 +478,7 @@ const BannerBuilder = struct {
 
     fn init(
         allocator: Allocator,
+        pool: *snail.PagePool,
         assets: *Assets,
         layout: *const Layout,
         snap_step: snail.Vec2,
@@ -487,8 +495,7 @@ const BannerBuilder = struct {
             .path_shapes = .empty,
             .extra_layer_storage = .empty,
             .next_path_id = 0,
-            .text_curves_owned = .empty,
-            .text_entries = .empty,
+            .text_atlas = snail.Atlas.init(allocator, pool),
             .text_shapes = .empty,
             .hinted_runs = .empty,
             .painted_text_entries = .empty,
@@ -507,9 +514,7 @@ const BannerBuilder = struct {
         for (self.extra_layer_storage.items) |s| self.allocator.free(s);
         self.extra_layer_storage.deinit(self.allocator);
 
-        for (self.text_curves_owned.items) |*c| c.deinit();
-        self.text_curves_owned.deinit(self.allocator);
-        self.text_entries.deinit(self.allocator);
+        self.text_atlas.deinit();
         self.text_shapes.deinit(self.allocator);
         // Hinted run descriptors transfer to Content on success; if the
         // builder is being torn down without a successful `build()` we
@@ -612,8 +617,8 @@ const BannerBuilder = struct {
         {
             var p = try demo_support.unitRectPath(sb.allocator);
             defer p.deinit();
-            try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.22, 0.50, 0.88, 1.0 } }, .{
-                .paint = .{ .solid = .{ 0.15, 0.38, 0.72, 1.0 } },
+            try sb.addPathFillAndStroke(&p, .{ .solid = srgb(.{ 0.22, 0.50, 0.88, 1.0 }) }, .{
+                .paint = .{ .solid = srgb(.{ 0.15, 0.38, 0.72, 1.0 }) },
                 .width = usw,
                 .join = .miter,
                 .placement = .inside,
@@ -625,8 +630,8 @@ const BannerBuilder = struct {
         {
             var p = try demo_support.unitRoundedRectPath(sb.allocator, 12 * s / sz);
             defer p.deinit();
-            try sb.addPathFillAndStroke(&p, .{ .solid = .{ 0.92, 0.82, 0.48, 1.0 } }, .{
-                .paint = .{ .solid = .{ 0.78, 0.62, 0.22, 1.0 } },
+            try sb.addPathFillAndStroke(&p, .{ .solid = srgb(.{ 0.92, 0.82, 0.48, 1.0 }) }, .{
+                .paint = .{ .solid = srgb(.{ 0.78, 0.62, 0.22, 1.0 }) },
                 .width = usw,
                 .join = .round,
                 .placement = .inside,
@@ -639,9 +644,9 @@ const BannerBuilder = struct {
             var p = try demo_support.unitEllipsePath(sb.allocator);
             defer p.deinit();
             const el_place = demo_support.placeRect(.{ .x = elx, .y = shapes_y, .w = sz, .h = sz });
-            try sb.addFilledPath(&p, .{ .solid = .{ 0.85, 0.52, 0.35, 1.0 } }, el_place);
+            try sb.addFilledPath(&p, .{ .solid = srgb(.{ 0.85, 0.52, 0.35, 1.0 }) }, el_place);
             try sb.addStrokedPath(&p, .{
-                .paint = .{ .solid = .{ 0.72, 0.38, 0.22, 1.0 } },
+                .paint = .{ .solid = srgb(.{ 0.72, 0.38, 0.22, 1.0 }) },
                 .width = usw,
                 .join = .round,
             }, el_place);
@@ -664,8 +669,8 @@ const BannerBuilder = struct {
                 .{ .x = 0.5, .y = 0 },
             );
             try path.close();
-            try sb.addPathFillAndStroke(&path, .{ .solid = .{ 0.58, 0.48, 0.82, 1.0 } }, .{
-                .paint = .{ .solid = .{ 0.42, 0.32, 0.68, 1.0 } },
+            try sb.addPathFillAndStroke(&path, .{ .solid = srgb(.{ 0.58, 0.48, 0.82, 1.0 }) }, .{
+                .paint = .{ .solid = srgb(.{ 0.42, 0.32, 0.68, 1.0 }) },
                 .width = usw,
                 .join = .round,
                 .placement = .inside,
@@ -682,7 +687,7 @@ const BannerBuilder = struct {
         {
             var p = try demo_support.unitRoundedRectPath(sb.allocator, fill_r);
             defer p.deinit();
-            try sb.addFilledPath(&p, .{ .solid = .{ 0.35, 0.72, 0.55, 1.0 } }, demo_support.placeRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }));
+            try sb.addFilledPath(&p, .{ .solid = srgb(.{ 0.35, 0.72, 0.55, 1.0 }) }, demo_support.placeRect(.{ .x = x0, .y = fills_y, .w = sz, .h = sz }));
         }
 
         // Linear gradient
@@ -693,8 +698,8 @@ const BannerBuilder = struct {
             try sb.addFilledPath(&p, .{ .linear_gradient = .{
                 .start = .{ .x = 0, .y = 0 },
                 .end = .{ .x = 1, .y = 1 },
-                .start_color = .{ 0.25, 0.55, 0.95, 1.0 },
-                .end_color = .{ 0.85, 0.30, 0.55, 1.0 },
+                .start_color = srgb(.{ 0.25, 0.55, 0.95, 1.0 }),
+                .end_color = srgb(.{ 0.85, 0.30, 0.55, 1.0 }),
             } }, demo_support.placeRect(.{ .x = lgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
@@ -706,8 +711,8 @@ const BannerBuilder = struct {
             try sb.addFilledPath(&p, .{ .radial_gradient = .{
                 .center = .{ .x = 0.45, .y = 0.4 },
                 .radius = 0.55,
-                .inner_color = .{ 0.98, 0.90, 0.55, 1.0 },
-                .outer_color = .{ 0.88, 0.42, 0.18, 1.0 },
+                .inner_color = srgb(.{ 0.98, 0.90, 0.55, 1.0 }),
+                .outer_color = srgb(.{ 0.88, 0.42, 0.18, 1.0 }),
             } }, demo_support.placeRect(.{ .x = rgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
@@ -731,8 +736,8 @@ const BannerBuilder = struct {
             defer p.deinit();
             try sb.addFilledPath(&p, .{ .conic_gradient = .{
                 .center = .{ .x = 0.5, .y = 0.5 },
-                .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
-                .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
+                .start_color = srgb(.{ 0.95, 0.75, 0.25, 1.0 }),
+                .end_color = srgb(.{ 0.30, 0.45, 0.85, 1.0 }),
             } }, demo_support.placeRect(.{ .x = cgx, .y = fills_y, .w = sz, .h = sz }));
         }
 
@@ -748,7 +753,7 @@ const BannerBuilder = struct {
                 .{ .x = 1.0 - uedge, .y = 0.3 },
             );
             try sb.addStrokedPath(&stroke_path, .{
-                .paint = .{ .solid = .{ 0.22, 0.55, 0.80, 1.0 } },
+                .paint = .{ .solid = srgb(.{ 0.22, 0.55, 0.80, 1.0 }) },
                 .width = uedge, // 4*s/sz in unit terms
                 .cap = .round,
                 .join = .round,
@@ -804,8 +809,8 @@ const BannerBuilder = struct {
             rx += (try self.addPaintedText(.{ .weight = .bold }, "gradient", rx, mixed_baseline, body_size, .{ .linear_gradient = .{
                 .start = .{ .x = rx, .y = mixed_baseline - body_size },
                 .end = .{ .x = rx + 92 * s, .y = mixed_baseline },
-                .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
-                .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
+                .start_color = srgb(.{ 0.18, 0.50, 0.88, 1.0 }),
+                .end_color = srgb(.{ 0.88, 0.30, 0.56, 1.0 }),
             } })).advance_x;
             _ = try self.addText(.{}, " / small", rx, mixed_baseline, 14 * s, muted);
             y += line_h + 4 * s;
@@ -973,8 +978,8 @@ const BannerBuilder = struct {
             const gradient_advance = (try self.addPaintedText(.{ .weight = .bold }, "gradient", x, gradient_baseline, paint_text_size, .{ .linear_gradient = .{
                 .start = .{ .x = x, .y = gradient_baseline - paint_text_size },
                 .end = .{ .x = x + 132 * s, .y = gradient_baseline },
-                .start_color = .{ 0.18, 0.50, 0.88, 1.0 },
-                .end_color = .{ 0.88, 0.30, 0.56, 1.0 },
+                .start_color = srgb(.{ 0.18, 0.50, 0.88, 1.0 }),
+                .end_color = srgb(.{ 0.88, 0.30, 0.56, 1.0 }),
             } })).advance_x;
 
             const image_x = x + gradient_advance + 34 * s;
@@ -1291,28 +1296,18 @@ const BannerBuilder = struct {
         const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch return false;
         const prepared = self.assets.preparedFor(ppem_26_6) orelse return false;
 
-        // Hint curves for every glyph in the run before emitting shapes,
-        // so a mid-run failure leaves the atlas state clean. The batch's
-        // `text_entries` dedup is the only memo needed: builds happen on
-        // invalidation (zoom changes the ppem anyway), and within a build
-        // each (glyph, ppem) hints once.
+        // Hinted records exist only for the primary latin font; runs that
+        // pulled in fallback faces render unhinted.
         for (shaped.glyphs) |g| {
-            const key = snail.record_key.ttHintedGlyph(0, g.glyph_id, ppem_26_6);
-            if (containsKey(self.text_entries.items, key)) continue;
-            var curves = vm.hintGlyph(
-                self.allocator,
-                self.scratch_arena.allocator(),
-                prepared,
-                g.glyph_id,
-            ) catch return false;
-            errdefer curves.deinit();
-            _ = self.scratch_arena.reset(.retain_capacity);
-            try self.text_curves_owned.append(self.allocator, curves);
-            try self.text_entries.append(self.allocator, .{
-                .key = key,
-                .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
-            });
+            if (g.font_id != self.assets.hint_font_id) return false;
         }
+        // Record hinted curves for the whole run before emitting shapes.
+        // `recordTtHintRun` batches its inserts, so a mid-run hint failure
+        // leaves the store clean and the caller falls back to unhinted.
+        snail.recordTtHintRun(&self.text_atlas, self.allocator, vm, prepared, self.assets.hint_font_id, shaped) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
 
         // Clone the run's glyphs so the descriptor outlives the caller's
         // ShapedText. Per-glyph layout (x_offset/y_offset/face_index/font_id)
@@ -1330,34 +1325,9 @@ const BannerBuilder = struct {
     }
 
     fn ensureUnhintedGlyphCurves(self: *BannerBuilder, shaped: *const snail.ShapedText) !void {
-        for (shaped.glyphs) |g| {
-            const face_index: u32 = g.face_index;
-            const fid: u32 = Assets.face_to_font_id[@as(usize, face_index)];
-            const font_ref = &self.assets.fonts[fid];
-            var iter = font_ref.colrLayers(g.glyph_id);
-            if (iter.count() > 0) {
-                while (iter.next()) |layer| {
-                    const layer_key = snail.record_key.unhintedGlyph(fid, layer.glyph_id);
-                    if (containsKey(self.text_entries.items, layer_key)) continue;
-                    const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), layer.glyph_id);
-                    _ = self.scratch_arena.reset(.retain_capacity);
-                    try self.text_curves_owned.append(self.allocator, curves);
-                    try self.text_entries.append(self.allocator, .{
-                        .key = layer_key,
-                        .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
-                    });
-                }
-            }
-            const key = snail.record_key.unhintedGlyph(fid, g.glyph_id);
-            if (containsKey(self.text_entries.items, key)) continue;
-            const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), g.glyph_id);
-            _ = self.scratch_arena.reset(.retain_capacity);
-            try self.text_curves_owned.append(self.allocator, curves);
-            try self.text_entries.append(self.allocator, .{
-                .key = key,
-                .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
-            });
-        }
+        // `.layers` records per-layer COLR glyphs, matching this scene's
+        // `colr = true` fanout placement.
+        try snail.recordUnhintedRun(&self.text_atlas, self.allocator, &self.assets.faces, shaped, .{ .colr = .layers });
     }
 };
 
@@ -1379,11 +1349,6 @@ fn addRoundedCard(
     var unit_stroke = stroke;
     unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
     try builder.addPathFillAndStroke(&p, fill, unit_stroke, demo_support.placeRectUniform(rect));
-}
-
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
-    for (entries) |e| if (e.key.eql(key)) return true;
-    return false;
 }
 
 fn hintPpem26_6(font_size: f32, ppem_scale: f32) !u32 {

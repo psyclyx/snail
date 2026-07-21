@@ -4,6 +4,11 @@
 //! and entry-point-free shader fragments live here. Snail owns no GPU objects or
 //! command submission. The complete CPU renderer is the separate, optional
 //! `snail-raster` module and consumes only this public API.
+//!
+//! Color contract: every `[4]f32` color crossing this API is LINEAR light
+//! with straight alpha, and fragment output is premultiplied linear — snail
+//! never interprets host colors. sRGB-authoring hosts convert once at the
+//! boundary with the `color` helpers.
 
 const math = @import("math.zig");
 const text_mod = @import("text.zig");
@@ -14,6 +19,10 @@ const record_key_mod = @import("atlas/record_key.zig");
 pub const font = @import("font.zig");
 
 // ── Math + geometry ──
+
+/// Boundary conversions for sRGB-authoring hosts (`srgbToLinearColor`,
+/// `linearToSrgbColor`, and the scalar transfer functions).
+pub const color = @import("color.zig");
 
 pub const Mat4 = math.Mat4;
 pub const Vec2 = math.Vec2;
@@ -43,6 +52,7 @@ pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
 const run_placement = @import("text/run_placement.zig");
 pub const HintMode = run_placement.HintMode;
 pub const RunSnap = run_placement.RunSnap;
+pub const YAxis = run_placement.YAxis;
 pub const RunPlacement = run_placement.RunPlacement;
 pub const PlaceRunError = run_placement.PlaceRunError;
 pub const PlaceRunAllocError = run_placement.PlaceRunAllocError;
@@ -99,6 +109,7 @@ pub const RecordFilter = atlas_mod.RecordFilter;
 
 const atlas_populate = @import("atlas/populate.zig");
 pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
+pub const ColrHandling = atlas_populate.ColrHandling;
 pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
 pub const recordAutohintRun = atlas_populate.recordAutohintRun;
 pub const recordTtHintRun = atlas_populate.recordTtHintRun;
@@ -144,6 +155,7 @@ pub const shader = struct {
 
 test {
     _ = math;
+    _ = color;
     _ = font;
     _ = text_mod;
     _ = image_mod;

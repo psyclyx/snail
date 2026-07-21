@@ -36,6 +36,12 @@ pub const Target = enum { curve, band, layer_info, image };
 /// re-upload only the grown texel span of an append-only page, split into
 /// at most a partial head row, full middle rows, and a partial tail row),
 /// absolute (the binding's slot rows) for layer_info.
+///
+/// Lifetime: `layer_info`/`image` regions alias the planner's scratch, valid
+/// until the next `plan`/`planDelta`. `curve`/`band` regions alias live page
+/// memory of the planned atlas — the atlas (and its pages) must stay alive
+/// and unmutated between planning and applying the copies; don't `deinit`,
+/// `compact`, or extend it in between.
 pub const Region = struct {
     target: Target,
     layer: u32 = 0,
@@ -389,10 +395,11 @@ pub const Planner = struct {
             for (records, 0..) |maybe_rec, i| {
                 const rec = maybe_rec orelse continue;
                 const abs_layer = slot.image_layer_base + imageLayer(records, rec.image);
-                // Emit the image upload once, at its first occurrence.
+                // Emit the image upload once, at its first occurrence. The
+                // texel bytes are opaque; bytes-per-texel is whatever the
+                // image carries and the host's texture format defines.
                 if (firstOccurrence(records, i)) {
-                    const img_bytes = @as(usize, rec.image.width) * @as(usize, rec.image.height) * 4;
-                    try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = rec.image.pixels[0..img_bytes], .width = rec.image.width, .height = rec.image.height });
+                    try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = rec.image.texels, .width = rec.image.width, .height = rec.image.height });
                 }
                 const uv_x: f32 = @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(self.opts.max_image_width));
                 const uv_y: f32 = @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(self.opts.max_image_height));

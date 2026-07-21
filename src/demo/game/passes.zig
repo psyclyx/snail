@@ -91,9 +91,9 @@ pub const PassBuilder = struct {
     extra_layer_storage: std.ArrayList([]snail.AtlasLayer),
     next_path_id: u32,
 
-    // Text namespace: solid-colored shaped runs.
-    text_curves_owned: std.ArrayList(snail.GlyphCurves),
-    text_entries: std.ArrayList(snail.AtlasEntry),
+    // Text namespace: solid-colored shaped runs, recorded straight into
+    // the store (`recordUnhintedRun`).
+    text_atlas: snail.Atlas,
     text_shapes: std.ArrayList(snail.Shape),
 
     pub fn init(allocator: std.mem.Allocator, fonts: *Fonts) PassBuilder {
@@ -105,8 +105,7 @@ pub const PassBuilder = struct {
             .path_shapes = .empty,
             .extra_layer_storage = .empty,
             .next_path_id = 0,
-            .text_curves_owned = .empty,
-            .text_entries = .empty,
+            .text_atlas = snail.Atlas.init(allocator, fonts.pool),
             .text_shapes = .empty,
         };
     }
@@ -119,9 +118,7 @@ pub const PassBuilder = struct {
         for (self.extra_layer_storage.items) |s| self.allocator.free(s);
         self.extra_layer_storage.deinit(self.allocator);
 
-        for (self.text_curves_owned.items) |*c| c.deinit();
-        self.text_curves_owned.deinit(self.allocator);
-        self.text_entries.deinit(self.allocator);
+        self.text_atlas.deinit();
         self.text_shapes.deinit(self.allocator);
     }
 
@@ -368,7 +365,7 @@ pub const PassBuilder = struct {
         em: f32,
         color: [4]f32,
     ) !void {
-        try self.ensureUnhintedGlyphCurves(shaped);
+        try snail.recordUnhintedRun(&self.text_atlas, self.allocator, &self.fonts.faces, shaped, .{});
         var picture = try demo_support.placeRun(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
@@ -425,27 +422,12 @@ pub const PassBuilder = struct {
         }
     }
 
-    fn ensureUnhintedGlyphCurves(self: *PassBuilder, shaped: *const snail.ShapedText) !void {
-        for (shaped.glyphs) |g| {
-            const face_index_int: usize = @intCast(g.face_index);
-            if (face_index_int >= self.fonts.faces.faceCount()) continue;
-            const fid = g.font_id;
-            const font_ref = &self.fonts.fonts[fid];
-            const key = snail.record_key.unhintedGlyph(fid, g.glyph_id);
-            if (containsKey(self.text_entries.items, key)) continue;
-            const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
-            try self.text_curves_owned.append(self.allocator, curves);
-            try self.text_entries.append(self.allocator, .{
-                .key = key,
-                .curves = self.text_curves_owned.items[self.text_curves_owned.items.len - 1],
-            });
-        }
-    }
-
     pub fn freeze(self: *PassBuilder, pool: *snail.PagePool) !PreparedPass {
         var path_atlas = try snail.Atlas.from(self.allocator, pool, self.path_entries.items);
         errdefer path_atlas.deinit();
-        var text_atlas = try snail.Atlas.from(self.allocator, pool, self.text_entries.items);
+        // Ownership of the recorded text store moves to PreparedPass.
+        var text_atlas = self.text_atlas;
+        self.text_atlas = snail.Atlas.empty(self.allocator);
         errdefer text_atlas.deinit();
         var path_picture = try demo_support.Picture.from(self.allocator, self.path_shapes.items);
         errdefer path_picture.deinit();
@@ -454,7 +436,6 @@ pub const PassBuilder = struct {
 
         // Ownership of the curve / extra-layer storage moves to PreparedPass.
         const path_owned = try self.path_curves_owned.toOwnedSlice(self.allocator);
-        const text_owned = try self.text_curves_owned.toOwnedSlice(self.allocator);
         const extras = try self.extra_layer_storage.toOwnedSlice(self.allocator);
 
         return .{
@@ -464,16 +445,10 @@ pub const PassBuilder = struct {
             .path_picture = path_picture,
             .text_picture = text_picture,
             .path_curves_owned = path_owned,
-            .text_curves_owned = text_owned,
             .extra_layer_storage = extras,
         };
     }
 };
-
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
-    for (entries) |e| if (e.key.eql(key)) return true;
-    return false;
-}
 
 // ── PreparedPass ──
 
@@ -484,7 +459,6 @@ pub const PreparedPass = struct {
     path_picture: demo_support.Picture,
     text_picture: demo_support.Picture,
     path_curves_owned: []snail.GlyphCurves,
-    text_curves_owned: []snail.GlyphCurves,
     extra_layer_storage: [][]snail.AtlasLayer,
 
     pub fn deinit(self: *PreparedPass) void {
@@ -494,8 +468,6 @@ pub const PreparedPass = struct {
         self.path_atlas.deinit();
         for (self.path_curves_owned) |*c| c.deinit();
         if (self.path_curves_owned.len > 0) self.allocator.free(self.path_curves_owned);
-        for (self.text_curves_owned) |*c| c.deinit();
-        if (self.text_curves_owned.len > 0) self.allocator.free(self.text_curves_owned);
         for (self.extra_layer_storage) |s| self.allocator.free(s);
         if (self.extra_layer_storage.len > 0) self.allocator.free(self.extra_layer_storage);
         self.* = undefined;

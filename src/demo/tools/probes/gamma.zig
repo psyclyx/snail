@@ -71,7 +71,10 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         curves[i] = try prepared.fillCurves(allocator, allocator);
         built += 1;
         const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = @intCast(i) };
-        entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = .{ v, v, v, 1 } } };
+        // Bands are authored in sRGB; snail takes linear, so decode at the
+        // boundary. The sRGB attachment re-encodes on store, round-tripping
+        // each band back to ~round(v*255).
+        entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = snail.color.srgbToLinearColor(.{ v, v, v, 1 }) } };
         shapes[i] = .{
             .key = key,
             .local_transform = prepared.placedBy(demo_support.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) })),

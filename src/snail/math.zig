@@ -13,7 +13,12 @@ pub const Rect = struct {
     h: f32,
 };
 
-/// Project the z = 0 plane of `mvp` to y-down viewport pixel coordinates.
+/// Project the z = 0 plane of `mvp` to viewport pixel coordinates with a
+/// TOP-LEFT origin (the `1 - ndc.y` flip below). This is the framebuffer
+/// texel convention, not a scene-axis choice — the scene's y direction
+/// comes from the caller's projection matrix (see `RunPlacement.y_axis`).
+/// A host addressing its framebuffer bottom-up should flip the returned
+/// transform's y row itself.
 /// Returns `null` for perspective or degenerate projections.
 pub fn mvpToScenePixel(mvp: Mat4, viewport_w: f32, viewport_h: f32) ?Transform2D {
     const m = mvp.data;

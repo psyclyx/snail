@@ -3,6 +3,7 @@ const sfnt = @import("sfnt.zig");
 const tt_outline = @import("truetype/outline.zig");
 const vec = @import("../math/vec.zig");
 const bezier_mod = @import("../math/bezier.zig");
+const color_mod = @import("../color.zig");
 const Vec2 = vec.Vec2;
 const QuadBezier = bezier_mod.QuadBezier;
 const BBox = bezier_mod.BBox;
@@ -589,14 +590,17 @@ pub const Font = struct {
                 return null;
             }
 
+            // CPAL colors are spec-defined sRGB (stored BGRA); convert to
+            // the API's linear-color convention here, where the encoded
+            // source data enters.
             return .{
                 .glyph_id = layer_gid,
-                .color = .{
+                .color = color_mod.srgbToLinearColor(.{
                     @as(f32, @floatFromInt(self.data[entry + 2])) / 255.0,
                     @as(f32, @floatFromInt(self.data[entry + 1])) / 255.0,
                     @as(f32, @floatFromInt(self.data[entry + 0])) / 255.0,
                     @as(f32, @floatFromInt(self.data[entry + 3])) / 255.0,
-                },
+                }),
             };
         }
     };

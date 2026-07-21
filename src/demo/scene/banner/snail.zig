@@ -7,6 +7,9 @@ const demo_support = @import("support");
 
 const Allocator = std.mem.Allocator;
 
+/// Colors below are authored in sRGB; snail's API takes linear light.
+const srgb = snail.color.srgbToLinearColor;
+
 pub const Builder = struct {
     allocator: Allocator,
     /// Reset between path producer calls; intermediate buffers for
@@ -270,10 +273,10 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
     try builder.addPathFillAndStroke(&body, .{ .linear_gradient = .{
         .start = .{ .x = 48.0, .y = 102.0 },
         .end = .{ .x = 320.0, .y = 158.0 },
-        .start_color = .{ 0.38, 0.48, 0.38, 0.95 },
-        .end_color = .{ 0.68, 0.65, 0.52, 0.95 },
+        .start_color = srgb(.{ 0.38, 0.48, 0.38, 0.95 }),
+        .end_color = srgb(.{ 0.68, 0.65, 0.52, 0.95 }),
     } }, .{
-        .paint = .{ .solid = .{ 0.45, 0.50, 0.38, 0.50 } },
+        .paint = .{ .solid = srgb(.{ 0.45, 0.50, 0.38, 0.50 }) },
         .width = 2.0,
         .join = .round,
         .placement = .inside,
@@ -284,7 +287,7 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
     try belly.moveTo(.{ .x = 92.0, .y = 140.0 });
     try belly.cubicTo(.{ .x = 138.0, .y = 132.0 }, .{ .x = 204.0, .y = 136.0 }, .{ .x = 274.0, .y = 142.0 });
     try builder.addStrokedPath(&belly, .{
-        .paint = .{ .solid = .{ 1.0, 1.0, 0.95, 0.35 } },
+        .paint = .{ .solid = srgb(.{ 1.0, 1.0, 0.95, 0.35 }) },
         .width = 4.0,
         .cap = .round,
         .join = .round,
@@ -298,10 +301,10 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
     }, .{ .radial_gradient = .{
         .center = .{ .x = 208.0, .y = 68.0 },
         .radius = 72.0,
-        .inner_color = .{ 0.62, 0.82, 0.92, 0.55 },
-        .outer_color = .{ 0.25, 0.45, 0.62, 0.88 },
+        .inner_color = srgb(.{ 0.62, 0.82, 0.92, 0.55 }),
+        .outer_color = srgb(.{ 0.25, 0.45, 0.62, 0.88 }),
     } }, .{
-        .paint = .{ .solid = .{ 0.35, 0.60, 0.78, 0.65 } },
+        .paint = .{ .solid = srgb(.{ 0.35, 0.60, 0.78, 0.65 }) },
         .width = 2.4,
         .join = .round,
     }, transform);
@@ -318,27 +321,27 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
         .paint = .{ .linear_gradient = .{
             .start = .{ .x = 252.0, .y = 60.0 },
             .end = .{ .x = 194.0, .y = 114.0 },
-            .start_color = .{ 0.92, 0.72, 0.28, 0.92 },
-            .end_color = .{ 0.85, 0.45, 0.18, 0.88 },
+            .start_color = srgb(.{ 0.92, 0.72, 0.28, 0.92 }),
+            .end_color = srgb(.{ 0.85, 0.45, 0.18, 0.88 }),
         } },
         .width = 9.0,
         .cap = .round,
         .join = .round,
     }, transform);
 
-    try addFilledQuadraticRibbon(builder, .{ .x = 308.0, .y = 100.0 }, .{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 }, 2.0, .{ 0.58, 0.58, 0.52, 0.90 }, transform);
-    try addFilledQuadraticRibbon(builder, .{ .x = 294.0, .y = 102.0 }, .{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 }, 2.0, .{ 0.58, 0.58, 0.52, 0.90 }, transform);
+    try addFilledQuadraticRibbon(builder, .{ .x = 308.0, .y = 100.0 }, .{ .x = 316.0, .y = 76.0 }, .{ .x = 334.0, .y = 58.0 }, 2.0, srgb(.{ 0.58, 0.58, 0.52, 0.90 }), transform);
+    try addFilledQuadraticRibbon(builder, .{ .x = 294.0, .y = 102.0 }, .{ .x = 298.0, .y = 80.0 }, .{ .x = 306.0, .y = 64.0 }, 2.0, srgb(.{ 0.58, 0.58, 0.52, 0.90 }), transform);
 
     const eye_stroke = snail.StrokeStyle{
-        .paint = .{ .solid = .{ 0.30, 0.32, 0.28, 0.80 } },
+        .paint = .{ .solid = srgb(.{ 0.30, 0.32, 0.28, 0.80 }) },
         .width = 1.2,
         .join = .round,
     };
-    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addEllipse(.{ .x = 330.0, .y = 54.0, .w = 9.0, .h = 9.0 }, .{ .solid = srgb(.{ 0.98, 0.97, 0.94, 1.0 }) }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 332.0, .y = 56.0, .w = 5.0, .h = 5.0 }, .{ .solid = srgb(.{ 0.18, 0.20, 0.22, 1.0 }) }, transform);
     try builder.addFilledEllipse(.{ .x = 333.0, .y = 56.5, .w = 1.5, .h = 1.5 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
-    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .solid = .{ 0.98, 0.97, 0.94, 1.0 } }, eye_stroke, transform);
-    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .solid = .{ 0.18, 0.20, 0.22, 1.0 } }, transform);
+    try builder.addEllipse(.{ .x = 303.0, .y = 61.0, .w = 7.0, .h = 7.0 }, .{ .solid = srgb(.{ 0.98, 0.97, 0.94, 1.0 }) }, eye_stroke, transform);
+    try builder.addFilledEllipse(.{ .x = 304.5, .y = 62.5, .w = 4.0, .h = 4.0 }, .{ .solid = srgb(.{ 0.18, 0.20, 0.22, 1.0 }) }, transform);
     try builder.addFilledEllipse(.{ .x = 305.2, .y = 63.0, .w = 1.2, .h = 1.2 }, .{ .solid = .{ 1.0, 1.0, 1.0, 0.90 } }, transform);
 
     var smile = snail.Path.init(builder.allocator);
@@ -346,7 +349,7 @@ pub fn addVectorSnail(builder: Builder, snail_stage: snail.Rect) !void {
     try smile.moveTo(.{ .x = 314.0, .y = 119.0 });
     try smile.quadTo(.{ .x = 321.0, .y = 123.0 }, .{ .x = 329.0, .y = 119.0 });
     try builder.addStrokedPath(&smile, .{
-        .paint = .{ .solid = .{ 0.25, 0.28, 0.22, 0.70 } },
+        .paint = .{ .solid = srgb(.{ 0.25, 0.28, 0.22, 0.70 }) },
         .width = 2.0,
         .cap = .round,
         .join = .round,

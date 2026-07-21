@@ -293,7 +293,7 @@ pub fn main() !void {
     try snail.recordTtHintRun(&atlas, allocator, &tt_hint_vm, &prepared, font_id, &shaped);
     const path_shapes = try extendWithPaths(allocator, &atlas);
     try snail.recordUnhintedRun(&atlas, allocator, &faces, &emoji, .{
-        .colr_foreground = .{ 0.18, 0.35, 0.70, 1.0 },
+        .colr_foreground = snail.color.srgbToLinearColor(.{ 0.18, 0.35, 0.70, 1.0 }),
     });
     const colr = try snail.placeRunAlloc(allocator, &emoji, null, .{
         .baseline = .{ .x = 775, .y = 145 },
@@ -317,14 +317,14 @@ pub fn main() !void {
     const unhinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
         .baseline = .{ .x = 48, .y = 92 },
         .em = 34,
-        .color = .{ 0.10, 0.22, 0.48, 1.0 },
+        .color = snail.color.srgbToLinearColor(.{ 0.10, 0.22, 0.48, 1.0 }),
         .mode = .unhinted,
     });
     defer allocator.free(unhinted);
     const autohinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
         .baseline = .{ .x = 48, .y = 202 },
         .em = 34,
-        .color = .{ 0.18, 0.48, 0.30, 1.0 },
+        .color = snail.color.srgbToLinearColor(.{ 0.18, 0.48, 0.30, 1.0 }),
         .mode = .{ .autohint = autohint_policy },
         .snap = .origins,
         .world_to_pixel = world_to_pixel,
@@ -333,7 +333,7 @@ pub fn main() !void {
     const tt_hinted = try snail.placeRunAlloc(allocator, &shaped, null, .{
         .baseline = .{ .x = 48, .y = 312 },
         .em = 34,
-        .color = .{ 0.54, 0.20, 0.20, 1.0 },
+        .color = snail.color.srgbToLinearColor(.{ 0.54, 0.20, 0.20, 1.0 }),
         .mode = .{ .tt_hint = .{ .ppem_26_6 = ppem } },
         .snap = .origins,
         .world_to_pixel = world_to_pixel,
@@ -424,7 +424,7 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
     var prepared_stroke = try stroke_path.prepare(allocator);
     defer prepared_stroke.deinit();
     const stroke_style = snail.StrokeStyle{
-        .paint = .{ .solid = .{ 0.10, 0.48, 0.64, 1.0 } },
+        .paint = .{ .solid = snail.color.srgbToLinearColor(.{ 0.10, 0.48, 0.64, 1.0 }) },
         .width = 12,
         .cap = .round,
         .join = .round,
@@ -438,7 +438,7 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
         .{
             .key = fill_key,
             .curves = fill_curves,
-            .paint = prepared_fill.paintForDesign(.{ .solid = .{ 0.34, 0.25, 0.72, 0.92 } }),
+            .paint = prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
         },
         .{
             .key = stroke_key,

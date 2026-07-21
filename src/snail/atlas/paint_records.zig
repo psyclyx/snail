@@ -39,15 +39,6 @@ pub fn readTexel(data: []const f32, texel_width: u32, texel_offset: u32) [4]f32 
     };
 }
 
-pub fn srgbToLinear(v: f32) f32 {
-    if (v <= 0.04045) return v / 12.92;
-    return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-}
-
-pub fn srgbToLinearColor(color: [4]f32) [4]f32 {
-    return .{ srgbToLinear(color[0]), srgbToLinear(color[1]), srgbToLinear(color[2]), color[3] };
-}
-
 pub fn tagFor(paint: anytype) f32 {
     return render_abi.paintRecordTag(switch (paint) {
         .solid => .solid,
@@ -74,10 +65,10 @@ pub fn write(
 ) void {
     writeBandHeader(data, texel_width, texel_offset, band_entry, tagFor(paint), fill_rule_bit);
     switch (paint) {
-        // Solid colors store linear in the layer-info texture so the
+        // API colors are linear (see `color.zig`), and the layer-info
+        // texture stores linear, so colors pass through untouched and the
         // path/colr fragment shaders skip a per-pixel `srgbDecode`.
-        // Matches the gradient endpoint convention.
-        .solid => |color| setTexel(data, texel_width, texel_offset + 2, srgbToLinearColor(color)),
+        .solid => |color| setTexel(data, texel_width, texel_offset + 2, color),
         .linear_gradient => |gradient| writeLinearGradient(data, texel_width, texel_offset, gradient),
         .radial_gradient => |gradient| writeRadialGradient(data, texel_width, texel_offset, gradient),
         .conic_gradient => |gradient| writeConicGradient(data, texel_width, texel_offset, gradient),
@@ -110,11 +101,11 @@ fn writeLinearGradient(data: []f32, texel_width: u32, texel_offset: u32, gradien
         gradient.end.x,
         gradient.end.y,
     });
-    // Endpoints are stored linear (like solid), so the renderer interpolates
-    // in linear light — consistent with the rest of the pipeline and free of
-    // the sRGB-space "muddy midpoint" for complementary colors.
-    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
+    // Endpoints are linear (like all API colors), so the renderer
+    // interpolates in linear light — free of the sRGB-space "muddy
+    // midpoint" for complementary colors.
+    setTexel(data, texel_width, texel_offset + 3, gradient.start_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.end_color);
     setTexel(data, texel_width, texel_offset + 5, .{
         @floatFromInt(@intFromEnum(gradient.extend)),
         0,
@@ -130,9 +121,9 @@ fn writeRadialGradient(data: []f32, texel_width: u32, texel_offset: u32, gradien
         gradient.radius,
         @floatFromInt(@intFromEnum(gradient.extend)),
     });
-    // Linear-stored endpoints; see writeLinearGradient.
-    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.inner_color));
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.outer_color));
+    // Linear endpoints; see writeLinearGradient.
+    setTexel(data, texel_width, texel_offset + 3, gradient.inner_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.outer_color);
     setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
 }
 
@@ -143,9 +134,9 @@ fn writeConicGradient(data: []f32, texel_width: u32, texel_offset: u32, gradient
         gradient.start_angle,
         @floatFromInt(@intFromEnum(gradient.extend)),
     });
-    // Linear-stored endpoints; see writeLinearGradient.
-    setTexel(data, texel_width, texel_offset + 3, srgbToLinearColor(gradient.start_color));
-    setTexel(data, texel_width, texel_offset + 4, srgbToLinearColor(gradient.end_color));
+    // Linear endpoints; see writeLinearGradient.
+    setTexel(data, texel_width, texel_offset + 3, gradient.start_color);
+    setTexel(data, texel_width, texel_offset + 4, gradient.end_color);
     setTexel(data, texel_width, texel_offset + 5, .{ 0, 0, 0, 0 });
 }
 

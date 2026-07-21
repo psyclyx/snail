@@ -69,7 +69,9 @@ pub const EmitResult = struct {
 
 /// Heterogeneous emit. One pre-composed `Instance` per shape in `shapes`,
 /// transform composed as `world_xform * shape.local_transform`, color as
-/// `shape.local_color`, tint as `world_tint`.
+/// `shape.local_color`, tint as `world_tint`. Color and tint are linear
+/// light, straight alpha (see `color.zig`); the renderer multiplies them
+/// in linear space.
 pub fn emit(
     instances_buf: []Instance,
     batches_buf: []DrawBatch,

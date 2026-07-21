@@ -18,6 +18,9 @@ const banner_snail = @import("banner/snail.zig");
 
 const Allocator = std.mem.Allocator;
 
+/// Colors below are authored in sRGB; snail's API takes linear light.
+const srgb = snail.color.srgbToLinearColor;
+
 pub const Content = struct {
     allocator: Allocator,
     pool: *snail.PagePool,
@@ -183,7 +186,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         var prepared = try p.prepare(allocator);
         defer prepared.deinit();
         const stroke = snail.StrokeStyle{
-            .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
+            .paint = .{ .solid = srgb(.{ 0.78, 0.82, 0.88, 1.0 }) },
             .width = demo_support.unitStrokeWidth(card_rect, 1.5),
         };
         try path_curves_owned.append(allocator, try prepared.strokeCurves(allocator, allocator, stroke));
@@ -192,7 +195,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         try path_entries.append(allocator, .{
             .key = key,
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
-            .paint = .{ .solid = .{ 0.78, 0.82, 0.88, 1.0 } },
+            .paint = .{ .solid = srgb(.{ 0.78, 0.82, 0.88, 1.0 }) },
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(card_place), .local_color = .{ 1, 1, 1, 1 } });
     }
@@ -209,8 +212,8 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         next_path_id += 1;
         const paint = snail.Paint{ .conic_gradient = .{
             .center = .{ .x = 0.5, .y = 0.5 },
-            .start_color = .{ 0.95, 0.75, 0.25, 1.0 },
-            .end_color = .{ 0.30, 0.45, 0.85, 1.0 },
+            .start_color = srgb(.{ 0.95, 0.75, 0.25, 1.0 }),
+            .end_color = srgb(.{ 0.30, 0.45, 0.85, 1.0 }),
         } };
         try path_entries.append(allocator, .{
             .key = key,
@@ -245,14 +248,14 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
     const wordmark_em: f32 = 52;
     const tagline_baseline: f32 = wordmark_baseline + 22;
     const tagline_em: f32 = 13;
-    const tagline_color = [4]f32{ 0.42, 0.46, 0.52, 1.0 };
+    const tagline_color = srgb(.{ 0.42, 0.46, 0.52, 1.0 });
 
     // Wordmark glyphs with per-glyph gradients.
     const wordmark_world_gradient = snail.LinearGradient{
         .start = .{ .x = left_pad, .y = wordmark_baseline - wordmark_em },
         .end = .{ .x = left_pad + 135, .y = wordmark_baseline },
-        .start_color = .{ 0.08, 0.30, 0.72, 1.0 },
-        .end_color = .{ 0.10, 0.10, 0.14, 1.0 },
+        .start_color = srgb(.{ 0.08, 0.30, 0.72, 1.0 }),
+        .end_color = srgb(.{ 0.10, 0.10, 0.14, 1.0 }),
     };
     for (shaped_wordmark.glyphs) |g| {
         const fid = g.font_id;
@@ -337,8 +340,8 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
 
     const sample_baseline: f32 = 196.0;
     const sample_em: f32 = 16.0;
-    const sample_color = [4]f32{ 0.15, 0.18, 0.24, 1.0 };
-    const sep_color = [4]f32{ 0.65, 0.70, 0.78, 1.0 };
+    const sample_color = srgb(.{ 0.15, 0.18, 0.24, 1.0 });
+    const sep_color = srgb(.{ 0.65, 0.70, 0.78, 1.0 });
     var sample_pics: std.ArrayList(demo_support.Picture) = .empty;
     defer {
         for (sample_pics.items) |*p| p.deinit();

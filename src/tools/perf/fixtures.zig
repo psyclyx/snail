@@ -2,6 +2,9 @@ const std = @import("std");
 const snail = @import("snail");
 const assets = @import("assets");
 
+/// Colors below are authored in sRGB; snail's API takes linear light.
+const srgb = snail.color.srgbToLinearColor;
+
 pub const width: u32 = 640;
 pub const height: u32 = 360;
 pub const paragraph =
@@ -244,10 +247,10 @@ fn addRegularText(build: *SceneBuild, fonts: *FontSet) !void {
     defer shaped.deinit();
     try ensureUnhinted(build, fonts, &shaped);
     const colors = [_][4]f32{
-        .{ 0.08, 0.12, 0.22, 1 },
-        .{ 0.16, 0.38, 0.70, 0.92 },
-        .{ 0.50, 0.18, 0.22, 0.88 },
-        .{ 0.12, 0.46, 0.30, 0.90 },
+        srgb(.{ 0.08, 0.12, 0.22, 1 }),
+        srgb(.{ 0.16, 0.38, 0.70, 0.92 }),
+        srgb(.{ 0.50, 0.18, 0.22, 0.88 }),
+        srgb(.{ 0.12, 0.46, 0.30, 0.90 }),
     };
     for (0..6) |row| {
         const placed = try snail.placeRunAlloc(build.allocator, &shaped, &fonts.faces, .{
@@ -279,7 +282,7 @@ fn addTtHintedText(build: *SceneBuild, fonts: *FontSet) !void {
         const placed = try snail.placeRunAlloc(build.allocator, &shaped, null, .{
             .baseline = .{ .x = 18, .y = 38 + @as(f32, @floatFromInt(row)) * 54 },
             .em = 20,
-            .color = .{ 0.08, 0.18 + @as(f32, @floatFromInt(row)) * 0.04, 0.34, 1 },
+            .color = srgb(.{ 0.08, 0.18 + @as(f32, @floatFromInt(row)) * 0.04, 0.34, 1 }),
             .mode = .{ .tt_hint = .{ .ppem_26_6 = ppem_26_6 } },
         });
         defer build.allocator.free(placed);
@@ -321,7 +324,7 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
         const placed = try snail.placeRunAlloc(build.allocator, &shaped, null, .{
             .baseline = .{ .x = 18, .y = 38 + @as(f32, @floatFromInt(row)) * 54 },
             .em = 18 + @as(f32, @floatFromInt(row % 3)) * 2,
-            .color = .{ 0.10, 0.32, 0.22 + @as(f32, @floatFromInt(row)) * 0.04, 1 },
+            .color = srgb(.{ 0.10, 0.32, 0.22 + @as(f32, @floatFromInt(row)) * 0.04, 1 }),
             .mode = .{ .autohint = policy },
         });
         defer build.allocator.free(placed);
@@ -346,7 +349,9 @@ fn addColr(build: *SceneBuild) !void {
     build.resetScratch();
     try build.owned_curves.append(build.allocator, first_curves);
     const base_curves = build.owned_curves.items[build.owned_curves.items.len - 1];
-    const fallback = [4]f32{ 0.18, 0.35, 0.70, 1.0 };
+    // COLR layer colors are already linear; the foreground fallback is
+    // authored in sRGB, so convert it to match.
+    const fallback = srgb(.{ 0.18, 0.35, 0.70, 1.0 });
     const first_color: [4]f32 = if (first.color[0] < 0) fallback else first.color;
 
     while (iter.next()) |layer| {
@@ -385,10 +390,10 @@ fn addColr(build: *SceneBuild) !void {
 
 fn addPaths(build: *SceneBuild) !void {
     const colors = [_][4]f32{
-        .{ 0.17, 0.43, 0.86, 0.92 },
-        .{ 0.90, 0.36, 0.22, 0.90 },
-        .{ 0.16, 0.66, 0.42, 0.90 },
-        .{ 0.72, 0.45, 0.86, 0.88 },
+        srgb(.{ 0.17, 0.43, 0.86, 0.92 }),
+        srgb(.{ 0.90, 0.36, 0.22, 0.90 }),
+        srgb(.{ 0.16, 0.66, 0.42, 0.90 }),
+        srgb(.{ 0.72, 0.45, 0.86, 0.88 }),
     };
     for (0..4) |row| for (0..6) |col| {
         const x = 24 + @as(f32, @floatFromInt(col)) * 96;

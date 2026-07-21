@@ -5,6 +5,7 @@ const BBox = @import("../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
 const render_abi = @import("abi.zig");
+const color_mod = @import("../color.zig");
 
 /// Per-instance data: 92 bytes = 23 u32 words per glyph.
 ///   rect:  4x f16 — bbox in em-space
@@ -12,8 +13,10 @@ const render_abi = @import("abi.zig");
 ///   org:   2x f32 — translation
 ///   glyph: 2x u32 — packed glyph data
 ///   bnd:   4x f32 — band transform
-///   col:   4x u8 normalized sRGBA base color
-///   tint:  4x u8 normalized sRGBA instance tint
+///   col:   4x u8 normalized sRGBA base color (transport encoding of the
+///          caller's linear color — 8-bit sRGB is perceptually uniform;
+///          the vertex stage decodes back to linear)
+///   tint:  4x u8 normalized sRGBA instance tint (same transport encoding)
 ///   policy: 7x u32 packed draw-time autohint policy (zero for other kinds)
 pub const Instance = extern struct {
     rect: [4]u16,
@@ -123,11 +126,13 @@ fn unorm8(value: f32) u8 {
     return @intFromFloat(@round(clamped * 255.0));
 }
 
+/// Pack a LINEAR API color into the u8 sRGB transport encoding (the
+/// shaders and CPU raster decode with `srgbToLinear`). Alpha is linear.
 fn color4(color: [4]f32) [4]u8 {
     return .{
-        unorm8(color[0]),
-        unorm8(color[1]),
-        unorm8(color[2]),
+        unorm8(color_mod.linearToSrgb(color[0])),
+        unorm8(color_mod.linearToSrgb(color[1])),
+        unorm8(color_mod.linearToSrgb(color[2])),
         unorm8(color[3]),
     };
 }
@@ -141,11 +146,13 @@ fn decodeHalf4(values: [4]u16) [4]f32 {
     };
 }
 
+/// Decode the u8 sRGB transport encoding back to the linear API color —
+/// the inverse of `color4`, mirroring the vertex-stage shader decode.
 fn decodeColor4(color: [4]u8) [4]f32 {
     return .{
-        @as(f32, @floatFromInt(color[0])) / 255.0,
-        @as(f32, @floatFromInt(color[1])) / 255.0,
-        @as(f32, @floatFromInt(color[2])) / 255.0,
+        color_mod.srgbToLinear(@as(f32, @floatFromInt(color[0])) / 255.0),
+        color_mod.srgbToLinear(@as(f32, @floatFromInt(color[1])) / 255.0),
+        color_mod.srgbToLinear(@as(f32, @floatFromInt(color[2])) / 255.0),
         @as(f32, @floatFromInt(color[3])) / 255.0,
     };
 }
@@ -185,48 +192,6 @@ pub fn decodeInstance(words: []const u32) DecodedInstance {
         .tint = decodeColor4(instance.tint),
         .policy = instance.policy,
     };
-}
-
-/// Generate instance data for a glyph quad (non-transformed).
-pub fn generateGlyphVertices(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    bbox: BBox,
-    band_entry: band_tex.GlyphBandEntry,
-    color: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateGlyphVerticesTinted(buf, x, y, font_size, bbox, band_entry, color, identity_tint, atlas_layer);
-}
-
-/// Generate instance data for a tinted glyph quad (non-transformed).
-pub fn generateGlyphVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    bbox: BBox,
-    band_entry: band_tex.GlyphBandEntry,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
-    const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
-        (@as(u32, band_entry.v_band_count - 1) << 16) |
-        (@as(u32, atlas_layer) << 24);
-
-    writeInstance(buf, .{
-        .rect = half4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
-        .xform = .{ font_size, 0, 0, -font_size },
-        .origin = .{ x, y },
-        .glyph = .{ gz, gw },
-        .band = .{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y },
-        .color = color4(color),
-        .tint = color4(tint),
-    });
 }
 
 /// Generate instance data for a glyph quad under a full 2D affine transform.
@@ -269,101 +234,6 @@ pub fn generateGlyphVerticesTransformedTinted(
         .tint = color4(tint),
     });
     return true;
-}
-
-/// Generate instance data for a multi-layer COLR glyph (single quad, all layers).
-pub fn generateMultiLayerGlyphVertices(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateMultiLayerGlyphVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, identity_tint, atlas_layer);
-}
-
-/// Generate instance data for a tinted multi-layer COLR glyph.
-pub fn generateMultiLayerGlyphVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .colr);
-}
-
-/// Generate instance data for a tinted path layer-info record.
-pub fn generatePathRecordVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .path);
-}
-
-/// Generate instance data for a tinted hinted text layer-info record.
-pub fn generateTtHintedTextVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .tt_hinted_text);
-}
-
-fn generateSpecialLayerVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-    kind: SpecialLayerKind,
-) void {
-    const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
-    const gw = specialGlyphWord(layer_count, kind);
-
-    writeInstance(buf, .{
-        .rect = specialRectHalf4(kind, .{ union_bbox.min.x, union_bbox.min.y, union_bbox.max.x, union_bbox.max.y }),
-        .xform = .{ font_size, 0, 0, -font_size },
-        .origin = .{ x, y },
-        .glyph = .{ gz, gw },
-        .band = .{ 0, 0, 0, @floatFromInt(atlas_layer) },
-        .color = color4(color),
-        .tint = color4(tint),
-    });
 }
 
 /// Generate instance data for a transformed multi-layer COLR glyph.
@@ -492,7 +362,8 @@ test "instance data produces correct layout" {
     };
     const color = [4]f32{ 1.0, 0.5, 0.0, 1.0 };
 
-    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0);
+    const transform = vec.Transform2D{ .xx = 24.0, .xy = 0, .tx = 100.0, .yx = 0, .yy = -24.0, .ty = 200.0 };
+    try std.testing.expect(generateGlyphVerticesTransformedTinted(&buf, bbox, band_entry, color, identity_tint, 0, transform));
     const decoded = decodeInstance(&buf);
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), decoded.rect[0], 0.001);
@@ -535,7 +406,7 @@ test "multi-layer glyph instance preserves wide layer counts" {
     };
     const color = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
 
-    generateMultiLayerGlyphVertices(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 300, color, 7);
+    try std.testing.expect(generateMultiLayerGlyphVerticesTransformedTinted(&buf, bbox, 12, 34, 300, color, identity_tint, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 300), render_abi.specialGlyphWordLayerCount(packed_gw));
@@ -549,7 +420,7 @@ test "path record instance uses path special kind" {
         .max = Vec2.new(0.5, 0.8),
     };
 
-    generatePathRecordVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+    try std.testing.expect(generatePathRecordVerticesTransformedTinted(&buf, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
@@ -563,7 +434,7 @@ test "hinted text instance uses hinted special kind" {
         .max = Vec2.new(0.6, 0.8),
     };
 
-    generateTtHintedTextVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+    try std.testing.expect(generateTtHintedTextVerticesTransformedTinted(&buf, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));

@@ -1,3 +1,7 @@
+//! Paint payloads for fills and strokes. All `[4]f32` colors are LINEAR
+//! light with straight alpha (see `color.zig`); gradient endpoints
+//! interpolate in linear light.
+
 const std = @import("std");
 const image_mod = @import("image.zig");
 const vec = @import("math/vec.zig");

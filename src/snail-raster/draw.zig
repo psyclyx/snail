@@ -446,7 +446,7 @@ test "draw renders image-painted shape through special-layer path" {
         image_pixels[p + 2] = 0;
         image_pixels[p + 3] = 255;
     }
-    var image = try snail.Image.initSrgba8(allocator, 4, 4, image_pixels[0..]);
+    var image = try snail.Image.init(allocator, 4, 4, image_pixels[0..]);
     defer image.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{

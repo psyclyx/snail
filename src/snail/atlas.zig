@@ -145,6 +145,7 @@ pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || erro
     MissingAutohintBase,
     InvalidAutohintAnalysis,
     LayerInfoTooLarge,
+    CorruptPaintRecord,
 };
 
 pub const Atlas = struct {

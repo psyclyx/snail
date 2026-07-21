@@ -79,7 +79,13 @@ pub const ShapeOptions = struct {
 pub const AdvanceProvider = struct {
     context: *anyopaque,
     covers: *const fn (context: *anyopaque, font_id: u32) bool,
-    get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: TtHintPpem) i32,
+    /// Returns the 26.6 advance, or null when the provider cannot supply
+    /// one (e.g. a hint-VM failure for this glyph). On null, shaping falls
+    /// back to the font's native em-scaled advance for that glyph, so a
+    /// single bad glyph degrades to unhinted spacing instead of collapsing
+    /// to zero width. Providers should expose their own error state (see
+    /// `TtAdvanceSource.last_error`) so hosts can observe the fallback.
+    get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: TtHintPpem) ?i32,
 };
 
 pub const FontWeight = enum(u4) {

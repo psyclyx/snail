@@ -242,7 +242,8 @@ pub const Overlay = struct {
 
 /// Off-white at ~85% opacity. Sits cleanly on the banner's cream
 /// background and the game demo's darker scenes alike.
-const hud_color = [4]f32{ 0.06, 0.07, 0.09, 0.85 };
+// Authored in sRGB; snail's API takes linear light.
+const hud_color = snail.color.srgbToLinearColor(.{ 0.06, 0.07, 0.09, 0.85 });
 
 fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;

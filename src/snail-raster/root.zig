@@ -2,6 +2,13 @@
 //!
 //! This module depends on `snail`; `snail` never depends on it. Applications
 //! that only use the GPU shader contracts do not compile the rasterizer.
+//!
+//! Device contracts (this renderer plays the role a GPU device + texture
+//! formats play for a hardware backend):
+//! - Image paint texels: 4 bytes/texel RGBA, sRGB-encoded RGB with straight
+//!   linear alpha — the CPU analog of binding an `SRGB8_ALPHA8` texture.
+//! - Output encoding is explicit via `TargetEncoding`/`PixelFormat`;
+//!   blending is performed in linear light.
 
 const renderer = @import("renderer.zig");
 const device_atlas = @import("device_atlas.zig");
