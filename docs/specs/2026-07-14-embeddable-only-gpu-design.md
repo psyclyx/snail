@@ -1,9 +1,12 @@
 # Embeddable-only GPU rendering — design
 
-Status: design (2026-07-14). Anchors the multi-stage arc recorded in memory
-`project_embeddable_only`. Foundation already landed: the compiler-module
-split (`project_module_graph`) isolates `snail_vulkan`/`snail_gl` and makes
-`coverage` the per-backend aggregation seam.
+Status: LANDED (2026-07-21). The staged arc (§8, stages A–F) shipped: the
+public surface exposes no all-in-one renderers (`src/snail/root.zig`), the
+ex-renderers live on as demo reference callers (`src/demo/render/{gl,vulkan}/`),
+and the caller-owned upload planner (`src/snail/atlas/upload_plan.zig`)
+replaced the backend caches. The §9 open questions were either resolved
+(linear-resolve recipe → the linear color boundary contract in
+`src/snail/color.zig`) or dropped. Kept as design rationale.
 
 ## 1. Goal & boundary
 

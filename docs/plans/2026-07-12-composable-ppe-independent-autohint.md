@@ -1,5 +1,12 @@
 # Composable PPEM-Independent Autohinting Implementation Plan
 
+**Status: COMPLETE (2026-07-21).** All phases shipped: `AutohintPolicy`/`Fade`
+(`src/snail/font/autohint/policy.zig`), immutable per-glyph analysis records
+in the atlas, and the runtime warp path across CPU/GL/Vulkan. The step
+checkboxes below were not ticked during execution; treat this doc as
+historical rationale, not open work. Note: file paths referencing
+`src/snail-helpers/` predate the module reorganization — that code lives in
+`src/support/` (demo-only) or was absorbed into core.
 
 **Goal:** Replace the named, per-PPEM `auto_light` path with explicit composable autohint policies over one immutable per-glyph analysis resource, deriving all fitted targets at render time.
 

@@ -1,5 +1,9 @@
 # Autohint Character Diff Harness Implementation Plan
 
+**Status: COMPLETE (2026-07-21).** Shipped as
+`src/demo/tools/autohint/character_diff.zig` with the
+`run-autohint-character-diff` build step and tests. The step checkboxes
+below were not ticked during execution; this doc is historical.
 
 **Goal:** Add a deterministic per-character autohint-versus-TrueType visual and numeric comparison harness.
 
