@@ -11,8 +11,9 @@
 //    set 0 binding 4 here (beyond the four atlas textures; a real caller
 //    picks its own set/binding, the module does not care).
 //  - Desktop GL: a R32UI texel buffer (Buffer<uint> → usamplerBuffer).
-//  - GLES 3.0: skipped — no texel buffers in ES 3.0; the composed catalog's
-//    R32UI-2D-texture interface remains the GLES story until stage C.
+//  - GLES 3.0 (-DSNAIL_TARGET_GLES on the ES leg): a 2D R32UI texture
+//    addressed row-major at a fixed width — texel buffers do not exist in
+//    ES 3.0 at any extension level (GL_EXT_texture_buffer requires ES 3.1).
 //
 // The entry samples at an interpolated scene position and returns the
 // premultiplied linear paint — the module's contract, nothing more.
@@ -46,6 +47,21 @@ struct Records : ISnailTextRecords {
 [[vk::binding(4, 0)]] StructuredBuffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }
+};
+#elif defined(SNAIL_TARGET_GLES)
+ConstantBuffer<SnailTextSampleParams> pc;
+Texture2DArray<float4> u_curve_tex;
+Texture2DArray<uint2> u_band_tex;
+// GLES 3.0: 2D R32UI texture, row-major at a fixed width (the upload side
+// pads the tail row with zeros; the composed catalog's
+// SNAIL_TEXT_RECORDS_TEX_WIDTH contract).
+Texture2D<uint> u_snail_text_records;
+static const int SNAIL_TEXT_RECORDS_TEX_WIDTH = 1024;
+struct Records : ISnailTextRecords {
+    uint word(int linear_index) {
+        return u_snail_text_records.Load(int3(linear_index % SNAIL_TEXT_RECORDS_TEX_WIDTH,
+                                              linear_index / SNAIL_TEXT_RECORDS_TEX_WIDTH, 0)).x;
+    }
 };
 #else // Desktop GL: R32UI texel buffer.
 ConstantBuffer<SnailTextSampleParams> pc;

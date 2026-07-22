@@ -21,7 +21,8 @@ pub const vk = embed_vulkan.vk;
 const Scene = scene_mod.Scene;
 const PreparedPass = passes.PreparedPass;
 
-/// Push constants for the material pipeline (matches glsl/game_material.*).
+/// Push constants for the material pipeline (matches the Vulkan flavor of
+/// GameMaterialParams in slang/game_material.slang).
 const MaterialPush = extern struct {
     mvp: [16]f32,
     base_color: [4]f32,

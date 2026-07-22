@@ -175,18 +175,26 @@ pub fn linearResolveGles300(comptime stage: Stage) [:0]const u8 {
     };
 }
 
-// ── Text-as-material sampler (canonical artifacts; consumer migration is
-// stage C — the game keeps composing the GLSL catalog) ──
+// ── Text-as-material sampler (canonical artifacts for every target; the
+// game's material shader — the one shipped consumer — is its own Slang
+// family importing the same text_sample module, see
+// src/demo/game/slang/game_material.slang) ──
 //
 // The desktop GL dialect exists since the SPIRV-Cross leg (naga's SPIR-V
 // front end rejected the texel buffer): the record buffer stays a plain
 // `usamplerBuffer u_snail_text_records`, the parameter block is
-// `SnailTextSampleParams_std140`. No GLES artifact: texel buffers are ES
-// 3.1+ (GL_EXT_texture_buffer itself requires ES 3.1), so ES 3.0 keeps
-// the R32UI-texture interface.
+// `SnailTextSampleParams_std140`. The GLES 3.0 dialect compiles with
+// -DSNAIL_TARGET_GLES: texel buffers are ES 3.1+ (GL_EXT_texture_buffer
+// itself requires ES 3.1), so the emit words bind as a 2D R32UI texture
+// addressed row-major at a fixed width of 1024 texels (the combined
+// sampler carries the SPIRV-Cross dummy-sampler name).
 
 pub const glsl_text_sample_block_name = "SnailTextSampleParams_std140";
 pub const glsl_text_sample_records_name = "u_snail_text_records";
+pub const gles_text_sample_records_name = "SPIRV_Cross_Combinedu_snail_text_recordsSPIRV_Cross_DummySampler";
+/// Row width (in u32 texels) of the GLES R32UI records texture; must match
+/// SNAIL_TEXT_RECORDS_TEX_WIDTH in the Slang source.
+pub const gles_text_sample_records_width = 1024;
 
 pub fn textSampleFragWgsl() [:0]const u8 {
     return @embedFile("generated/wgsl/text_sample.frag.wgsl");
@@ -194,6 +202,10 @@ pub fn textSampleFragWgsl() [:0]const u8 {
 
 pub fn textSampleFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/text_sample.frag.glsl");
+}
+
+pub fn textSampleFragGles300() [:0]const u8 {
+    return @embedFile("generated/gles300/text_sample.frag.glsl");
 }
 
 // ── Autohint (own vertex stage: the knot fit runs per provoking vertex) ──
@@ -338,6 +350,13 @@ test "generated artifacts carry the documented interface names" {
     // named usamplerBuffer (a loader would bind it by name).
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), "usamplerBuffer " ++ glsl_text_sample_records_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), glsl_text_sample_block_name) != null);
+    // Text-sample GLES dialect: no texel buffer exists in ES 3.0 — the
+    // records bind as a 2D R32UI texture through the combined dummy
+    // sampler, and the default float precision must be highp.
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "usampler2D " ++ gles_text_sample_records_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), glsl_text_sample_block_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "usamplerBuffer") == null);
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "precision highp float;") != null);
     // Linear resolve: block + sampler names must survive.
     inline for (.{ linearResolveGlsl330(.fragment), linearResolveGles300(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_linear_resolve_block_name) != null);

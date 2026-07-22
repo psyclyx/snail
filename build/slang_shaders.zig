@@ -101,8 +101,17 @@ const fragment_stage = Stage{ .entry = "fragmentMain", .stage = "fragment", .sho
 pub const Family = struct {
     /// Artifact base name (generated/<target>/<name>.<stage>.<ext>).
     name: []const u8,
-    /// Family entry file under families/.
+    /// Family entry file under `dir`.
     source: []const u8,
+    /// Directory containing the family entry file. Defaults to the library
+    /// module dir; caller-authored families (the game's material shader)
+    /// live in their own tree and import the library modules via the
+    /// always-passed `-I module_dir`.
+    dir: []const u8 = module_dir,
+    /// Where gen-shaders checks the GL-dialect artifacts in. The library
+    /// families ship under src/snail/shader/generated/; caller families
+    /// (the game) keep theirs next to the consumer.
+    out_prefix: []const u8 = "src/snail/shader/generated/",
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
@@ -130,6 +139,11 @@ pub const Family = struct {
     /// Skip the GLES 3.0 artifact (subpixel: ES 3.0 has no dual-source
     /// blending; the composed catalog has no GLES subpixel program either).
     no_gles: bool = false,
+    /// The GLES 3.0 dialect compiles its own SPIR-V leg with an additional
+    /// -DSNAIL_TARGET_GLES: record-store families bind a 2D R32UI texture
+    /// there instead of the desktop texel buffer (Buffer<uint> has no ES
+    /// 3.0 translation — GL_EXT_texture_buffer requires ES 3.1).
+    gles_define: bool = false,
     /// GL dialects only: run build/glsl_patch_cubic_solver.zig on the
     /// SPIRV-Cross output — substitutes the composed-catalog text of the
     /// cubic Newton solver, whose regenerated emission Mesa compiles with
@@ -154,17 +168,20 @@ pub const families = [_]Family{
     // `fragmentMain` entry slang emits keeps MRT locations 0/1 (no
     // consumer is wired; wgpu still uses the old catalog).
     .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
-    // Canonical artifacts plus (new with the SPIRV-Cross leg) the desktop
-    // GL dialect — naga rejected the Buffer<uint> texel buffer, SPIRV-Cross
-    // emits a plain `usamplerBuffer` (validates under glslang as-is). No
-    // GLES artifact: texel buffers do not exist in ES 3.0 at any extension
-    // level — SPIRV-Cross emits `#extension GL_EXT_texture_buffer`, but
-    // that extension itself requires ES 3.1 (the output only validates
-    // with the version line rewritten to `310 es`), so the R32UI-texture
-    // interface remains the ES 3.0 answer. The shipped consumer (the
-    // game's material shader) keeps composing the GLSL catalog until
-    // stage C.
-    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
+    // Canonical artifacts for every target. Desktop GL is a plain
+    // `usamplerBuffer` texel buffer (new with the SPIRV-Cross leg — naga
+    // rejected Buffer<uint>). GLES 3.0 has no texel buffers at any
+    // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
+    // compiles with -DSNAIL_TARGET_GLES and binds the emit words as a 2D
+    // R32UI texture instead (the composed catalog's ES answer, now
+    // single-sourced in Slang).
+    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .gles_define = true },
+    // The game demo's text-as-material shader (stage C): a caller-authored
+    // family importing the library's text_sample module. GL dialects are
+    // checked in next to the consumer; the Vulkan leg is compiled by the
+    // demo build directly (build.zig addGameShaderSpirv), like the library
+    // families.
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .out_prefix = "src/demo/game/generated/", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true, .gles_define = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
     .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
@@ -180,20 +197,20 @@ fn findFamily(comptime name: []const u8) Family {
     @compileError("unknown slang shader family: " ++ name);
 }
 
-/// slangc invocation for one entry point of one family. `target_define`
-/// selects the per-target resource-binding flavor in the family source.
+/// slangc invocation for one entry point of one family. `target_defines`
+/// select the per-target resource-binding flavor in the family source (the
+/// GLES leg of `gles_define` families passes SNAIL_TARGET_GL +
+/// SNAIL_TARGET_GLES).
 fn slangcFamily(
     b: *std.Build,
     comptime family: Family,
     stage: Stage,
-    target_define: []const u8,
+    target_defines: []const []const u8,
     target_args: []const []const u8,
     output_name: []const u8,
 ) std.Build.LazyPath {
-    const cmd = b.addSystemCommand(&.{
-        "slangc",
-        b.fmt("-D{s}", .{target_define}),
-    });
+    const cmd = b.addSystemCommand(&.{"slangc"});
+    for (target_defines) |d| cmd.addArg(b.fmt("-D{s}", .{d}));
     inline for (family.defines) |d| cmd.addArg("-D" ++ d);
     cmd.addArgs(&.{
         "-entry",
@@ -206,14 +223,14 @@ fn slangcFamily(
         "-I",
     });
     cmd.addDirectoryArg(b.path(module_dir));
-    cmd.addFileArg(b.path(module_dir ++ "/" ++ family.source));
+    cmd.addFileArg(b.path(family.dir ++ "/" ++ family.source));
     cmd.addArgs(target_args);
     cmd.addArg("-o");
     return cmd.addOutputFileArg(output_name);
 }
 
 fn vulkanStageSpv(b: *std.Build, comptime family: Family, stage: Stage) std.Build.LazyPath {
-    return slangcFamily(b, family, stage, "SNAIL_TARGET_VULKAN", &.{ "-target", "spirv", "-profile", "spirv_1_3" }, b.fmt("{s}.{s}.spv", .{ family.name, stage.short }));
+    return slangcFamily(b, family, stage, &.{"SNAIL_TARGET_VULKAN"}, &.{ "-target", "spirv", "-profile", "spirv_1_3" }, b.fmt("{s}.{s}.spv", .{ family.name, stage.short }));
 }
 
 /// Compile the native text family to Vulkan SPIR-V (both stages). Used by
@@ -236,6 +253,18 @@ pub fn vulkanFragmentSpv(b: *std.Build, comptime name: []const u8) std.Build.Laz
 /// Compile a family's own Vulkan vertex SPIR-V (autohint).
 pub fn vulkanVertexSpv(b: *std.Build, comptime name: []const u8) std.Build.LazyPath {
     return vulkanStageSpv(b, comptime findFamily(name), vertex_stage);
+}
+
+/// Compile the game demo's material family to Vulkan SPIR-V (both stages).
+/// The game is a caller of snail's text_sample module, so its Vulkan leg is
+/// compiled by the demo build like the library families (no checked-in
+/// SPIR-V; gen-shaders checks in only the GL dialects the GL hosts embed).
+pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, frag: std.Build.LazyPath } {
+    const family = comptime findFamily("game_material");
+    return .{
+        .vert = vulkanStageSpv(b, family, vertex_stage),
+        .frag = vulkanStageSpv(b, family, fragment_stage),
+    };
 }
 
 pub fn addGenShadersStep(b: *std.Build) void {
@@ -268,24 +297,30 @@ pub fn addGenShadersStep(b: *std.Build) void {
 
                 if (!family.no_wgsl) {
                     // WGSL — direct target.
-                    const wgsl = slangcFamily(b, family, stage, "SNAIL_TARGET_WGSL", &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
+                    const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
                     update.addCopyFileToSource(wgsl, "src/snail/shader/generated/wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
                 }
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both
             // fine through SPIRV-Cross), then spirv-cross per dialect.
+            // `gles_define` families additionally compile a second SPIR-V
+            // leg for the ES dialect (different record-store bindings).
             const gl_args: []const []const u8 = if (family.gl_o0)
                 &.{ "-target", "spirv", "-profile", "spirv_1_3", "-O0" }
             else
                 &.{ "-target", "spirv", "-profile", "spirv_1_3" };
-            const gl_spv = slangcFamily(b, family, stage, "SNAIL_TARGET_GL", gl_args, "gl-" ++ family.name ++ "." ++ stage.short ++ ".spv");
+            const gl_spv = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_GL"}, gl_args, "gl-" ++ family.name ++ "." ++ stage.short ++ ".spv");
+            const gles_spv = if (family.gles_define and !family.no_gles)
+                slangcFamily(b, family, stage, &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }, gl_args, "gles-" ++ family.name ++ "." ++ stage.short ++ ".spv")
+            else
+                gl_spv;
             inline for (.{ "glsl330", "gles300" }) |out_dir| {
                 const es = comptime std.mem.eql(u8, out_dir, "gles300");
                 const skip_dialect = family.no_gles and es;
                 if (!skip_dialect) {
                     const cross = b.addSystemCommand(&.{"spirv-cross"});
-                    cross.addFileArg(gl_spv);
+                    cross.addFileArg(if (es) gles_spv else gl_spv);
                     if (es) {
                         cross.addArgs(&.{ "--version", "300", "--es" });
                     } else {
@@ -315,7 +350,7 @@ pub fn addGenShadersStep(b: *std.Build) void {
                         patch.addFileArg(glsl);
                         glsl = patch.addOutputFileArg("highp-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
                     }
-                    update.addCopyFileToSource(glsl, "src/snail/shader/generated/" ++ out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl");
+                    update.addCopyFileToSource(glsl, family.out_prefix ++ out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl");
                 }
             }
         }

@@ -874,18 +874,14 @@ fn addInteractiveDemoStep(
     run_step.dependOn(&run_demo.step);
 }
 
-/// Compile the game's custom Vulkan material shaders (which #include snail's
-/// coverage + records GLSL) to SPIR-V and inject them into `mod` as anonymous
-/// imports for `game/game_shaders.zig`.
+/// Compile the game's custom Vulkan material shaders (native Slang; the
+/// caller-authored family src/demo/game/slang/game_material.slang imports
+/// snail's text_sample module) to SPIR-V and inject them into `mod` as
+/// anonymous imports for `game/game_shaders.zig`.
 fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
-    const snail_includes = vulkan_shaders.IncludeDirs{
-        .glsl = b.path("src/snail/shader/glsl"),
-    };
-    const game_glsl = [_]std.Build.LazyPath{b.path("src/demo/game/glsl")};
-    const vert = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.vert"), "vertex", "game_material.vert.spv", &.{}, snail_includes, &game_glsl);
-    const frag = vulkan_shaders.compileCallerShader(b, b.path("src/demo/game/glsl/game_material.frag"), "fragment", "game_material.frag.spv", &.{}, snail_includes, &game_glsl);
-    mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = vert });
-    mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = frag });
+    const spv = slang_shaders.vulkanGameMaterialSpv(b);
+    mod.addAnonymousImport("game_material.vert.spv", .{ .root_source_file = spv.vert });
+    mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = spv.frag });
 }
 
 fn addGameDemoStep(

@@ -356,3 +356,73 @@ compiler-internal surface (a1-04 explicitly reserves the right to break
 them); the subpixel WGSL artifact additionally depends on slang's name
 mangling. Treat candidate 3 as a regeneration-time convenience guarded by
 naga validation, not a stable contract.
+
+Stage C (2026-07-21): the game's text-as-material path is native Slang
+=====================================================================
+The last composed-GLSL consumer is migrated. What it was: the game demo's
+material shader — genuine embeddable composition, NOT a text_sample
+pipeline. Custom lighting code (bevel emboss from five coverage samples +
+procedural roughness) called snail_text_sample_premul_linear_with_footprint
+from a caller-owned fragment program. Three legs, two mechanisms:
+GL 3.3/4.4/ES 3.0 composed `snail.shader.glsl` sources with host-injected
+uniforms at Zig comptime (gl_material.zig); Vulkan ran slangc
+GLSL-ingestion over glsl/game_material.frag #including the catalog
+(build.zig compileCallerShader).
+
+Migration (the idiomatic stage-C answer for the composition case): the
+game's material shader is now a caller-authored Slang family —
+src/demo/game/slang/game_material.slang, `import text_sample`, per-target
+`ISnailTextRecords` impls — compiled by the same gen-shaders matrix.
+Checked-in GL dialects live NEXT TO THE CONSUMER
+(src/demo/game/generated/{glsl330,gles300}/game_material.{vert,frag}.glsl,
+via the new Family.dir/out_prefix fields); the Vulkan leg is compiled by
+the demo build (build.zig addGameShaderSpirv →
+slang_shaders.vulkanGameMaterialSpv), keeping the existing MaterialPush
+push-constant layout, set 0 = atlas plane, set 1 binding 0 = records SSBO,
+entry `main`. gl_material.zig now embeds the artifacts and binds
+GameMaterialParams_std140 as a UBO + the SPIRV_Cross_Combined* /
+u_snail_text_records names; the loose-uniform + source-composition plumbing
+is gone.
+
+GLES record store (trap 17, ES half): RESOLVED single-source. New
+build/slang_shaders.zig mechanism `gles_define` compiles a SECOND SPIR-V
+leg with -DSNAIL_TARGET_GLES; the family source binds Texture2D<uint>
+(R32UI, row-major, width 1024) there instead of Buffer<uint>. Both the
+game family and the library text_sample family use it — text_sample now
+has a full artifact set (spirv, wgsl, glsl330, gles300; no_gles off) and
+the composed R32UI interface fragments are dead.
+
+AE=0 traps met (all four game gates byte-identical to the clean-51e4396
+baselines, no re-baselining, no new patch tools):
+ - Push budget vs exact vertex math: Vulkan keeps ONE premultiplied mvp
+   (two mat4s would blow the 128-byte push range); the GL flavor keeps
+   view_proj and model SEPARATE because the composed GL leg multiplied on
+   the GPU — CPU-premultiplying moves clip coords by ULPs and every
+   interpolated sample with them.
+ - Associativity: GLSL `u_view_proj * u_model * vec4` is LEFT-associative
+   (mat×mat first, then mat×vec). Port as
+   `mul(mul(view_proj, model), v)`, not `mul(view_proj, mul(model, v))`.
+ - The cubic-solver fusion patch is NOT needed here: glyph coverage is
+   quadratic-only (solveMonotonicCubicRoot is dead in this family), and
+   the game body's transcendental soup (sin/pow/normalize) fused
+   identically under Mesa. gl_o0 IS used, like every stage-B family.
+ - Records stride is a compile-time 23 in the family source;
+   gl_material.zig comptime-asserts it against
+   snail.render.records.BYTES_PER_INSTANCE.
+
+Composed-GLSL consumers remaining after stage C:
+ - build/glsl_patch_cubic_solver.zig reads
+   src/snail/shader/glsl/snail_path_frag_body.glsl as the composed spec
+   text for the fusion pin (load-bearing, keep).
+ - src/tools/perf/glsl.zig (`zig build bench` GLSL harness) and
+   src/demo/app/minimal_gl.zig + the composed pub consts in
+   src/demo/render/gl/shaders.zig: they still assemble the catalog for
+   perf comparison / the one-file example. These are stage-D work items,
+   not render-path consumers — every shipped render path (demo, banner,
+   game, minimal-wgpu aside) runs generated artifacts.
+Stage D can now delete: the game's composed sources are ALREADY deleted
+(src/demo/game/glsl/*); the text_sample interface fragments
+(snail_text_sample.interface{,.gles30,.vulkan}.glsl) and
+snail_text_sample_body.glsl have no consumer left once the perf harness
+and minimal_gl stop composing (or are re-pointed), and
+vulkan_shaders.compileCallerShader has no caller in-tree.

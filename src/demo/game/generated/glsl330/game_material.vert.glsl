@@ -1,0 +1,36 @@
+#version 330
+
+struct Varyings
+{
+    vec4 position;
+    vec2 uv;
+};
+
+layout(std140) uniform GameMaterialParams_std140
+{
+    layout(row_major) mat4 view_proj;
+    layout(row_major) mat4 model;
+    vec4 base_color;
+    vec4 light_dir;
+    vec2 scene_size;
+    int glyph_count;
+    int output_srgb;
+    float relief;
+    float roughness;
+} pc;
+
+layout(location = 1) in vec2 input_uv;
+layout(location = 0) in vec3 input_pos;
+out vec2 snail_io0;
+
+mat4 spvWorkaroundRowMajor(mat4 wrap) { return wrap; }
+
+void main()
+{
+    Varyings o;
+    o.uv = input_uv;
+    o.position = vec4(input_pos, 1.0) * (spvWorkaroundRowMajor(pc.model) * spvWorkaroundRowMajor(pc.view_proj));
+    gl_Position = o.position;
+    snail_io0 = o.uv;
+}
+

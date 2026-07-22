@@ -1,6 +1,6 @@
 //! SPIR-V for the game's custom Vulkan material shader, compiled at build time
-//! from `glsl/game_material.{vert,frag}` (which #include snail's coverage +
-//! records sources) and injected as anonymous imports by the build.
+//! from `slang/game_material.slang` (which imports snail's text_sample Slang
+//! module) and injected as anonymous imports by the build.
 
 const raw_vert = @embedFile("game_material.vert.spv");
 const raw_frag = @embedFile("game_material.frag.spv");
