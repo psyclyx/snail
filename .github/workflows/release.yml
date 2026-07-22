@@ -34,7 +34,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
-            glslc \
             libegl1-mesa-dev \
             libgl1-mesa-dri \
             libglvnd-dev \
@@ -42,6 +41,17 @@ jobs:
             libvulkan-dev \
             libwayland-dev \
             wayland-protocols
+
+      # install-demo/install-game compile the native-Slang families to
+      # SPIR-V at build time (see .github/workflows/ci.yml for details).
+      - name: Install slangc (shader-slang)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/slang.zip" \
+            https://github.com/shader-slang/slang/releases/download/v2026.5.2/slang-2026.5.2-linux-x86_64.zip
+          mkdir -p "$RUNNER_TEMP/slang"
+          unzip -q "$RUNNER_TEMP/slang.zip" -d "$RUNNER_TEMP/slang"
+          "$RUNNER_TEMP/slang/bin/slangc" -v
+          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
 
       - name: Test public modules
         run: zig build test -Dcpu=baseline

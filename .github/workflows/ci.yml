@@ -31,7 +31,6 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             pkg-config \
-            glslc \
             libegl1-mesa-dev \
             libgl1-mesa-dri \
             libglvnd-dev \
@@ -39,6 +38,22 @@ jobs:
             libvulkan-dev \
             libwayland-dev \
             wayland-protocols
+
+      # The demo/game Vulkan legs compile the native-Slang families to
+      # SPIR-V at build time (build/vulkan_shaders.zig, addGameShaderSpirv),
+      # so `install-demo`/`install-game` need `slangc`. Everything else
+      # (GL/GLES/WGSL/HLSL/MSL) consumes the checked-in artifacts under
+      # src/snail/shader/generated/ and needs no shader toolchain
+      # (spirv-cross is only used by the maintainer-run `gen-shaders`).
+      # Pinned to the release matching the shell.nix toolchain (v2026.5.2).
+      - name: Install slangc (shader-slang)
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/slang.zip" \
+            https://github.com/shader-slang/slang/releases/download/v2026.5.2/slang-2026.5.2-linux-x86_64.zip
+          mkdir -p "$RUNNER_TEMP/slang"
+          unzip -q "$RUNNER_TEMP/slang.zip" -d "$RUNNER_TEMP/slang"
+          "$RUNNER_TEMP/slang/bin/slangc" -v
+          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
 
       - name: Test public modules
         run: zig build test -Dcpu=baseline
@@ -62,6 +77,103 @@ jobs:
         run: |
           zig build run-composite-probe -Dcpu=baseline
           zig build run-coverage-probe -Dcpu=baseline
+
+      - name: Coverage parity probe (CPU rasterizer)
+        run: zig build run-coverage-parity -Dcpu=baseline
+
+      - name: Minimal GL example
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: zig build run-minimal-gl -Dcpu=baseline
+
+      # run-minimal-d3d11 is NOT run here: it needs wine >= 11.6
+      # (wine64Packages.unstable in shell.nix) — stable wine 11.0's bundled
+      # vkd3d-shader crashes compiling autohint.vert.hlsl, and Ubuntu's apt
+      # wine is older still. Revisit when a >= 11.6 wine is cheaply
+      # installable on the runner; until then the HLSL artifacts are gated
+      # by the checked-in-artifact tests in `zig build test`.
+
+  macos:
+    name: macOS (Metal)
+    runs-on: macos-15
+    timeout-minutes: 30
+    continue-on-error: false
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.16.0"
+
+      - name: Install system dependencies
+        run: brew install harfbuzz pkg-config imagemagick
+
+      # Homebrew on Apple Silicon lives under /opt/homebrew; zig's
+      # `linkSystemLibrary("harfbuzz")` resolves it via pkg-config.
+      - name: Export Homebrew pkg-config path
+        run: echo "PKG_CONFIG_PATH=/opt/homebrew/lib/pkgconfig:/opt/homebrew/share/pkgconfig" >> "$GITHUB_ENV"
+
+      # check-metal-demo / run-minimal-metal compile HarfBuzz into the demo's
+      # snail module from the upstream single-file amalgam (src/harfbuzz.cc)
+      # instead of linking the host library — same pattern as the Wine/D3D11
+      # demo. Version matches the nixpkgs pin in shell.nix.
+      - name: Export HarfBuzz amalgam source
+        run: |
+          curl -fsSL -o "$RUNNER_TEMP/harfbuzz.tar.xz" \
+            https://github.com/harfbuzz/harfbuzz/releases/download/12.3.0/harfbuzz-12.3.0.tar.xz
+          tar -xf "$RUNNER_TEMP/harfbuzz.tar.xz" -C "$RUNNER_TEMP"
+          echo "HARFBUZZ_SRC=$RUNNER_TEMP/harfbuzz-12.3.0" >> "$GITHUB_ENV"
+
+      - name: Test public modules
+        run: zig build test -Dcpu=baseline
+
+      - name: Cross-compile check of the Metal demo
+        run: zig build check-metal-demo -Dcpu=baseline
+
+      # The real validation: the generated MSL artifacts meet an actual Metal
+      # frontend (runtime newLibraryWithSource:) and a real GPU. No shader
+      # toolchain is needed — the MSL is checked in and embedded.
+      - name: Render through Metal
+        run: zig build run-minimal-metal -Dcpu=baseline
+
+      # Reference is the GL render of the identical scene
+      # (src/demo/app/minimal_reference.png, from zig-out/minimal-gl.tga).
+      # Known cross-backend deltas at a 4% max-channel threshold: wgpu = 679,
+      # d3d11 = 679 (AA-edge class); 2000 is generous headroom over that
+      # while still catching real breakage (flip / blank / wrong-binding
+      # classes are tens of thousands of pixels).
+      #
+      # Not `compare -metric AE`: ImageMagick 7.1.2's AE regressed to a Q16
+      # channel-distance sum (one differing pixel reports 65535), so the
+      # differing-pixel count is computed explicitly instead.
+      - name: Gate the Metal render
+        run: |
+          n=$(magick src/demo/app/minimal_reference.png zig-out/minimal-metal.tga \
+            -alpha off -compose difference -composite \
+            -separate -evaluate-sequence max \
+            -threshold 4% -format "%[fx:round(mean*w*h)]" info:)
+          echo "pixels over 4% channel delta: $n (threshold 2000; wgpu/d3d11 baseline: 679)"
+          case "$n" in
+            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          esac
+          test "$n" -le 2000
+
+      - name: Write diff image on failure
+        if: failure()
+        run: |
+          magick compare src/demo/app/minimal_reference.png \
+            zig-out/minimal-metal.tga zig-out/minimal-metal-diff.png || true
+
+      - name: Upload Metal render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimal-metal
+          path: |
+            zig-out/minimal-metal.tga
+            zig-out/minimal-metal-diff.png
+          if-no-files-found: ignore
 
   nix:
     name: Nix
