@@ -238,9 +238,15 @@ fn compileLibrary(device: id, source: [:0]const u8, label: []const u8) !id {
     // way Mesa's fma fusion did (1-LSB drift on every AA edge — observed
     // as ~2.9k gate pixels vs the ~680 cross-backend class on the first
     // CI run). No other backend compiles snail's shaders with fast-math;
-    // disable it so Metal joins the same numeric class. BOOL on arm64 is
-    // a C bool (i8).
+    // disable it so Metal joins the same numeric class. Both spellings:
+    // `fastMathEnabled` (BOOL, deprecated — can be a no-op shim on
+    // macOS 15+) and `mathMode` (MTLMathModeSafe = 0, the replacement).
+    // `respondsToSelector:` guards the newer setter on older frameworks.
     msg(void, options, "setFastMathEnabled:", .{@as(i8, 0)});
+    if (msg(i8, options, "respondsToSelector:", .{sel_registerName("setMathMode:")}) != 0) {
+        msg(void, options, "setMathMode:", .{@as(isize, 0)});
+    }
+    std.debug.print("metal compile options: fast-math disabled (mathMode safe where available)\n", .{});
     var err: id = null;
     const library = msg(id, device, "newLibraryWithSource:options:error:", .{ nsString(source), options, @as(*id, &err) });
     if (library == null) {
