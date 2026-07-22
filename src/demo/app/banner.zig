@@ -729,9 +729,9 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             // bytes on insert, so eviction-by-content works as long as
             // the slice we hand it still reflects what was inserted.
             if (hud_frame_ms_text.len > 0)
-                hud.shape_cache.evict(hud_frame_ms_text, .{ .style = .{ .weight = .regular } });
+                hud.shape_cache.evict(hud.faces, hud_frame_ms_text, .{ .style = .{ .weight = .regular } });
             if (hud_cadence_text.len > 0)
-                hud.shape_cache.evict(hud_cadence_text, .{ .style = .{ .weight = .regular } });
+                hud.shape_cache.evict(hud.faces, hud_cadence_text, .{ .style = .{ .weight = .regular } });
             hud_fps = display_snap.fps;
             // Always quote frame ms from the loop ring — it tells the
             // user how fast their render code is running, which is the
@@ -768,11 +768,11 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
             //   loop    main-loop top stages     (wait / hud / compose)
             // Empty when `T` is off so the HUD lines collapse.
             if (hud_stage_pre_text.len > 0)
-                hud.shape_cache.evict(hud_stage_pre_text, .{ .style = .{ .weight = .regular } });
+                hud.shape_cache.evict(hud.faces, hud_stage_pre_text, .{ .style = .{ .weight = .regular } });
             if (hud_stage_pass_text.len > 0)
-                hud.shape_cache.evict(hud_stage_pass_text, .{ .style = .{ .weight = .regular } });
+                hud.shape_cache.evict(hud.faces, hud_stage_pass_text, .{ .style = .{ .weight = .regular } });
             if (hud_stage_loop_text.len > 0)
-                hud.shape_cache.evict(hud_stage_loop_text, .{ .style = .{ .weight = .regular } });
+                hud.shape_cache.evict(hud.faces, hud_stage_loop_text, .{ .style = .{ .weight = .regular } });
             if (timing_enabled and stage_stats.count > 0) {
                 const ss = &stage_stats;
                 hud_stage_pre_text = std.fmt.bufPrint(

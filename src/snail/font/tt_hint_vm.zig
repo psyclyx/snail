@@ -34,6 +34,10 @@ const band_tex = @import("../format/band_texture.zig");
 
 pub const Font = font_mod.Font;
 pub const TtHintPpem = struct {
+    /// Largest 26.6 value that can be represented exactly in an atlas
+    /// record key (1023.984375 px).
+    pub const max_26_6: u32 = 0xFFFF;
+
     x_26_6: u32,
     y_26_6: u32,
 
@@ -41,14 +45,20 @@ pub const TtHintPpem = struct {
         return .{ .x_26_6 = ppem_26_6, .y_26_6 = ppem_26_6 };
     }
 
-    /// Pack both axes into a single u32 for use as `RecordKey.c`. The two
-    /// axes share a 16-bit slot apiece; this is enough range for the
-    /// ppem values used in practice (well under 1024 px even at extreme
-    /// zoom) given the 26.6 scaling factor of 64×.
-    pub fn packed26Dot6(self: TtHintPpem) u32 {
-        const x: u32 = @min(self.x_26_6, 0xFFFF);
-        const y: u32 = @min(self.y_26_6, 0xFFFF);
-        return (y << 16) | x;
+    pub fn validate(self: TtHintPpem) error{InvalidPpem}!void {
+        if (self.x_26_6 == 0 or self.y_26_6 == 0 or
+            self.x_26_6 > max_26_6 or self.y_26_6 > max_26_6)
+        {
+            return error.InvalidPpem;
+        }
+    }
+
+    /// Pack both axes exactly into a single u32 for use as `RecordKey.c`.
+    /// Invalid values are rejected instead of clamping onto another ppem's
+    /// cache key.
+    pub fn packed26Dot6(self: TtHintPpem) error{InvalidPpem}!u32 {
+        try self.validate();
+        return (self.y_26_6 << 16) | self.x_26_6;
     }
 };
 
@@ -65,6 +75,7 @@ pub const TtHintVmStats = struct {
 pub const TtHintError = error{
     // TtHintVm-specific.
     NoHinting,
+    InvalidPpem,
     GlyphTopologyChanged,
     InvalidStorageSnapshot,
     // Allocator (mirrors std.mem.Allocator.Error).
@@ -99,6 +110,7 @@ comptime {
     // error sets surfaces here instead of silently widening TtHintError.
     const expected = error{
         NoHinting,
+        InvalidPpem,
         GlyphTopologyChanged,
         InvalidStorageSnapshot,
     } || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
@@ -179,6 +191,7 @@ pub const TtHintVm = struct {
     /// caller owns it — cache it and `deinit` it. Expensive (thousands of
     /// cycles); amortize by holding one per active ppem.
     pub fn prepare(self: *TtHintVm, ppem: TtHintPpem) TtHintError!PreparedPpem {
+        try ppem.validate();
         try self.ensureScratch();
         return self.machine.?.prepare(self.allocator, .{ .x_26_6 = ppem.x_26_6, .y_26_6 = ppem.y_26_6 }, .{});
     }
@@ -265,6 +278,16 @@ pub const TtHintVm = struct {
 };
 
 const testing = std.testing;
+
+test "TtHintPpem packing is exact and rejects aliases" {
+    const max = TtHintPpem{ .x_26_6 = TtHintPpem.max_26_6, .y_26_6 = TtHintPpem.max_26_6 };
+    try testing.expectEqual(@as(u32, 0xFFFF_FFFF), try max.packed26Dot6());
+    try testing.expectError(error.InvalidPpem, TtHintPpem.uniform(0).packed26Dot6());
+    try testing.expectError(error.InvalidPpem, (TtHintPpem{
+        .x_26_6 = TtHintPpem.max_26_6 + 1,
+        .y_26_6 = 64,
+    }).packed26Dot6());
+}
 
 test "TtHintVm hints DejaVu digits and letters across small ppems" {
     // Regression net for two TT-interpreter bugs that only surfaced on real
@@ -394,7 +417,7 @@ test "TtHintVm hint output round-trips through an atlas" {
     var curves = try hinter.hintGlyph(testing.allocator, testing.allocator, &prepared, gid);
     defer curves.deinit();
 
-    const key = record_key_mod.ttHintedGlyph(0, gid, ppem.packed26Dot6());
+    const key = record_key_mod.ttHintedGlyph(0, gid, try ppem.packed26Dot6());
     var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, &.{
         .{ .key = key, .curves = curves },
     });

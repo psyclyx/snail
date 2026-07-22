@@ -25,6 +25,12 @@ pub const FEATURE_GLOBAL_END: c_uint = 0xFFFFFFFF;
 pub const TtHintPpem = text_types.TtHintPpem;
 pub const AdvanceProvider = text_types.AdvanceProvider;
 
+pub const SegmentProperties = struct {
+    direction: ?text_types.TextDirection = null,
+    script: ?[4]u8 = null,
+    language: ?[]const u8 = null,
+};
+
 pub fn makeTag(tag: [4]u8) u32 {
     return (@as(u32, tag[0]) << 24) | (@as(u32, tag[1]) << 16) |
         (@as(u32, tag[2]) << 8) | @as(u32, tag[3]);
@@ -189,7 +195,16 @@ pub const HarfBuzzShaper = struct {
         text: []const u8,
         features: []const hb.hb_feature_t,
     ) ShapedRaw {
-        return self.shapeIntoBuffer(self.hb_font_em, text, features);
+        return self.shapeTextWithProperties(text, features, .{});
+    }
+
+    pub fn shapeTextWithProperties(
+        self: *const HarfBuzzShaper,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+        properties: SegmentProperties,
+    ) ShapedRaw {
+        return self.shapeIntoBuffer(self.hb_font_em, text, features, properties);
     }
 
     /// Shape `text` through HB with the attached `AdvanceProvider`
@@ -202,16 +217,26 @@ pub const HarfBuzzShaper = struct {
         features: []const hb.hb_feature_t,
         ppem: TtHintPpem,
     ) ShapedRaw {
-        const font = self.hb_font_tt_hinted orelse return self.shapeTextWithFeatures(text, features);
+        return self.shapeTextWithProviderProperties(text, features, ppem, .{});
+    }
+
+    pub fn shapeTextWithProviderProperties(
+        self: *const HarfBuzzShaper,
+        text: []const u8,
+        features: []const hb.hb_feature_t,
+        ppem: TtHintPpem,
+        properties: SegmentProperties,
+    ) ShapedRaw {
+        const font = self.hb_font_tt_hinted orelse return self.shapeTextWithProperties(text, features, properties);
         if (self.hooks) |h| {
-            if (h.source != .provider) return self.shapeTextWithFeatures(text, features);
+            if (h.source != .provider) return self.shapeTextWithProperties(text, features, properties);
             h.ppem_x_26_6 = ppem.x_26_6;
             h.ppem_y_26_6 = ppem.y_26_6;
         } else {
-            return self.shapeTextWithFeatures(text, features);
+            return self.shapeTextWithProperties(text, features, properties);
         }
         hb.hb_font_set_scale(font, @intCast(ppem.x_26_6), @intCast(ppem.y_26_6));
-        return self.shapeIntoBuffer(font, text, features);
+        return self.shapeIntoBuffer(font, text, features, properties);
     }
 
     fn shapeIntoBuffer(
@@ -219,9 +244,24 @@ pub const HarfBuzzShaper = struct {
         font: *hb.hb_font_t,
         text: []const u8,
         features: []const hb.hb_feature_t,
+        properties: SegmentProperties,
     ) ShapedRaw {
         hb.hb_buffer_clear_contents(self.hb_buffer);
         hb.hb_buffer_add_utf8(self.hb_buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
+        if (properties.direction) |direction| {
+            hb.hb_buffer_set_direction(self.hb_buffer, switch (direction) {
+                .ltr => hb.HB_DIRECTION_LTR,
+                .rtl => hb.HB_DIRECTION_RTL,
+                .ttb => hb.HB_DIRECTION_TTB,
+                .btt => hb.HB_DIRECTION_BTT,
+            });
+        }
+        if (properties.script) |script| {
+            hb.hb_buffer_set_script(self.hb_buffer, hb.hb_script_from_iso15924_tag(makeTag(script)));
+        }
+        if (properties.language) |language| {
+            hb.hb_buffer_set_language(self.hb_buffer, hb.hb_language_from_string(language.ptr, @intCast(language.len)));
+        }
         hb.hb_buffer_guess_segment_properties(self.hb_buffer);
         const features_ptr: [*c]const hb.hb_feature_t = if (features.len == 0) null else features.ptr;
         hb.hb_shape(font, self.hb_buffer, features_ptr, @intCast(features.len));

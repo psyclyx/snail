@@ -38,10 +38,29 @@ pub const OpenTypeFeature = struct {
     range: ?SourceRange = null,
 };
 
+/// Text-flow direction passed to HarfBuzz. Leave `ShapeOptions.direction`
+/// null to let HarfBuzz infer the direction from the text and script.
+pub const TextDirection = enum {
+    ltr,
+    rtl,
+    ttb,
+    btt,
+};
+
 pub const ShapeOptions = struct {
     features: []const OpenTypeFeature = &.{},
     /// Style selector for the face chain (regular/bold/italic).
     style: FontStyle = .{},
+    /// Explicit text-flow direction. `null` asks HarfBuzz to infer it.
+    /// This controls shaping within each fallback-font run; it is not a
+    /// replacement for paragraph-level Unicode bidi layout.
+    direction: ?TextDirection = null,
+    /// Optional ISO 15924 script tag, such as `"Latn".*` or `"Arab".*`.
+    /// `null` asks HarfBuzz to infer the script.
+    script: ?[4]u8 = null,
+    /// Optional BCP 47 language tag. The slice is borrowed only for the
+    /// duration of `shape()` and must be non-empty when present.
+    language: ?[]const u8 = null,
     /// Closure invoked from HarfBuzz's `glyph_h_advance` font_func.
     /// Returns the advance in 26.6 fixed-point pixels for
     /// `(font_id, glyph_id)` at `target_ppem`. Faces the provider
@@ -62,7 +81,10 @@ pub const ShapeOptions = struct {
     ///      can look up the right hinted advance.
     /// The provider does *not* carry its own ppem — it's a pure
     /// `(font_id, glyph_id, ppem) → advance` function. Required
-    /// whenever `advance_provider` is non-null; ignored otherwise.
+    /// whenever `advance_provider` is non-null. A missing value is reported
+    /// as `error.MissingTargetPpem`; zero or values above the exact atlas-key
+    /// range are reported as `error.InvalidPpem`. A supplied ppem is validated
+    /// even when no provider is active, so invalid options never fail silently.
     target_ppem: ?TtHintPpem = null,
 };
 

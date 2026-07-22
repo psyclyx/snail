@@ -311,7 +311,7 @@ pub fn recordTtAdvanceRun(
     font_id: u32,
     shaped: *const text_mod.ShapedText,
 ) !void {
-    const packed_ppem = ppemOf(prepared).packed26Dot6();
+    const packed_ppem = try ppemOf(prepared).packed26Dot6();
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != font_id) continue;
         const key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
@@ -361,7 +361,8 @@ pub const TtAdvanceSource = struct {
 
     fn getAdvance(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: hint_vm_mod.TtHintPpem) ?i32 {
         const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
-        const key = record_key.ttAdvance(font_id, glyph_id, ppem.packed26Dot6());
+        const packed_ppem = ppem.packed26Dot6() catch return null;
+        const key = record_key.ttAdvance(font_id, glyph_id, packed_ppem);
         if (self.atlas.lookupTtAdvance(key)) |advance| return advance;
         const prepared_ppem = ppemOf(self.prepared);
         std.debug.assert(ppem.x_26_6 == prepared_ppem.x_26_6 and ppem.y_26_6 == prepared_ppem.y_26_6);
@@ -504,7 +505,7 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
     defer prepared.deinit();
     try recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped);
 
-    const packed_ppem = hint_vm_mod.TtHintPpem.uniform(ppem_26_6).packed26Dot6();
+    const packed_ppem = try hint_vm_mod.TtHintPpem.uniform(ppem_26_6).packed26Dot6();
     for (shaped.glyphs) |glyph| {
         try testing.expect(atlas.contains(record_key.autohintGlyph(0, glyph.glyph_id)));
         try testing.expect(atlas.contains(record_key.ttHintedGlyph(0, glyph.glyph_id, ppem_26_6)));
