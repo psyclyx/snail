@@ -65,6 +65,9 @@ jobs:
       # Wine's D3D11 needs a display connection to enumerate a GPU
       # adapter, so the headless exe runs under Xvfb; the GL underneath
       # goes to llvmpipe. WINEPREFIX is hermetic in zig-out (build.zig).
+      # This gate stays even though the `windows` job below runs the same
+      # exe on real Windows: Wine is a real deployment target in its own
+      # right; Windows is the authoritative runtime.
       - name: Minimal D3D11 example (Wine)
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
@@ -82,6 +85,19 @@ jobs:
           esac
           test "$n" -le 2000
 
+      # Cross-build the artifacts the `windows` job executes: the D3D11 demo
+      # exe, the dependency-free pixelgate comparison tool, and the reference
+      # TGA. The Windows runner installs no toolchain — the one nix pin here
+      # builds everything it runs.
+      - name: Build Windows gate artifacts
+        run: nix-shell --run "zig build install-windows-gates -Dcpu=baseline"
+
+      - name: Upload Windows gate artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-gates
+          path: zig-out/windows-gates/
+
       - name: Write diff image on failure
         if: failure()
         run: |
@@ -96,6 +112,40 @@ jobs:
           path: |
             zig-out/minimal-d3d11.tga
             zig-out/minimal-d3d11-diff.png
+          if-no-files-found: ignore
+
+  # The same D3D11 exe the Wine gate ran, on the authoritative runtime: a
+  # real Windows kernel, Microsoft's d3dcompiler_47 and D3D11 runtime
+  # (hardware or WARP). No Windows-side toolchain — the runner only
+  # executes the prebuilt `windows-gates` artifacts from the zig job,
+  # keeping shell.nix the single toolchain pin.
+  windows:
+    name: Windows (D3D11)
+    runs-on: windows-2025
+    needs: zig
+    timeout-minutes: 15
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: windows-gates
+
+      # The exe creates zig-out/ itself and writes
+      # zig-out/minimal-d3d11.tga relative to the cwd.
+      - name: Render through D3D11
+        run: .\snail-minimal-d3d11.exe
+
+      # Same rule and threshold as the Wine/Metal magick gates (>4%
+      # max-channel delta per pixel, <= 2000 bad pixels; llvmpipe-measured
+      # d3d11 baseline: ~680), via the cross-built pixelgate tool.
+      - name: Gate the render
+        run: .\pixelgate.exe minimal_reference.tga zig-out\minimal-d3d11.tga 2000
+
+      - name: Upload Windows render
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: minimal-d3d11-windows
+          path: zig-out/minimal-d3d11.tga
           if-no-files-found: ignore
 
   macos:

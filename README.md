@@ -312,7 +312,10 @@ tests (including the byte-identity checks for `compact` and delta uploads),
 the CPU-vs-GL backend-compare, the composite/coverage/coverage-parity
 probes, the minimal GL example under llvmpipe, and the minimal D3D11
 example under Wine, gated against `src/demo/app/minimal_reference.png`;
-a macOS job runs the Metal example on a real GPU and gates it against the
+a Windows job re-runs the same cross-built D3D11 exe on a real Windows
+runner (no Windows-side toolchain — it only executes artifacts built by
+the nix job) and gates it with a dependency-free pixel comparator; a
+macOS job runs the Metal example on a real GPU and gates it against the
 same reference. The gamma probe and the GLES/Vulkan screenshot variants
 remain local build steps.
 

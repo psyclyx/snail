@@ -328,6 +328,14 @@ fn addTestSteps(
 
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
+    // The dependency-free TGA pixel gate used by the Windows CI job.
+    const pixelgate_tests = b.addTest(.{ .root_module = b.createModule(.{
+        .root_source_file = b.path("src/tools/pixelgate.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+    }) });
+    test_step.dependOn(&b.addRunArtifact(pixelgate_tests).step);
+
     const autohint_compare_test_module = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
@@ -969,9 +977,11 @@ fn addMinimalD3d11Step(
     modules: ProjectModules,
 ) void {
     const step = b.step("run-minimal-d3d11", "Render the one-file public-API D3D11 example under Wine to zig-out/minimal-d3d11.tga");
+    const gates_step = b.step("install-windows-gates", "Install the cross-built D3D11 demo, pixelgate, and the reference TGA into zig-out/windows-gates for the Windows CI job");
     const hb_src = b.graph.environ_map.get("HARFBUZZ_SRC") orelse {
         const fail = b.addFail("run-minimal-d3d11 needs HARFBUZZ_SRC (enter nix-shell; see shell.nix)");
         step.dependOn(&fail.step);
+        gates_step.dependOn(&fail.step);
         return;
     };
     const win_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
@@ -1018,6 +1028,37 @@ fn addMinimalD3d11Step(
     // Rendering output changes with the shaders/scene, not just the exe.
     run.has_side_effects = true;
     step.dependOn(&run.step);
+
+    // `install-windows-gates`: everything a bare Windows CI runner needs to
+    // validate the render against real D3D11 — the demo exe, the pixelgate
+    // comparison tool (the ImageMagick gate without ImageMagick), and the
+    // checked-in reference TGA. The Windows runner only executes these
+    // prebuilt artifacts; the one nix-pinned toolchain stays on Linux
+    // (see the `windows` job in .github/workflows/ci.yml).
+    const gates_dir: std.Build.InstallDir = .{ .custom = "windows-gates" };
+    const pixelgate_win = b.addExecutable(.{
+        .name = "pixelgate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/pixelgate.zig"),
+            .target = win_target,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    gates_step.dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = gates_dir } }).step);
+    gates_step.dependOn(&b.addInstallArtifact(pixelgate_win, .{ .dest_dir = .{ .override = gates_dir } }).step);
+    gates_step.dependOn(&b.addInstallFile(b.path("src/demo/app/minimal_reference.tga"), "windows-gates/minimal_reference.tga").step);
+
+    // A native pixelgate too (zig-out/bin), so the same gate is runnable
+    // locally against Wine-produced TGAs.
+    const pixelgate_native = b.addExecutable(.{
+        .name = "pixelgate",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/tools/pixelgate.zig"),
+            .target = b.graph.host,
+            .optimize = .ReleaseFast,
+        }),
+    });
+    gates_step.dependOn(&b.addInstallArtifact(pixelgate_native, .{}).step);
 }
 
 /// Best-effort Metal demo (see src/demo/app/minimal_metal.zig and
