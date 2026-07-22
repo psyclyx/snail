@@ -4,9 +4,9 @@
 //!
 //! - Caller owns every `Font`. `Faces` borrows pointers; nothing is
 //!   parsed inside.
-//! - `face_index → font_id` is auto-derived by `*const Font` pointer
-//!   identity, replacing the explicit `face_to_font_id` array the old
-//!   picture builders required.
+//! - Every face declares a caller-owned stable `font_id`. Atlas keys contain
+//!   this id, so it must identify the same font face and variation coordinates
+//!   everywhere an atlas can be shared or retained.
 //! - No hinter slots, no `attachHinter`. Hinted advances are routed at
 //!   shape time via `ShapeOptions.advance_provider` (typically backed
 //!   by `snail.TtAdvanceSource`..
@@ -33,7 +33,6 @@ pub const Font = font_mod.Font;
 pub const FaceIndex = text_mod.FaceIndex;
 pub const FontWeight = text_mod.FontWeight;
 pub const FontStyle = text_mod.FontStyle;
-pub const SyntheticStyle = text_mod.SyntheticStyle;
 pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
 pub const ShapedText = text_mod.ShapedText;
 pub const ShapeOptions = text_mod.ShapeOptions;
@@ -47,20 +46,22 @@ pub const TextDirection = text_mod.TextDirection;
 /// participates in fallback resolution for every style).
 pub const Face = struct {
     font: *const Font,
+    /// Stable application identity used in atlas record keys. Reuse an id only
+    /// for faces backed by the exact same `Font` pointer. In particular, all
+    /// per-thread `Faces` values that feed one atlas must use the same ids.
+    font_id: u32,
     weight: FontWeight = .regular,
     italic: bool = false,
     fallback: bool = false,
-    synthetic: SyntheticStyle = .{},
 };
 
 /// Internal per-face state. Owns the HarfBuzz shaper parsed from the
 /// underlying font data; multiple `FaceState`s with the same `*const
 /// Font` share one parse (the `owns_shaper` flag tracks that).
-pub const FaceState = struct {
+const FaceState = struct {
     font: *const Font,
     weight: FontWeight,
     italic: bool,
-    synthetic: SyntheticStyle,
     hb_shaper: harfbuzz.HarfBuzzShaper,
     owns_shaper: bool,
 
@@ -77,7 +78,7 @@ const ParsedShaper = struct {
     }
 };
 
-pub const Chains = struct {
+const Chains = struct {
     style_chains: std.AutoHashMapUnmanaged(u8, std.ArrayListUnmanaged(FaceIndex)),
     global_chain: []FaceIndex,
     primary_face: ?FaceIndex,
@@ -90,23 +91,34 @@ pub const Chains = struct {
     }
 };
 
-pub const Faces = struct {
+const FacesStorage = struct {
     allocator: Allocator,
     faces: []FaceState,
     chains: Chains,
     missing_glyph_replacement: ?MissingGlyphReplacement,
-    /// Auto-derived from `Face.font` pointer identity. Indexed by face
-    /// index; two faces backed by the same `*const Font` share a font id.
+    /// Caller-provided stable identity, indexed by face index.
     face_to_font_id: []u32,
-    /// Number of distinct fonts referenced (i.e. max(face_to_font_id) + 1
-    /// when non-empty). Useful for sizing per-font helper caches.
-    font_count: u32,
+};
+
+fn facesStorage(self: *Faces) *FacesStorage {
+    return @ptrCast(@alignCast(self._storage));
+}
+
+fn facesStorageConst(self: *const Faces) *const FacesStorage {
+    return @ptrCast(@alignCast(self._storage));
+}
+
+/// Owned face-set handle. The pointee is deliberately type-erased so callers
+/// cannot infer and mutate HarfBuzz state, fallback chains, or identity maps.
+pub const Faces = struct {
+    _storage: *anyopaque,
 
     /// Build the style and fallback chains and parse each distinct `Face.font`
-    /// pointer once. At most `maxInt(FaceIndex) + 1` face specs are accepted;
-    /// a larger set returns `error.TooManyFaces`. On any error no partially
-    /// built state is returned.
+    /// pointer once. An empty set returns `error.NoFaces`; conflicting ids
+    /// return `error.FontIdConflict`. At most `maxInt(FaceIndex) + 1` face
+    /// specs are accepted. On error no partially built state is returned.
     pub fn build(allocator: Allocator, specs: []const Face) !Faces {
+        if (specs.len == 0) return error.NoFaces;
         if (specs.len > @as(usize, std.math.maxInt(FaceIndex)) + 1) return error.TooManyFaces;
         const faces = try buildFaceStates(allocator, specs);
         errdefer deinitFaceStates(allocator, faces);
@@ -114,40 +126,50 @@ pub const Faces = struct {
         var chains = try buildChains(allocator, specs);
         errdefer chains.deinit(allocator);
 
-        const mapping = try buildFontIdMap(allocator, specs);
+        const face_to_font_id = try buildFontIdMap(allocator, specs);
+        errdefer allocator.free(face_to_font_id);
 
-        return .{
+        const storage = try allocator.create(FacesStorage);
+        storage.* = .{
             .allocator = allocator,
             .faces = faces,
             .chains = chains,
             .missing_glyph_replacement = findMissingGlyphReplacement(faces, &chains),
-            .face_to_font_id = mapping.face_to_font_id,
-            .font_count = mapping.font_count,
+            .face_to_font_id = face_to_font_id,
         };
+
+        return .{ ._storage = storage };
     }
 
     pub fn deinit(self: *Faces) void {
-        deinitFaceStates(self.allocator, self.faces);
-        self.chains.deinit(self.allocator);
-        self.allocator.free(self.face_to_font_id);
+        const storage = facesStorage(self);
+        const allocator = storage.allocator;
+        deinitFaceStates(allocator, storage.faces);
+        storage.chains.deinit(allocator);
+        allocator.free(storage.face_to_font_id);
+        allocator.destroy(storage);
         self.* = undefined;
     }
 
     pub fn faceCount(self: *const Faces) usize {
-        return self.faces.len;
+        return facesStorageConst(self).faces.len;
     }
 
     /// Return the stable font id for a valid face index, or null when a
     /// caller-provided index is outside this set.
     pub fn fontIdForFace(self: *const Faces, face_index: FaceIndex) ?u32 {
-        if (face_index >= self.face_to_font_id.len) return null;
-        return self.face_to_font_id[face_index];
+        const storage = facesStorageConst(self);
+        if (face_index >= storage.face_to_font_id.len) return null;
+        return storage.face_to_font_id[face_index];
     }
 
-    /// Borrow one face, returning null for an out-of-range index.
-    pub fn face(self: *const Faces, index: FaceIndex) ?*const FaceState {
-        if (index >= self.faces.len) return null;
-        return &self.faces[index];
+    /// Borrow the caller-owned font for a face, returning null for an
+    /// out-of-range index. HarfBuzz ownership and fallback-chain state remain
+    /// private to `Faces`.
+    pub fn fontForFace(self: *const Faces, index: FaceIndex) ?*const Font {
+        const storage = facesStorageConst(self);
+        if (index >= storage.faces.len) return null;
+        return storage.faces[index].font;
     }
 };
 
@@ -168,7 +190,6 @@ fn buildFaceStates(allocator: Allocator, specs: []const Face) ![]FaceState {
                 .font = spec.font,
                 .weight = spec.weight,
                 .italic = spec.italic,
-                .synthetic = spec.synthetic,
                 .hb_shaper = cached.hb_shaper,
                 .owns_shaper = false,
             };
@@ -180,7 +201,6 @@ fn buildFaceStates(allocator: Allocator, specs: []const Face) ![]FaceState {
                 .font = spec.font,
                 .weight = spec.weight,
                 .italic = spec.italic,
-                .synthetic = spec.synthetic,
                 .hb_shaper = parsed.hb_shaper,
                 .owns_shaper = true,
             };
@@ -237,6 +257,11 @@ fn buildChains(allocator: Allocator, specs: []const Face) !Chains {
             }
         }
     }
+
+    // Every non-empty face set has a deterministic last-resort face. HarfBuzz
+    // can then emit that font's .notdef glyph when no face covers a cluster,
+    // instead of itemization silently dropping source text.
+    if (primary_face == null and specs.len != 0) primary_face = 0;
 
     const global_chain = try global_list.toOwnedSlice(allocator);
     return .{
@@ -301,8 +326,9 @@ fn resolveFace(faces: []const FaceState, chains: *const Chains, style: FontStyle
 }
 
 fn unresolvedCodepointFace(faces_value: *const Faces) ?FaceIndex {
-    if (faces_value.missing_glyph_replacement) |r| return r.face_index;
-    return faces_value.chains.primary_face;
+    const storage = facesStorageConst(faces_value);
+    if (storage.missing_glyph_replacement) |r| return r.face_index;
+    return storage.chains.primary_face;
 }
 
 // ── Itemization ──
@@ -392,43 +418,16 @@ fn isIndicLinker(cp: u21) bool {
     };
 }
 
-/// The fallback itemizer only needs the parts of extended-grapheme
-/// segmentation that can otherwise split a font-sensitive sequence. HarfBuzz
-/// remains the authority for shaping and its cluster values remain the
-/// authority for returned source ranges.
+/// The fallback itemizer intentionally implements only the sequence boundaries
+/// that affect font fallback: Unicode marks (from HarfBuzz's current Unicode
+/// database), emoji modifiers/tags/variation selectors, ZWJ sequences,
+/// regional-indicator pairs, CRLF, and the Indic linkers above. It is not a
+/// general UAX #29 segmenter; HarfBuzz remains the authority for shaping and
+/// for the source clusters returned to callers.
 fn isGraphemeExtend(cp: u21) bool {
-    return (cp >= 0x0300 and cp <= 0x036F) or
-        (cp >= 0x0483 and cp <= 0x0489) or
-        (cp >= 0x0591 and cp <= 0x05BD) or cp == 0x05BF or
-        (cp >= 0x05C1 and cp <= 0x05C2) or (cp >= 0x05C4 and cp <= 0x05C5) or cp == 0x05C7 or
-        (cp >= 0x0610 and cp <= 0x061A) or (cp >= 0x064B and cp <= 0x065F) or cp == 0x0670 or
-        (cp >= 0x06D6 and cp <= 0x06ED) or
-        (cp >= 0x0711 and cp <= 0x0711) or (cp >= 0x0730 and cp <= 0x074A) or
-        (cp >= 0x07A6 and cp <= 0x07B0) or (cp >= 0x07EB and cp <= 0x07F3) or
-        (cp >= 0x0816 and cp <= 0x082D) or (cp >= 0x0859 and cp <= 0x085B) or
-        (cp >= 0x08D3 and cp <= 0x0903) or
-        (cp >= 0x093A and cp <= 0x094F) or (cp >= 0x0951 and cp <= 0x0957) or
-        (cp >= 0x0962 and cp <= 0x0963) or
-        (cp >= 0x0981 and cp <= 0x0983) or (cp >= 0x09BC and cp <= 0x09CD) or
-        (cp >= 0x09D7 and cp <= 0x09D7) or (cp >= 0x09E2 and cp <= 0x09E3) or
-        (cp >= 0x0A01 and cp <= 0x0A03) or (cp >= 0x0A3C and cp <= 0x0A4D) or
-        (cp >= 0x0A51 and cp <= 0x0A51) or (cp >= 0x0A70 and cp <= 0x0A71) or cp == 0x0A75 or
-        (cp >= 0x0A81 and cp <= 0x0A83) or (cp >= 0x0ABC and cp <= 0x0ACD) or
-        (cp >= 0x0AE2 and cp <= 0x0AE3) or
-        (cp >= 0x0B01 and cp <= 0x0B03) or (cp >= 0x0B3C and cp <= 0x0B4D) or
-        (cp >= 0x0B55 and cp <= 0x0B57) or (cp >= 0x0B62 and cp <= 0x0B63) or
-        (cp >= 0x0B82 and cp <= 0x0B82) or (cp >= 0x0BBE and cp <= 0x0BCD) or cp == 0x0BD7 or
-        (cp >= 0x0C00 and cp <= 0x0C04) or (cp >= 0x0C3C and cp <= 0x0C4D) or
-        (cp >= 0x0C55 and cp <= 0x0C56) or (cp >= 0x0C62 and cp <= 0x0C63) or
-        (cp >= 0x0C81 and cp <= 0x0C83) or (cp >= 0x0CBC and cp <= 0x0CCD) or
-        (cp >= 0x0CD5 and cp <= 0x0CD6) or (cp >= 0x0CE2 and cp <= 0x0CE3) or
-        (cp >= 0x0D00 and cp <= 0x0D03) or (cp >= 0x0D3B and cp <= 0x0D4D) or
-        (cp >= 0x0D57 and cp <= 0x0D57) or (cp >= 0x0D62 and cp <= 0x0D63) or
-        (cp >= 0x0D81 and cp <= 0x0D83) or (cp >= 0x0DCA and cp <= 0x0DDF) or
-        (cp >= 0x0DF2 and cp <= 0x0DF3) or
-        (cp >= 0x1AB0 and cp <= 0x1AFF) or (cp >= 0x1DC0 and cp <= 0x1DFF) or
-        (cp >= 0x20D0 and cp <= 0x20FF) or (cp >= 0xFE00 and cp <= 0xFE0F) or
-        (cp >= 0xFE20 and cp <= 0xFE2F) or (cp >= 0x1F3FB and cp <= 0x1F3FF) or
+    return harfbuzz.isUnicodeMark(cp) or
+        (cp >= 0xFE00 and cp <= 0xFE0F) or
+        (cp >= 0x1F3FB and cp <= 0x1F3FF) or
         (cp >= 0xE0020 and cp <= 0xE007F) or (cp >= 0xE0100 and cp <= 0xE01EF);
 }
 
@@ -527,6 +526,7 @@ fn resolveClusterFace(
 }
 
 fn itemizeText(allocator: Allocator, faces_value: *const Faces, style: FontStyle, text: []const u8) ![]ItemizedRun {
+    const storage = facesStorageConst(faces_value);
     _ = std.unicode.Utf8View.init(text) catch return error.InvalidUtf8;
     var runs: std.ArrayListUnmanaged(ItemizedRun) = .empty;
     errdefer runs.deinit(allocator);
@@ -539,12 +539,9 @@ fn itemizeText(allocator: Allocator, faces_value: *const Faces, style: FontStyle
         const cluster_end = try graphemeClusterEnd(text, i);
         const cluster = text[i..cluster_end];
         const first = try decodeCodepoint(text, i);
-        const face_idx = resolveClusterFace(faces_value.faces, &faces_value.chains, style, cluster, 0) orelse
-            resolveFace(faces_value.faces, &faces_value.chains, style, first.value, 0) orelse
-            unresolvedCodepointFace(faces_value) orelse {
-            i = cluster_end;
-            continue;
-        };
+        const face_idx = resolveClusterFace(storage.faces, &storage.chains, style, cluster, 0) orelse
+            resolveFace(storage.faces, &storage.chains, style, first.value, 0) orelse
+            unresolvedCodepointFace(faces_value) orelse return error.NoFontForCluster;
 
         if (current_face == null) {
             current_face = face_idx;
@@ -565,13 +562,12 @@ fn itemizeText(allocator: Allocator, faces_value: *const Faces, style: FontStyle
 // ── Per-run shaping ──
 
 const ShapeRunResult = struct {
-    glyphs: []ShapedText.Glyph,
     advance_x: f32,
     advance_y: f32,
 };
 
 fn emptyRun() ShapeRunResult {
-    return .{ .glyphs = &.{}, .advance_x = 0, .advance_y = 0 };
+    return .{ .advance_x = 0, .advance_y = 0 };
 }
 
 fn shapeRun(
@@ -581,15 +577,34 @@ fn shapeRun(
     text: []const u8,
     source_base: u32,
     opts: ShapeOptions,
+    pen_x: f32,
+    pen_y: f32,
+    glyphs: *std.ArrayListUnmanaged(ShapedText.Glyph),
+    cluster_starts: *std.ArrayListUnmanaged(u32),
 ) !ShapeRunResult {
     if (text.len == 0) return emptyRun();
-    const fc = &faces_value.faces[face_index];
-    const font_id = faces_value.face_to_font_id[face_index];
-    const missing_replacement = if (faces_value.missing_glyph_replacement) |r|
+    const storage = facesStorage(faces_value);
+    const fc = &storage.faces[face_index];
+    const font_id = storage.face_to_font_id[face_index];
+    const missing_replacement = if (storage.missing_glyph_replacement) |r|
         if (r.face_index == face_index) r.glyph_id else null
     else
         null;
-    return shapeWithHarfbuzz(allocator, fc, face_index, font_id, faces_value.allocator, text, source_base, missing_replacement, opts);
+    return shapeWithHarfbuzz(
+        allocator,
+        fc,
+        face_index,
+        font_id,
+        storage.allocator,
+        text,
+        source_base,
+        missing_replacement,
+        opts,
+        pen_x,
+        pen_y,
+        glyphs,
+        cluster_starts,
+    );
 }
 
 fn shapeWithHarfbuzz(
@@ -602,6 +617,10 @@ fn shapeWithHarfbuzz(
     source_base: u32,
     missing_replacement: ?u16,
     opts: ShapeOptions,
+    pen_x: f32,
+    pen_y: f32,
+    out: *std.ArrayListUnmanaged(ShapedText.Glyph),
+    cluster_scratch: *std.ArrayListUnmanaged(u32),
 ) !ShapeRunResult {
     const hbs: *harfbuzz.HarfBuzzShaper = &fc.hb_shaper;
 
@@ -648,10 +667,10 @@ fn shapeWithHarfbuzz(
 
     if (shaped.count == 0 or shaped.infos == null or shaped.positions == null) return emptyRun();
 
-    const out = try allocator.alloc(ShapedText.Glyph, shaped.count);
-    errdefer allocator.free(out);
-    const cluster_starts = try allocator.alloc(u32, shaped.count);
-    defer allocator.free(cluster_starts);
+    try out.ensureUnusedCapacity(allocator, shaped.count);
+    try cluster_scratch.ensureTotalCapacity(allocator, shaped.count);
+    cluster_scratch.items.len = shaped.count;
+    const cluster_starts = cluster_scratch.items;
 
     for (0..shaped.count) |i| {
         cluster_starts[i] = @min(@as(u32, @intCast(shaped.infos[i].cluster)), @as(u32, @intCast(text.len)));
@@ -671,23 +690,22 @@ fn shapeWithHarfbuzz(
             @floatFromInt(pos.x_advance)
         else
             @floatFromInt(fc.font.advanceWidth(glyph_id) catch 500);
-        out[i] = .{
+        out.appendAssumeCapacity(.{
             .face_index = face_index,
             .glyph_id = glyph_id,
-            .x_offset = (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * inv,
-            .y_offset = -(cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * inv,
+            .x_offset = pen_x + (cursor_x + @as(f32, @floatFromInt(pos.x_offset))) * inv,
+            .y_offset = pen_y - (cursor_y + @as(f32, @floatFromInt(pos.y_offset))) * inv,
             .x_advance = advance_x * inv,
             .y_advance = -@as(f32, @floatFromInt(pos.y_advance)) * inv,
             .source_start = source_base + cluster,
             .source_end = source_base + cluster_end,
             .font_id = font_id,
-        };
+        });
         cursor_x += advance_x;
         cursor_y += @as(f32, @floatFromInt(pos.y_advance));
     }
 
     return .{
-        .glyphs = out,
         .advance_x = cursor_x * inv,
         .advance_y = -cursor_y * inv,
     };
@@ -743,31 +761,35 @@ fn buildHbFeatures(
     return out_buf[0..n];
 }
 
-// ── Font-id derivation ──
+// ── Font-id validation ──
 
-const FontIdMap = struct {
-    face_to_font_id: []u32,
-    font_count: u32,
-};
-
-fn buildFontIdMap(allocator: Allocator, specs: []const Face) !FontIdMap {
+fn buildFontIdMap(allocator: Allocator, specs: []const Face) ![]u32 {
     const out = try allocator.alloc(u32, specs.len);
     errdefer allocator.free(out);
 
-    var by_ptr: std.AutoHashMap(*const Font, u32) = .init(allocator);
-    defer by_ptr.deinit();
+    var id_by_font: std.AutoHashMap(*const Font, u32) = .init(allocator);
+    defer id_by_font.deinit();
+    var font_by_id: std.AutoHashMap(u32, *const Font) = .init(allocator);
+    defer font_by_id.deinit();
 
-    var next_id: u32 = 0;
     for (specs, 0..) |spec, i| {
-        const gop = try by_ptr.getOrPut(spec.font);
-        if (!gop.found_existing) {
-            gop.value_ptr.* = next_id;
-            next_id += 1;
+        const font_gop = try id_by_font.getOrPut(spec.font);
+        if (font_gop.found_existing) {
+            if (font_gop.value_ptr.* != spec.font_id) return error.FontIdConflict;
+        } else {
+            font_gop.value_ptr.* = spec.font_id;
         }
-        out[i] = gop.value_ptr.*;
+
+        const id_gop = try font_by_id.getOrPut(spec.font_id);
+        if (id_gop.found_existing) {
+            if (id_gop.value_ptr.* != spec.font) return error.FontIdConflict;
+        } else {
+            id_gop.value_ptr.* = spec.font;
+        }
+        out[i] = spec.font_id;
     }
 
-    return .{ .face_to_font_id = out, .font_count = next_id };
+    return out;
 }
 
 // ── Public free shape() ──
@@ -787,7 +809,8 @@ fn buildFontIdMap(allocator: Allocator, specs: []const Face) !FontIdMap {
 ///
 /// Input and option validation reports `InvalidUtf8`, `TextTooLong`,
 /// `TooManyFeatures`, `InvalidFeatureRange`, `InvalidLanguage`,
-/// `MissingTargetPpem`, or `InvalidPpem` as applicable. Feature ranges are
+/// `MissingTargetPpem`, `InvalidPpem`, or `NoFontForCluster` as applicable.
+/// Feature ranges are
 /// half-open source-byte ranges; portions outside a fallback-font run are
 /// clipped to that run. Allocation and font/shaper errors are also propagated.
 pub fn shape(
@@ -812,6 +835,8 @@ pub fn shape(
 
     var glyphs: std.ArrayListUnmanaged(ShapedText.Glyph) = .empty;
     errdefer glyphs.deinit(allocator);
+    var cluster_scratch: std.ArrayListUnmanaged(u32) = .empty;
+    defer cluster_scratch.deinit(allocator);
 
     var cursor_x: f32 = 0;
     var cursor_y: f32 = 0;
@@ -824,22 +849,11 @@ pub fn shape(
             segment,
             run.text_start,
             opts,
+            cursor_x,
+            cursor_y,
+            &glyphs,
+            &cluster_scratch,
         );
-        defer if (shaped_run.glyphs.len > 0) allocator.free(shaped_run.glyphs);
-
-        for (shaped_run.glyphs) |g| {
-            try glyphs.append(allocator, .{
-                .face_index = g.face_index,
-                .glyph_id = g.glyph_id,
-                .x_offset = cursor_x + g.x_offset,
-                .y_offset = cursor_y + g.y_offset,
-                .x_advance = g.x_advance,
-                .y_advance = g.y_advance,
-                .source_start = g.source_start,
-                .source_end = g.source_end,
-                .font_id = g.font_id,
-            });
-        }
         cursor_x += shaped_run.advance_x;
         cursor_y += shaped_run.advance_y;
     }
@@ -855,24 +869,53 @@ pub fn shape(
 const testing = std.testing;
 const assets = @import("assets");
 
-test "Faces builds, dedups font_id by pointer identity, exposes fontIdForFace" {
+fn exerciseFacesAllocationFailures(allocator: Allocator, font: *Font) !void {
+    var faces = try Faces.build(allocator, &.{.{ .font = font, .font_id = 42 }});
+    defer faces.deinit();
+    var shaped = try shape(allocator, &faces, "failure atomic", .{});
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len > 0);
+}
+
+test "Faces build and shape clean up every allocation failure" {
+    var font = try Font.init(assets.noto_sans_regular);
+    try testing.checkAllAllocationFailures(testing.allocator, exerciseFacesAllocationFailures, .{&font});
+}
+
+test "Faces rejects empty sets and conflicting stable ids" {
+    try testing.expectError(error.NoFaces, Faces.build(testing.allocator, &.{}));
+
+    var font_a = try Font.init(assets.noto_sans_regular);
+    var font_b = try Font.init(assets.noto_sans_bold);
+    try testing.expectError(error.FontIdConflict, Faces.build(testing.allocator, &.{
+        .{ .font = &font_a, .font_id = 9 },
+        .{ .font = &font_b, .font_id = 9 },
+    }));
+    try testing.expectError(error.FontIdConflict, Faces.build(testing.allocator, &.{
+        .{ .font = &font_a, .font_id = 9 },
+        .{ .font = &font_a, .font_id = 10 },
+    }));
+}
+
+test "Faces preserves stable ids and exposes only borrowed fonts" {
     var font_a = try Font.init(assets.noto_sans_regular);
     var font_b = try Font.init(assets.noto_sans_bold);
 
     var faces = try Faces.build(testing.allocator, &.{
-        .{ .font = &font_a },
-        .{ .font = &font_b, .weight = .bold },
-        .{ .font = &font_a, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
+        .{ .font = &font_a, .font_id = 0 },
+        .{ .font = &font_b, .font_id = 41, .weight = .bold },
+        .{ .font = &font_a, .font_id = 0, .italic = true },
     });
     defer faces.deinit();
 
     try testing.expectEqual(@as(usize, 3), faces.faceCount());
-    try testing.expectEqual(@as(u32, 2), faces.font_count);
     try testing.expectEqual(@as(?u32, 0), faces.fontIdForFace(0));
-    try testing.expectEqual(@as(?u32, 1), faces.fontIdForFace(1));
+    try testing.expectEqual(@as(?u32, 41), faces.fontIdForFace(1));
     try testing.expectEqual(@as(?u32, 0), faces.fontIdForFace(2));
     try testing.expectEqual(@as(?u32, null), faces.fontIdForFace(3));
-    try testing.expectEqual(@as(?*const FaceState, null), faces.face(3));
+    try testing.expectEqual(@as(?*const Font, &font_a), faces.fontForFace(0));
+    try testing.expectEqual(@as(?*const Font, &font_b), faces.fontForFace(1));
+    try testing.expectEqual(@as(?*const Font, null), faces.fontForFace(3));
 }
 
 test "Faces with fallback face populates global chain and missing-glyph replacement" {
@@ -880,13 +923,14 @@ test "Faces with fallback face populates global chain and missing-glyph replacem
     var font_arabic = try Font.init(assets.noto_sans_arabic);
 
     var faces = try Faces.build(testing.allocator, &.{
-        .{ .font = &font_regular },
-        .{ .font = &font_arabic, .fallback = true },
+        .{ .font = &font_regular, .font_id = 0 },
+        .{ .font = &font_arabic, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
 
-    try testing.expect(faces.missing_glyph_replacement != null);
-    try testing.expectEqual(@as(usize, 1), faces.chains.global_chain.len);
+    const storage = facesStorageConst(&faces);
+    try testing.expect(storage.missing_glyph_replacement != null);
+    try testing.expectEqual(@as(usize, 1), storage.chains.global_chain.len);
 }
 
 test "shape produces ShapedText with font_id populated" {
@@ -894,8 +938,8 @@ test "shape produces ShapedText with font_id populated" {
     var font_arabic = try Font.init(assets.noto_sans_arabic);
 
     var faces = try Faces.build(testing.allocator, &.{
-        .{ .font = &font_regular },
-        .{ .font = &font_arabic, .fallback = true },
+        .{ .font = &font_regular, .font_id = 0 },
+        .{ .font = &font_arabic, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
 
@@ -923,7 +967,7 @@ test "shape preserves HarfBuzz complex-script behavior" {
 
     for (cases) |case| {
         var font = try Font.init(case.font_data);
-        var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+        var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
         defer faces.deinit();
         var shaped = try shape(testing.allocator, &faces, case.text, .{});
         defer shaped.deinit();
@@ -934,7 +978,7 @@ test "shape preserves HarfBuzz complex-script behavior" {
 
 test "shape forwards OpenType feature overrides" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var default = try shape(testing.allocator, &faces, "office", .{});
@@ -948,7 +992,7 @@ test "shape forwards OpenType feature overrides" {
 
 test "shape forwards feature lists larger than the stack fast path" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var default = try shape(testing.allocator, &faces, "office", .{});
@@ -965,7 +1009,7 @@ test "shape forwards feature lists larger than the stack fast path" {
 
 test "shape reports the logical source extent of each HarfBuzz cluster" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var shaped = try shape(testing.allocator, &faces, "abc", .{});
@@ -979,7 +1023,7 @@ test "shape reports the logical source extent of each HarfBuzz cluster" {
 
 test "shape accepts explicit HarfBuzz segment properties" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var ltr = try shape(testing.allocator, &faces, "abc", .{});
@@ -999,7 +1043,7 @@ test "shape accepts explicit HarfBuzz segment properties" {
 
 test "shape rejects invalid shaping options" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     try testing.expectError(error.InvalidPpem, shape(testing.allocator, &faces, "a", .{
@@ -1034,8 +1078,8 @@ test "fallback itemization keeps emoji-presentation clusters together" {
     var regular = try Font.init(assets.noto_sans_regular);
     var emoji = try Font.init(assets.twemoji_mozilla);
     var faces = try Faces.build(testing.allocator, &.{
-        .{ .font = &regular },
-        .{ .font = &emoji, .fallback = true },
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
 
@@ -1055,9 +1099,9 @@ test "HarfBuzz shaping uses variable font coordinates" {
     var light_font = try Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &light_coords });
     var heavy_font = try Font.initWithOptions(assets.source_serif_cff2_variable, .{ .variations = &heavy_coords });
 
-    var light_faces = try Faces.build(testing.allocator, &.{.{ .font = &light_font }});
+    var light_faces = try Faces.build(testing.allocator, &.{.{ .font = &light_font, .font_id = 0 }});
     defer light_faces.deinit();
-    var heavy_faces = try Faces.build(testing.allocator, &.{.{ .font = &heavy_font }});
+    var heavy_faces = try Faces.build(testing.allocator, &.{.{ .font = &heavy_font, .font_id = 0 }});
     defer heavy_faces.deinit();
 
     var light_text = try shape(testing.allocator, &light_faces, "m", .{});

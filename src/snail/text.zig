@@ -130,14 +130,6 @@ pub const FontStyle = struct {
     italic: bool = false,
 };
 
-/// Synthetic style hints attached to a face spec. The shaper carries
-/// them on the face state so callers can read them back when laying
-/// out glyphs.
-pub const SyntheticStyle = struct {
-    embolden: f32 = 0,
-    skew_x: f32 = 0,
-};
-
 pub const MissingGlyphReplacement = struct {
     face_index: FaceIndex,
     glyph_id: u16,
@@ -165,7 +157,7 @@ pub const ShapedText = struct {
         /// Resolved font id, set by `shape(faces, ...)` from
         /// `faces.fontIdForFace(face_index)`. Picture builders read it
         /// directly to key atlas records.
-        font_id: u32 = 0,
+        font_id: u32,
     };
 
     pub fn advanceX(self: *const ShapedText) f32 {

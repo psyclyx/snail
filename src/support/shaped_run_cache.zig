@@ -12,8 +12,9 @@
 //! ## Lifetime
 //!
 //! `shape()` returns a borrowed `*const ShapedText` owned by the cache.
-//! The pointer stays valid until the next mutating call on the same
-//! cache (`evict`, `clear`, `deinit`). The cache owns the entry's
+//! The pointer stays stable across unrelated cache misses and remains valid
+//! until that exact entry is removed by `evict`, `clear`, or `deinit`. The
+//! cache owns the entry's
 //! `text`, `language`, and `features` slices and its `ShapedText.glyphs`; all
 //! are freed on eviction.
 //!
@@ -35,7 +36,9 @@ const ShapedText = snail.ShapedText;
 
 pub const ShapedRunCache = struct {
     allocator: Allocator,
-    entries: std.HashMapUnmanaged(Key, ShapedText, KeyContext, std.hash_map.default_max_load_percentage),
+    // Values live in individual allocations so a hash-table growth/rehash
+    // cannot invalidate pointers previously returned to the caller.
+    entries: std.HashMapUnmanaged(Key, *ShapedText, KeyContext, std.hash_map.default_max_load_percentage),
 
     pub const Stats = struct {
         entry_count: u32,
@@ -149,7 +152,7 @@ pub const ShapedRunCache = struct {
         opts: ShapeOptions,
     ) !*const ShapedText {
         const lookup_key = keyFor(faces, text, opts);
-        if (self.entries.getPtr(lookup_key)) |hit| return hit;
+        if (self.entries.get(lookup_key)) |hit| return hit;
 
         // Miss: shape and intern. We copy `text` into cache-owned
         // memory before inserting so the key stays valid for the
@@ -163,6 +166,9 @@ pub const ShapedRunCache = struct {
         errdefer self.allocator.free(owned_language);
         const owned_features = try self.allocator.dupe(OpenTypeFeature, lookup_key.features);
         errdefer self.allocator.free(owned_features);
+        const owned_shaped = try self.allocator.create(ShapedText);
+        errdefer self.allocator.destroy(owned_shaped);
+        owned_shaped.* = shaped;
 
         const owned_key = Key{
             .text = owned_text,
@@ -181,8 +187,8 @@ pub const ShapedRunCache = struct {
             .provider_covers = lookup_key.provider_covers,
             .provider_get_advance = lookup_key.provider_get_advance,
         };
-        try self.entries.putNoClobber(self.allocator, owned_key, shaped);
-        return self.entries.getPtr(owned_key).?;
+        try self.entries.putNoClobber(self.allocator, owned_key, owned_shaped);
+        return owned_shaped;
     }
 
     /// Drop the exact entry for `(faces identity, text, opts)` if present.
@@ -193,8 +199,8 @@ pub const ShapedRunCache = struct {
             self.allocator.free(kv.key.text);
             self.allocator.free(kv.key.language);
             self.allocator.free(kv.key.features);
-            var shaped = kv.value;
-            shaped.deinit();
+            kv.value.deinit();
+            self.allocator.destroy(kv.value);
         }
     }
 
@@ -205,7 +211,8 @@ pub const ShapedRunCache = struct {
             self.allocator.free(kv.key_ptr.text);
             self.allocator.free(kv.key_ptr.language);
             self.allocator.free(kv.key_ptr.features);
-            kv.value_ptr.deinit();
+            kv.value_ptr.*.deinit();
+            self.allocator.destroy(kv.value_ptr.*);
         }
         self.entries.clearRetainingCapacity();
     }
@@ -215,7 +222,7 @@ pub const ShapedRunCache = struct {
         var text_bytes: usize = 0;
         var it = self.entries.iterator();
         while (it.next()) |kv| {
-            glyphs += kv.value_ptr.glyphs.len;
+            glyphs += kv.value_ptr.*.glyphs.len;
             text_bytes += kv.key_ptr.text.len;
         }
         return .{
@@ -260,7 +267,7 @@ const Font = snail.Font;
 test "ShapedRunCache returns the same pointer across repeated lookups" {
     var font = try Font.init(assets.noto_sans_regular);
 
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);
@@ -277,13 +284,46 @@ test "ShapedRunCache returns the same pointer across repeated lookups" {
     try testing.expectEqual(@as(u32, 2), cache.stats().entry_count);
 }
 
+test "ShapedRunCache pointers survive unrelated insertions and rehashes" {
+    var font = try Font.init(assets.noto_sans_regular);
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
+    defer faces.deinit();
+    var cache = ShapedRunCache.init(testing.allocator);
+    defer cache.deinit();
+
+    const first = try cache.shape(&faces, "persistent", .{});
+    const first_len = first.glyphs.len;
+    var text_buf: [32]u8 = undefined;
+    for (0..256) |i| {
+        const value = try std.fmt.bufPrint(&text_buf, "unrelated-{d}", .{i});
+        _ = try cache.shape(&faces, value, .{});
+    }
+    try testing.expectEqual(first, try cache.shape(&faces, "persistent", .{}));
+    try testing.expectEqual(first_len, first.glyphs.len);
+}
+
+fn exerciseCacheAllocationFailures(allocator: Allocator, faces: *Faces) !void {
+    var cache = ShapedRunCache.init(allocator);
+    defer cache.deinit();
+    const shaped = try cache.shape(faces, "allocation failure", .{});
+    try testing.expect(shaped.glyphs.len > 0);
+    try testing.expectEqual(@as(u32, 1), cache.stats().entry_count);
+}
+
+test "ShapedRunCache miss is leak-free across every allocation failure" {
+    var font = try Font.init(assets.noto_sans_regular);
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
+    defer faces.deinit();
+    try testing.checkAllAllocationFailures(testing.allocator, exerciseCacheAllocationFailures, .{&faces});
+}
+
 test "ShapedRunCache distinguishes styles and ppems" {
     var font = try Font.init(assets.noto_sans_regular);
     var bold = try Font.init(assets.noto_sans_bold);
 
     var faces = try Faces.build(testing.allocator, &.{
-        .{ .font = &font, .weight = .regular },
-        .{ .font = &bold, .weight = .bold },
+        .{ .font = &font, .font_id = 0, .weight = .regular },
+        .{ .font = &bold, .font_id = 1, .weight = .bold },
     });
     defer faces.deinit();
 
@@ -302,7 +342,7 @@ test "ShapedRunCache distinguishes styles and ppems" {
 
 test "ShapedRunCache distinguishes segment properties" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);
@@ -322,7 +362,7 @@ test "ShapedRunCache distinguishes segment properties" {
 
 test "ShapedRunCache owns and distinguishes exact OpenType features" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);
@@ -352,9 +392,9 @@ test "ShapedRunCache owns and distinguishes exact OpenType features" {
 
 test "ShapedRunCache distinguishes Faces identity and evicts exactly" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces_a = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces_a = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces_a.deinit();
-    var faces_b = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces_b = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces_b.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);
@@ -393,7 +433,7 @@ test "ShapedRunCache distinguishes advance-provider identities" {
     };
 
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
     var context_a: u8 = 0;
     var context_b: u8 = 0;
@@ -446,7 +486,7 @@ test "ShapedRunCache distinguishes advance-provider identities" {
 
 test "ShapedRunCache reproduces snail.shape output byte-for-byte" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);
@@ -470,7 +510,7 @@ test "ShapedRunCache reproduces snail.shape output byte-for-byte" {
 
 test "ShapedRunCache evict and clear free the entries" {
     var font = try Font.init(assets.noto_sans_regular);
-    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     var cache = ShapedRunCache.init(testing.allocator);

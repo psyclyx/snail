@@ -36,6 +36,19 @@ pub fn makeTag(tag: [4]u8) u32 {
         (@as(u32, tag[2]) << 8) | @as(u32, tag[3]);
 }
 
+/// Query HarfBuzz's versioned Unicode database instead of duplicating mark
+/// ranges in Snail's fallback itemizer.
+pub fn isUnicodeMark(codepoint: u21) bool {
+    const funcs = hb.hb_unicode_funcs_get_default();
+    return switch (hb.hb_unicode_general_category(funcs, codepoint)) {
+        hb.HB_UNICODE_GENERAL_CATEGORY_SPACING_MARK,
+        hb.HB_UNICODE_GENERAL_CATEGORY_ENCLOSING_MARK,
+        hb.HB_UNICODE_GENERAL_CATEGORY_NON_SPACING_MARK,
+        => true,
+        else => false,
+    };
+}
+
 /// What backs the `glyph_h_advance` font_func. `shape(faces, ...)`
 /// attaches a closure that typically routes into a
 /// `snail.TtAdvanceSource`.

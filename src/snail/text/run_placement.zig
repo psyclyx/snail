@@ -16,7 +16,6 @@ const text = @import("../text.zig");
 const faces_mod = @import("faces.zig");
 const shape_mod = @import("../draw/shape.zig");
 const math = @import("../math/vec.zig");
-const snap = @import("../snap.zig");
 const record_key = @import("../atlas/record_key.zig");
 const policy_mod = @import("../font/autohint/policy.zig");
 
@@ -39,6 +38,20 @@ pub const PlaceRunError = error{
     MissingWorldToPixel,
     /// The supplied world-to-pixel transform cannot be inverted.
     InvalidWorldToPixel,
+    /// Column snapping is defined only for an axis-aligned world-to-pixel
+    /// transform. Use `.origins` for rotated or sheared text.
+    UnsupportedColumnsTransform,
+    /// Em size must be finite and strictly positive.
+    InvalidEm,
+    /// Baseline coordinates and all shaped glyph metrics must be finite.
+    InvalidPlacement,
+    /// Instance color components must be finite and straight alpha must be in
+    /// `[0, 1]`. RGB remains unclamped so HDR values survive.
+    InvalidColor,
+    /// A TT ppem or autohint policy is invalid.
+    InvalidHintMode,
+    /// Column snapping requires one common horizontal advance.
+    NonMonospaceColumns,
     /// Caller-provided shape storage was too small.
     BufferTooSmall,
     /// The expanded COLR shape count cannot be represented by `usize`.
@@ -71,7 +84,7 @@ pub const HintMode = union(enum) {
             .unhinted, .autohint => em,
             .tt_hint => |t| blk: {
                 const ppem_px = @as(f32, @floatFromInt(t.ppem_26_6)) / 64.0;
-                break :blk if (ppem_px > 0.0) em / ppem_px else em;
+                break :blk em / ppem_px;
             },
         };
     }
@@ -135,6 +148,7 @@ pub const RunPlacement = struct {
 const Placer = struct {
     p: RunPlacement,
     inv: Transform2D = .{},
+    scale: f32,
     base_dev: Vec2 = .{ .x = 0, .y = 0 },
     dev_adv: f32 = 0,
     /// +1 for `.down`, -1 for `.up`. Shaped `y_offset`/`y_advance` are
@@ -143,39 +157,99 @@ const Placer = struct {
     y_sign: f32 = 1,
 
     fn init(p: RunPlacement, shaped: *const ShapedText) PlaceRunError!Placer {
-        var self = Placer{ .p = p, .y_sign = if (p.y_axis == .down) 1 else -1 };
+        try validatePlacement(shaped, p);
+        const scale = p.mode.scale(p.em);
+        if (!std.math.isFinite(scale)) return error.InvalidEm;
+        var self = Placer{ .p = p, .scale = scale, .y_sign = if (p.y_axis == .down) 1 else -1 };
         if (p.snap != .none and p.world_to_pixel == null) return error.MissingWorldToPixel;
         if (p.snap != .none) self.inv = p.world_to_pixel.?.inverse() orelse return error.InvalidWorldToPixel;
         if (p.snap == .columns) {
             const w2p = p.world_to_pixel.?;
+            if (w2p.xy != 0 or w2p.yx != 0) return error.UnsupportedColumnsTransform;
             const bdev = w2p.applyPoint(p.baseline);
+            if (!finiteVec(bdev)) return error.InvalidPlacement;
             self.base_dev = .{ .x = @round(bdev.x), .y = @round(bdev.y) };
-            // Device x-advance of one em-scaled unit advance. Assumes an
-            // axis-aligned world→device transform (hinted text isn't rotated);
-            // `xx` is the x-scale.
+            // Device x-advance of one em-scaled unit advance. Axis alignment
+            // was checked above, so `xx` is the complete x scale.
             const adv0 = if (shaped.glyphs.len > 0) shaped.glyphs[0].x_advance else 0;
             self.dev_adv = @round(w2p.xx * p.em * adv0);
+            if (!std.math.isFinite(self.dev_adv)) return error.InvalidPlacement;
         }
+        // Validate every derived origin before `placeRun` publishes its first
+        // output shape, so an extreme later glyph cannot leave a partial run.
+        for (shaped.glyphs, 0..) |glyph, i| _ = try self.originFor(glyph, i);
         return self;
     }
 
-    fn originFor(self: *const Placer, g: anytype, i: usize) Vec2 {
-        return switch (self.p.snap) {
-            .none => .{
-                .x = self.p.baseline.x + self.p.em * g.x_offset,
-                .y = self.p.baseline.y + self.p.em * g.y_offset * self.y_sign,
-            },
-            .origins => snap.origin(.{
-                .x = self.p.baseline.x + self.p.em * g.x_offset,
-                .y = self.p.baseline.y + self.p.em * g.y_offset * self.y_sign,
-            }, self.p.world_to_pixel.?),
-            .columns => self.inv.applyPoint(.{
-                .x = self.base_dev.x + @as(f32, @floatFromInt(i)) * self.dev_adv,
-                .y = self.base_dev.y,
-            }),
+    fn originFor(self: *const Placer, g: anytype, i: usize) PlaceRunError!Vec2 {
+        const natural = Vec2{
+            .x = self.p.baseline.x + self.p.em * g.x_offset,
+            .y = self.p.baseline.y + self.p.em * g.y_offset * self.y_sign,
         };
+        const result = switch (self.p.snap) {
+            .none => natural,
+            .origins => blk: {
+                if (!finiteVec(natural)) return error.InvalidPlacement;
+                const device = self.p.world_to_pixel.?.applyPoint(natural);
+                if (!finiteVec(device)) return error.InvalidPlacement;
+                break :blk self.inv.applyPoint(.{ .x = @round(device.x), .y = @round(device.y) });
+            },
+            .columns => blk: {
+                const device = Vec2{
+                    .x = self.base_dev.x + @as(f32, @floatFromInt(i)) * self.dev_adv,
+                    .y = self.base_dev.y,
+                };
+                if (!finiteVec(device)) return error.InvalidPlacement;
+                break :blk self.inv.applyPoint(device);
+            },
+        };
+        if (!finiteVec(result)) return error.InvalidPlacement;
+        return result;
     }
 };
+
+fn finite(values: anytype) bool {
+    inline for (values) |value| if (!std.math.isFinite(value)) return false;
+    return true;
+}
+
+fn finiteVec(value: Vec2) bool {
+    return finite(.{ value.x, value.y });
+}
+
+fn validColor(color: [4]f32) bool {
+    return finite(color) and color[3] >= 0 and color[3] <= 1;
+}
+
+fn validatePlacement(shaped: *const ShapedText, p: RunPlacement) PlaceRunError!void {
+    if (!std.math.isFinite(p.em) or p.em <= 0) return error.InvalidEm;
+    if (!finite(.{ p.baseline.x, p.baseline.y })) return error.InvalidPlacement;
+    if (!validColor(p.color)) return error.InvalidColor;
+    switch (p.mode) {
+        .unhinted => {},
+        .autohint => |policy| policy.validate() catch return error.InvalidHintMode,
+        .tt_hint => |tt| {
+            if (tt.ppem_26_6 == 0 or tt.ppem_26_6 > text.TtHintPpem.max_26_6) return error.InvalidHintMode;
+        },
+    }
+    if (p.snap != .none) {
+        const w2p = p.world_to_pixel orelse return error.MissingWorldToPixel;
+        _ = w2p.inverse() orelse return error.InvalidWorldToPixel;
+        if (p.snap == .columns and (w2p.xy != 0 or w2p.yx != 0))
+            return error.UnsupportedColumnsTransform;
+    }
+
+    const column_advance = if (shaped.glyphs.len == 0) @as(f32, 0) else shaped.glyphs[0].x_advance;
+    for (shaped.glyphs) |glyph| {
+        if (!finite(.{ glyph.x_offset, glyph.y_offset, glyph.x_advance, glyph.y_advance }))
+            return error.InvalidPlacement;
+        if (p.snap == .columns and
+            (glyph.x_advance != column_advance or glyph.y_advance != 0))
+        {
+            return error.NonMonospaceColumns;
+        }
+    }
+}
 
 /// Number of shapes needed to place a run. Usually one per glyph; COLR glyphs
 /// can fan out into several layer shapes.
@@ -184,6 +258,7 @@ pub fn placedRunShapeCount(
     faces: ?*const Faces,
     p: RunPlacement,
 ) PlaceRunError!usize {
+    try validatePlacement(shaped, p);
     if (!p.colr) return shaped.glyphs.len;
     switch (p.mode) {
         .unhinted => {},
@@ -194,7 +269,13 @@ pub fn placedRunShapeCount(
     for (shaped.glyphs) |g| {
         const fi: usize = @intCast(g.face_index);
         if (fi >= fc.faceCount()) return error.UnknownFaceIndex;
-        const layer_count = fc.face(g.face_index).?.font.colrLayers(g.glyph_id).count();
+        var layers = fc.fontForFace(g.face_index).?.colrLayers(g.glyph_id);
+        const layer_count = layers.count();
+        while (layers.next()) |layer| {
+            // A negative red component is the COLR foreground marker; it is
+            // replaced with the already-validated placement color.
+            if (!(layer.color[0] < 0) and !validColor(layer.color)) return error.InvalidColor;
+        }
         count = std.math.add(usize, count, if (layer_count > 0) layer_count else 1) catch
             return error.ShapeCountOverflow;
     }
@@ -212,13 +293,12 @@ pub fn placeRun(
 ) PlaceRunError![]Shape {
     const shape_count = try placedRunShapeCount(shaped, faces, p);
     if (out.len < shape_count) return error.BufferTooSmall;
-    const scale = p.mode.scale(p.em);
     const placer = try Placer.init(p, shaped);
 
     // Fast path: one shape per glyph (all modes; COLR is the only fan-out).
     if (!p.colr) {
         for (shaped.glyphs, 0..) |g, i| {
-            out[i] = placedShape(placer.originFor(g, i), scale, placer.y_sign, p.mode.key(g.font_id, g.glyph_id), p.color, p.mode);
+            out[i] = placedShape(placer.originFor(g, i) catch unreachable, placer.scale, placer.y_sign, p.mode.key(g.font_id, g.glyph_id), p.color, p.mode);
         }
         return out[0..shape_count];
     }
@@ -228,16 +308,16 @@ pub fn placeRun(
     const fc = faces.?;
     var cursor: usize = 0;
     for (shaped.glyphs, 0..) |g, i| {
-        const origin = placer.originFor(g, i);
-        var iter = fc.face(g.face_index).?.font.colrLayers(g.glyph_id);
+        const origin = placer.originFor(g, i) catch unreachable;
+        var iter = fc.fontForFace(g.face_index).?.colrLayers(g.glyph_id);
         if (iter.count() > 0) {
             while (iter.next()) |layer| {
                 const layer_color: [4]f32 = if (layer.color[0] < 0) p.color else layer.color;
-                out[cursor] = placedShape(origin, scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, layer.glyph_id), layer_color, p.mode);
+                out[cursor] = placedShape(origin, placer.scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, layer.glyph_id), layer_color, p.mode);
                 cursor += 1;
             }
         } else {
-            out[cursor] = placedShape(origin, scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, g.glyph_id), p.color, p.mode);
+            out[cursor] = placedShape(origin, placer.scale, placer.y_sign, record_key.unhintedGlyph(g.font_id, g.glyph_id), p.color, p.mode);
             cursor += 1;
         }
     }
@@ -283,7 +363,7 @@ test "placeRun rejects unknown face_index on COLR fanout" {
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
-    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     // COLR is the only path that dereferences face_index; the
@@ -298,6 +378,7 @@ test "placeRun rejects unknown face_index on COLR fanout" {
         .y_advance = 0,
         .source_start = 0,
         .source_end = 0,
+        .font_id = 0,
     }};
     const shaped = ShapedText{
         .allocator = allocator,
@@ -327,7 +408,7 @@ test "autohint mode key is independent of policy" {
 test "placeRun: mode picks scale+key, columns snaps to integer device pens" {
     const allocator = testing.allocator;
     var font = try Font.init(@import("assets").dejavu_sans_mono);
-    var faces = try Faces.build(allocator, &.{.{ .font = &font }});
+    var faces = try Faces.build(allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
     var shaped = try faces_mod.shape(allocator, &faces, "abc", .{});
     defer shaped.deinit();
@@ -403,6 +484,111 @@ test "placeRun requires an explicit transform for snapping" {
     }));
 }
 
+test "placeRun validates numeric inputs, hint modes, and column transforms" {
+    var glyphs = [_]ShapedText.Glyph{.{
+        .face_index = 0,
+        .glyph_id = 1,
+        .x_offset = 0,
+        .y_offset = 0,
+        .x_advance = 0.5,
+        .y_advance = 0,
+        .source_start = 0,
+        .source_end = 1,
+        .font_id = 0,
+    }};
+    const shaped = ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
+    try testing.expectError(error.InvalidEm, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 0,
+    }));
+    try testing.expectError(error.InvalidColor, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+        .color = .{ std.math.nan(f32), 1, 1, 1 },
+    }));
+    try testing.expectError(error.InvalidColor, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+        .color = .{ -2, 4, 8, 1.01 },
+    }));
+    try testing.expectError(error.InvalidHintMode, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+        .mode = .{ .tt_hint = .{ .ppem_26_6 = 0 } },
+    }));
+    try testing.expectError(error.UnsupportedColumnsTransform, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+        .snap = .columns,
+        .world_to_pixel = Transform2D.rotate(0.25),
+    }));
+
+    glyphs[0].x_advance = std.math.inf(f32);
+    try testing.expectError(error.InvalidPlacement, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+    }));
+}
+
+test "placeRun rejects derived overflow before touching output" {
+    var glyphs = [_]ShapedText.Glyph{
+        .{ .face_index = 0, .glyph_id = 1, .x_offset = 0, .y_offset = 0, .x_advance = 1, .y_advance = 0, .source_start = 0, .source_end = 1, .font_id = 0 },
+        .{ .face_index = 0, .glyph_id = 2, .x_offset = std.math.floatMax(f32), .y_offset = 0, .x_advance = 1, .y_advance = 0, .source_start = 1, .source_end = 2, .font_id = 0 },
+    };
+    const shaped = ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
+    const sentinel = Shape{
+        .key = record_key.unhintedGlyph(99, 99),
+        .local_transform = .{ .tx = 1234, .ty = 5678 },
+        .local_color = .{ 9, 8, 7, 1 },
+    };
+    var out = [_]Shape{ sentinel, sentinel };
+
+    try testing.expectError(error.InvalidPlacement, placeRun(&out, &shaped, null, .{
+        .baseline = .zero,
+        .em = 2,
+    }));
+    try testing.expectEqualDeep(sentinel, out[0]);
+    try testing.expectEqualDeep(sentinel, out[1]);
+
+    glyphs[1].x_offset = 0;
+    try testing.expectError(error.InvalidPlacement, placeRun(&out, &shaped, null, .{
+        .baseline = .{ .x = std.math.floatMax(f32), .y = 0 },
+        .em = 2,
+        .snap = .origins,
+        .world_to_pixel = .{ .xx = 2, .yy = 1 },
+    }));
+    try testing.expectEqualDeep(sentinel, out[0]);
+
+    try testing.expectError(error.InvalidPlacement, placeRun(&out, &shaped, null, .{
+        .baseline = .zero,
+        .em = std.math.floatMax(f32),
+        .snap = .columns,
+        .world_to_pixel = .{ .xx = 2, .yy = 1 },
+    }));
+    try testing.expectEqualDeep(sentinel, out[0]);
+
+    try testing.expectError(error.InvalidEm, placeRun(&out, &shaped, null, .{
+        .baseline = .zero,
+        .em = std.math.floatMax(f32),
+        .mode = .{ .tt_hint = .{ .ppem_26_6 = 1 } },
+    }));
+    try testing.expectEqualDeep(sentinel, out[0]);
+}
+
+test "column snapping rejects proportional advances" {
+    var glyphs = [_]ShapedText.Glyph{
+        .{ .face_index = 0, .glyph_id = 1, .x_offset = 0, .y_offset = 0, .x_advance = 0.5, .y_advance = 0, .source_start = 0, .source_end = 1, .font_id = 0 },
+        .{ .face_index = 0, .glyph_id = 2, .x_offset = 0.5, .y_offset = 0, .x_advance = 0.6, .y_advance = 0, .source_start = 1, .source_end = 2, .font_id = 0 },
+    };
+    const shaped = ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
+    try testing.expectError(error.NonMonospaceColumns, placeRun(&.{}, &shaped, null, .{
+        .baseline = .{ .x = 0, .y = 0 },
+        .em = 16,
+        .snap = .columns,
+        .world_to_pixel = .identity,
+    }));
+}
+
 test "y-up placement mirrors y-down about the baseline" {
     const allocator = testing.allocator;
     var fake_glyphs = [_]ShapedText.Glyph{.{
@@ -414,6 +600,7 @@ test "y-up placement mirrors y-down about the baseline" {
         .y_advance = 0,
         .source_start = 0,
         .source_end = 1,
+        .font_id = 0,
     }};
     const shaped = ShapedText{ .allocator = allocator, .glyphs = fake_glyphs[0..] };
 

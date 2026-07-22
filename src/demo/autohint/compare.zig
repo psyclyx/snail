@@ -14,7 +14,6 @@ const assets = @import("assets");
 
 const Allocator = std.mem.Allocator;
 const ShapedRunCache = demo_support.ShapedRunCache;
-const warp = snail.autohint.warp;
 const testing = std.testing;
 
 // Chosen for hinting coverage: `Hamburg` (classic type tester — even `m` legs,
@@ -180,7 +179,7 @@ pub const Compare = struct {
         errdefer allocator.destroy(font);
         font.* = try snail.Font.init(font_bytes);
 
-        var faces = try snail.Faces.build(allocator, &.{.{ .font = font }});
+        var faces = try snail.Faces.build(allocator, &.{.{ .font = font, .font_id = 0 }});
         errdefer faces.deinit();
         const font_id = faces.fontIdForFace(0).?;
 
@@ -386,8 +385,8 @@ pub const Compare = struct {
             const base = try self.font.extractCurves(scratch, scratch, g.glyph_id);
             if (base.curve_count == 0) continue;
 
-            const x_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
-            const y_features = try scratch.alloc(snail.autohint.FeatureEdge, warp.max_knots);
+            const x_features = try scratch.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
+            const y_features = try scratch.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
             const glyph = try self.auto.analyzeGlyph(scratch, g.glyph_id, x_features, y_features);
             try entries.append(scratch, .{
                 .key = key_a,
