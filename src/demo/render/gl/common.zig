@@ -32,7 +32,7 @@ pub const LinearResolvePass = enum(c_int) {
 };
 
 /// The 96-byte std140 uniform block of the native-Slang text-family
-/// shaders (`snail.shader.generated`). Field-for-field identical to
+/// shaders (`snail_shaders`). Field-for-field identical to
 /// the Vulkan `contract.zig:PushConstants`; the GL hosts upload it into a
 /// UBO instead of setting loose uniforms.
 pub const NativeTextPushBlock = extern struct {

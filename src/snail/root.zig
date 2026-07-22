@@ -147,15 +147,15 @@ pub const snap = @import("snap.zig");
 /// Stable byte-layout contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
-/// Shader surface. `generated` is the complete per-target catalog produced
-/// from the native-Slang sources (`shader/slang/`): Vulkan SPIR-V, WGSL,
-/// GLSL 330, and GLES 300 modules for every family, plus their binding-name
-/// contracts. `glsl` is the hand-written, entry-point-free GLSL fragment
-/// catalog — the behavioral spec and the composition surface for GL hosts
-/// that inject snail's coverage math into their own shaders.
+/// Shader surface. `glsl` is the hand-written, entry-point-free GLSL
+/// fragment catalog — the behavioral spec and the composition surface for
+/// GL hosts that inject snail's coverage math into their own shaders. The
+/// complete per-target catalog produced from the native-Slang sources
+/// (`shader/slang/`) lives in the separate `snail-shaders` module
+/// (`@import("snail_shaders")`), generated at build time — so consumers of
+/// `snail` alone never need the Slang toolchain.
 pub const shader = struct {
     pub const glsl = @import("shader/glsl.zig");
-    pub const generated = @import("shader/generated.zig");
 };
 
 test {
@@ -193,5 +193,4 @@ test {
     _ = render;
     _ = shader;
     _ = shader.glsl;
-    _ = shader.generated;
 }

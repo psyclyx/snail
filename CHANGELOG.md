@@ -54,13 +54,17 @@ Treat this as a from-scratch migration.
 - `snail-raster`: optional software renderer consuming only the public API
   (`Renderer`, `DeviceAtlas`, `draw`), with explicit target encodings and
   linear-light blending.
-- `shader.generated`: complete per-target shaders for every family —
-  Vulkan SPIR-V, WGSL (dual-source subpixel included), GLSL 330, and
-  GLES 300 — generated from the native Slang modules in
-  `src/snail/shader/slang/` (the shader source of truth) and checked in
-  as artifacts with their binding-name contracts; consumers never need
-  the Slang toolchain (`zig build gen-shaders`, slangc + SPIRV-Cross, is
-  a maintainer step). Callers can also compose at the Slang level:
+- `snail-shaders` (separate module, `@import("snail_shaders")`): complete
+  per-target shaders for every family — Vulkan SPIR-V, WGSL (dual-source
+  subpixel included), GLSL 330, GLES 300, D3D11 HLSL, and Metal MSL —
+  generated from the native Slang modules in `src/snail/shader/slang/`
+  (the shader source of truth), with their binding-name contracts.
+  Artifacts are not checked in: they are produced at build time into the
+  zig cache, only for builds that import the module, so the Slang
+  toolchain (slangc + SPIRV-Cross) is needed exactly then and consumers
+  of `snail`/`snail-raster` alone never need it (`zig build gen-shaders`
+  optionally materializes the artifacts into `zig-out/shaders/` for
+  inspection). Callers can also compose at the Slang level:
   `import text_sample` from a caller-authored family samples glyph
   coverage inside an engine-owned material shader (the game demo's
   `game_material.slang` is the worked example). The GLSL fragment

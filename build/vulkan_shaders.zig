@@ -2,7 +2,7 @@
 //!
 //! Every family is compiled at build time from the native-Slang sources
 //! (`src/snail/shader/slang/families/*.slang`) via `slangc` — the same
-//! compile `gen-shaders` uses for the checked-in `generated/spirv/*.spv`
+//! compile that produces the `snail-shaders` module's `spirv/*.spv`
 //! artifacts, so the running pipeline can never drift from the source. See
 //! build/slang_shaders.zig for the per-target flag sets and their reasons.
 

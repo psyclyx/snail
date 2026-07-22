@@ -1,7 +1,7 @@
 const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_common = @import("../common.zig");
-const slang_gen = @import("snail").shader.generated;
+const slang_gen = @import("snail_shaders");
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
@@ -77,7 +77,7 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
 }
 
 /// Link a native-Slang program (generated GLES 300 es; see
-/// `snail.shader.generated`). Mirrors the GL 3.3/4.4 loader in
+/// `snail_shaders`). Mirrors the GL 3.3/4.4 loader in
 /// `gl/programs.zig`: one 96-byte std140 block per stage bound to
 /// `NATIVE_TEXT_UBO_BINDING`, generated samplers pinned to units 0..3
 /// (locations a family does not declare resolve to -1 and stay unbound).

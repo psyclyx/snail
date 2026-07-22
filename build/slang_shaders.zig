@@ -54,7 +54,7 @@
 //!  - `--no-420pack-extension` (desktop leg): SPIRV-Cross otherwise emits
 //!    `layout(binding = N)` under GL_ARB_shading_language_420pack; the
 //!    loaders bind samplers by name (`SPIRV_Cross_Combined*`, see
-//!    src/snail/shader/generated.zig) exactly like the composed
+//!    src/snail/shader/generated_root.zig) exactly like the composed
 //!    catalog's loose `u_*` samplers.
 //!  - GLES default precision: SPIRV-Cross fragments open with `precision
 //!    mediump float;` and only qualify globals explicitly — locals inherit
@@ -83,11 +83,15 @@
 //! tools) is gone: SPIRV-Cross consumes slang's direct SPIR-V for every
 //! stage, loops and spirv_asm included, so all GL legs share one recipe.
 //!
-//! `zig build gen-shaders` (inside `nix-shell`: slangc + spirv-cross)
-//! rewrites the checked-in artifacts under `src/snail/shader/generated/`;
-//! consumers embed those and need no toolchain. The demo Vulkan build
-//! additionally compiles the SPIR-V leg directly (it already runs slangc
-//! for every family).
+//! Artifacts are NOT checked in: every compile is a lazy build-graph Run
+//! step whose output lands in the zig cache. `createGeneratedModule` lays
+//! the per-target artifacts out next to `src/snail/shader/generated_root.zig`
+//! (copied into one WriteFiles directory) and publishes the result as the
+//! `snail-shaders` module — only consumers that import that module (or the
+//! demo Vulkan/game SPIR-V legs) depend on the generation steps, so builds
+//! that never touch generated shaders never need slangc/spirv-cross on
+//! PATH. `zig build gen-shaders` optionally materializes the artifacts
+//! into zig-out/shaders/ for inspection.
 
 const std = @import("std");
 
@@ -112,10 +116,11 @@ pub const Family = struct {
     /// live in their own tree and import the library modules via the
     /// always-passed `-I module_dir`.
     dir: []const u8 = module_dir,
-    /// Where gen-shaders checks the GL-dialect artifacts in. The library
-    /// families ship under src/snail/shader/generated/; caller families
-    /// (the game) keep theirs next to the consumer.
-    out_prefix: []const u8 = "src/snail/shader/generated/",
+    /// Who consumes the artifacts. Library families feed the
+    /// `snail-shaders` module; caller-authored families (the game's
+    /// material shader) are wired as anonymous imports next to their
+    /// consumer.
+    owner: enum { library, game } = .library,
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
@@ -157,7 +162,7 @@ pub const Family = struct {
 ///    TEXCOORD0..14 varyings, declared in the family sources next to the
 ///    [[vk::location]]s); without them dxc/fxc reject the entry point.
 ///  - -line-directive-mode none keeps absolute build paths out of the
-///    checked-in artifacts.
+///    generated artifacts.
 ///  - Dual source: [[vk::index(1)]] emits SV_Target0/SV_Target1 — D3D11's
 ///    dual-source form (blend factors SRC1_*) — so text_subpixel has a
 ///    full-fidelity HLSL artifact.
@@ -235,11 +240,11 @@ pub const families = [_]Family{
     // R32UI texture instead.
     .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gles_define = true },
     // The game demo's text-as-material shader: a caller-authored family
-    // importing the library's text_sample module. GL dialects are checked
-    // in next to the consumer; the Vulkan leg is compiled by the demo
-    // build directly (build.zig addGameShaderSpirv), like the library
-    // families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .out_prefix = "src/demo/game/generated/", .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true, .gles_define = true },
+    // importing the library's text_sample module. GL dialects are wired as
+    // anonymous imports next to the consumer (build.zig addGameShaderGl);
+    // the Vulkan leg is compiled by the demo build directly (build.zig
+    // addGameShaderSpirv), like the library families.
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true, .gles_define = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
     .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true },
@@ -256,8 +261,8 @@ fn findFamily(comptime name: []const u8) Family {
 /// input of the slangc invocation. Load-bearing: `addDirectoryArg` (the
 /// `-I` argument) hashes only the path STRING — without explicit file
 /// inputs, an edit to an imported module (anything that is not the family
-/// entry file) leaves the cached slangc output stale and `gen-shaders`
-/// silently rewrites old artifacts.
+/// entry file) leaves the cached slangc output stale and consumers silently
+/// embed old artifacts.
 fn addModuleInputs(b: *std.Build, cmd: *std.Build.Step.Run, dir_path: []const u8) void {
     const io = b.graph.io;
     var dir = b.build_root.handle.openDir(io, dir_path, .{ .iterate = true }) catch return;
@@ -273,6 +278,33 @@ fn addModuleInputs(b: *std.Build, cmd: *std.Build.Step.Run, dir_path: []const u8
     }
 }
 
+/// Preflight for the shader toolchain, mirroring the HARFBUZZ_SRC pattern
+/// in build.zig: when slangc/spirv-cross are missing from PATH, every
+/// generation Run step gets a Fail-step dependency so consumers abort with
+/// a clear message instead of a raw exec error. Consumers that never
+/// depend on generated shaders are untouched (the Fail step, like the Run
+/// steps, only executes when depended on). Cached per build graph.
+var toolchain_gate_cache: ?struct { owner: *std.Build, fail: ?*std.Build.Step } = null;
+
+fn toolchainFail(b: *std.Build) ?*std.Build.Step {
+    if (toolchain_gate_cache) |g| if (g.owner == b) return g.fail;
+    const missing = check: {
+        _ = b.findProgram(&.{"slangc"}, &.{}) catch break :check true;
+        _ = b.findProgram(&.{"spirv-cross"}, &.{}) catch break :check true;
+        break :check false;
+    };
+    const fail: ?*std.Build.Step = if (missing)
+        &b.addFail("generated shaders need slangc + spirv-cross; enter nix-shell or install shader-slang/SPIRV-Cross").step
+    else
+        null;
+    toolchain_gate_cache = .{ .owner = b, .fail = fail };
+    return fail;
+}
+
+fn attachToolchainGate(b: *std.Build, step: *std.Build.Step) void {
+    if (toolchainFail(b)) |fail| step.dependOn(fail);
+}
+
 /// slangc invocation for one entry point of one family. `target_defines`
 /// select the per-target resource-binding flavor in the family source (the
 /// GLES leg of `gles_define` families passes SNAIL_TARGET_GL +
@@ -286,6 +318,7 @@ fn slangcFamily(
     output_name: []const u8,
 ) std.Build.LazyPath {
     const cmd = b.addSystemCommand(&.{"slangc"});
+    attachToolchainGate(b, &cmd.step);
     for (target_defines) |d| cmd.addArg(b.fmt("-D{s}", .{d}));
     inline for (family.defines) |d| cmd.addArg("-D" ++ d);
     cmd.addArgs(&.{
@@ -312,8 +345,8 @@ fn vulkanStageSpv(b: *std.Build, comptime family: Family, stage: Stage) std.Buil
 }
 
 /// Compile the native text family to Vulkan SPIR-V (both stages). Used by
-/// the demo Vulkan build for the text pipeline and by `gen-shaders` for the
-/// checked-in artifact.
+/// the demo Vulkan build for the text pipeline and by `collectArtifacts`
+/// for the module artifact.
 pub fn vulkanTextSpv(b: *std.Build) struct { vert: std.Build.LazyPath, frag: std.Build.LazyPath } {
     const family = comptime findFamily("text");
     return .{
@@ -335,8 +368,8 @@ pub fn vulkanVertexSpv(b: *std.Build, comptime name: []const u8) std.Build.LazyP
 
 /// Compile the game demo's material family to Vulkan SPIR-V (both stages).
 /// The game is a caller of snail's text_sample module, so its Vulkan leg is
-/// compiled by the demo build like the library families (no checked-in
-/// SPIR-V; gen-shaders checks in only the GL dialects the GL hosts embed).
+/// compiled by the demo build like the library families (the GL dialects
+/// the GL hosts embed come from `Artifacts.game`, see collectArtifacts).
 pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, frag: std.Build.LazyPath } {
     const family = comptime findFamily("game_material");
     return .{
@@ -345,8 +378,33 @@ pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, f
     };
 }
 
-pub fn addGenShadersStep(b: *std.Build) void {
-    const update = b.addUpdateSourceFiles();
+/// One generated artifact: its path under the module's `generated/` tree
+/// (e.g. "spirv/text.vert.spv") and the build-graph file producing it.
+pub const Entry = struct {
+    sub_path: []const u8,
+    file: std.Build.LazyPath,
+};
+
+/// The full per-target artifact matrix, split by owner: `library` feeds the
+/// `snail-shaders` module, `game` is the game demo's caller-authored
+/// material family (GL dialects, wired as anonymous imports next to the
+/// consumer by build.zig addGameShaderGl).
+pub const Artifacts = struct {
+    library: []const Entry,
+    game: []const Entry,
+};
+
+fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), sub_path: []const u8, file: std.Build.LazyPath) void {
+    list.append(b.allocator, .{ .sub_path = sub_path, .file = file }) catch @panic("OOM");
+}
+
+/// Wire every slangc/spirv-cross invocation as lazy Run steps and return
+/// their outputs. Nothing here executes unless a consumer depends on the
+/// LazyPaths, so builds that never touch generated shaders never need the
+/// toolchain on PATH.
+pub fn collectArtifacts(b: *std.Build) Artifacts {
+    var library: std.ArrayList(Entry) = .empty;
+    var game: std.ArrayList(Entry) = .empty;
     const es_highp_patch_tool = b.addExecutable(.{
         .name = "glsl-patch-es-highp",
         .root_module = b.createModule(.{
@@ -358,26 +416,30 @@ pub fn addGenShadersStep(b: *std.Build) void {
 
     inline for (families) |family| {
         inline for (family.stages) |stage| {
+            const list = switch (family.owner) {
+                .library => &library,
+                .game => &game,
+            };
             if (!family.gl_only) {
-                // Vulkan SPIR-V (checked-in record; the demo build also
+                // Vulkan SPIR-V (module artifact; the demo build also
                 // compiles this leg itself so the running pipeline can never
                 // drift from the source).
                 const spv = vulkanStageSpv(b, family, stage);
-                update.addCopyFileToSource(spv, "src/snail/shader/generated/spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv");
+                appendEntry(b, list, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
 
                 // WGSL — direct target.
                 const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
-                update.addCopyFileToSource(wgsl, "src/snail/shader/generated/wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
+                appendEntry(b, list, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl);
 
                 // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
-                update.addCopyFileToSource(hlsl, "src/snail/shader/generated/hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl");
+                appendEntry(b, list, "hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl", hlsl);
 
                 // Metal MSL — direct target, best-effort (see msl_args;
                 // no Metal compiler exists on this platform, validation
                 // is textual + deferred to a real Mac).
                 const msl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_METAL"}, msl_args, family.name ++ "." ++ stage.short ++ ".metal");
-                update.addCopyFileToSource(msl, "src/snail/shader/generated/msl/" ++ family.name ++ "." ++ stage.short ++ ".metal");
+                appendEntry(b, list, "msl/" ++ family.name ++ "." ++ stage.short ++ ".metal", msl);
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both
@@ -395,6 +457,7 @@ pub fn addGenShadersStep(b: *std.Build) void {
                 const skip_dialect = family.no_gles and es;
                 if (!skip_dialect) {
                     const cross = b.addSystemCommand(&.{"spirv-cross"});
+                    attachToolchainGate(b, &cross.step);
                     cross.addFileArg(if (es) gles_spv else gl_spv);
                     if (es) {
                         cross.addArgs(&.{ "--version", "300", "--es" });
@@ -419,12 +482,46 @@ pub fn addGenShadersStep(b: *std.Build) void {
                         patch.addFileArg(glsl);
                         glsl = patch.addOutputFileArg("highp-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
                     }
-                    update.addCopyFileToSource(glsl, family.out_prefix ++ out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl");
+                    appendEntry(b, list, out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl", glsl);
                 }
             }
         }
     }
 
-    const step = b.step("gen-shaders", "Regenerate the checked-in native-Slang shader artifacts in src/snail/shader/generated (needs slangc + spirv-cross)");
-    step.dependOn(&update.step);
+    return .{
+        .library = library.toOwnedSlice(b.allocator) catch @panic("OOM"),
+        .game = game.toOwnedSlice(b.allocator) catch @panic("OOM"),
+    };
+}
+
+pub const GeneratedModule = struct {
+    module: *std.Build.Module,
+    /// The laid-out module root file — also usable as the root of a test
+    /// compilation (the accessor file carries the artifact-contract tests).
+    root: std.Build.LazyPath,
+};
+
+/// Build the public `snail-shaders` module: the in-tree accessor
+/// source (src/snail/shader/generated_root.zig) copied next to a
+/// `generated/` tree of build-time artifacts — the paths its `@embedFile`s
+/// expect — inside one WriteFiles output directory. Only consumers that
+/// import the module depend on (and therefore run) the shader toolchain.
+pub fn createGeneratedModule(b: *std.Build, artifacts: Artifacts) GeneratedModule {
+    const wf = b.addWriteFiles();
+    const root = wf.addCopyFile(b.path("src/snail/shader/generated_root.zig"), "root.zig");
+    for (artifacts.library) |e| _ = wf.addCopyFile(e.file, b.pathJoin(&.{ "generated", e.sub_path }));
+    return .{
+        .module = b.addModule("snail-shaders", .{ .root_source_file = root }),
+        .root = root,
+    };
+}
+
+/// Optional debugging step: materialize the generated artifacts into
+/// zig-out/shaders/ (library families) and zig-out/shaders/game/ (the
+/// game's material family) for inspection. Never writes into src/ —
+/// consumers embed straight from the build cache via `snail-shaders`.
+pub fn addGenShadersStep(b: *std.Build, artifacts: Artifacts) void {
+    const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + spirv-cross)");
+    for (artifacts.library) |e| step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);
+    for (artifacts.game) |e| step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", "game", e.sub_path })).step);
 }

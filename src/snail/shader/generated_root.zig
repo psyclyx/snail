@@ -5,16 +5,18 @@
 //! Metal compiler exists on the Linux dev/CI hosts, so the MSL artifacts
 //! are textually validated only and real validation is deferred to a Mac,
 //! see slang/README-notes "Metal stage").
-//! The hand-written GLSL fragment catalog (`shader.glsl`) remains available
-//! as the behavioral spec and the composition surface for GL hosts.
+//! The hand-written GLSL fragment catalog (`snail.shader.glsl`) remains
+//! available as the behavioral spec and the composition surface for GL hosts.
 //!
-//! These are checked-in artifacts; regenerate with
-//!
-//!     zig build gen-shaders
-//!
-//! inside `nix-shell` (needs `slangc` + `spirv-cross`; see
-//! build/slang_shaders.zig for the per-target flag sets and the semantic
-//! traps they avoid).
+//! This file is the root of the public `snail-shaders` module. The
+//! artifacts are NOT checked in: the build lays this file out next to a
+//! `generated/` tree of build-time compiler outputs (one WriteFiles
+//! directory in the zig cache; see build/slang_shaders.zig for the
+//! per-target flag sets and the semantic traps they avoid), and the
+//! `@embedFile`s below read from that tree. Only builds that import the
+//! `snail-shaders` module need `slangc` + `spirv-cross` on PATH (the nix
+//! shell provides both); `zig build gen-shaders` optionally materializes
+//! the artifacts into zig-out/shaders/ for inspection.
 //!
 //! ## Interface contracts
 //!

@@ -111,7 +111,7 @@ const colr_fragment_source: [:0]const u8 =
 // The fullscreen vertex feeds the scene position through the generated
 // module's location-0 varying (`snail_io0`); the fragment computes its own
 // footprint and reads glyph records from a R32UI texel buffer.
-const slang_gen = snail.shader.generated;
+const slang_gen = @import("snail_shaders");
 const sample_vertex_source: [:0]const u8 =
     \\#version 330 core
     \\out vec2 snail_io0;

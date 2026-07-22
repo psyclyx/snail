@@ -179,13 +179,15 @@ pre-linearized data. `snail-raster` documents its own device format: 4
 bytes/texel RGBA, sRGB-encoded, straight alpha.
 
 **Shader targets.** The native Slang modules in `src/snail/shader/slang/`
-are the source of truth. From them, `shader.generated` ships complete,
-checked-in shaders for every family and target — Vulkan SPIR-V, WGSL,
-GLSL 330, GLES 300, D3D11 HLSL, and Metal MSL (best-effort: generated and
-cross-checked on Linux, not yet validated on a Mac) — plus the
-binding-name contracts loaders bind by.
-Regeneration is a maintainer step (`zig build gen-shaders`, needs `slangc`
-and SPIRV-Cross); consumers never need the Slang toolchain. Composition is
+are the source of truth. From them, the separate `snail-shaders` module
+(`@import("snail_shaders")`) provides complete shaders for every family
+and target — Vulkan SPIR-V, WGSL, GLSL 330, GLES 300, D3D11 HLSL, and
+Metal MSL (best-effort: generated and cross-checked on Linux, not yet
+validated on a Mac) — plus the binding-name contracts loaders bind by.
+Artifacts are not checked in: they are generated at build time, in the zig
+cache, only for builds that actually import the module, so the toolchain
+(`slangc` + SPIRV-Cross; the nix shell provides both) is needed only then —
+consumers of `snail`/`snail-raster` alone never need it. Composition is
 Slang-level too: a caller-authored family can `import text_sample` and
 sample glyph coverage inside its own material shader — the game demo's
 [`game_material.slang`](src/demo/game/slang/game_material.slang) is the
@@ -197,8 +199,8 @@ hosts that compose snail's fragments into their own programs
 
 **Texture ABI.** Curves RGBA16F, bands RG16UI, layer-info RGBA32F, plus the
 host-formatted image array. Layouts are stable and documented in
-`snail.render` (byte-layout contract for caller-owned renderers),
-`snail.shader.generated` (per-target binding/name contracts of the
+`snail.render` (byte-layout contract for caller-owned renderers), the
+`snail-shaders` module (per-target binding/name contracts of the
 generated shaders), and `snail.shader.glsl` (composable fragments).
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
@@ -272,7 +274,7 @@ zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → 
 zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga
 zig build run-minimal-metal       # same scene through Metal (macOS hosts; best-effort/unvalidated) → zig-out/minimal-metal.tga
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
-zig build gen-shaders             # regenerate the checked-in shader artifacts (maintainers; needs slang+spirv-cross)
+zig build gen-shaders             # materialize the generated shader artifacts into zig-out/shaders for inspection (needs slang+spirv-cross)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate

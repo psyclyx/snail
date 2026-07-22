@@ -1,6 +1,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const raster = @import("snail-raster");
+const generated = @import("snail_shaders");
 
 test "external renderers need only the public snail api" {
     comptime {
@@ -30,13 +31,17 @@ test "external renderers need only the public snail api" {
         _ = snail.shader.glsl.source(.coverage_common);
         _ = snail.shader.glsl.fileName(.coverage_common);
         _ = snail.shader.glsl.dependencies.regular_text;
-        _ = snail.shader.generated.textSpv(.fragment);
-        _ = snail.shader.generated.textWgsl(.fragment);
-        _ = snail.shader.generated.textSampleFragGlsl330();
+        // The generated per-target catalog is the separate `snail-shaders`
+        // module (build-time artifacts; needs the Slang toolchain) — the
+        // `snail` module itself must stay toolchain-free.
+        if (@hasDecl(snail.shader, "generated")) @compileError("the generated catalog moved to the snail-shaders module");
+        _ = generated.textSpv(.fragment);
+        _ = generated.textWgsl(.fragment);
+        _ = generated.textSampleFragGlsl330();
         if (@hasDecl(snail.shader.glsl, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
         if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
         if (@hasDecl(snail.shader, "wgsl")) @compileError("the generated per-target catalog replaced shader.wgsl");
-        if (@hasDecl(snail.shader, "slang_generated")) @compileError("the generated catalog is snail.shader.generated");
+        if (@hasDecl(snail.shader, "slang_generated")) @compileError("the generated catalog is the snail-shaders module");
 
         _ = raster.Renderer;
         _ = raster.DeviceAtlas;

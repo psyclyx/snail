@@ -344,8 +344,9 @@ jobs:
           test "$n" -le 0
 
       # The real validation: the generated MSL artifacts meet an actual Metal
-      # frontend (runtime newLibraryWithSource:) and a real GPU. No shader
-      # toolchain is needed — the MSL is checked in and embedded. HarfBuzz
+      # frontend (runtime newLibraryWithSource:) and a real GPU. The MSL is
+      # generated at build time by the snail-shaders module (slangc +
+      # spirv-cross come from nix-shell, like on Linux). HarfBuzz
       # is compiled in from the amalgam (HARFBUZZ_SRC, set by shell.nix).
       # SDKROOT: nix's hermetic zig doesn't autodetect the Apple SDK, and
       # build.zig falls back to xcrun only if SDKROOT is unset — export it

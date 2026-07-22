@@ -1,6 +1,6 @@
 //! Minimal Snail + Direct3D 11 example — the Windows analog of
 //! `minimal_wgpu.zig`, rendering the identical scene with the generated
-//! D3D11 HLSL artifacts (`snail.shader.generated`, SM 5.0). Cross-compiled
+//! D3D11 HLSL artifacts (`snail_shaders`, SM 5.0). Cross-compiled
 //! to x86_64-windows-gnu and validated headless under Wine
 //! (`zig build run-minimal-d3d11`).
 //!
@@ -13,7 +13,7 @@
 //! and the screenshot writer. Its one frame covers unhinted, autohinted,
 //! TT-hinted, and COLR text plus filled and stroked paths.
 //!
-//! Binding contract (see `snail.shader.generated`): registers land on the
+//! Binding contract (see `snail_shaders`): registers land on the
 //! Vulkan binding numbers — b0 = the 96-byte push-constant block as a
 //! constant buffer, t0 curve, t1 band, t2 layer-info, t3 image array,
 //! s0 image sampler. Vertex-input semantics are `ATTRIB0..8` over the
@@ -39,7 +39,7 @@ const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const slang_gen = snail.shader.generated;
+const slang_gen = @import("snail_shaders");
 
 /// The Vulkan push-constant block as a D3D11 constant buffer (the cbuffer
 /// packing of `SnailPushConstants` matches the C struct's offsets; 96 bytes

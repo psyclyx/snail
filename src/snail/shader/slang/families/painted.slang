@@ -22,7 +22,7 @@
 //    split-sampler contract (filtering sampler slot).
 //  - GL: no explicit bindings; slangc fuses Texture+SamplerState back into
 //    a combined sampler and the generated names are recorded in
-//    snail.shader.generated.
+//    snail_shaders.
 module painted;
 
 import render_abi;

@@ -143,6 +143,7 @@ fn createEmbedGlModule(
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
     render_state_mod: *std.Build.Module,
+    shaders_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
         .root_source_file = b.path("src/demo/render/gl/root.zig"),
@@ -152,6 +153,7 @@ fn createEmbedGlModule(
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
             .{ .name = "render-state", .module = render_state_mod },
+            .{ .name = "snail_shaders", .module = shaders_mod },
         },
     });
     return mod;
@@ -301,6 +303,14 @@ const ProjectModules = struct {
     snail: *std.Build.Module,
     render_state: *std.Build.Module,
     raster: *std.Build.Module,
+    /// The public `snail-shaders` module (build-time generated per-target
+    /// artifacts; needs slangc + spirv-cross only when actually consumed).
+    shaders: *std.Build.Module,
+    /// Its laid-out root file, reusable as a test-compilation root.
+    shaders_root: std.Build.LazyPath,
+    /// The game material family's build-time GL dialects (anonymous-import
+    /// wiring via addGameShaderGl).
+    game_material_gl: []const slang_shaders.Entry,
 };
 
 fn addTestSteps(
@@ -322,9 +332,19 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "snail", .module = snail_tests },
             .{ .name = "snail-raster", .module = raster_tests },
+            .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
+
+    // The generated-artifact contract tests live in the snail-shaders
+    // module root (binding names, entry points, no #line leakage, ...).
+    const shaders_tests = b.createModule(.{
+        .root_source_file = modules.shaders_root,
+        .target = config.target,
+        .optimize = config.optimize,
+    });
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = shaders_tests })).step);
 
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
@@ -391,7 +411,7 @@ fn addScreenshotSteps(
     const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
     const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types);
-    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.shaders);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
@@ -689,9 +709,11 @@ fn addScreenshotSteps(
                 .{ .name = "snail", .module = release_snail_mod },
                 .{ .name = "snail-raster", .module = release_raster_mod },
                 .{ .name = "support", .module = release_support_mod },
+                .{ .name = "snail_shaders", .module = modules.shaders },
             },
         });
         selectDemoEntry(b, game_shot_mod, .game_screenshot_gl);
+        addGameShaderGl(b, game_shot_mod, modules.game_material_gl);
         configureEglOffscreenModule(game_shot_mod, embed_gl_mod, .{ .desktop = true, .es = true });
         const game_shot_exe = b.addExecutable(.{ .name = "snail-game-screenshot", .root_module = game_shot_mod });
         const run_game_shot = b.addRunArtifact(game_shot_exe);
@@ -840,7 +862,7 @@ fn addInteractiveDemoStep(
     // shape/emit path that a Debug build is visibly slower; explicit
     // override (e.g. `-Doptimize=Debug` for debugging) still wins.
     const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
-    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state);
+    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.shaders);
     const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types);
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
@@ -891,6 +913,18 @@ fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {
     mod.addAnonymousImport("game_material.frag.spv", .{ .root_source_file = spv.frag });
 }
 
+/// Inject the game material family's build-time GL dialects into `mod` as
+/// anonymous imports for `game/gl_material.zig`: an artifact at
+/// `glsl330/game_material.vert.glsl` becomes `game_material.vert.glsl330`
+/// (and so on for the three other stage/dialect combinations).
+fn addGameShaderGl(b: *std.Build, mod: *std.Build.Module, entries: []const slang_shaders.Entry) void {
+    for (entries) |e| {
+        const dialect = std.fs.path.dirname(e.sub_path).?;
+        const stem = std.fs.path.stem(e.sub_path); // e.g. "game_material.vert"
+        mod.addAnonymousImport(b.fmt("{s}.{s}", .{ stem, dialect }), .{ .root_source_file = e.file });
+    }
+}
+
 fn addGameDemoStep(
     b: *std.Build,
     config: BuildConfig,
@@ -900,7 +934,7 @@ fn addGameDemoStep(
     // runtime — a 3D scene whose custom material shader samples snail glyph
     // coverage. It owns both window-system integrations and their API links.
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
-    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.render_state);
+    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.shaders);
     const game_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
@@ -912,9 +946,11 @@ fn addGameDemoStep(
             .{ .name = "snail-raster", .module = modules.raster },
             .{ .name = "support", .module = modules.support },
             .{ .name = "embed_gl", .module = game_embed_gl_mod },
+            .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
     selectDemoEntry(b, game_mod, .game);
+    addGameShaderGl(b, game_mod, modules.game_material_gl);
     game_mod.linkSystemLibrary("wayland-client", .{});
     game_mod.addIncludePath(b.path("src/demo/platform"));
     game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
@@ -1010,6 +1046,7 @@ fn addMinimalD3d11Step(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = snail_win },
+            .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
     mod.linkSystemLibrary("d3d11", .{ .use_pkg_config = .no });
@@ -1077,6 +1114,7 @@ fn addMinimalD3d11Step(
             .imports = &.{
                 .{ .name = "assets", .module = modules.assets },
                 .{ .name = "snail", .module = snail_win },
+                .{ .name = "snail_shaders", .module = modules.shaders },
             },
         });
         wgpu_win_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ wgpu_win, "include" }) });
@@ -1168,6 +1206,7 @@ fn addMinimalMetalStep(
                 .imports = &.{
                     .{ .name = "assets", .module = mods.assets },
                     .{ .name = "snail", .module = snail_mac },
+                    .{ .name = "snail_shaders", .module = mods.shaders },
                 },
             });
             return mod;
@@ -1231,6 +1270,7 @@ fn addMinimalWgpuStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
     // wgpu-native ships no pkg-config file; the nix shell exports the split
@@ -1264,6 +1304,12 @@ pub fn build(b: *std.Build) void {
     const support_mod = createSupportModule(b, config.target, config.optimize, snail_mod, assets_mod);
     const vk_shaders_mod = vulkan_shaders.createModule(b);
     const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
+    // The whole generated-shader matrix as lazy Run steps; only consumers
+    // of the `snail-shaders` module (or the game GL dialects) depend on
+    // them, so `zig build` targets that never touch generated shaders
+    // never need slangc/spirv-cross.
+    const shader_artifacts = slang_shaders.collectArtifacts(b);
+    const generated_shaders = slang_shaders.createGeneratedModule(b, shader_artifacts);
 
     const modules = ProjectModules{
         .assets = assets_mod,
@@ -1273,6 +1319,9 @@ pub fn build(b: *std.Build) void {
         .snail = snail_mod,
         .render_state = render_state_mod,
         .raster = raster_mod,
+        .shaders = generated_shaders.module,
+        .shaders_root = generated_shaders.root,
+        .game_material_gl = shader_artifacts.game,
     };
 
     addTestSteps(b, config, modules);
@@ -1284,7 +1333,7 @@ pub fn build(b: *std.Build) void {
     addMinimalD3d11Step(b, modules);
     addMinimalMetalStep(b, modules);
     addPerfSteps(b, config, modules);
-    slang_shaders.addGenShadersStep(b);
+    slang_shaders.addGenShadersStep(b, shader_artifacts);
 }
 
 fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) void {
@@ -1321,6 +1370,7 @@ fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) voi
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
     glsl_perf_mod.linkSystemLibrary("EGL", .{});

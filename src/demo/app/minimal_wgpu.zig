@@ -1,6 +1,6 @@
 //! Minimal Snail + WebGPU (wgpu-native) example — the headless analog of
 //! `minimal_gl.zig`, rendering the identical scene with the generated WGSL
-//! modules (`snail.shader.generated`).
+//! modules (`snail_shaders`).
 //!
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules. It owns the WebGPU instance/adapter/device
@@ -9,7 +9,7 @@
 //! and the screenshot writer. Its one frame covers unhinted, autohinted,
 //! TT-hinted, and COLR text plus filled and stroked paths.
 //!
-//! Binding contract (see `snail.shader.generated`): group 0 = atlas textures
+//! Binding contract (see `snail_shaders`): group 0 = atlas textures
 //! at the Vulkan binding numbers, group 1 = the split samplers, group 2 =
 //! the Vulkan push-constant block as a 96-byte uniform buffer.
 //!
@@ -40,7 +40,7 @@ const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const slang_gen = snail.shader.generated;
+const slang_gen = @import("snail_shaders");
 
 /// The Vulkan push-constant block reshaped as a uniform buffer (std140; the
 /// scalar fields land on the same offsets as the C struct's). Must stay in

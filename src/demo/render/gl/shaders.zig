@@ -3,7 +3,7 @@
 //! reusable, entry-point-free pieces in `snail.shader.glsl`.
 
 const glsl = @import("snail").shader.glsl;
-const slang_gen = @import("snail").shader.generated;
+const slang_gen = @import("snail_shaders");
 const vert_interface = glsl.source(.vertex_interface);
 const autohint_vert_interface = glsl.source(.autohint_vertex_interface);
 const frag_interface = glsl.source(.render_fragment_interface);
@@ -78,7 +78,7 @@ pub const Gl330 = struct {
     pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 
     // Native-Slang generated families: complete shaders, UBO parameter
-    // block instead of loose uniforms. See `snail.shader.generated`
+    // block instead of loose uniforms. See `snail_shaders`
     // for the interface contract. The fragment-only families pair with
     // `native_text_vertex_shader` (shared stage IO).
     pub const native_text_vertex_shader = slang_gen.textGlsl330(.vertex);

@@ -1,6 +1,6 @@
 //! Minimal Snail + Metal example — the macOS analog of `minimal_wgpu.zig` /
 //! `minimal_d3d11.zig`, rendering the identical scene with the generated
-//! Metal MSL artifacts (`snail.shader.generated`, runtime-compiled with
+//! Metal MSL artifacts (`snail_shaders`, runtime-compiled with
 //! `newLibraryWithSource:`).
 //!
 //! BEST-EFFORT STATUS: this file is written and cross-COMPILED on Linux
@@ -21,7 +21,7 @@
 //! writer. Its one frame covers unhinted, autohinted, TT-hinted, and COLR
 //! text plus filled and stroked paths.
 //!
-//! Binding contract (see `snail.shader.generated`): the 96-byte
+//! Binding contract (see `snail_shaders`): the 96-byte
 //! push-constant block binds as `constant SnailPushConstants_natural*` at
 //! [[buffer(0)]] (natural layout — byte-identical to the extern struct);
 //! textures land on the Vulkan binding numbers as [[texture(0)]] curve,
@@ -59,7 +59,7 @@ const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const slang_gen = snail.shader.generated;
+const slang_gen = @import("snail_shaders");
 
 /// The Vulkan push-constant block as a Metal `constant` buffer at
 /// [[buffer(0)]]. The generated MSL declares it with NATURAL (C) layout

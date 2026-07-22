@@ -3,9 +3,9 @@
 // composition case: a CALLER-authored material (text carved into a rough,
 // lit surface) that imports snail's `text_sample` module and calls
 // `snailTextSamplePremulLinearWithFootprint` against its own record
-// storage. `zig build gen-shaders` produces the checked-in GL dialects in
-// src/demo/game/generated/; the demo Vulkan build compiles the SPIR-V leg
-// directly (build.zig addGameShaderSpirv).
+// storage. The GL dialects are generated at build time and wired in as
+// anonymous imports (build.zig addGameShaderGl); the demo Vulkan build
+// compiles the SPIR-V leg directly (build.zig addGameShaderSpirv).
 //
 // Ported 1:1 from the retired composed sources (the behavioral spec — every
 // literal and operation order preserved):

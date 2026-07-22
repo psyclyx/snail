@@ -4,6 +4,9 @@ Native-Slang shader source — stage A notes (regular-text family)
 One Slang source tree, four targets, regression-gated against the composed
 GLSL catalog. `zig build gen-shaders` (nix-shell: slangc 2026.5.2 + naga)
 regenerates the checked-in artifacts in src/snail/shader/generated/.
+[HISTORICAL: artifacts are no longer checked in — see "Build-time
+generation architecture" at the end of this file. naga is gone too
+(SPIRV-Cross cutover, below).]
 
 Module layout
 -------------
@@ -688,3 +691,46 @@ Risks, ranked:
 Report results (tga + console output + `magick compare` numbers) back into
 this section; on green, promote the README "best-effort" wording and
 consider a metallib offline-compile step on the Mac side.
+
+Build-time generation architecture (2026-07-22): artifacts leave the tree
+-------------------------------------------------------------------------
+The checked-in artifact trees (src/snail/shader/generated/,
+src/demo/game/generated/) are DELETED and gitignored. What ships is the
+Slang sources plus build steps; every slangc/spirv-cross invocation is an
+ordinary lazy build-graph Run step whose outputs land in the zig cache
+(build/slang_shaders.zig collectArtifacts — the same per-target matrix,
+flags unchanged).
+
+Module mechanics: the accessor file (formerly src/snail/shader/generated.zig,
+now src/snail/shader/generated_root.zig, API IDENTICAL) is copied by a
+WriteFiles step into one cache directory as root.zig, with the artifacts
+laid out under generated/<target>/ next to it — exactly the relative paths
+its @embedFile calls already used. That directory's root.zig is published
+as the PUBLIC `snail-shaders` module (b.addModule("snail-shaders", ...));
+snail.shader.generated is GONE from the `snail` module
+(public_renderer_api compile-errors if it returns). In-repo consumers
+import it as `@import("snail_shaders")` (demo GL renderers, minimal
+wgpu/d3d11/metal, perf glsl rows, windows-gates). The game material GL
+dialects are anonymous imports next to their consumer
+(build.zig addGameShaderGl → @embedFile("game_material.vert.glsl330") etc.
+in gl_material.zig); its Vulkan leg stays a direct slangc compile
+(addGameShaderSpirv), as do the demo Vulkan family pipelines
+(build/vulkan_shaders.zig).
+
+THE SCOPING RULE: Zig's build graph only executes steps that are depended
+on, and the generation steps are wired ONLY into the WriteFiles dir /
+anonymous imports above. So a consumer that imports only `snail` +
+`snail-raster` (or composes shader.glsl) never runs slangc/spirv-cross and
+does not need them installed — verified by building an out-of-tree
+path-dependency consumer with both tools stripped from PATH. When a build
+DOES need them and they are missing, a preflight Fail step
+(slang_shaders.zig toolchainFail, mirroring the HARFBUZZ_SRC pattern)
+aborts with "generated shaders need slangc + spirv-cross; enter nix-shell
+or install shader-slang/SPIRV-Cross" instead of a raw exec error.
+
+`zig build gen-shaders` remains as an OPTIONAL debugging step: it
+materializes the full artifact matrix into zig-out/shaders/ (library) and
+zig-out/shaders/game/ (game material) for inspection. It never writes into
+src/. The artifact-contract tests (binding names, entries, no #line, ...)
+still live in the accessor file's test block and run under `zig build test`
+as a compilation of the laid-out module root.
