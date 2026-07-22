@@ -234,6 +234,13 @@ const Gpu = struct {
 fn compileLibrary(device: id, source: [:0]const u8, label: []const u8) !id {
     const options = msg(id, msg(id, class("MTLCompileOptions"), "alloc", .{}), "init", .{});
     defer release(options);
+    // Metal's shader compiler defaults to fast-math, which relaxes FP the
+    // way Mesa's fma fusion did (1-LSB drift on every AA edge — observed
+    // as ~2.9k gate pixels vs the ~680 cross-backend class on the first
+    // CI run). No other backend compiles snail's shaders with fast-math;
+    // disable it so Metal joins the same numeric class. BOOL on arm64 is
+    // a C bool (i8).
+    msg(void, options, "setFastMathEnabled:", .{@as(i8, 0)});
     var err: id = null;
     const library = msg(id, device, "newLibraryWithSource:options:error:", .{ nsString(source), options, @as(*id, &err) });
     if (library == null) {
