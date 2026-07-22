@@ -331,12 +331,19 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
         mod.addAnonymousImport(spec.import_name, .{ .root_source_file = spv_outputs[i] });
     }
 
-    // Stage A of the Slang cutover: the regular-text pipeline compiles from
-    // the native-Slang family source (src/snail/shader/slang/families/
-    // text.slang) instead of the composed GLSL. Other families keep the
+    // Slang cutover: pipelines ported to the native-Slang family sources
+    // (src/snail/shader/slang/families/*.slang) compile from those instead
+    // of the composed GLSL. Families not yet cut over keep the
     // GLSL-ingestion path above. See build/slang_shaders.zig for flags.
+    // Fragment-only families share the native text vertex module.
     const native_text = slang_shaders.vulkanTextSpv(b);
     mod.addAnonymousImport("snail_text_native.vert.spv", .{ .root_source_file = native_text.vert });
     mod.addAnonymousImport("snail_text_native.frag.spv", .{ .root_source_file = native_text.frag });
+    mod.addAnonymousImport("snail_colr_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "colr") });
+    mod.addAnonymousImport("snail_path_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path") });
+    mod.addAnonymousImport("snail_tt_hinted_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text") });
+    mod.addAnonymousImport("snail_autohint_native.vert.spv", .{ .root_source_file = slang_shaders.vulkanVertexSpv(b, "autohint") });
+    mod.addAnonymousImport("snail_autohint_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint") });
+    mod.addAnonymousImport("snail_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "text_subpixel") });
     return mod;
 }

@@ -328,23 +328,23 @@ const Pipelines = struct {
         defer c.wgpuShaderModuleRelease(native_text_vert);
         const native_text_frag = try createShaderModule(device, slang_gen.textWgsl(.fragment), "snail-text-native-frag");
         defer c.wgpuShaderModuleRelease(native_text_frag);
-        const autohint_vert = try createShaderModule(device, wgsl.source(.autohint, .vertex), "snail-autohint-vert");
+        const autohint_vert = try createShaderModule(device, slang_gen.autohintWgsl(.vertex), "snail-autohint-native-vert");
         defer c.wgpuShaderModuleRelease(autohint_vert);
-        const autohint_frag = try createShaderModule(device, wgsl.source(.autohint, .fragment), "snail-autohint-frag");
+        const autohint_frag = try createShaderModule(device, slang_gen.autohintWgsl(.fragment), "snail-autohint-native-frag");
         defer c.wgpuShaderModuleRelease(autohint_frag);
-        const tt_frag = try createShaderModule(device, wgsl.source(.tt_hinted_text, .fragment), "snail-tt-frag");
+        const tt_frag = try createShaderModule(device, slang_gen.ttHintedFragWgsl(), "snail-tt-native-frag");
         defer c.wgpuShaderModuleRelease(tt_frag);
-        const path_frag = try createShaderModule(device, wgsl.source(.path, .fragment), "snail-path-frag");
-        defer c.wgpuShaderModuleRelease(path_frag);
-        const colr_frag = try createShaderModule(device, wgsl.source(.colr, .fragment), "snail-colr-frag");
-        defer c.wgpuShaderModuleRelease(colr_frag);
+        const native_path_frag = try createShaderModule(device, slang_gen.pathFragWgsl(), "snail-path-native-frag");
+        defer c.wgpuShaderModuleRelease(native_path_frag);
+        const native_colr_frag = try createShaderModule(device, slang_gen.colrFragWgsl(), "snail-colr-native-frag");
+        defer c.wgpuShaderModuleRelease(native_colr_frag);
 
         return .{
             .regular = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_text_frag, slang_gen.wgsl_fragment_entry, "snail-text"),
-            .autohint = try createPipeline(device, layout, autohint_vert, autohint_frag, "snail-autohint"),
-            .tt_hint = try createPipeline(device, layout, text_vert, tt_frag, "snail-tt-hint"),
-            .path = try createPipeline(device, layout, text_vert, path_frag, "snail-path"),
-            .colr = try createPipeline(device, layout, text_vert, colr_frag, "snail-colr"),
+            .autohint = try createPipelineEntries(device, layout, autohint_vert, slang_gen.wgsl_vertex_entry, autohint_frag, slang_gen.wgsl_fragment_entry, "snail-autohint"),
+            .tt_hint = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, tt_frag, slang_gen.wgsl_fragment_entry, "snail-tt-hint"),
+            .path = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_path_frag, slang_gen.wgsl_fragment_entry, "snail-path"),
+            .colr = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_colr_frag, slang_gen.wgsl_fragment_entry, "snail-colr"),
         };
     }
 

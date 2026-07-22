@@ -77,11 +77,21 @@ pub const Gl330 = struct {
     pub const linear_resolve_vertex_shader = version ++ linear_resolve_vertex_body;
     pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 
-    // Native-Slang generated text family (stage A): complete shaders, UBO
-    // parameter block instead of loose uniforms. See
-    // `snail.shader.slang_generated` for the interface contract.
+    // Native-Slang generated families: complete shaders, UBO parameter
+    // block instead of loose uniforms. See `snail.shader.slang_generated`
+    // for the interface contract. The fragment-only families pair with
+    // `native_text_vertex_shader` (shared stage IO).
     pub const native_text_vertex_shader = slang_gen.textGlsl330(.vertex);
     pub const native_text_fragment_shader = slang_gen.textGlsl330(.fragment);
+    pub const native_painted_vertex_shader = slang_gen.paintedVertGlsl330();
+    pub const native_colr_fragment_shader = slang_gen.colrFragGlsl330();
+    pub const native_path_fragment_shader = slang_gen.pathFragGlsl330();
+    pub const native_tt_hinted_fragment_shader = slang_gen.ttHintedFragGlsl330();
+    pub const native_autohint_vertex_shader = slang_gen.autohintGlsl330(.vertex);
+    pub const native_autohint_fragment_shader = slang_gen.autohintGlsl330(.fragment);
+    pub const native_subpixel_fragment_shader = slang_gen.subpixelFragGlsl330();
+    pub const native_linear_resolve_vertex_shader = slang_gen.linearResolveGlsl330(.vertex);
+    pub const native_linear_resolve_fragment_shader = slang_gen.linearResolveGlsl330(.fragment);
 };
 
 pub const Gles30 = struct {
@@ -104,9 +114,17 @@ pub const Gles30 = struct {
     pub const linear_resolve_vertex_shader = version ++ linear_resolve_vertex_body;
     pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 
-    // Native-Slang generated text family (stage A); see Gl330 above.
+    // Native-Slang generated families; see Gl330 above.
     pub const native_text_vertex_shader = slang_gen.textGles300(.vertex);
     pub const native_text_fragment_shader = slang_gen.textGles300(.fragment);
+    pub const native_painted_vertex_shader = slang_gen.paintedVertGles300();
+    pub const native_colr_fragment_shader = slang_gen.colrFragGles300();
+    pub const native_path_fragment_shader = slang_gen.pathFragGles300();
+    pub const native_tt_hinted_fragment_shader = slang_gen.ttHintedFragGles300();
+    pub const native_autohint_vertex_shader = slang_gen.autohintGles300(.vertex);
+    pub const native_autohint_fragment_shader = slang_gen.autohintGles300(.fragment);
+    pub const native_linear_resolve_vertex_shader = slang_gen.linearResolveGles300(.vertex);
+    pub const native_linear_resolve_fragment_shader = slang_gen.linearResolveGles300(.fragment);
 };
 
 test "reference entry points stay outside the library shader surface" {

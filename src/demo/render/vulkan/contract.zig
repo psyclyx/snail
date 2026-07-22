@@ -127,12 +127,20 @@ pub const frag_autohint_spv = vk_shaders.frag_autohint_spv;
 pub const frag_colr_spv = vk_shaders.frag_colr_spv;
 pub const frag_path_spv = vk_shaders.frag_path_spv;
 pub const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
-/// Native-Slang text family (stage A of the Slang cutover). Same push
-/// constants, vertex input, and descriptor-set layout: the shaders declare
-/// the curve/band textures as sampled images, which Vulkan permits to be
-/// backed by the existing COMBINED_IMAGE_SAMPLER descriptors.
+/// Native-Slang families (Slang cutover). Same push constants, vertex
+/// input, and descriptor-set layout: the shaders declare the atlas textures
+/// as sampled images (and, for the image paint, a sampler aliasing the same
+/// binding), which Vulkan permits to be backed by the existing
+/// COMBINED_IMAGE_SAMPLER descriptors. Fragment-only families pair with
+/// `vert_text_native_spv`.
 pub const vert_text_native_spv = vk_shaders.vert_text_native_spv;
 pub const frag_text_native_spv = vk_shaders.frag_text_native_spv;
+pub const frag_colr_native_spv = vk_shaders.frag_colr_native_spv;
+pub const frag_path_native_spv = vk_shaders.frag_path_native_spv;
+pub const frag_tt_hinted_native_spv = vk_shaders.frag_tt_hinted_native_spv;
+pub const vert_autohint_native_spv = vk_shaders.vert_autohint_native_spv;
+pub const frag_autohint_native_spv = vk_shaders.frag_autohint_native_spv;
+pub const frag_subpixel_native_spv = vk_shaders.frag_subpixel_native_spv;
 
 // ── Blend ──
 
@@ -178,15 +186,14 @@ pub const PipelineRecipe = struct {
 
 pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
-        // Stage A of the Slang cutover: regular text draws with the
-        // native-Slang compiled pair; every other family keeps the
-        // GLSL-catalog modules.
+        // Slang cutover: families already ported draw with the native-Slang
+        // compiled modules; the rest keep the GLSL-catalog modules.
         .text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_text_native_spv, .blend = .premultiplied },
-        .colr => .{ .vert_spv = vert_spv, .frag_spv = frag_colr_spv, .blend = .premultiplied },
-        .path => .{ .vert_spv = vert_spv, .frag_spv = frag_path_spv, .blend = .premultiplied },
-        .tt_hinted_text => .{ .vert_spv = vert_spv, .frag_spv = frag_tt_hinted_text_spv, .blend = .premultiplied },
-        .autohint => .{ .vert_spv = vert_autohint_spv, .frag_spv = frag_autohint_spv, .blend = .premultiplied },
-        .subpixel => .{ .vert_spv = vert_spv, .frag_spv = frag_text_subpixel_dual_spv, .blend = .dual_source, .requires_dual_src_blend = true },
+        .colr => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_colr_native_spv, .blend = .premultiplied },
+        .path => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_path_native_spv, .blend = .premultiplied },
+        .tt_hinted_text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_tt_hinted_native_spv, .blend = .premultiplied },
+        .autohint => .{ .vert_spv = vert_autohint_native_spv, .frag_spv = frag_autohint_native_spv, .blend = .premultiplied },
+        .subpixel => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_subpixel_native_spv, .blend = .dual_source, .requires_dual_src_blend = true },
     };
 }
 

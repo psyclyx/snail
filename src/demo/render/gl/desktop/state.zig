@@ -28,8 +28,8 @@ fn regularTextRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextR
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
 const LinearResolveState = linear_resolve.StateFor(gl, .{
-    .vertex_shader = shaders.linear_resolve_vertex_shader,
-    .fragment_shader = shaders.linear_resolve_fragment_shader,
+    .vertex_shader = shaders.native_linear_resolve_vertex_shader,
+    .fragment_shader = shaders.native_linear_resolve_fragment_shader,
     .dst_format = .intermediate,
     .linkProgram = gl_programs.linkProgram,
 });
@@ -116,16 +116,20 @@ fn TextStateFor(comptime backend: Backend) type {
             errdefer self.deinit();
 
             // Link all draw programs during renderer init so draw never compiles or links.
-            // Regular text uses the native-Slang generated pair (stage A of
-            // the Slang cutover); the other families keep the composed
-            // GLSL-fragment catalog.
-            self.text_program = try gl_programs.loadNativeTextProgramState(shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
-            self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
-            self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
-            self.tt_hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
-            self.autohint_program = try loadProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
+            // Regular text and colr use the native-Slang generated shaders
+            // (stages A/B of the Slang cutover); the remaining families keep
+            // the composed GLSL-fragment catalog. The fragment-only native
+            // families share the native text vertex stage.
+            self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
+            self.colr_program = try gl_programs.loadNativeProgramState("colr-native", shaders.native_painted_vertex_shader, shaders.native_colr_fragment_shader);
+            self.path_program = try gl_programs.loadNativeProgramState("path-native", shaders.native_painted_vertex_shader, shaders.native_path_fragment_shader);
+            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_painted_vertex_shader, shaders.native_tt_hinted_fragment_shader);
+            self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
             if (self.supports_dual_source_blend) {
-                self.text_subpixel_dual_program = try loadProgramState("text-subpixel-dual", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
+                // Native subpixel fragment carries its own
+                // layout(location = 0, index = N) qualifiers, so no
+                // glBindFragDataLocationIndexed calls are needed.
+                self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel-native", shaders.native_painted_vertex_shader, shaders.native_subpixel_fragment_shader);
             }
             try self.linear_resolve.init();
 

@@ -87,6 +87,77 @@ Semantic traps found (stage B must respect all of these)
    — measured pixel-exact after 8-bit quantization on all gates, but keep
    the exact-0 GL gate to catch regressions.
 
+Stage-B traps (discovered porting colr/path; apply to later families)
+---------------------------------------------------------------------
+9.  Per-target bit-parity pins each leg to its own history. slangc
+    strength-reduces constant divisions (srgbDecode's c/12.92 and
+    (c+0.055)/1.055 become reciprocal multiplies) in BOTH its direct
+    SPIR-V backend and the via-glsl leg at the default -O. The Vulkan and
+    WGSL baselines came from the slangc GLSL-ingestion pipeline (same
+    reduction) — keep default -O there. The GL baseline is the raw-GLSL
+    catalog compiled by the driver (division preserved) — compile GL legs
+    of new families with -O0 (`gl_o0` in build/slang_shaders.zig). The
+    fragment-only families therefore pair with the -O0 `painted` GL
+    vertex, while Vulkan/WGSL keep sharing the text vertex.
+10. -O0 keeps functions un-inlined, so the dead layer component of an
+    arrayed GetDimensions query survives and naga's SPIR-V front end
+    rejects it ("Index 2 is out of bounds"): run
+    `spirv-opt --eliminate-dead-code-aggressive` between slangc and naga
+    on -O0 via-glsl legs.
+11. Textually/semantically identical GLSL can still render differently:
+    Mesa's multiply-add fusion is code-shape sensitive. naga's
+    statement-per-op emission of the cubic Newton/bisection solver
+    compiles to different fusion than the composed single-expression
+    form — a 20M-input strict-IEEE CPU sweep of both transcriptions is
+    bit-identical, yet llvmpipe flips scattered LSBs on cubic path edges.
+    Fix: build/glsl_patch_cubic_solver.zig substitutes the composed spec
+    text of `solveMonotonicCubicRoot` into the generated GL artifacts
+    (`patch_cubic_solver` per family). If another family's GL gate shows
+    scattered 1-LSB diffs, suspect this class first and bisect by
+    splicing composed functions into the artifact.
+12. Vulkan image-paint sampling: `Texture2DArray` + `SamplerState`
+    aliased on one binding (set 0, binding 3) both bind from the existing
+    COMBINED_IMAGE_SAMPLER descriptor — spec-legal; silence slangc's
+    E39001 overlap warning. WGSL puts the sampler at @group(1)
+    @binding(3) (the catalog's split-sampler slot); the GL leg fuses the
+    pair back into one combined sampler (`_group_0_binding_4_fs`).
+13. A via-glsl VERTEX stage (autohint: fitter loops force it) cannot use
+    the spirv_asm raw-VertexIndex workaround, and SV_VertexID through
+    that leg still carries D3D semantics: the naga GL output reads
+    gl_BaseVertex (GL 4.6-only, absent in GLES).
+    build/glsl_patch_base_vertex.zig pins the read to 0 (exact for
+    snail's base-vertex-0 draws). Its uniform block also gets the
+    glslang-style name (`block_SnailPushConstants_0_block_0Vertex`) —
+    GL hosts try both vertex block names.
+14. Command-line -D defines DO reach imported modules (verified: the
+    SNAIL_TARGET_WGSL branch of snailAhFinite selects per target inside
+    autohint_warp.slang — OpIsNan in the Vulkan SPIR-V, none in WGSL).
+    Stage-specific variants use generics instead
+    (snailFitAutohintAxis<N, IS_VERTEX>) — no cross-module preprocessor
+    state needed.
+15. Dual source: native [[vk::location(0)]] [[vk::index(1)]] emits the
+    SPIR-V Index decoration on EVERY leg incl. via-glsl. naga still needs
+    an explicit `Index 0` on the color output
+    (build/spv_patch_dual_source.zig, "fragmentMain_color 0") and then
+    emits `layout(location = 0, index = N)` — no
+    glBindFragDataLocationIndexed needed for the native GL program. The
+    WGSL backend DROPS the index (no @blend_src): the subpixel family
+    generates no WGSL artifact (wgpu keeps the old catalog).
+16. A family file cannot share its BASENAME with a module it imports
+    (`import text_subpixel` from families/text_subpixel.slang resolves to
+    itself → "recursive module import"). Name family translation units
+    distinctly (module text_subpixel_family / subpixel_body).
+17. naga's SPIR-V front end rejects texel buffers (SampledBuffer /
+    "unsupported image dimension"), so a Buffer<uint>-based family has no
+    naga GL leg (text_sample: canonical artifacts are spirv+wgsl only;
+    the GL consumer keeps composing the GLSL catalog until stage C).
+
+Stage-B status (2026-07-21): all seven families landed — colr, path,
+tt_hinted_text, autohint (both stages), text_subpixel (Vulkan+GL330;
+verified AE=0 against the composed path under a forced-subpixel render),
+text_sample (canonical artifacts only; consumer migration is stage C),
+linear_resolve (GL hosts). Full gate exact vs the 492de91 baselines.
+
 Stage B recipe (per remaining family: colr, path, tt_hinted_text,
 autohint, subpixel, text_sample, linear_resolve)
 ----------------------------------------------------------------

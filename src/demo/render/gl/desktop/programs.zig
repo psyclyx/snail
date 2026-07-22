@@ -77,21 +77,29 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
     return ps;
 }
 
-/// Link the native-Slang text program (generated GLSL 330; see
+/// Link a native-Slang program (generated GLSL 330; see
 /// `snail.shader.slang_generated`). Uniforms live in one 96-byte std140
 /// block per stage — both block indices are bound to
 /// `NATIVE_TEXT_UBO_BINDING`, backed by the UBO created here — and the
-/// curve/band combined samplers are pinned to texture units 0/1 at link
-/// time, exactly like the composed programs.
-pub fn loadNativeTextProgramState(vs_src: [*c]const u8, fs_src: [*c]const u8) !ProgramState {
-    const handle = try linkProgram("text-native", vs_src, fs_src, false);
+/// generated combined samplers are pinned to texture units 0..3
+/// (curve/band/layer/image) at link time, exactly like the composed
+/// programs. Sampler locations that a family's fragment does not declare
+/// resolve to -1 and stay unbound (the shadow-cache binder keys off them).
+pub fn loadNativeProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8) !ProgramState {
+    const handle = try linkProgram(cache_label, vs_src, fs_src, false);
     var ps = ProgramState{
         .handle = handle,
         .curve_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_curve_tex_name),
         .band_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_band_tex_name),
+        .layer_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_layer_tex_name),
+        .image_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_image_tex_name),
     };
 
-    const vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_vertex_block_name);
+    // Direct-leg vertex stages and via-glsl vertex stages (autohint) name
+    // their block differently; accept either.
+    var vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_vertex_block_name);
+    if (vertex_block == gl.GL_INVALID_INDEX)
+        vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_via_vertex_block_name);
     const fragment_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_fragment_block_name);
     if (vertex_block == gl.GL_INVALID_INDEX or fragment_block == gl.GL_INVALID_INDEX) {
         gl.glDeleteProgram(handle);
@@ -105,11 +113,18 @@ pub fn loadNativeTextProgramState(vs_src: [*c]const u8, fs_src: [*c]const u8) !P
     gl.glBufferData(gl.GL_UNIFORM_BUFFER, @sizeOf(gl_common.NativeTextPushBlock), null, gl.GL_DYNAMIC_DRAW);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
 
+    // The autohint vertex stage samples the layer-info texture too; pin its
+    // combined sampler to the same unit 2 the fragment uses.
+    const vert_layer_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_vert_layer_tex_name);
+
     var prev_program: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
     gl.glUseProgram(handle);
     if (ps.curve_tex_loc >= 0) gl.glUniform1i(ps.curve_tex_loc, 0);
     if (ps.band_tex_loc >= 0) gl.glUniform1i(ps.band_tex_loc, 1);
+    if (ps.layer_tex_loc >= 0) gl.glUniform1i(ps.layer_tex_loc, 2);
+    if (ps.image_tex_loc >= 0) gl.glUniform1i(ps.image_tex_loc, 3);
+    if (vert_layer_loc >= 0) gl.glUniform1i(vert_layer_loc, 2);
     gl.glUseProgram(@intCast(prev_program));
     return ps;
 }

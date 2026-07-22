@@ -17,6 +17,7 @@ const std = @import("std");
 const snail_mod = @import("snail");
 const render_state = @import("render-state");
 const gl_common = @import("common.zig");
+const slang_gen = snail_mod.shader.slang_generated;
 
 const LinearResolve = render_state.LinearResolve;
 const IntermediateFormat = LinearResolve.Format;
@@ -48,9 +49,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
         const Self = @This();
 
         program: gl.GLuint = 0,
-        tex_loc: gl.GLint = -1,
-        dst_tex_loc: gl.GLint = -1,
-        mode_loc: gl.GLint = -1,
+        mode_ubo: gl.GLuint = 0,
         vao: gl.GLuint = 0,
         fbo: gl.GLuint = 0,
         tex: gl.GLuint = 0,
@@ -62,14 +61,32 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
 
         pub fn init(self: *Self) !void {
             self.program = try linkProgram("linear-resolve", vertex_shader, fragment_shader, false);
-            self.tex_loc = gl.glGetUniformLocation(self.program, "u_linear_tex");
-            self.dst_tex_loc = gl.glGetUniformLocation(self.program, "u_dst_tex");
-            self.mode_loc = gl.glGetUniformLocation(self.program, "u_mode");
+            // Native-Slang generated program: the mode lives in a one-int
+            // std140 block, samplers carry the generated names (see
+            // snail.shader.slang_generated). Pin the samplers to units 0/1
+            // at link time; bind the block to binding point 0 (rebound with
+            // its buffer on every drawTriangle).
+            const linear_loc = gl.glGetUniformLocation(self.program, slang_gen.glsl_linear_resolve_linear_tex_name);
+            const dst_loc = gl.glGetUniformLocation(self.program, slang_gen.glsl_linear_resolve_dst_tex_name);
+            const block = gl.glGetUniformBlockIndex(self.program, slang_gen.glsl_linear_resolve_block_name);
+            if (block == gl.GL_INVALID_INDEX) return error.ShaderLinkFailed;
+            gl.glUniformBlockBinding(self.program, block, gl_common.NATIVE_TEXT_UBO_BINDING);
+            gl.glGenBuffers(1, &self.mode_ubo);
+            gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, self.mode_ubo);
+            gl.glBufferData(gl.GL_UNIFORM_BUFFER, 16, null, gl.GL_DYNAMIC_DRAW);
+            gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
+            var prev_program: gl.GLint = 0;
+            gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
+            gl.glUseProgram(self.program);
+            if (linear_loc >= 0) gl.glUniform1i(linear_loc, 0);
+            if (dst_loc >= 0) gl.glUniform1i(dst_loc, 1);
+            gl.glUseProgram(@intCast(prev_program));
             gl.glGenVertexArrays(1, &self.vao);
         }
 
         pub fn deinit(self: *Self) void {
             if (self.program != 0) gl.glDeleteProgram(self.program);
+            if (self.mode_ubo != 0) gl.glDeleteBuffers(1, &self.mode_ubo);
             if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
             if (self.fbo != 0) gl.glDeleteFramebuffers(1, &self.fbo);
             if (self.tex != 0) gl.glDeleteTextures(1, &self.tex);
@@ -177,9 +194,9 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             gl.glBindTexture(gl.GL_TEXTURE_2D, if (pass == .seed_intermediate) 0 else self.tex);
             gl.glActiveTexture(gl.GL_TEXTURE1);
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.dst_tex);
-            if (self.tex_loc >= 0) gl.glUniform1i(self.tex_loc, 0);
-            if (self.dst_tex_loc >= 0) gl.glUniform1i(self.dst_tex_loc, 1);
-            if (self.mode_loc >= 0) gl.glUniform1i(self.mode_loc, @intFromEnum(pass));
+            const block = [4]i32{ @intFromEnum(pass), 0, 0, 0 };
+            gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, self.mode_ubo);
+            gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, 16, &block);
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3);
         }
 
