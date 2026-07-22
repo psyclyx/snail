@@ -1,9 +1,9 @@
 //! Public draw entry for the software rasterizer.
 //!
 //! Walks batches, resolves each batch's `Binding.pool` to a
-//! `DeviceAtlas` (caller-supplied), validates the binding's
-//! generation against its last upload, then dispatches per-instance
-//! into the CPU rasterizer via `Renderer.drawBatch`.
+//! `DeviceAtlas` (caller-supplied), validates the binding's complete owner,
+//! generation, and placement identity, then dispatches per-instance into the
+//! CPU rasterizer via `Renderer.drawBatch`.
 //!
 
 const std = @import("std");
@@ -26,7 +26,8 @@ pub const Transform2D = math.Transform2D;
 pub const DrawError = error{
     /// Batch references a `PagePool` no entry in `caches` covers.
     MissingBinding,
-    /// Batch's binding generation is newer than the cache's last upload.
+    /// A cache covers the pool, but no live slot matches the binding's complete
+    /// source, generation, and placement identity.
     StaleBinding,
     /// Batch's instance range falls outside `records.instances`.
     MalformedBatch,
@@ -35,8 +36,11 @@ pub const DrawError = error{
 const Renderer = @import("renderer.zig").Renderer;
 const RendererPtr = *Renderer;
 
-/// Render `records` into `renderer`'s pixel buffer. `device_atlases` provides the
-/// CPU-side prepared data for the pools referenced by `records.batches`.
+/// Render `records` into `renderer`'s pixel buffer. `caches` provides the
+/// CPU-side prepared data for the bindings referenced by `records.batches`.
+/// Every batch range and complete binding identity is validated before that
+/// batch is rendered; an error can therefore occur after earlier batches have
+/// already modified the target.
 ///
 /// `thread_pool` is the per-call work-distribution policy: pass a non-null
 /// pool to fan tile work across its workers, or `null` to rasterize on the

@@ -424,11 +424,14 @@ pub const VulkanDeviceAtlas = struct {
         self.active_bindings = next_active;
     }
 
-    /// Incrementally update `prev_binding`'s slot with `atlas`'s
-    /// current state. See `GlDeviceAtlas.uploadDelta` for the
-    /// contract; this Vulkan implementation queues only the changed
-    /// curve / band / layer-info / image regions into a single
-    /// `UploadBatch` that's flushed before returning.
+    /// Incrementally update `prev_binding`'s slot with `atlas`'s current
+    /// state. Exact snapshots and direct append-only children reuse unchanged
+    /// data; branches, skipped descendants, and unrelated same-pool atlases
+    /// conservatively replace binding-relative side data. This Vulkan
+    /// implementation requires all resulting side data to fit the binding's
+    /// original row/image reservation, queues the required
+    /// curve/band/layer-info/image regions into one `UploadBatch`, and flushes
+    /// it before returning.
     pub fn uploadDelta(
         self: *Self,
         scratch: std.mem.Allocator,

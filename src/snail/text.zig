@@ -73,15 +73,18 @@ pub const ShapeOptions = struct {
     /// `snail.TtAdvanceSource.advanceProvider()` so HB lookups hit
     /// recorded `ns.tt_advance` values, falling back to the pure VM on miss.
     advance_provider: ?AdvanceProvider = null,
-    /// Ppem to shape at. Two roles, both shape-time:
-    ///   1. HB's sub-font scale is set to this so positions come back
-    ///      in 26.6 units of this ppem (the caller divides by ppem to
-    ///      recover em-space offsets).
-    ///   2. Passed to `advance_provider.get_advance` so the provider
-    ///      can look up the right hinted advance.
+    /// Ppem used when `advance_provider` covers the face being shaped. It has
+    /// two shape-time roles for those faces:
+    ///   1. HB's provider sub-font scale is set to this so positions come back
+    ///      in 26.6 units of this ppem (the caller divides by ppem to recover
+    ///      em-space offsets).
+    ///   2. It is passed to `advance_provider.get_advance` so the provider can
+    ///      look up the right hinted advance.
     /// The provider does *not* carry its own ppem — it's a pure
     /// `(font_id, glyph_id, ppem) → advance` function. Required
-    /// whenever `advance_provider` is non-null. A missing value is reported
+    /// whenever `advance_provider` is non-null. Faces the provider does not
+    /// cover continue to use the font's ordinary em scale. A missing value is
+    /// reported
     /// as `error.MissingTargetPpem`; zero or values above the exact atlas-key
     /// range are reported as `error.InvalidPpem`. A supplied ppem is validated
     /// even when no provider is active, so invalid options never fail silently.
@@ -152,7 +155,12 @@ pub const ShapedText = struct {
         y_offset: f32,
         x_advance: f32,
         y_advance: f32,
+        /// First byte of this glyph's HarfBuzz cluster in the original UTF-8
+        /// input. Bounds remain in logical source order even when glyph output
+        /// is RTL. A ligature can start a multi-unit range, and multiple glyphs
+        /// can share one range.
         source_start: u32,
+        /// Exclusive end byte of the source cluster begun at `source_start`.
         source_end: u32,
         /// Resolved font id, set by `shape(faces, ...)` from
         /// `faces.fontIdForFace(face_index)`. Picture builders read it

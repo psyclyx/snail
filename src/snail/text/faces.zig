@@ -102,6 +102,10 @@ pub const Faces = struct {
     /// when non-empty). Useful for sizing per-font helper caches.
     font_count: u32,
 
+    /// Build the style and fallback chains and parse each distinct `Face.font`
+    /// pointer once. At most `maxInt(FaceIndex) + 1` face specs are accepted;
+    /// a larger set returns `error.TooManyFaces`. On any error no partially
+    /// built state is returned.
     pub fn build(allocator: Allocator, specs: []const Face) !Faces {
         if (specs.len > @as(usize, std.math.maxInt(FaceIndex)) + 1) return error.TooManyFaces;
         const faces = try buildFaceStates(allocator, specs);
@@ -775,11 +779,17 @@ fn buildFontIdMap(allocator: Allocator, specs: []const Face) !FontIdMap {
 ///
 /// `opts.advance_provider`, if set, routes HarfBuzz's `glyph_h_advance`
 /// font_func through the provider — typically a
-/// `snail.TtAdvanceSource`.closure — for hinted advances.
+/// `snail.TtAdvanceSource.advanceProvider()` — for hinted advances.
 /// `opts.target_ppem` selects the ppem the provider is asked about and
-/// the HB scale to set on the sub-font; the returned `ShapedText` is
-/// em-space, so callers multiply by `font_size_px` downstream as
-/// usual.
+/// the HB scale for faces the provider covers; uncovered faces retain their
+/// ordinary em scale. The returned `ShapedText` is em-space, so callers
+/// multiply by `font_size_px` downstream as usual.
+///
+/// Input and option validation reports `InvalidUtf8`, `TextTooLong`,
+/// `TooManyFeatures`, `InvalidFeatureRange`, `InvalidLanguage`,
+/// `MissingTargetPpem`, or `InvalidPpem` as applicable. Feature ranges are
+/// half-open source-byte ranges; portions outside a fallback-font run are
+/// clipped to that run. Allocation and font/shaper errors are also propagated.
 pub fn shape(
     allocator: Allocator,
     faces_value: *Faces,

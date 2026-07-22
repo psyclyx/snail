@@ -8,6 +8,72 @@ Every previously exposed noun (`TextBlobBundle`, `TrueTypeHintContext`,
 the all-in-one `*Renderer`s, and the C API built on them) has been replaced.
 Treat this as a from-scratch migration.
 
+### Hardening and migration notes
+
+- Construction and sizing that can fail are now explicitly fallible:
+  `PagePool.init`, `Atlas.init`, `atlas_upload.sizes`/planner initialization,
+  and `snail-raster.Renderer.init`/`reinitBuffer` (which now take length-owned
+  `[]u8` buffers). Invalid capacities, exhausted identities, malformed
+  buffers, incompatible strides, and target mismatches return typed errors
+  rather than trapping or silently accepting a partial configuration.
+- `Faces.build` rejects a face set that cannot be represented by `FaceIndex`.
+  `Faces.face` and `Faces.fontIdForFace` now return `null` for an out-of-range
+  index instead of indexing unchecked; migrate callers to unwrap or propagate
+  the missing face.
+- `Binding` identity is now complete and non-wrapping in practical use:
+  `source_id` and `generation` are `u64`, and equality/cache validation covers
+  the pool, issuing planner/device cache, generation, layer-info row, and image
+  layer. Bindings from another cache, retired slots, and forged offsets are
+  rejected.
+- Shaping accepts explicit `ShapeOptions.direction`, `.script`, and
+  `.language`; feature lists are no longer capped at the 32-entry stack fast
+  path. Each glyph's `source_start..source_end` now records a complete
+  half-open UTF-8 byte range for both LTR and RTL clusters, and fallback
+  itemization preserves its supported font-sensitive combining, emoji, and
+  Indic sequences. Invalid UTF-8, feature ranges, empty/oversized language
+  strings, ppem values, missing provider ppem, excessive text/features, and
+  excessive face counts are observable errors. Shaping-cache identity includes
+  every shaping input.
+- Path construction and preparation reject non-finite/unrepresentable
+  geometry, non-positive rational-conic weights, and counter/size overflow
+  with `InvalidGeometry` or `ShapeTooComplex`. Failed appends no longer consume
+  logical curve counts. Large finite f32 coordinate ranges normalize through
+  f64 intermediates instead of overflowing.
+- Atlas insertion validates structural curve/band payloads and keeps paired
+  curve/band reservations atomic. `emit` preflights bindings, records,
+  transforms, colors, policies, cursors, and output capacity; failures leave
+  both output cursors and buffers logically uncommitted.
+- `snail-raster` validates image sizes/formats, render-target dimensions,
+  pixel format, stride, and backing byte length. Failed multi-atlas uploads
+  release every binding they planned; resize and renderer buffer replacement
+  are failure-atomic. Unsupported resolve/format combinations are reported
+  rather than reinterpreted.
+- Root exports add `TextDirection` and `ConicGradient`. The internal
+  `snail.tt` namespace is no longer public; use the focused `TtHintVm`,
+  `TtHintPpem`, `TtHintVmStats`, and `TtHintError` exports.
+
+### Correctness and performance
+
+- Upload planning distinguishes exact snapshots, direct append-only children,
+  branches, and unrelated atlases using full snapshot lineage. Delta plans
+  copy only changed page spans for direct growth; branches/unrelated snapshots
+  conservatively replace side data. Changed side data must fit the binding's
+  fixed initial row/image reservation; callers release and plan a fresh binding
+  after outgrowing it. Image records are validated for exact dimensions and
+  bytes per texel and are not redundantly uploaded for an exact snapshot or
+  direct child.
+- If applying a returned upload plan fails, `invalidateUploads()` now clears
+  both page watermarks and snapshot identity, so the next retry re-emits all
+  referenced pages, layer-info rows, and images instead of skipping bytes that
+  never reached the device.
+- Atlas growth can consume several producer slices through
+  `extendBatchesInPlace`, avoiding a flattened temporary and repeated
+  persistent-side-data copies. Raster page preparation decodes only appended
+  curve/band tails, image discovery is linear, and adaptive raster tile work
+  is bounded.
+- Draw batches describe one draw call over a contiguous run of instances:
+  there is one bounding quad per instance, not one quad per batch.
+
 ### Design
 
 - **Embeddable-only.** snail owns no GPU objects, command submission,
@@ -39,8 +105,10 @@ Treat this as a from-scratch migration.
   `compact(filter)` is defragmentation and eviction in one full-fidelity
   operation (`RecordFilter` keeps the working set).
 - `AtlasUploadPlanner` (`atlas_upload`): allocation-free, caller-owned
-  planner producing backend-neutral upload `Region`s; `planDelta` uploads
-  only grown sub-row spans of append-only pages.
+  planner producing backend-neutral upload `Region`s; for a direct
+  append-only child, `planDelta` uploads only grown sub-row spans and changed
+  side data that fits the binding's fixed initial reservation. Branches and
+  unrelated snapshots use conservative replacement within that same limit.
 - `emit`: typed `Instance` / `DrawBatch` records (stable byte layout in
   `render`), batch coalescing, typed errors.
 - `shader.glsl`: entry-point-free GLSL fragments + resource contracts for
@@ -55,10 +123,11 @@ Treat this as a from-scratch migration.
   (`Renderer`, `DeviceAtlas`, `draw`), with explicit target encodings and
   linear-light blending.
 - `snail-shaders` (separate module, `@import("snail_shaders")`): complete
-  per-target shaders for every family — Vulkan SPIR-V, WGSL (dual-source
-  subpixel included), GLSL 330, GLES 300, D3D11 HLSL, and Metal MSL —
-  generated from the native Slang modules in `src/snail/shader/slang/`
-  (the shader source of truth), with their binding-name contracts.
+  shaders for every supported family/target combination across Vulkan SPIR-V,
+  WGSL (dual-source subpixel included), GLSL 330, GLES 300, D3D11 HLSL, and
+  Metal MSL, generated from the native Slang modules in
+  `src/snail/shader/slang/` (the shader source of truth), with their
+  binding-name contracts.
   Artifacts are not checked in: they are produced at build time into the
   zig cache, only for builds that import the module, so the Slang
   toolchain (slangc + SPIRV-Cross) is needed exactly then and consumers

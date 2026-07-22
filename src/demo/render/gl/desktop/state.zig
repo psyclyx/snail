@@ -593,10 +593,10 @@ pub const Gl44TextState = TextStateFor(.gl44);
 
 // ── Renderer wrappers ──
 //
-// The demos call `snail.Gl33Renderer.init(allocator)` and access
-// `.state` to drive draws. The allocator parameter is unused — text
-// state has no heap allocations of its own — but the signature keeps
-// the public API uniform across backends.
+// The demos call this module's `Gl33Renderer.init(allocator)` and access
+// `.state` to drive draws. The allocator parameter is unused — text state
+// has no heap allocations of its own — but the signature keeps the demo
+// wrappers uniform across backends.
 
 pub const Gl33Renderer = struct {
     state: Gl33TextState = .{},

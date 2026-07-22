@@ -1,7 +1,9 @@
 //! Value-typed atlas: the store of prepared glyph records. Holds
 //! refcounted page references plus a key→record lookup table.
-//! Construction and update operations return new atlases, leaving the
-//! input atlas untouched.
+//! `from`, `extend`, and `compact` return new snapshots, leaving their input
+//! atlas logically unchanged. The explicitly in-place operations
+//! `extendInPlace`, `extendBatchesInPlace`, and `recordTtAdvance` mutate their
+//! receiver.
 //!
 //! ## Capacity model
 //!
@@ -25,7 +27,7 @@
 //! page-free and never pressure the pool). `src/support/working_set.zig`
 //! is the worked example of a bounded-residency policy over this model.
 //!
-//! See the README's capacity-model section for the public eviction recipe.
+//! See the README's "Capacity and eviction" section for the public recipe.
 
 const std = @import("std");
 const page_mod = @import("atlas/page.zig");

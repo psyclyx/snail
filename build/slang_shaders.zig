@@ -1,5 +1,5 @@
-//! Native-Slang shader toolchain (stage A: text; stage B: the remaining
-//! families).
+//! Native-Slang shader toolchain for every supported shipped family/target
+//! combination.
 //!
 //! Single source: `src/snail/shader/slang/` — proper Slang modules
 //! (`module`/`import`), entry points declared with `[shader(...)]` in
@@ -14,7 +14,7 @@
 //!   D3D11       slangc -DSNAIL_TARGET_D3D11 -target hlsl             generated/hlsl/<f>.*.hlsl
 //!               -profile sm_5_0 -line-directive-mode none            (see hlsl_args for the trap notes)
 //!   Metal       slangc -DSNAIL_TARGET_METAL -target metal            generated/msl/<f>.*.metal
-//!               -ignore-capabilities -line-directive-mode none       (best-effort; see msl_args)
+//!               -ignore-capabilities -line-directive-mode none       (see msl_args)
 //!   GLSL 330    slangc -DSNAIL_TARGET_GL -target spirv               generated/glsl330/<f>.*.glsl
 //!               -profile spirv_1_3, then
 //!               spirv-cross --version 330 --no-420pack-extension
@@ -174,10 +174,11 @@ pub const Family = struct {
 ///    full-fidelity HLSL artifact.
 const hlsl_args: []const []const u8 = &.{ "-target", "hlsl", "-profile", "sm_5_0", "-line-directive-mode", "none" };
 
-/// slangc arguments for the Metal MSL leg (BEST-EFFORT: generated and
-/// textually validated on Linux; never compiled by a real Metal compiler
-/// here — see README-notes "Metal stage"). Notes, verified against the
-/// emitted code (v2026.5.2):
+/// slangc arguments for the Metal MSL leg. Linux checks the generated
+/// contract textually; macOS CI runtime-compiles every MSL artifact with a
+/// real Metal frontend, builds the scene-used pipelines, and render-gates
+/// them on a real GPU. Notes below were verified against the emitted code
+/// (v2026.5.2):
 ///
 ///  - `-ignore-capabilities` is load-bearing: slangc's capability checker
 ///    has a Metal-specific bug where a fragment entry that uses `discard`
@@ -235,14 +236,14 @@ pub const families = [_]Family{
     .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage} },
     .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage } },
     // The WGSL artifact carries a dual-source entry (`fragmentDualMain`,
-    // @blend_src 0/1) via the in-source __requirePrelude interop in
-    // families/text_subpixel.slang; the plain `fragmentMain` entry keeps
-    // MRT locations 0/1. See README-notes for the mangled-name caveat.
+    // @blend_src 0/1) synthesized after slangc by
+    // build/wgsl_gen_dual_entry.zig; the plain `fragmentMain` entry keeps
+    // MRT locations 0/1. naga validates the transformed artifact.
     .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
     // LCD subpixel variants of the hinted text families. Fragment-only:
     // tt_hinted_text_subpixel pairs with text.vert, autohint_subpixel with
     // autohint.vert (identical varying interfaces). Same dual-source and
-    // WGSL-prelude story as text_subpixel.
+    // WGSL post-generation transform as text_subpixel.
     .{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
     .{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
     // Canonical artifacts for every target. Desktop GL is a plain
@@ -471,10 +472,10 @@ pub const Entry = struct {
     target: Target,
     sub_path: []const u8,
     file: std.Build.LazyPath,
-    /// Optional validation step (naga over the fragile subpixel WGSL —
-    /// its prelude-injected dual-source entry references slang's mangled
-    /// names, so regeneration must re-prove validity). Run only by the
-    /// aggregate/test module and gen-shaders, never by consumer scopes.
+    /// Optional validation step (naga over transformed subpixel WGSL, so
+    /// regeneration re-proves the structural transform's assumptions).
+    /// Run only by the aggregate/test module and gen-shaders, never by
+    /// consumer scopes.
     validate: ?*std.Build.Step = null,
 };
 
@@ -595,9 +596,10 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
                 appendEntry(b, list, .hlsl, "hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl", hlsl);
 
-                // Metal MSL — direct target, best-effort (see msl_args;
-                // no Metal compiler exists on this platform, validation
-                // is textual + deferred to a real Mac).
+                // Metal MSL — direct target (see msl_args). Portable
+                // builds validate the text contract; macOS CI also
+                // runtime-compiles every artifact and render-gates the
+                // scene-used families.
                 const msl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_METAL"}, msl_args, family.name ++ "." ++ stage.short ++ ".metal");
                 appendEntry(b, list, .msl, "msl/" ++ family.name ++ "." ++ stage.short ++ ".metal", msl);
             }

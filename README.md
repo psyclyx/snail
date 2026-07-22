@@ -47,13 +47,15 @@ footprint, plus an optional host-formatted image array for image paints.
 The upload planner emits the texel regions; the host copies them into
 textures it owns.
 
-**3. Draw: one instanced quad per glyph.** Each placed shape is one
-instance of a quad bounding the outline under its transform — `emit`
-produces typed instances and coalesced batches, one instanced draw per
-batch. A fragment maps its position back to glyph-local coordinates through
-the inverse transform, which is why any affine or perspective transform
-(and either y-axis convention) renders exactly: all the math from here on
-happens in the glyph's own space.
+**3. Draw: one instanced quad per emitted record.** Each placed shape whose
+atlas record contains curves becomes one instance of a quad bounding the
+outline under its transform; empty records produce no draw work. `emit`
+produces typed instances and coalesced batches, one instanced draw per batch.
+A fragment maps its position back to glyph-local coordinates through the
+inverse transform, which is why any affine or perspective transform (and
+either y-axis convention) renders exactly on the GPU pipelines: all the math
+from here on happens in the record's own space. The optional CPU rasterizer is
+affine-only and reports `NonAffineMvp` for a perspective MVP.
 
 <img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="320">
 
@@ -101,32 +103,58 @@ const snail = @import("snail");
 // Prepare: parse fonts, shape text.
 var font = try snail.Font.init(font_bytes);            // borrows the bytes
 var faces = try snail.Faces.build(alloc, &.{.{ .font = &font }});
+defer faces.deinit();
 var shaped = try snail.shape(alloc, &faces, "Hello, world", .{});
+defer shaped.deinit();
 
 // Record: commit prepared glyph records into the store.
 var pool = try snail.PagePool.init(alloc, .{
     .max_layers = 8, .curve_words_per_page = 1 << 17, .band_words_per_page = 1 << 14,
 });
+defer pool.deinit();
 var atlas = try snail.Atlas.init(alloc, pool);
+defer atlas.deinit();
 try snail.recordUnhintedRun(&atlas, alloc, &faces, &shaped, .{});
 
 // Upload: plan backend-neutral texel regions, copy them into YOUR textures.
-// (Planner state is caller-owned and allocation-free; see atlas_upload.sizes.)
-var n: usize = 0;
-const binding = try planner.plan(&atlas, regions_buf, &n, info_scratch);
-for (regions_buf[0..n]) |r| myEngine.texSubImage(r); // curve/band/layer_info/image
-// Next frame's hot path: planDelta uploads only what grew.
+const upload_options: snail.atlas_upload.Options = .{
+    .max_bindings = 16,
+    .layer_info_height = 64,
+    .max_images = 16,
+    .max_image_width = 2048,
+    .max_image_height = 2048,
+};
+var planner = try snail.OwnedAtlasUploadPlanner.init(alloc, pool, upload_options);
+defer planner.deinit();
+const upload = try planner.plan(&atlas);
+for (upload.regions) |r| try myEngine.texSubImage(r); // curve/band/layer_info/image
+const binding = upload.binding;
+// On a direct append-only child, planDelta emits only changed regions.
+// Side-data growth must fit this binding's original fixed reservation;
+// release and plan a fresh binding when it does not.
 
 // Place + emit: shaped run -> Shapes -> typed instances and batches.
 const shapes = try snail.placeRunAlloc(alloc, &shaped, null, .{
     .baseline = .{ .x = 48, .y = 92 }, .em = 34,
 });
+defer alloc.free(shapes);
 _ = try snail.emit.emit(instances, batches, &ni, &nb,
     binding, &atlas, shapes, world_xform, .{ 1, 1, 1, 1 });
+const records: snail.render.records.DrawRecords = .{
+    .instances = instances[0..ni], .batches = batches[0..nb],
+};
 
-// Draw: your pipeline, your command buffer. One instanced quad per batch,
-// vertex/fragment stages composed from snail.shader.glsl fragments.
+// Draw: your pipeline, your command buffer. One draw per batch and one quad
+// per instance, using stages composed from snail.shader.glsl fragments.
 ```
+
+If applying a successful `plan`/`planDelta` result fails, call
+`planner.invalidateUploads()`, then retry the allocated slot with
+`planDelta(binding, &atlas)`. Alternatively, release that binding before a
+fresh `plan`. A returned `Binding` is valid only for the issuing planner/device
+cache: identity includes the `PagePool`, the planner's `source_id`, a 64-bit
+slot generation, and both storage offsets. Do not synthesize or partially
+compare bindings in a device cache.
 
 The complete, runnable version of this flow against a raw GL context is
 [`src/demo/app/minimal_gl.zig`](src/demo/app/minimal_gl.zig) (`zig build
@@ -135,7 +163,46 @@ delta-upload hot path. For a full engine-shaped integration (descriptor
 layouts, multi-pass, Vulkan), read the demo's reference callers in
 [`src/demo/render/gl/`](src/demo/render/gl) and
 [`src/demo/render/vulkan/`](src/demo/render/vulkan). The software-renderer
-flow is `snail-raster`'s `DeviceAtlas.upload` + `draw`.
+flow is `snail-raster`'s `DeviceAtlas.upload` + `draw`:
+
+```zig
+const raster = @import("snail-raster");
+
+var device = try raster.DeviceAtlas.init(alloc, pool, .{});
+defer device.deinit();
+var bindings: [1]snail.render.records.Binding = undefined;
+try device.upload(alloc, &.{&atlas}, &bindings);
+
+// Bindings are cache-specific, so emit against the DeviceAtlas binding.
+var raster_ni: usize = 0;
+var raster_nb: usize = 0;
+_ = try snail.emit.emit(instances, batches, &raster_ni, &raster_nb,
+    bindings[0], &atlas, shapes, world_xform, .{ 1, 1, 1, 1 });
+const raster_records: raster.DrawRecords = .{
+    .instances = instances[0..raster_ni], .batches = batches[0..raster_nb],
+};
+
+var renderer = try raster.Renderer.init(pixels, width, height, stride);
+try raster.draw(&renderer, .{
+    .mvp = mvp,
+    .surface = .{
+        .pixel_width = @floatFromInt(width),
+        .pixel_height = @floatFromInt(height),
+        .encoding = .srgb,
+        .format = .rgba8_unorm,
+    },
+}, raster_records, &.{&device}, null);
+```
+
+`Renderer.init` and `reinitBuffer` validate the caller-owned byte length and
+stride. Every draw also validates the declared surface size and selected
+`PixelFormat`; choose a stride of at least
+`width * format.bytesPerPixel()`. `DeviceAtlas.upload` requires exactly one
+output binding per input atlas. If a multi-atlas call fails, none of the
+bindings it planned remain live and every output entry from that call is
+unusable, though successfully prepared shared page data may remain cached.
+`raster.draw` supports affine scene-to-pixel transforms; a perspective MVP
+returns `NonAffineMvp`.
 
 ### Capacity and eviction
 
@@ -188,10 +255,10 @@ sRGB-encoded, straight alpha.
 
 **Shader targets.** The native Slang modules in `src/snail/shader/slang/`
 are the source of truth. From them, the separate `snail-shaders` module
-(`@import("snail_shaders")`) provides complete shaders for every family
-and target — Vulkan SPIR-V, WGSL, GLSL 330, GLES 300, D3D11 HLSL, and
-Metal MSL (best-effort: generated and cross-checked on Linux, not yet
-validated on a Mac) — plus the binding-name contracts loaders bind by.
+(`@import("snail_shaders")`) provides complete shaders for every supported
+family/target combination across Vulkan SPIR-V, WGSL, GLSL 330, GLES 300,
+D3D11 HLSL, and Metal MSL (generated/cross-checked on Linux and exercised by
+the macOS GPU CI gate) — plus the binding-name contracts loaders bind by.
 Artifacts are not checked in: they are generated at build time, in the zig
 cache, only for builds that actually import the module — and per-target
 scopes of the same API (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`,
@@ -216,24 +283,65 @@ generated shaders), and `snail.shader.glsl` (composable fragments).
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
 allocator; there is no global or threadlocal state. `Atlas` is value-typed
-and persistent — `extend`/`compact` return new snapshots sharing
-unchanged pages, and lookups return records **by value**, so there is no
-entry-vs-eviction lifetime hazard. Upload `Region`s alias planner scratch
+and persistent — `extend`/`compact` return new snapshots sharing retained,
+refcounted page storage while preserving prior logical snapshot contents, and
+lookups return records **by value**, so there is no entry-vs-eviction lifetime
+hazard. Upload `Region`s alias planner scratch
 (`layer_info`), live page memory (`curve`/`band`), or caller-owned `Image`
 texels: apply them before the next `plan`/`planDelta`, and keep the atlas and
 images alive and unchanged until the copies finish. A `PagePool` must outlive
 every atlas, binding planner, and device cache created from it. `Font` borrows
 the font bytes you pass it.
 
+**Validation is part of the API.** `PagePool.init`, `Atlas.init`, upload
+planner sizing/initialization, and software-renderer attachment are fallible.
+Atlas insertion rejects malformed curve/band payloads; paths reject non-finite
+geometry, invalid rational-conic weights, and unrepresentable complexity;
+`emit` rejects stale/foreign atlas records, invalid transforms, colors,
+policies, cursors, and insufficient output. Atlas insertion, draw emission,
+device resize, and renderer buffer replacement preflight or stage their work
+so failure leaves their published state unchanged; a failed multi-atlas upload
+releases every binding it planned but may retain prepared shared-page work.
+Path construction is deliberately incremental: a multi-segment convenience
+operation can retain a successfully appended prefix if a later allocation
+fails. Propagate typed errors instead of treating them as asserts.
+
 **Threading.** snail does not create threads. Values are single-threaded
-unless documented; `PagePool` acquire/release is the one internally
-synchronized boundary, so independent atlases over one pool can be built on
-different threads. `snail-raster` has an optional caller-driven `ThreadPool`.
+unless documented. `PagePool` acquisition/release and identity minting are
+synchronized, as are paired reservations within a shared page, so independent
+atlases over one pool can be built on different threads. `snail-raster` has an
+optional caller-driven `ThreadPool`.
 
 ## Text and hinting
 
 `Faces.build` + `shape()` produce a `ShapedText` (HarfBuzz shaping, style
 selection, fallback chains, OpenType features, source-range metadata).
+Direction, script, and language can be explicit or left for HarfBuzz to infer:
+
+```zig
+const features = [_]snail.OpenTypeFeature{
+    .{ .tag = "liga".*, .value = 1 },
+    .{ .tag = "kern".*, .value = 0, .range = .{ .start = 0, .end = 8 } },
+};
+var shaped = try snail.shape(alloc, &faces, text, .{
+    .direction = .rtl,
+    .script = "Arab".*,
+    .language = "ar",
+    .features = &features,
+});
+defer shaped.deinit();
+```
+
+`direction` is run-level shaping direction, not paragraph bidi layout.
+Feature ranges and each glyph's half-open `source_start..source_end` are UTF-8
+byte offsets into the original input. Cluster ranges are complete in both LTR
+and RTL output; glyph order follows HarfBuzz within each fallback-font run.
+The fallback itemizer keeps its supported font-sensitive combining, emoji, and
+Indic sequences together. Invalid UTF-8, feature ranges, empty/oversized
+language strings, ppem values, and missing ppem for an advance provider are
+reported as errors. `Faces.build` reports `TooManyFaces`, while `Faces.face`
+and `fontIdForFace` return `null` for an invalid index.
+
 `placeRun`/`placeRunAlloc` turn a run into `Shape`s under one of three modes,
 each pairing a record namespace with a population verb:
 
@@ -285,7 +393,7 @@ zig build run-game                # interactive 3D scene: world-space text, cust
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
 zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
 zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga
-zig build run-minimal-metal       # same scene through Metal (macOS hosts; best-effort/unvalidated) → zig-out/minimal-metal.tga
+zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-gated in CI) → zig-out/minimal-metal.tga
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
 zig build gen-shaders             # materialize the generated shader artifacts into zig-out/shaders for inspection (needs slang+spirv-cross)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)

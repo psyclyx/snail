@@ -135,9 +135,10 @@ pub const DrawState = struct {
 };
 
 pub const TargetEncoding = struct {
-    /// How the current attachment interprets color values written by the
-    /// fragment stage. Use `.srgb` for GL/Vulkan sRGB formats and `.linear` for
-    /// linear UNORM/float targets and CPU byte buffers.
+    /// How the current attachment interprets values written by the fragment
+    /// stage. Use `.srgb` for hardware sRGB attachments and `.linear` for
+    /// linear UNORM/float attachments. The CPU backend emulates the declared
+    /// attachment/storage pair rather than inferring it from the byte buffer.
     attachment: ColorEncoding,
     /// Encoding expected in the final stored pixels. On an sRGB attachment this
     /// should also be `.srgb`; the format encoder converts linear shader output.

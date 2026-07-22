@@ -1,7 +1,8 @@
 //! `DrawRecords`: the output of `emit`.
 //!
 //! Two slices:
-//! - `instances` is packed GPU-ready data: one `Instance` per shape.
+//! - `instances` is packed GPU-ready data: one `Instance` per non-empty shape
+//!   record emitted by `emit`.
 //! - `batches` describes how to bind state and dispatch each draw.
 //!
 const std = @import("std");

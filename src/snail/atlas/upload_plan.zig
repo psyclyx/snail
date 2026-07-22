@@ -219,8 +219,9 @@ pub const Slot = struct {
     uploaded_info_rows: u32 = 0,
     /// Snapshot whose binding-relative side data currently occupies this
     /// slot. Exact snapshots need no side-data upload; direct children may
-    /// append; branches, skipped descendants, and unrelated atlases trigger
-    /// a conservative full side-data replacement.
+    /// append only within the slot's fixed initial row/image reservation.
+    /// Branches, skipped descendants, and unrelated atlases trigger a
+    /// conservative full side-data replacement within that same reservation.
     snapshot_id: u64 = 0,
     lineage: u64 = 0,
 };
@@ -240,6 +241,10 @@ pub const Planner = struct {
     image_free: FreeList,
     upload_generation: u64 = 0,
 
+    /// Initialize allocation-free planner state over caller-owned backing. Each
+    /// slice must provide at least its corresponding `sizes(pool, opts)` element
+    /// count. The pool and all backing slices must outlive the planner and its
+    /// live bindings; initialization mints a distinct binding-source identity.
     pub fn init(
         pool: *PagePool,
         opts: Options,
@@ -330,7 +335,12 @@ pub const Planner = struct {
     }
 
     /// Plan an incremental re-upload of `atlas` into the slot `prev_binding`
-    /// already owns (only changed curve/band/layer-info/image regions).
+    /// already owns. Exact/direct-child snapshots suppress unchanged regions;
+    /// branches and unrelated snapshots conservatively replace side data.
+    /// The slot's initial layer-info and image reservations never grow, so an
+    /// atlas that exceeds either returns `NoLayerInfoRoomToGrow` or
+    /// `NoImageRoomToGrow`; release the binding and use `plan` for a larger
+    /// fresh reservation.
     pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
         out_len.* = 0;
         if (prev_binding.pool != self.pool) return error.UnknownPool;
@@ -376,12 +386,14 @@ pub const Planner = struct {
         return true;
     }
 
-    /// Forget the page upload watermarks after the caller fails to apply a
-    /// previously returned region list. Bindings and their placement remain
-    /// valid, but the next plan conservatively re-emits every referenced page.
-    /// Callers must invoke this when GPU upload/recording fails after `plan` or
-    /// `planDelta` succeeds; otherwise a retry could skip bytes that never
-    /// reached the GPU.
+    /// Forget page and binding-relative upload residency after the caller fails
+    /// to apply a previously returned region list. Bindings and their placement
+    /// remain valid, but the next `planDelta` for a live binding conservatively
+    /// re-emits every referenced page, layer-info row, and image. Callers must
+    /// invoke this when GPU upload/recording fails after `plan` or `planDelta`
+    /// succeeds, then retry with `planDelta(binding, atlas)` or release the
+    /// binding before a fresh `plan`; otherwise a retry could skip bytes that
+    /// never reached the GPU.
     pub fn invalidateUploads(self: *Planner) void {
         @memset(self.prepared_generation, 0);
         @memset(self.prepared_curve_words, 0);
@@ -632,6 +644,8 @@ pub const OwnedPlanner = struct {
     regions: []Region,
     layer_info_scratch: []f32,
 
+    /// Allocate every backing slice required by `Planner.init`. The borrowed
+    /// pool must outlive this wrapper and all bindings it issues.
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool, opts: Options) (std.mem.Allocator.Error || InitError)!OwnedPlanner {
         const required = try sizes(pool, opts);
         const generation = try allocator.alloc(u64, required.generation);
@@ -665,6 +679,7 @@ pub const OwnedPlanner = struct {
         };
     }
 
+    /// Release all planner backing. Live bindings become invalid immediately.
     pub fn deinit(self: *OwnedPlanner) void {
         self.allocator.free(self.generation);
         self.allocator.free(self.curve_words);
@@ -677,22 +692,30 @@ pub const OwnedPlanner = struct {
         self.* = undefined;
     }
 
+    /// Allocator-backed convenience for `Planner.plan`; the returned region
+    /// slice is borrowed until the next plan call on this wrapper.
     pub fn plan(self: *OwnedPlanner, atlas: *const Atlas) Error!PlannedUpload {
         var region_count: usize = 0;
         const binding = try self.planner.plan(atlas, self.regions, &region_count, self.layer_info_scratch);
         return .{ .binding = binding, .regions = self.regions[0..region_count] };
     }
 
+    /// Allocator-backed convenience for `Planner.planDelta`, including its
+    /// fixed initial row/image reservation. The returned region slice is
+    /// borrowed until the next plan call on this wrapper.
     pub fn planDelta(self: *OwnedPlanner, previous: Binding, atlas: *const Atlas) Error!PlannedUpload {
         var region_count: usize = 0;
         const binding = try self.planner.planDelta(previous, atlas, self.regions, &region_count, self.layer_info_scratch);
         return .{ .binding = binding, .regions = self.regions[0..region_count] };
     }
 
+    /// Release a live binding and its fixed reservations.
     pub fn release(self: *OwnedPlanner, binding: Binding) bool {
         return self.planner.release(binding);
     }
 
+    /// Forward `Planner.invalidateUploads` after a returned region list could
+    /// not be applied completely.
     pub fn invalidateUploads(self: *OwnedPlanner) void {
         self.planner.invalidateUploads();
     }

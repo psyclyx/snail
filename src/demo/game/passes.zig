@@ -22,8 +22,9 @@ const assets = @import("assets");
 pub const Fonts = struct {
     allocator: std.mem.Allocator,
     faces: snail.Faces,
-    /// Heap-allocated so `Faces.face(i).font` (raw `*const Font`) survives
-    /// `Fonts` getting moved during `init`'s return-by-value.
+    /// Heap-allocated so `Faces.face(i).?.font` (raw `*const Font`) survives
+    /// `Fonts` getting moved during `init`'s return-by-value. The unwrap is
+    /// valid only after checking `i < faceCount()`.
     fonts: []snail.Font,
     pool: *snail.PagePool,
 

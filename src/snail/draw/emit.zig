@@ -2,9 +2,10 @@
 //! against an `Atlas`, plus homogeneous `DrawBatch`es describing the binding
 //! and semantic family of each contiguous instance run.
 //!
-//! `emit` walks shape lists and writes one packed `Instance` per shape into
-//! caller-provided buffers. Consecutive instances and calls that share a
-//! binding, semantic family, and contiguity coalesce their batches.
+//! `emit` walks shape lists and writes one packed `Instance` per non-empty atlas
+//! record into caller-provided buffers. Shapes whose record has no curves are
+//! skipped. Consecutive instances and calls that share a binding, semantic
+//! family, and contiguity coalesce their batches.
 //!
 //! Buffer sizing: one emit call writes at most `shapes.len` instances and
 //! `shapes.len` batches past the current lengths. Instances are GPU-bound
@@ -200,6 +201,12 @@ fn inspectShape(
 /// `shape.local_color`, tint as `world_tint`. Color and tint are linear
 /// light, straight alpha (see `color.zig`); the renderer multiplies them
 /// in linear space.
+///
+/// The operation is failure-atomic: every shape and both output capacities are
+/// preflighted before either buffer or cursor is changed. On error,
+/// `instance_len` and `batch_len` and all existing output elements are
+/// unchanged. Empty records are skipped before shape-specific transform,
+/// color, and autohint-policy validation because they emit no draw work.
 pub fn emit(
     instances_buf: []Instance,
     batches_buf: []DrawBatch,

@@ -13,14 +13,22 @@
 //!   for `max_bindings`, `layer_info_height` rows of paint records, and
 //!   `max_images` image references. The caller decides how much is
 //!   enough; a `DeviceAtlas` never auto-grows.
-//! - `upload(scratch, atlases)` plans one binding per atlas and applies
+//! - `upload(scratch, atlases, out_bindings)` plans one binding per atlas and applies
 //!   the planned regions. Errors with `error.NoFreeBinding` /
 //!   `error.NoFreeLayerInfoRows` / `error.NoFreeImageLayers` if capacity
 //!   is exceeded — the caller handles by releasing retired bindings or
 //!   calling `resize`.
 //! - `release(binding)` returns the slot's storage to the free list.
+//! - `uploadDelta(scratch, binding, atlas)` updates a live slot. Append-only direct
+//!   children reuse unchanged prepared data; branches and unrelated snapshots
+//!   conservatively replace their side data within the slot's reserved capacity.
 //! - `resize(options)` reshapes the storage. Errors if there are active
 //!   bindings.
+//!
+//! Image paints borrow both the `Image` value and its texel slice. Keep them
+//! alive and unmodified until every binding that references them is released or
+//! replaced. This backend accepts exactly four bytes per texel: RGBA with
+//! sRGB-encoded RGB and straight alpha.
 
 const std = @import("std");
 
@@ -76,14 +84,24 @@ fn layerInfoFloatCount(height: u32) upload_plan.InitError!usize {
 }
 
 pub const DeviceAtlasOptions = struct {
+    /// Maximum number of simultaneously live bindings.
     max_bindings: u32 = 16,
+    /// Total rows in the shared RGBA32F layer-info store. Active bindings take
+    /// disjoint row ranges from this fixed capacity.
     layer_info_height: u32 = 64,
+    /// Total image-reference layers shared by active bindings. Repeated uses of
+    /// the same `*const Image` within one atlas consume one layer.
     max_images: u32 = 16,
 };
 pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
+    /// `atlases` and `out_bindings` must have identical lengths.
     BindingOutputLengthMismatch,
+    /// The request length or resulting active-binding count cannot be
+    /// represented as `u32`.
     ActiveBindingCountOverflow,
+    /// An image has zero dimensions or is not exactly width*height*4 bytes.
     InvalidImageFormat,
+    /// A planner region does not match the CPU device's texture contract.
     InvalidUploadRegion,
 };
 pub const ResizeError = error{ActiveBindingsPreventResize} || upload_plan.InitError || std.mem.Allocator.Error;
@@ -145,6 +163,10 @@ pub const DeviceAtlas = struct {
         };
     }
 
+    /// Allocate all fixed-capacity planner and prepared-resource storage. The
+    /// borrowed `pool` must outlive this cache and all bindings it issues.
+    /// Invalid/unrepresentable options and allocation failure leave no live
+    /// partial cache.
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !DeviceAtlas {
         const max_layers = pool.options.max_layers;
 
@@ -262,7 +284,11 @@ pub const DeviceAtlas = struct {
     /// planned bindings are released on failure.
     ///
     /// `scratch` holds transactional staging data for the duration of this
-    /// call. No pointer into it is retained.
+    /// call. No pointer into it is retained. Atlas page/record data is prepared
+    /// into cache-owned storage, but image values and texels remain borrowed as
+    /// described by the module lifetime contract. On failure, every binding
+    /// planned by this call is released; entries already written to
+    /// `out_bindings` must not be used.
     pub fn upload(
         self: *DeviceAtlas,
         scratch: std.mem.Allocator,
@@ -291,10 +317,12 @@ pub const DeviceAtlas = struct {
         self.active_bindings = next_active;
     }
 
-    /// Incrementally update `prev_binding`'s slot with `atlas`'s
-    /// current state. See `GlDeviceAtlas.uploadDelta` for the
-    /// contract; the planner's per-page watermarks keep unchanged
-    /// pages free of copy traffic.
+    /// Incrementally update `prev_binding`'s live slot with `atlas`'s current
+    /// state. Exact snapshots and direct append-only children reuse unchanged
+    /// prepared pages and side data; branches, skipped descendants, and
+    /// unrelated snapshots conservatively replace side data. Any resulting
+    /// side data must fit the row/image capacity reserved by the original
+    /// binding. On error, the previously prepared device state remains usable.
     pub fn uploadDelta(
         self: *DeviceAtlas,
         scratch: std.mem.Allocator,
@@ -323,7 +351,9 @@ pub const DeviceAtlas = struct {
     /// buffer (row 0 of the slice is the slot's first row); `info_row_base`
     /// is where this slot sits in the global info_y space and is the value
     /// emit added to `Instance.info_y`. Path records' `texel_offset` is
-    /// already slot-relative (matches `layer_info_data`).
+    /// already slot-relative (matches `layer_info_data`). Returned slices are
+    /// borrowed from the cache and remain valid only until that binding is
+    /// released, updated, resized, or the cache is deinitialized.
     pub fn snapshotFor(self: *const DeviceAtlas, binding: Binding) ?Snapshot {
         const slot_index = self.findSlot(binding) orelse return null;
         const slot = &self.planner.bindings[slot_index];
@@ -358,6 +388,9 @@ pub const DeviceAtlas = struct {
         return self.findSlot(binding) != null;
     }
 
+    /// Borrow the prepared page for one pool layer, or null when that layer has
+    /// not been uploaded. The pointer is invalidated by a later upload/delta
+    /// touching the layer, resize, or deinit.
     pub fn page(self: *const DeviceAtlas, layer: u32) ?*const PreparedAtlasPage {
         if (layer >= self.prepared.len) return null;
         if (self.prepared[layer]) |*p| return p;
@@ -777,8 +810,8 @@ test "uploadDelta errors for released binding" {
 }
 
 test "uploadDelta accepts a different atlas on the same pool" {
-    // Per the contract docstring on GlDeviceAtlas.uploadDelta: a
-    // different atlas on the same pool is permitted — the cache's
+    // Per the public uploadDelta contract, a different atlas on the same pool
+    // is permitted — the cache's
     // per-layer page tracking notices the change and re-uploads
     // affected pages. This is correct, just less efficient than a
     // true extension would be. Lock that in so future "tighten the

@@ -1,6 +1,12 @@
 Native-Slang shader source — stage A notes (regular-text family)
 ================================================================
 
+CURRENT READER NOTE (2026-07-22): this is a chronological engineering log.
+Sections before "Build-time generation architecture" describe the state at
+that stage and are historical unless explicitly updated. The current shipped
+surface is summarized by "Build-time generation architecture", "Caller
+integration", and "Dual-source WGSL + contract verification" near the end.
+
 One Slang source tree, four targets, regression-gated against the composed
 GLSL catalog. `zig build gen-shaders` (nix-shell: slangc 2026.5.2 + naga)
 regenerates the checked-in artifacts in src/snail/shader/generated/.
@@ -160,7 +166,7 @@ Stage-B traps (discovered porting colr/path; apply to later families)
 Stage-B status (2026-07-21): all seven families landed — colr, path,
 tt_hinted_text, autohint (both stages), text_subpixel (Vulkan+GL330;
 verified AE=0 against the composed path under a forced-subpixel render),
-text_sample (canonical artifacts only; consumer migration is stage C),
+text_sample (canonical artifacts only; consumer migration followed in Stage C),
 linear_resolve (GL hosts). Full gate exact vs the 492de91 baselines.
 
 Stage B recipe (per remaining family: colr, path, tt_hinted_text,
@@ -243,9 +249,10 @@ Traps DEAD with SPIRV-Cross:
       `layout(location = 0, index = 1)` on the blend output straight from
       the [[vk::index(1)]] decoration and leaves index-0 implicit (the GL
       default) — no explicit Index-0 patch, no
-      glBindFragDataLocationIndexed. The WGSL half (no @blend_src at
-      declaration level) stands, but see the interop spike below: a valid
-      dual-source WGSL artifact is now generated via __requirePrelude.
+      glBindFragDataLocationIndexed. At this point the WGSL half (no
+      @blend_src at declaration level) used the __requirePrelude experiment
+      described below; the later tooling-upgrade section records its
+      retirement in favor of a structural post-generation transform.
   17. (desktop half) texel-buffer rejection: dead. text_sample now has a
       glsl330 artifact — plain `uniform usamplerBuffer
       u_snail_text_records` + SnailTextSampleParams_std140 — which
@@ -289,8 +296,14 @@ desktop GL artifact naga could not produce. Re-baselining is NOT required
 at merge (AE=0 everywhere); if gl_o0 is dropped later, re-run the full
 suite (only the screenshot gates were checked under default -O).
 
-Slang-native interop spike (2026-07-21, a1-04 mechanisms vs patch tools)
-========================================================================
+Historical Slang-native interop spike (2026-07-21; now superseded)
+==================================================================
+This section records experiments as they stood that day. In particular,
+the successful __requirePrelude WGSL experiment described below is no
+longer the implementation: see "Dual-source WGSL + contract verification"
+for the current post-generation transform, which has no mangled-name
+dependency.
+
 Question: can `__target_switch` / `__intrinsic_asm` / `__requirePrelude` /
 spirv_asm replace the external patch tools? One structural fact decides
 the two GL candidates: since the SPIRV-Cross cutover, slangc NEVER emits
@@ -360,8 +373,12 @@ them); the subpixel WGSL artifact additionally depends on slang's name
 mangling. Treat candidate 3 as a regeneration-time convenience guarded by
 naga validation, not a stable contract.
 
-Stage C (2026-07-21): the game's text-as-material path is native Slang
-=====================================================================
+Historical Stage C (2026-07-21): game material migration
+==========================================================
+This records the intermediate migration state. Stage D and the later
+build-time generation architecture supersede its checked-in-artifact and
+remaining-consumer inventory.
+
 The last composed-GLSL consumer is migrated. What it was: the game demo's
 material shader — genuine embeddable composition, NOT a text_sample
 pipeline. Custom lighting code (bevel emboss from five coverage samples +
@@ -376,9 +393,10 @@ Migration (the idiomatic stage-C answer for the composition case): the
 game's material shader is now a caller-authored Slang family —
 src/demo/game/slang/game_material.slang, `import text_sample`, per-target
 `ISnailTextRecords` impls — compiled by the same gen-shaders matrix.
-Checked-in GL dialects live NEXT TO THE CONSUMER
+At this stage, checked-in GL dialects lived NEXT TO THE CONSUMER
 (src/demo/game/generated/{glsl330,gles300}/game_material.{vert,frag}.glsl,
-via the new Family.dir/out_prefix fields); the Vulkan leg is compiled by
+via the new Family.dir/out_prefix fields); those checked-in artifacts were
+subsequently retired in favor of build-time generation. The Vulkan leg is compiled by
 the demo build (build.zig addGameShaderSpirv →
 slang_shaders.vulkanGameMaterialSpv), keeping the existing MaterialPush
 push-constant layout, set 0 = atlas plane, set 1 binding 0 = records SSBO,
@@ -423,15 +441,15 @@ Composed-GLSL consumers remaining after stage C:
    perf comparison / the one-file example. These are stage-D work items,
    not render-path consumers — every shipped render path (demo, banner,
    game, minimal-wgpu aside) runs generated artifacts.
-Stage D can now delete: the game's composed sources are ALREADY deleted
-(src/demo/game/glsl/*); the text_sample interface fragments
-(snail_text_sample.interface{,.gles30,.vulkan}.glsl) and
-snail_text_sample_body.glsl have no consumer left once the perf harness
-and minimal_gl stop composing (or are re-pointed), and
-vulkan_shaders.compileCallerShader has no caller in-tree.
+The subsequent Stage D deleted the already-unused composed sources and
+text_sample interface fragments, migrated the remaining perf/minimal_gl
+consumers, and removed vulkan_shaders.compileCallerShader.
 
-Stage D (2026-07-21): retirement, merge simplifications, docs
-=============================================================
+Historical Stage D (2026-07-21): retirement and simplification
+================================================================
+This section records the retirement transition. The current steady-state
+layout is described under "Build-time generation architecture" below.
+
 Retired: the GLSL-ingestion WGSL catalog (shader.wgsl + src/snail/shader/
 wgsl/ + build/wgsl_shaders.zig, spv_wgsl_prep, glsl_patch_dual_source,
 spv_patch_dual_source) and the whole Vulkan GLSL-ingestion path in
@@ -470,11 +488,11 @@ Fifth target: `hlsl` — D3D11 / SM 5.0, FXC-class. gen-shaders compiles
 every non-gl_only family with
   slangc -DSNAIL_TARGET_D3D11 -target hlsl -profile sm_5_0
          -line-directive-mode none
-into src/snail/shader/generated/hlsl/ (nine artifacts; linear_resolve and
-game_material are gl_only by design — D3D11 renders to an sRGB RTV and has
-no resolve pass). Exposed via snail.shader.generated (textHlsl/
-autohintHlsl/{colr,path,ttHinted,subpixel,textSample}FragHlsl + name/
-semantic constants), with artifact tests.
+into the build-generated `hlsl` module scope (eleven library artifacts;
+linear_resolve and game_material are GL-only by design — D3D11 renders to an
+sRGB RTV and has no resolve pass). The separate `snail-shaders` module exposes
+the text/autohint stages plus the colr, path, TT-hinted, three subpixel, and
+text_sample fragment accessors and their entry/semantic constants.
 
 Findings (all verified empirically):
  - Matrix layout: the native-Slang finding CARRIES OVER — the default is
@@ -516,19 +534,19 @@ Wine traps (Wine's d3dcompiler_47 is vkd3d-shader, not Microsoft FXC):
    guard) so every subscript is a compile-time constant.
  - Even with both fixed, stable wine 11.0 crashes in its HLSL front end on
    autohint.vert; wine 11.6 (wine64Packages.unstable in shell.nix)
-   compiles all nine. Real Windows d3dcompiler_47 has none of these
+   compiles all eleven. Real Windows d3dcompiler_47 has none of these
    limits, but Wine is the CI environment, so the artifacts stay inside
    the vkd3d-supported subset.
 
 Validation (cheapest that genuinely validates, per artifact class):
  1. dxc (nix directx-shader-compiler) accepts -T vs_5_0/ps_5_0 and
-    compiles all nine — language/semantic validation at artifact time.
+    compiles all eleven — language/semantic validation at artifact time.
  2. vkd3d-compiler 1.19 (nix vkd3d) `-p {vs,ps}_5_0 -b dxbc-tpf` produces
-    real SM5 DXBC for all nine — bytecode-level validation.
- 3. The demo runtime-compiles all nine through Wine's d3dcompiler_47: the
-    seven it draws with, plus text_subpixel/text_sample as compile-only
-    checks (validateRemainingArtifacts) since the scene has no subpixel or
-    material pass.
+    real SM5 DXBC for all eleven — bytecode-level validation.
+ 3. The demo runtime-compiles all eleven through Wine's d3dcompiler_47: the
+    seven it draws with, plus all three subpixel fragments and text_sample as
+    compile-only checks (`validateRemainingArtifacts`) since the scene has no
+    subpixel or material pass.
 
 minimal_d3d11 (src/demo/app/minimal_d3d11.zig): mirrors minimal_wgpu's
 structure and scene exactly (same fonts/atlas planner/emit stream/mvp).
@@ -562,19 +580,17 @@ gen-shaders silently rewrote stale artifacts. slangcFamily now registers
 every *.slang under the include dirs via addFileInput (see
 addModuleInputs in build/slang_shaders.zig).
 
-Metal stage (best-effort) (2026-07-21): MSL artifacts + minimal_metal
-=====================================================================
+Metal stage (2026-07-21; real-GPU CI gate added 2026-07-22)
+============================================================
 Sixth target: `msl` — `slangc -DSNAIL_TARGET_METAL -target metal
 -ignore-capabilities -line-directive-mode none` for every non-gl_only
-family (nine artifacts in src/snail/shader/generated/msl/, exposed via
-snail.shader.generated: textMsl/autohintMsl/{colr,path,ttHinted,subpixel,
-textSample}FragMsl + msl_{vertex,fragment}_entry). BEST-EFFORT: everything
-below was verified by READING the emitted MSL and by textual artifact
-tests — there is no Metal compiler for Linux (checked nixpkgs: moltenvk is
-darwin-only; spirv-cross/glslang have no MSL front end; metal-cpp is
-headers, unpackaged, and wouldn't validate anyway), so even SYNTAX
-validation is deferred to the Mac. The demo runtime-compiles the sources
-with newLibraryWithSource:, which is the real validation pass.
+family. The eleven library artifacts live in the build-generated `msl`
+module scope and are exposed through the separate `snail-shaders` module.
+Linux performs the portable checks: slangc generation, textual artifact
+contracts, and macOS cross-codegen. The macOS CI job additionally
+runtime-compiles all eleven artifacts with `newLibraryWithSource:`, builds
+the scene-used pipelines, renders on a real Metal GPU, and gates the resulting
+image against the shared reference.
 
 Findings (from the emitted code, not from running it):
  - slangc capability-checker bug forces -ignore-capabilities: a fragment
@@ -643,54 +659,34 @@ target is RGBA8Unorm_sRGB, storage Private, read back with a blit into a
 Shared MTLBuffer + contents (works on Intel and Apple silicon; the ATLAS
 textures use Shared storage + replaceRegion:, which is Apple-silicon —
 switch them to Managed(1) on Intel, noted in-source). One PSO per family;
-text_subpixel + text_sample are compile-only validated
-(validateRemainingArtifacts). Output: zig-out/minimal-metal.tga (BGRA
-top-left TGA like the other minimal examples).
+all three subpixel fragments plus text_sample are compile-only validated by
+validateRemainingArtifacts. Output: zig-out/minimal-metal.tga (BGRA top-left
+TGA like the other minimal examples).
 
-What IS verified on Linux (2026-07-21):
- - slangc emits all nine artifacts without errors; gen-shaders is
+What is verified on Linux:
+ - slangc emits all eleven library artifacts without errors; gen-shaders is
    idempotent; every other target's artifacts are byte-identical.
- - Textual contract tests in snail.shader.generated (bindings, entries,
+ - Textual contract tests in the generated accessor (bindings, entries,
    vertex_id, texture_buffer, MRT-dual-source pin, no #line).
  - `zig build check-metal-demo`: the demo + its snail module (HarfBuzz
    amalgam) fully compile AND codegen for aarch64-macos into a static
    archive (zig's bundled macOS libc/libc++; `comptime { _ = &main; }`
    defeats lazy analysis; the install forces real emission past
    -fno-emit-bin).
-What is NOT verified: framework linking (needs the macOS SDK), every
-Objective-C selector spelling and pinned enum value (runtime-only), MSL
-compilation itself, and every pixel.
+What macOS CI additionally verifies:
+ - Framework linking and the Objective-C bridge on a current macOS SDK.
+ - Runtime compilation of all eleven library MSL artifacts through Apple's
+   Metal frontend, plus pipeline creation for the scene-used families.
+ - A real-GPU render. The two-tier image gate allows the measured
+   Apple-rasterizer AA-edge variance while still catching broken bindings,
+   matrices, and missing families (currently <=4000 pixels over 4% channel
+   delta and <=2000 over 25%).
 
-Mac handoff (run on the Mac, needs Xcode CLT + zig 0.16 + nix or a
-HARFBUZZ_SRC checkout exported in the environment):
-  zig build run-minimal-metal            # → zig-out/minimal-metal.tga
-  zig build run-minimal-gl               # (or copy minimal-gl.tga from Linux)
-  magick compare -metric AE -fuzz 4% zig-out/minimal-metal.tga \
-      zig-out/minimal-gl.tga null:      # expect ~650/403200 (the known
-                                        # AA-edge class; wgpu=650, d3d11=650)
-  magick compare -metric AE zig-out/minimal-metal.tga \
-      zig-out/minimal-wgpu.tga null:    # expect ~single digits raw AE if
-                                        # available (d3d11 vs wgpu was 3)
-Risks, ranked:
- 1. objc shim typos (selector spellings, pinned enum values, msgSend
-    signatures) — crash or nil-object errors before any rendering. The
-    demo prints which call failed; paste the first failure.
- 2. newLibraryWithSource errors — the MSL never met a real Metal frontend.
-    The demo prints the full NSError text per artifact; paste it verbatim
-    into this file's Metal section.
- 3. Coordinate convention — a vertically flipped image means the y-up
-    analysis is wrong somewhere; compare against minimal-wgpu.tga first.
- 4. sRGB attachment behavior — washed-out or double-dark output means the
-    RGBA8Unorm_sRGB encode-on-write assumption differs; check whether the
-    clear color band (0.955..0.985 linear) reads back ~[249,250,252].
- 5. Argument-index mismatches (buffer 1 vs stage_in, texture slots) —
-    Metal validation layer (`MTL_DEBUG_LAYER=1 zig build run-minimal-metal`)
-    names the offending slot.
- 6. Shared-storage atlas textures on Intel Macs — replaceRegion asserts;
-    switch GpuAtlas.createTexture to Managed(1).
-Report results (tga + console output + `magick compare` numbers) back into
-this section; on green, promote the README "best-effort" wording and
-consider a metallib offline-compile step on the Mac side.
+Remaining coverage and portability caveats: the compile-only subpixel and
+text_sample families are not rendered by this grayscale scene, and CI covers
+its current Apple-GPU runner rather than every OS/GPU generation. Intel-Mac
+shared-storage behavior and offline metallib generation remain outside the
+gate.
 
 Build-time generation architecture (2026-07-22): artifacts leave the tree
 -------------------------------------------------------------------------

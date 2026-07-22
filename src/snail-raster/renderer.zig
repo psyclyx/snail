@@ -1,7 +1,7 @@
 //! Software rasterizer for snail glyph data.
 //! Evaluates the same Bezier curve/band data the GPU shaders use, but per-pixel
-//! into a caller-owned, explicitly formatted memory buffer. Intended for headless rendering
-//! and bootstrap frames (before EGL/Vulkan is available).
+//! into a caller-owned, explicitly formatted memory buffer. Intended for
+//! headless rendering and bootstrap frames (before EGL/Vulkan is available).
 //!
 //! Pixel parity vs GL/Vulkan: matches within 1 sRGB LSB on virtually every
 //! pixel; near-tangent conic edges may diverge by a few LSB due to differing
@@ -176,8 +176,14 @@ pub const Renderer = struct {
     const MAX_COMPOSITE_LAYERS: usize = 8;
 
     pub const BufferError = error{
+        /// The byte slice is too short for `stride * height`, or that product
+        /// cannot be represented by the host.
         InvalidBuffer,
+        /// A row cannot hold `width` pixels in the selected format, or its
+        /// required byte count overflows.
         InvalidStride,
+        /// Target dimensions are non-finite, do not exactly match the attached
+        /// buffer, or select an invalid/empty resolve surface.
         InvalidTargetSurface,
     };
 
@@ -206,7 +212,10 @@ pub const Renderer = struct {
         };
     }
 
-    /// Update the pixel buffer and dimensions without clearing atlas state.
+    /// Replace the caller-owned pixel buffer and dimensions while retaining
+    /// renderer configuration and profiling state. Initial validation uses one
+    /// byte per pixel; the exact format-specific stride is checked by
+    /// `validateTarget`/`drawBatch`. Failure leaves the existing buffer intact.
     pub fn reinitBuffer(self: *Renderer, pixels: []u8, width: u32, height: u32, stride: u32) BufferError!void {
         try validateBuffer(pixels, width, height, stride, null);
         self.pixels = pixels;
@@ -228,6 +237,9 @@ pub const Renderer = struct {
         if (pixels.len < required) return error.InvalidBuffer;
     }
 
+    /// Validate that `surface` has finite dimensions exactly matching the
+    /// attached buffer and that `stride` and `pixels.len` can hold its selected
+    /// pixel format. Called before every public operation that writes pixels.
     pub fn validateTarget(self: *const Renderer, surface: render_state.TargetSurface) BufferError!void {
         if (!std.math.isFinite(surface.pixel_width) or !std.math.isFinite(surface.pixel_height) or
             surface.pixel_width != @as(f32, @floatFromInt(self.width)) or
@@ -238,6 +250,8 @@ pub const Renderer = struct {
         try validateBuffer(self.pixels, self.width, self.height, self.stride, surface.format);
     }
 
+    /// Opaque renderer state returned by `beginLinearResolve`; pass it exactly
+    /// once to `endLinearResolve` after drawing the resolve pass.
     pub const LinearResolveRestore = struct {
         row_clip_min: u32,
         row_clip_max: u32,
@@ -249,6 +263,12 @@ pub const Renderer = struct {
         format: render_state.PixelFormat,
     };
 
+    /// Begin the CPU emulation of a linear intermediate resolve, restrict writes
+    /// to its resolve rectangle, and seed the requested backdrop. The software
+    /// backend currently supports only `.rgba16f` as `intermediate_format`;
+    /// other intermediate formats return `UnsupportedResolve`. Nested passes
+    /// return `LinearResolveAlreadyActive`. Errors occur before renderer state
+    /// or target pixels are changed.
     pub fn beginLinearResolve(self: *Renderer, surface: render_state.TargetSurface, resolve: render_state.LinearResolve) !LinearResolveRestore {
         try self.validateTarget(surface);
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
@@ -278,6 +298,9 @@ pub const Renderer = struct {
         return restore;
     }
 
+    /// End a successful linear-resolve scope and restore the renderer state
+    /// captured by `beginLinearResolve`. Calling this outside an active scope is
+    /// a contract violation asserted in safe builds.
     pub fn endLinearResolve(self: *Renderer, restore: LinearResolveRestore) void {
         std.debug.assert(self.linear_resolve_active);
         self.row_clip_min = restore.row_clip_min;
@@ -330,6 +353,11 @@ pub const Renderer = struct {
         };
     }
 
+    /// Low-level draw of one homogeneous instance slice against prepared atlas
+    /// resources. The target surface is validated before writes. Perspective
+    /// MVPs return `NonAffineMvp`, because the CPU backend supports affine
+    /// scene-to-pixel transforms only. A non-null pool distributes bounded row
+    /// strips; null renders on the calling thread.
     pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
         try self.validateTarget(state.surface);
         // Drive the four fields the rendering helpers read off `self` from
@@ -414,8 +442,11 @@ pub const Renderer = struct {
         self.row_clip_max = @intCast(sy1);
     }
 
+    /// Compatibility hook for renderer-generic drivers; the CPU backend has no
+    /// command-buffer state to begin.
     pub fn beginDraw(_: *Renderer) void {}
 
+    /// Stable diagnostic backend name.
     pub fn backendName(_: *const Renderer) [:0]const u8 {
         return "CPU";
     }

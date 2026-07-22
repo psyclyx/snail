@@ -165,10 +165,11 @@ pub const Content = struct {
 pub const Assets = struct {
     allocator: Allocator,
     faces: snail.Faces,
-    /// Heap-allocated so `Faces.face(i).font` (which holds raw
-    /// `*const Font` pointers) survives `Assets` getting moved
-    /// during `init`'s return-by-value. An in-struct `[N]Font`
-    /// would dangle the moment init returned.
+    /// Heap-allocated so `Faces.face(i).?.font` (which holds a raw
+    /// `*const Font` pointer) survives `Assets` getting moved during
+    /// `init`'s return-by-value. The unwrap is valid only after checking
+    /// `i < faceCount()`. An in-struct `[N]Font` would dangle the moment
+    /// init returned.
     fonts: []snail.Font,
     paint_image: snail.Image,
     /// TtHintVm for face 0 (the regular face). Heap-allocated so the

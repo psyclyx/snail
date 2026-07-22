@@ -1,10 +1,10 @@
 //! Generated, complete per-target shaders from the native-Slang source
-//! (`src/snail/shader/slang/`) — every family, six targets: Vulkan SPIR-V
-//! (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), GLES 300 (`gles300`),
-//! D3D11 HLSL SM 5.0 (`hlsl`), and Metal MSL (`msl`; BEST-EFFORT — no
-//! Metal compiler exists on the Linux dev/CI hosts, so the MSL artifacts
-//! are textually validated only and real validation is deferred to a Mac,
-//! see slang/README-notes "Metal stage").
+//! (`src/snail/shader/slang/`) — supported combinations spanning six targets:
+//! Vulkan SPIR-V (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), GLES 300 (`gles300`),
+//! D3D11 HLSL SM 5.0 (`hlsl`), and Metal MSL (`msl`). Linux validates the
+//! generated MSL contract textually; macOS CI runtime-compiles every MSL
+//! artifact with `newLibraryWithSource:`, builds the scene-used pipelines,
+//! renders on a real Metal GPU, and gates the image.
 //! The hand-written GLSL fragment catalog (`snail.shader.glsl`) remains
 //! available as the behavioral spec and the composition surface for GL hosts.
 //!
@@ -197,10 +197,11 @@ pub fn ttHintedFragWgsl() [:0]const u8 {
 // WGSL: each artifact carries TWO fragment entries. `fragmentMain` is
 // plain MRT (locations 0/1 — valid WGSL, wrong blend semantics); the
 // dual-source entry is `wgsl_dual_fragment_entry` (`fragmentDualMain`,
-// @blend_src 0/1), injected via the __requirePrelude interop in the
-// family source and referencing slang's MANGLED names — regeneration is
-// guarded by naga validation (see slang/README-notes). Dual-source
-// consumers need the `dual_source_blending` WGSL extension
+// @blend_src 0/1), synthesized after slangc by
+// build/wgsl_gen_dual_entry.zig. The transform clones the generated entry
+// structurally and never depends on Slang-internal mangled identifiers;
+// naga validation guards its assumptions. Dual-source consumers need the
+// `dual_source_blending` WGSL extension
 // (WGPUFeatureName_DualSourceBlending) and must select the dual entry.
 
 /// WGSL dual-source fragment entry point of the subpixel families.
@@ -355,10 +356,10 @@ pub fn textSampleFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/text_sample.frag.hlsl");
 }
 
-// ── Metal MSL (best-effort: generated + textually checked on Linux;
-// compile validation deferred to a Mac — see slang/README-notes "Metal
-// stage"). Runtime-compile with `newLibraryWithSource:`; fragment-only
-// families pair with `textMsl(.vertex)`; autohint uses its own vertex. ──
+// ── Metal MSL (textually checked on Linux; runtime-compiled and
+// real-GPU render-gated on macOS CI). Compile with `newLibraryWithSource:`;
+// fragment-only families pair with `textMsl(.vertex)`; autohint uses its
+// own vertex. ──
 
 /// Metal entry-point names (like WGSL/HLSL, the Slang function names
 /// survive) — pass to `newFunctionWithName:`.
@@ -526,7 +527,7 @@ test "generated artifacts carry the documented interface names" {
     // GL 3.3 artifacts (SPIRV-Cross leaves the index-0 output implicit —
     // the GL default — and qualifies only the blend output), the SPIR-V
     // must exist, and the WGSL artifacts must carry BOTH entries (plain
-    // MRT fragmentMain + the prelude-injected dual-source entry with the
+    // MRT fragmentMain + the post-generation dual-source entry with the
     // dual_source_blending extension enabled).
     inline for (.{ subpixelFragGlsl330(), ttHintedSubpixelFragGlsl330(), autohintSubpixelFragGlsl330() }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0) out") != null);
@@ -550,7 +551,7 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, "[[color(1)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "index(1)") == null);
     }
-    // Text-sample canonical artifacts (consumer migration is stage C).
+    // Text-sample canonical artifacts.
     try std.testing.expect(std.mem.readInt(u32, textSampleFragSpv()[0..4], .little) == 0x0723_0203);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragWgsl(), "fn " ++ wgsl_fragment_entry) != null);
     // Text-sample desktop GL dialect: the texel buffer must stay a plain
@@ -606,8 +607,9 @@ test "generated artifacts carry the documented interface names" {
     inline for (.{ textHlsl(.vertex), textHlsl(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
     }
-    // MSL artifacts (best-effort; textual contract only — no Metal
-    // compiler on this platform): the b0-analog parameter block at
+    // MSL artifacts (this portable test checks the textual contract;
+    // macOS CI additionally runtime-compiles and renders them): the
+    // b0-analog parameter block at
     // [[buffer(0)]], Vulkan-numbered [[texture(n)]] slots, [[vertex_id]]
     // entries with the ATTRIB-analog [[attribute(n)]] stage_in, Slang
     // entry names, and no #line leakage.

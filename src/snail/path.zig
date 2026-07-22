@@ -1,3 +1,13 @@
+//! Mutable vector-path construction and precision-safe preparation.
+//!
+//! Public geometry inputs must be finite. Segment-producing operations require
+//! an active contour begun by `moveTo` and report `error.PathMissingMoveTo`
+//! otherwise. Invalid points, rectangles, arc parameters, offsets, tolerances,
+//! and rational conics report `error.InvalidGeometry`; conic weights must be
+//! finite and positive so their homogeneous denominator cannot cross zero.
+//! Operations whose curve/subdivision counts cannot be represented or would
+//! exceed the bounded adaptive-arc budget report `error.ShapeTooComplex`.
+
 const std = @import("std");
 
 const bezier = @import("math/bezier.zig");
@@ -133,6 +143,10 @@ fn makePathArcConic(center: Vec2, radii: Vec2, start_angle: f32, end_angle: f32)
     });
 }
 
+/// Append a quadratic approximation of an elliptical arc to an existing
+/// contour. `depth` bounds refinement quality; requests that would exceed the
+/// global 4096-segment work budget fail with `ShapeTooComplex` before appending.
+/// Non-finite inputs return `InvalidGeometry` before appending.
 pub fn appendAdaptiveArcCurve(
     path: *Path,
     center: Vec2,
@@ -173,6 +187,10 @@ fn appendAdaptiveArcConic(
     try path.appendSegment(makePathArcConic(center, radii, start_angle, end_angle));
 }
 
+/// Append a cubic approximation of an elliptical arc to an existing contour.
+/// The span is split into pieces no wider than pi/2, up to the global
+/// 4096-segment work budget. Excessive spans return `ShapeTooComplex`, and
+/// non-finite inputs return `InvalidGeometry`, before appending.
 pub fn appendAdaptiveArcCubic(
     path: *Path,
     center: Vec2,
@@ -394,6 +412,10 @@ fn appendOffsetCurveApproxKind(
     try appendOffsetCurveApproxKind(kind, path, halves[1], offset, depth - 1, tolerance, tangent_mid, tangent1);
 }
 
+/// Append an adaptive cubic approximation of one offset curve to an existing
+/// contour. Geometry, offset, and tolerance must be finite, tolerance must be
+/// non-negative, and rational-conic weights must be positive; violations
+/// return `InvalidGeometry`.
 pub fn appendOffsetCurveApprox(
     path: *Path,
     curve: CurveSegment,
@@ -411,6 +433,11 @@ pub fn appendOffsetCurveApprox(
     }
 }
 
+/// Allocator-backed mutable path. Geometry construction is incremental: a
+/// successful `moveTo` starts a contour, and line/quad/cubic/segment appends
+/// require one. Individual segment appends update curve accounting only after
+/// allocation succeeds. Multi-segment convenience operations can retain an
+/// already appended prefix if a later allocation fails.
 pub const Path = struct {
     allocator: std.mem.Allocator,
     curves: std.ArrayList(CurveSegment) = .empty,
@@ -461,8 +488,10 @@ pub const Path = struct {
         return copy;
     }
 
-    /// Normalize arbitrary source-space geometry into a small design space
-    /// near the origin before it is quantized into the f16 curve format.
+    /// Normalize source-space geometry whose maximum bbox extent is greater
+    /// than 1/65536 into a small design space near the origin before it is
+    /// quantized into the f16 curve format. Empty and sub-threshold paths use
+    /// identity transforms and have no prepared fill geometry.
     /// `PreparedPath.design_to_source` carries the inverse placement, and its
     /// paint/stroke helpers keep the whole shape in the same coordinate frame.
     pub fn prepare(self: *const Path, allocator: std.mem.Allocator) !PreparedPath {
@@ -545,6 +574,9 @@ pub const Path = struct {
         };
     }
 
+    /// Begin a contour at a finite point. If the current contour contains no
+    /// segments and remains open, this replaces its start instead of adding a
+    /// second empty contour.
     pub fn moveTo(self: *Path, point: Vec2) !void {
         if (!finiteVec(point)) return error.InvalidGeometry;
         if (self.contours.items.len > 0) {
@@ -566,11 +598,15 @@ pub const Path = struct {
         self.expandPointBBox(point);
     }
 
+    /// Append a line to a finite point, or return `PathMissingMoveTo` when no
+    /// contour has been started.
     pub fn lineTo(self: *Path, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.appendSegment(makePathLineSegment(contour.current_point, point));
     }
 
+    /// Append a quadratic with finite control/end points, or return
+    /// `PathMissingMoveTo` when no contour has been started.
     pub fn quadTo(self: *Path, control: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.appendSegment(CurveSegment.fromQuad(.{
@@ -580,6 +616,8 @@ pub const Path = struct {
         }));
     }
 
+    /// Append a cubic with finite control/end points, or return
+    /// `PathMissingMoveTo` when no contour has been started.
     pub fn cubicTo(self: *Path, control1: Vec2, control2: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.appendSegment(CurveSegment.fromCubic(.{
@@ -603,6 +641,9 @@ pub const Path = struct {
         }
     }
 
+    /// Add a rectangle. Negative dimensions clamp to zero; an empty
+    /// result is a no-op. Non-finite inputs or overflowing corners return
+    /// `InvalidGeometry` before mutation.
     pub fn addRect(self: *Path, rect: Rect) !void {
         if (!finiteRect(rect)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
@@ -615,6 +656,8 @@ pub const Path = struct {
         try self.close();
     }
 
+    /// Add the rectangle with reversed winding. Validation and empty-rectangle
+    /// behavior match `addRect`.
     pub fn addRectReversed(self: *Path, rect: Rect) !void {
         if (!finiteRect(rect)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
@@ -627,6 +670,8 @@ pub const Path = struct {
         try self.close();
     }
 
+    /// Add a rounded rectangle. The finite radius is clamped to
+    /// `[0, min(width, height) / 2]`; rectangle validation matches `addRect`.
     pub fn addRoundedRect(self: *Path, rect: Rect, corner_radius: f32) !void {
         if (!finiteRect(rect) or !std.math.isFinite(corner_radius)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
@@ -655,6 +700,8 @@ pub const Path = struct {
         try self.close();
     }
 
+    /// Add the rounded rectangle with reversed winding. Validation and radius
+    /// clamping match `addRoundedRect`.
     pub fn addRoundedRectReversed(self: *Path, rect: Rect, corner_radius: f32) !void {
         if (!finiteRect(rect) or !std.math.isFinite(corner_radius)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
@@ -683,6 +730,8 @@ pub const Path = struct {
         try self.close();
     }
 
+    /// Add an ellipse bounded by `rect`. Rectangle validation and
+    /// empty-rectangle behavior match `addRect`.
     pub fn addEllipse(self: *Path, rect: Rect) !void {
         if (!finiteRect(rect)) return error.InvalidGeometry;
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
@@ -697,6 +746,8 @@ pub const Path = struct {
         try self.close();
     }
 
+    /// Add the ellipse with reversed winding. Validation and empty-rectangle
+    /// behavior match `addEllipse`.
     pub fn addEllipseReversed(self: *Path, rect: Rect) !void {
         if (!finiteRect(rect)) return error.InvalidGeometry;
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
@@ -716,6 +767,10 @@ pub const Path = struct {
         return &self.contours.items[self.contours.items.len - 1];
     }
 
+    /// Append a finite low-level segment to the active contour. Rational conic
+    /// weights must be finite and positive. Returns `PathMissingMoveTo`,
+    /// `InvalidGeometry`, or `ShapeTooComplex` without changing curve
+    /// accounting when validation/allocation fails.
     pub inline fn appendSegment(self: *Path, curve: CurveSegment) !void {
         switch (curve.kind) {
             inline else => |k| try self.appendSegmentKind(k, curve),
@@ -772,6 +827,9 @@ pub const Path = struct {
         return count;
     }
 
+    /// Clone the fill geometry, adding a closing line for every non-empty open
+    /// contour. The caller owns the returned slice. Returns `ShapeTooComplex`
+    /// if the resulting count cannot be represented.
     pub fn cloneFilledCurves(self: *const Path, allocator: std.mem.Allocator) ![]CurveSegment {
         const close_count = self.unclosedContourCount();
         const total_count = std.math.add(usize, self.curves.items.len, close_count) catch
@@ -788,11 +846,16 @@ pub const Path = struct {
         return out;
     }
 
+    /// Curve count used for filled-path band sizing, including implicit closing
+    /// lines. Returns `ShapeTooComplex` on count overflow.
     pub fn filledBandCurveCount(self: *const Path) error{ShapeTooComplex}!usize {
         return std.math.add(usize, self.band_curve_count, self.unclosedContourCount()) catch
             error.ShapeTooComplex;
     }
 
+    /// Outline the path's stroke into caller-owned curves. Returns null when
+    /// the stroke/path is effectively empty and `ShapeTooComplex` when logical
+    /// curve accounting overflows; geometry/allocation errors propagate.
     pub fn cloneStrokedCurves(
         self: *const Path,
         allocator: std.mem.Allocator,
@@ -845,10 +908,12 @@ fn transformCurve(curve: CurveSegment, transform: Transform2D) CurveSegment {
     return out;
 }
 
-/// A path expressed in Snail's precision-safe design space. Each non-degenerate
-/// bbox axis spans `[-1,1]`; `design_to_source` restores the original aspect
-/// ratio when the shape is drawn. Strokes are outlined in source space before
-/// this normalization, so the independent axis scales cannot distort them.
+/// A path expressed in Snail's precision-safe design space. Each numerically
+/// significant bbox axis spans `[-1,1]`; `design_to_source` restores the
+/// original aspect ratio when the shape is drawn. Empty and sub-threshold paths
+/// use identity transforms and an empty prepared fill. Strokes are outlined in
+/// source space before normalization, so independent axis scales cannot distort
+/// them.
 pub const PreparedPath = struct {
     source: Path,
     design: Path,
