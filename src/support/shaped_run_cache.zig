@@ -376,14 +376,19 @@ test "ShapedRunCache distinguishes advance-provider identities" {
         fn coversA(_: *anyopaque, _: u32) bool {
             return false;
         }
-        fn coversB(_: *anyopaque, _: u32) bool {
-            return false;
+        fn coversB(_: *anyopaque, scalar: u32) bool {
+            // Deliberately differs from coversA even under release-mode
+            // identical-code folding, while remaining false for Unicode.
+            return scalar > 0x10ffff;
         }
         fn advanceA(_: *anyopaque, _: u32, _: u16, _: snail.TtHintPpem) ?i32 {
             return null;
         }
-        fn advanceB(_: *anyopaque, _: u32, _: u16, _: snail.TtHintPpem) ?i32 {
-            return null;
+        fn advanceB(_: *anyopaque, _: u32, glyph_id: u16, _: snail.TtHintPpem) ?i32 {
+            // The test string never maps to the sentinel glyph. Keeping a
+            // distinct observable branch prevents release builds from
+            // coalescing this callback with advanceA.
+            return if (glyph_id == std.math.maxInt(u16)) 0 else null;
         }
     };
 
