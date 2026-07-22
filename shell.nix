@@ -34,6 +34,12 @@ pkgs.mkShell ({
     # Headless WebGPU reference example (`zig build run-minimal-wgpu`):
     # Vulkan/GL backends on Linux, Metal on macOS.
     wgpu-native
+    # Build-time shader generation (the `snail-shaders*` modules): slangc
+    # for every target, spirv-cross for the GL dialects. Needed on every
+    # platform since generation moved out of git — the aggregate contract
+    # tests (zig build test) and the Metal demo's MSL both generate.
+    shader-slang
+    spirv-cross
   ] ++ lib.optionals stdenv.isLinux [
     libGL
     # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
@@ -45,10 +51,6 @@ pkgs.mkShell ({
     vulkan-loader
     vulkan-headers
     vulkan-validation-layers
-    # Shader artifact regeneration (`zig build gen-shaders`): slangc for
-    # every target, spirv-cross for the GL dialects.
-    shader-slang
-    spirv-cross
     # naga CLI (`naga <file>.wgsl`): validation tripwire for the generated
     # WGSL artifacts (the subpixel module's prelude entry in particular).
     wgpu-utils
