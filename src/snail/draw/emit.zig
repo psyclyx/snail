@@ -21,6 +21,7 @@ const math = @import("../math/vec.zig");
 const vertex = @import("../format/vertex.zig");
 const instance_emit = @import("../format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
+const record_key_mod = @import("../atlas/record_key.zig");
 const autohint_policy = @import("../font/autohint/policy.zig");
 const draw_records = @import("records.zig");
 const shape_mod = @import("shape.zig");
@@ -36,10 +37,18 @@ pub const Instance = draw_records.Instance;
 pub const Shape = shape_mod.Shape;
 
 pub const EmitError = error{
+    /// A cursor was past the end of its corresponding output buffer.
+    InvalidCursor,
+    /// The binding belongs to a different page pool than the atlas.
+    BindingPoolMismatch,
+    /// An atlas record referred to an invalid, foreign, or recycled page.
+    InvalidAtlasRecord,
     /// The shape slice references a key not present in the atlas.
     MissingRecord,
     /// A shape's composed transform had near-zero determinant.
     InvalidTransform,
+    /// A color or tint contained a non-finite component.
+    InvalidColor,
     /// An autohint analysis shape omitted its draw-time fitting policy.
     MissingAutohintPolicy,
     /// A non-autohint shape supplied an autohint fitting policy.
@@ -54,6 +63,8 @@ pub const EmitError = error{
     /// vertex format's u16 `info_y` slot. Caller's cache holds too
     /// much layer-info; either release retired bindings or shrink.
     InfoRowOverflow,
+    /// The output cannot be represented by the draw ABI's u32 indices.
+    OutputTooLarge,
 };
 
 fn addRowBase(info_y: u16, row_base: u32) EmitError!u16 {
@@ -66,6 +77,123 @@ pub const EmitResult = struct {
     instance_count: u32,
     batch_count: u32,
 };
+
+const ShapeMode = enum {
+    regular,
+    colr,
+    path,
+    tt_hinted_text,
+    autohint,
+
+    fn kind(self: ShapeMode) draw_records.ShapeKind {
+        return switch (self) {
+            .regular => .regular,
+            .colr => .colr,
+            .path => .path,
+            .tt_hinted_text => .tt_hinted_text,
+            .autohint => .autohint,
+        };
+    }
+};
+
+const InspectedShape = struct {
+    rec: atlas_mod.AtlasRecord,
+    mode: ShapeMode,
+    atlas_layer: u8,
+    final_transform: Transform2D,
+    info_x: u16 = 0,
+    info_y: u16 = 0,
+    layer_count: u16 = 0,
+    packed_policy: [7]u32 = [_]u32{0} ** 7,
+};
+
+fn allFinite(values: anytype) bool {
+    inline for (values) |value| {
+        if (!std.math.isFinite(value)) return false;
+    }
+    return true;
+}
+
+fn validTransform(transform: Transform2D) bool {
+    if (!allFinite(.{ transform.xx, transform.xy, transform.tx, transform.yx, transform.yy, transform.ty })) return false;
+    const det = transform.xx * transform.yy - transform.xy * transform.yx;
+    return std.math.isFinite(det) and @abs(det) >= 1e-10;
+}
+
+/// Resolve and validate everything that could make one instance fail before
+/// touching either output buffer. Empty records intentionally short-circuit
+/// before mode-specific metadata and draw-policy checks.
+fn inspectShape(
+    binding: Binding,
+    atlas: *const Atlas,
+    shape: Shape,
+    world_xform: Transform2D,
+    world_tint: [4]f32,
+) EmitError!?InspectedShape {
+    const rec = atlas.lookupRecord(shape.key) orelse return error.MissingRecord;
+    if (rec.curve_count == 0) return null;
+
+    if (!allFinite(shape.local_color) or !allFinite(world_tint)) return error.InvalidColor;
+
+    if (rec.page_index >= atlas.pages.len) return error.InvalidAtlasRecord;
+    const page = atlas.pages[rec.page_index];
+    if (page.layer_index >= binding.pool.pages.len or
+        binding.pool.pages[page.layer_index] != page or
+        rec.page_generation != page.currentGeneration())
+    {
+        return error.InvalidAtlasRecord;
+    }
+    const curve_texels = std.math.mul(u32, rec.curve_count, curve_tex_format.SEGMENT_TEXELS) catch return error.InvalidAtlasRecord;
+    const curve_end = std.math.add(u32, rec.curve_texel, curve_texels) catch return error.InvalidAtlasRecord;
+    if (curve_end > page.curve.usedWords() / 4 or
+        !allFinite(.{ rec.bbox.min.x, rec.bbox.min.y, rec.bbox.max.x, rec.bbox.max.y }))
+    {
+        return error.InvalidAtlasRecord;
+    }
+    // 0xff is the packed special-record sentinel, not a usable page layer.
+    if (page.layer_index >= std.math.maxInt(u8)) return error.AtlasLayerOverflow;
+
+    const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
+    if (!validTransform(final_transform)) return error.InvalidTransform;
+
+    var inspected = InspectedShape{
+        .rec = rec,
+        .mode = .regular,
+        .atlas_layer = @intCast(page.layer_index),
+        .final_transform = final_transform,
+    };
+
+    if (atlas.lookupAutohintRecord(shape.key)) |info| {
+        const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
+        policy.validate() catch return error.InvalidAutohintPolicy;
+        inspected.mode = .autohint;
+        inspected.info_x = info.info_x;
+        inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
+        inspected.layer_count = info.layer_count;
+        inspected.packed_policy = policy.pack();
+    } else if (atlas.lookupTtHintedRecord(shape.key)) |info| {
+        if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
+        inspected.mode = .tt_hinted_text;
+        inspected.info_x = info.info_x;
+        inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
+        inspected.layer_count = info.layer_count;
+    } else if (atlas.lookupPaintRecord(shape.key)) |info| {
+        if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
+        inspected.mode = if (shape.key.namespace == record_key_mod.ns.unhinted_glyph) .colr else .path;
+        inspected.info_x = info.info_x;
+        inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
+        inspected.layer_count = info.layer_count;
+    } else {
+        if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
+        if (rec.bands.h_band_count == 0 or rec.bands.v_band_count == 0 or
+            !allFinite(.{ rec.bands.band_scale_x, rec.bands.band_scale_y, rec.bands.band_offset_x, rec.bands.band_offset_y }))
+        {
+            return error.InvalidAtlasRecord;
+        }
+    }
+
+    return inspected;
+}
 
 /// Heterogeneous emit. One pre-composed `Instance` per shape in `shapes`,
 /// transform composed as `world_xform * shape.local_transform`, color as
@@ -83,7 +211,39 @@ pub fn emit(
     world_xform: Transform2D,
     world_tint: [4]f32,
 ) EmitError!EmitResult {
-    if (instances_buf.len - instance_len.* < shapes.len) return error.BufferTooSmall;
+    if (instance_len.* > instances_buf.len or batch_len.* > batches_buf.len) return error.InvalidCursor;
+    if (instance_len.* > std.math.maxInt(u32)) return error.OutputTooLarge;
+    if (atlas.pool) |pool| {
+        if (binding.pool != pool) return error.BindingPoolMismatch;
+    }
+
+    // Full preflight makes the operation failure-atomic. Count only records
+    // that render: spaces and zero-contour controls consume no capacity.
+    var emitted_len: usize = 0;
+    var batches_needed: usize = 0;
+    var previous_kind: ?draw_records.ShapeKind = null;
+    for (shapes) |shape| {
+        const inspected = (try inspectShape(binding, atlas, shape, world_xform, world_tint)) orelse continue;
+        const kind = inspected.mode.kind();
+        if (emitted_len == 0) {
+            var merges_existing = false;
+            if (batch_len.* > 0) {
+                const last = batches_buf[batch_len.* - 1];
+                const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return error.InvalidCursor;
+                merges_existing = last_end == @as(u32, @intCast(instance_len.*)) and
+                    last.binding.eql(binding) and last.kind == kind;
+            }
+            if (!merges_existing) batches_needed += 1;
+        } else if (previous_kind.? != kind) {
+            batches_needed += 1;
+        }
+        previous_kind = kind;
+        emitted_len += 1;
+    }
+
+    const final_instance_len = std.math.add(usize, instance_len.*, emitted_len) catch return error.OutputTooLarge;
+    if (final_instance_len > std.math.maxInt(u32)) return error.OutputTooLarge;
+    if (final_instance_len > instances_buf.len or batches_needed > batches_buf.len - batch_len.*) return error.BufferTooSmall;
 
     const words_buf: []u32 = @ptrCast(std.mem.sliceAsBytes(instances_buf));
     var cursor: usize = instance_len.* * WORDS_PER_INSTANCE;
@@ -93,97 +253,67 @@ pub fn emit(
     var batches_added: u32 = 0;
 
     for (shapes) |shape| {
-        const rec = atlas.lookupRecord(shape.key) orelse {
-            return error.MissingRecord;
-        };
+        const inspected = inspectShape(binding, atlas, shape, world_xform, world_tint) catch unreachable orelse continue;
 
-        // Empty records are non-rendering glyphs (spaces, zero-contour
-        // controls). Their semantic side records are intentionally optional;
-        // skip before validating mode-specific metadata.
-        if (rec.curve_count == 0) continue;
-
-        const ah_info_opt = atlas.lookupAutohintRecord(shape.key);
-        const packed_policy = if (ah_info_opt != null) blk: {
-            const policy = shape.autohint_policy orelse return error.MissingAutohintPolicy;
-            policy.validate() catch return error.InvalidAutohintPolicy;
-            break :blk policy.pack();
-        } else blk: {
-            if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
-            break :blk [_]u32{0} ** 7;
-        };
-
-        const page = atlas.pages[rec.page_index];
-        if (page.layer_index > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
-        const atlas_layer: u8 = @intCast(page.layer_index);
-
-        const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
-
-        if (ah_info_opt) |ah_info| {
-            // Warped instance over the shared base glyph.
-            try cur.appendAutohintTransformedTinted(
-                rec.bbox,
-                ah_info.info_x,
-                try addRowBase(ah_info.info_y, binding.info_row_base),
-                ah_info.layer_count,
+        switch (inspected.mode) {
+            .autohint => cur.appendAutohintTransformedTinted(
+                inspected.rec.bbox,
+                inspected.info_x,
+                inspected.info_y,
+                inspected.layer_count,
                 shape.local_color,
                 world_tint,
-                atlas_layer,
-                final_transform,
-                packed_policy,
-            );
-        } else if (atlas.lookupTtHintedRecord(shape.key)) |hinted_info| {
-            try cur.appendTtHintedTextTransformedTinted(
-                rec.bbox,
-                hinted_info.info_x,
-                try addRowBase(hinted_info.info_y, binding.info_row_base),
-                hinted_info.layer_count,
+                inspected.atlas_layer,
+                inspected.final_transform,
+                inspected.packed_policy,
+            ) catch unreachable,
+            .tt_hinted_text => cur.appendTtHintedTextTransformedTinted(
+                inspected.rec.bbox,
+                inspected.info_x,
+                inspected.info_y,
+                inspected.layer_count,
                 shape.local_color,
                 world_tint,
-                atlas_layer,
-                final_transform,
-            );
-        } else if (atlas.lookupPaintRecord(shape.key)) |paint_info| {
-            if (shape.key.namespace == record_key_mod.ns.unhinted_glyph) {
-                try cur.appendMultiLayerGlyphTransformedTinted(
-                    rec.bbox,
-                    paint_info.info_x,
-                    try addRowBase(paint_info.info_y, binding.info_row_base),
-                    paint_info.layer_count,
-                    shape.local_color,
-                    world_tint,
-                    atlas_layer,
-                    final_transform,
-                );
-            } else {
-                try cur.appendPathRecordTransformedTinted(
-                    rec.bbox,
-                    paint_info.info_x,
-                    try addRowBase(paint_info.info_y, binding.info_row_base),
-                    paint_info.layer_count,
-                    shape.local_color,
-                    world_tint,
-                    atlas_layer,
-                    final_transform,
-                );
-            }
-        } else {
-            try cur.appendGlyphTransformedTinted(
-                rec.bbox,
+                inspected.atlas_layer,
+                inspected.final_transform,
+            ) catch unreachable,
+            .colr => cur.appendMultiLayerGlyphTransformedTinted(
+                inspected.rec.bbox,
+                inspected.info_x,
+                inspected.info_y,
+                inspected.layer_count,
+                shape.local_color,
+                world_tint,
+                inspected.atlas_layer,
+                inspected.final_transform,
+            ) catch unreachable,
+            .path => cur.appendPathRecordTransformedTinted(
+                inspected.rec.bbox,
+                inspected.info_x,
+                inspected.info_y,
+                inspected.layer_count,
+                shape.local_color,
+                world_tint,
+                inspected.atlas_layer,
+                inspected.final_transform,
+            ) catch unreachable,
+            .regular => cur.appendGlyphTransformedTinted(
+                inspected.rec.bbox,
                 .{
-                    .glyph_x = rec.bands.glyph_x,
-                    .glyph_y = rec.bands.glyph_y,
-                    .h_band_count = rec.bands.h_band_count,
-                    .v_band_count = rec.bands.v_band_count,
-                    .band_scale_x = rec.bands.band_scale_x,
-                    .band_scale_y = rec.bands.band_scale_y,
-                    .band_offset_x = rec.bands.band_offset_x,
-                    .band_offset_y = rec.bands.band_offset_y,
+                    .glyph_x = inspected.rec.bands.glyph_x,
+                    .glyph_y = inspected.rec.bands.glyph_y,
+                    .h_band_count = inspected.rec.bands.h_band_count,
+                    .v_band_count = inspected.rec.bands.v_band_count,
+                    .band_scale_x = inspected.rec.bands.band_scale_x,
+                    .band_scale_y = inspected.rec.bands.band_scale_y,
+                    .band_offset_x = inspected.rec.bands.band_offset_x,
+                    .band_offset_y = inspected.rec.bands.band_offset_y,
                 },
                 shape.local_color,
                 world_tint,
-                atlas_layer,
-                final_transform,
-            );
+                inspected.atlas_layer,
+                inspected.final_transform,
+            ) catch unreachable,
         }
 
         const instance_index = cursor / WORDS_PER_INSTANCE - 1;
@@ -191,10 +321,10 @@ pub fn emit(
             .binding = binding,
             .first_instance = @intCast(instance_index),
             .instance_count = 1,
-            .kind = draw_records.shapeKind(&instances_buf[instance_index]),
+            .kind = inspected.mode.kind(),
         };
         if (!draw_records.mergeIfAdjacent(batches_buf, &working_batch_len, batch)) {
-            if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
+            std.debug.assert(working_batch_len < batches_buf.len);
             batches_buf[working_batch_len] = batch;
             working_batch_len += 1;
             batches_added += 1;
@@ -216,7 +346,6 @@ pub fn emit(
 // ---------------------------------------------------------------------------
 
 const testing = std.testing;
-const record_key_mod = @import("../atlas/record_key.zig");
 const curves_mod = @import("../atlas/curves.zig");
 const page_pool_mod = @import("../atlas/page_pool.zig");
 const curve_tex_format = @import("../format/curve_texture.zig");
@@ -649,4 +778,149 @@ test "emit produces separate batches for different bindings" {
     try testing.expectEqual(@as(usize, 2), blen);
     try testing.expect(batches[0].binding.pool == pool_a);
     try testing.expect(batches[1].binding.pool == pool_b);
+}
+
+test "emit rejects a binding from another pool before writing" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var other_pool = try PagePool.init(testing.allocator, pool.options);
+    defer other_pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    var instances: [1]Instance = undefined;
+    @memset(std.mem.asBytes(&instances), 0xa5);
+    const before = instances;
+    var batches: [1]DrawBatch = undefined;
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+
+    try testing.expectError(error.BindingPoolMismatch, emit(
+        &instances,
+        &batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = other_pool },
+        &atlas,
+        &.{.{ .key = record_key_mod.unhintedGlyph(0, 1) }},
+        .identity,
+        .{ 1, 1, 1, 1 },
+    ));
+    try testing.expectEqual(@as(usize, 0), instance_len);
+    try testing.expectEqual(@as(usize, 0), batch_len);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&instances));
+}
+
+test "emit validates cursors instead of subtracting past buffer bounds" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    var instances: [1]Instance = undefined;
+    var batches: [1]DrawBatch = undefined;
+    var instance_len: usize = 2;
+    var batch_len: usize = 0;
+    try testing.expectError(error.InvalidCursor, emit(
+        &instances,
+        &batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = pool },
+        &atlas,
+        &.{},
+        .identity,
+        .{ 1, 1, 1, 1 },
+    ));
+
+    instance_len = 0;
+    batch_len = 2;
+    try testing.expectError(error.InvalidCursor, emit(
+        &instances,
+        &batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = pool },
+        &atlas,
+        &.{},
+        .identity,
+        .{ 1, 1, 1, 1 },
+    ));
+}
+
+test "emit is failure-atomic for errors discovered late in a shape slice" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    var instances: [2]Instance = undefined;
+    @memset(std.mem.asBytes(&instances), 0x5a);
+    const before = instances;
+    var batches: [2]DrawBatch = undefined;
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+    const shapes = [_]Shape{
+        .{ .key = record_key_mod.unhintedGlyph(0, 1) },
+        .{ .key = record_key_mod.unhintedGlyph(0, 99) },
+    };
+
+    try testing.expectError(error.MissingRecord, emit(
+        &instances,
+        &batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = pool },
+        &atlas,
+        &shapes,
+        .identity,
+        .{ 1, 1, 1, 1 },
+    ));
+    try testing.expectEqual(@as(usize, 0), instance_len);
+    try testing.expectEqual(@as(usize, 0), batch_len);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&instances));
+}
+
+test "emit preflights batch capacity before writing instances" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 512,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try buildTestAtlas(pool, &.{1});
+    defer atlas.deinit();
+
+    var instances: [1]Instance = undefined;
+    @memset(std.mem.asBytes(&instances), 0x3c);
+    const before = instances;
+    var no_batches: [0]DrawBatch = .{};
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+
+    try testing.expectError(error.BufferTooSmall, emit(
+        &instances,
+        &no_batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = pool },
+        &atlas,
+        &.{.{ .key = record_key_mod.unhintedGlyph(0, 1) }},
+        .identity,
+        .{ 1, 1, 1, 1 },
+    ));
+    try testing.expectEqual(@as(usize, 0), instance_len);
+    try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&instances));
 }
