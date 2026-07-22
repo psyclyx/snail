@@ -15,6 +15,29 @@ const BandGeometry = struct {
 
 const max_band_count = 12;
 
+/// Every physical glyph block starts with a private two-texel self-describing
+/// prefix that CPU upload consumers can walk without consulting an Atlas
+/// snapshot. A draw record's `glyphLoc` points at the first ordinary header
+/// immediately after this prefix, so GPU header/reference sampling is
+/// unchanged. The prefix may cross a texture-row boundary; all locations are
+/// linearized before their `(x, y)` representation is stored.
+pub const block_prefix_texels: u32 = 2;
+pub const block_magic = [2]u16{ 0x534e, 0x4149 }; // "SNAI"
+
+pub const BlockPrefix = struct { h_band_count: u16, v_band_count: u16 };
+
+pub fn packBlockPrefix(h_band_count: u16, v_band_count: u16) [4]u16 {
+    return .{ block_magic[0], block_magic[1], h_band_count, v_band_count };
+}
+
+pub fn unpackBlockPrefix(words: [4]u16) ?BlockPrefix {
+    if (words[0] != block_magic[0] or words[1] != block_magic[1]) return null;
+    return .{
+        .h_band_count = words[2],
+        .v_band_count = words[3],
+    };
+}
+
 /// Per-band curve index lists, backed by a single flat slab per axis
 /// instead of `max_band_count` separate `ArrayList`s. Each band's slot
 /// in the slab is fixed-size `curve_count`; the per-band length counter
@@ -223,10 +246,11 @@ fn directEncodingBandOverlap(curves: []const CurveSegment, prepared_curves: []co
 pub const TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 
 /// Result of building band data for a single glyph.
-/// Band texture layout for one glyph (all at row glyphLoc.y, starting at column glyphLoc.x):
+/// Physical band texture layout for one glyph (linear; rows may wrap):
 ///
-///   [hband0] [hband1] ... [hbandN-1]  [vband0] [vband1] ... [vbandN-1]  [hband_indices...] [vband_indices...]
+///   [prefix0] [prefix1] [hband0] ... [vbandN-1] [hband_indices...] [vband_indices...]
 ///
+/// Draw-record `glyphLoc` addresses `hband0`, after the private prefix.
 /// Each hband/vband entry: RG16UI = (curve_count, index_offset_from_glyphLoc)
 /// Each index entry: RG16UI = ((first_member_band << 12) | curveLoc.x, curveLoc.y)
 pub const GlyphBandData = struct {
@@ -387,24 +411,28 @@ fn packBandLists(
     for (0..h_bands) |bi| total_indices += lists.h_lens[bi];
     for (0..v_bands) |bi| total_indices += lists.v_lens[bi];
 
-    const total_texels = header_count + total_indices;
+    const total_texels = block_prefix_texels + header_count + total_indices;
     var data = try allocator.alloc(u16, total_texels * 2);
     errdefer allocator.free(data);
-    // No @memset — the header + ref-list loops below write every word
-    // in the buffer. Sufficient texels are allocated for exactly
-    // header_count + total_indices texels (`total_texels * 2` words).
+    // No @memset: prefix, header, and ref-list writes cover every word.
 
+    const prefix = packBlockPrefix(lists.h_band_count, lists.v_band_count);
+    @memcpy(data[0..prefix.len], &prefix);
+
+    // Header offsets stay relative to the public glyph location, which points
+    // at header zero rather than at the private prefix.
     var index_offset: u32 = header_count;
     for (0..h_bands) |bi| {
         const band_len = lists.h_lens[bi];
         if (index_offset > std.math.maxInt(u16)) return error.ShapeTooComplex;
-        data[bi * 2 + 0] = band_len;
-        data[bi * 2 + 1] = @intCast(index_offset);
+        const header_word = (block_prefix_texels + bi) * 2;
+        data[header_word + 0] = band_len;
+        data[header_word + 1] = @intCast(index_offset);
         index_offset += band_len;
     }
 
     for (0..v_bands) |bi| {
-        const off = (h_bands + bi) * 2;
+        const off = (block_prefix_texels + h_bands + bi) * 2;
         const band_len = lists.v_lens[bi];
         if (index_offset > std.math.maxInt(u16)) return error.ShapeTooComplex;
         data[off + 0] = band_len;
@@ -412,7 +440,7 @@ fn packBandLists(
         index_offset += band_len;
     }
 
-    var write_pos: u32 = header_count;
+    var write_pos: u32 = block_prefix_texels + header_count;
     for (0..h_bands) |bi| {
         for (lists.hBand(bi)) |curve_idx| {
             const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
@@ -538,6 +566,37 @@ pub fn buildGlyphBandDataWithPreparedCurves(
         curve_sort_max_x,
         curve_sort_max_y,
     );
+    const geometry_values = .{
+        geometry.bbox.min.x,
+        geometry.bbox.min.y,
+        geometry.bbox.max.x,
+        geometry.bbox.max.y,
+        geometry.width,
+        geometry.height,
+        geometry.epsilon,
+    };
+    inline for (geometry_values) |value| {
+        if (!std.math.isFinite(value)) return error.InvalidCurveData;
+    }
+    if (geometry.width < 0 or geometry.height < 0 or geometry.epsilon < 0) return error.InvalidCurveData;
+    for (curve_bboxes) |curve_bbox| {
+        const values = .{ curve_bbox.min.x, curve_bbox.min.y, curve_bbox.max.x, curve_bbox.max.y };
+        inline for (values) |value| if (!std.math.isFinite(value)) return error.InvalidCurveData;
+        if (curve_bbox.min.x > curve_bbox.max.x or curve_bbox.min.y > curve_bbox.max.y) {
+            return error.InvalidCurveData;
+        }
+    }
+
+    // Validate the transform before membership's float-to-integer band range
+    // conversion. Finite inputs can still overflow in width or offset
+    // arithmetic when their magnitudes have opposite signs.
+    const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(geometry.width, 1e-10);
+    const band_scale_y = @as(f32, @floatFromInt(h_bands)) / @max(geometry.height, 1e-10);
+    const band_offset_x = -geometry.bbox.min.x * band_scale_x;
+    const band_offset_y = -geometry.bbox.min.y * band_scale_y;
+    inline for (.{ band_scale_x, band_scale_y, band_offset_x, band_offset_y }) |value| {
+        if (!std.math.isFinite(value)) return error.InvalidCurveData;
+    }
 
     var lists = try BandLists.init(scratch, prepared_curves.len, geometry, h_bands, v_bands);
     defer lists.deinit(scratch);
@@ -546,12 +605,6 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     // The packed band data is the returned output — owned by the
     // caller's `allocator`.
     const packed_data = try packBandLists(allocator, curve_entry, &lists, prepared_curves);
-
-    // Band transform: maps em-space coords to band indices
-    const band_scale_x = @as(f32, @floatFromInt(v_bands)) / @max(geometry.width, 1e-10);
-    const band_scale_y = @as(f32, @floatFromInt(h_bands)) / @max(geometry.height, 1e-10);
-    const band_offset_x = -geometry.bbox.min.x * band_scale_x;
-    const band_offset_y = -geometry.bbox.min.y * band_scale_y;
 
     return .{
         .data = packed_data.data,
@@ -616,12 +669,25 @@ pub fn buildBandTexture(
     glyph_band_data: []const GlyphBandData,
 ) !struct { texture: BandTexture, entries: []GlyphBandEntry } {
     var total_texels: u32 = 0;
-    for (glyph_band_data) |g| total_texels += g.texel_count;
+    for (glyph_band_data) |g| {
+        const expected_words = std.math.mul(usize, @as(usize, g.texel_count), 2) catch return error.ShapeTooComplex;
+        if (g.data.len != expected_words) return error.InvalidBandData;
+        if (g.texel_count != 0) {
+            if (g.texel_count < block_prefix_texels) return error.InvalidBandData;
+            const prefix = unpackBlockPrefix(g.data[0..4].*) orelse return error.InvalidBandData;
+            if (prefix.h_band_count != g.h_band_count or prefix.v_band_count != g.v_band_count) {
+                return error.InvalidBandData;
+            }
+        }
+        total_texels = std.math.add(u32, total_texels, g.texel_count) catch return error.ShapeTooComplex;
+    }
 
-    const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
-    const padded = TEX_WIDTH * height;
+    const rounded_texels = std.math.add(u32, total_texels, TEX_WIDTH - 1) catch return error.ShapeTooComplex;
+    const height = @max(1, rounded_texels / TEX_WIDTH);
+    const padded = std.math.mul(u32, TEX_WIDTH, height) catch return error.ShapeTooComplex;
+    const padded_words = std.math.mul(usize, @as(usize, padded), 2) catch return error.ShapeTooComplex;
 
-    var data = try data_allocator.alloc(u16, padded * 2);
+    var data = try data_allocator.alloc(u16, padded_words);
     errdefer data_allocator.free(data);
     @memset(data, 0);
 
@@ -630,8 +696,13 @@ pub fn buildBandTexture(
     var texel_offset: u32 = 0;
 
     for (glyph_band_data, 0..) |g, gi| {
-        const gx = texel_offset % TEX_WIDTH;
-        const gy = texel_offset / TEX_WIDTH;
+        const glyph_texel = if (g.texel_count == 0)
+            texel_offset
+        else
+            std.math.add(u32, texel_offset, block_prefix_texels) catch return error.ShapeTooComplex;
+        const gx = glyph_texel % TEX_WIDTH;
+        const gy = glyph_texel / TEX_WIDTH;
+        if (gy > std.math.maxInt(u16)) return error.ShapeTooComplex;
         entries[gi] = .{
             .glyph_x = @intCast(gx),
             .glyph_y = @intCast(gy),
@@ -645,10 +716,10 @@ pub fn buildBandTexture(
 
         // Copy glyph's band data into the texture.
         if (g.data.len > 0) {
-            const dst_idx = texel_offset * 2;
+            const dst_idx = std.math.mul(usize, @as(usize, texel_offset), 2) catch return error.ShapeTooComplex;
             @memcpy(data[dst_idx .. dst_idx + g.data.len], g.data);
         }
-        texel_offset += g.texel_count;
+        texel_offset = std.math.add(u32, texel_offset, g.texel_count) catch return error.ShapeTooComplex;
     }
 
     return .{
@@ -671,6 +742,49 @@ test "bandCount heuristic" {
     try std.testing.expectEqual(@as(u16, 1), bandCount(2));
     try std.testing.expectEqual(@as(u16, 4), bandCount(8));
     try std.testing.expectEqual(@as(u16, 8), bandCount(32));
+}
+
+test "finite extreme geometry is rejected before band-index conversion" {
+    const hi = std.math.floatMax(f32);
+    const curves = [_]CurveSegment{.{
+        .kind = .quadratic,
+        .p0 = Vec2.new(-hi, -hi),
+        .p1 = Vec2.new(0, 0),
+        .p2 = Vec2.new(hi, hi),
+    }};
+    const bbox = BBox{ .min = Vec2.new(-hi, -hi), .max = Vec2.new(hi, hi) };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = 0 };
+    try std.testing.expectError(error.InvalidCurveData, buildGlyphBandDataWithPreparedCurves(
+        std.testing.allocator,
+        std.testing.allocator,
+        &curves,
+        1,
+        bbox,
+        entry,
+        .zero,
+        false,
+        &curves,
+        null,
+    ));
+}
+
+test "band texture rejects inconsistent caller-authored block sizes" {
+    var prefix = packBlockPrefix(1, 1);
+    const malformed = GlyphBandData{
+        .data = &prefix,
+        .texel_count = 3,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    try std.testing.expectError(error.InvalidBandData, buildBandTexture(
+        std.testing.allocator,
+        std.testing.allocator,
+        &.{malformed},
+    ));
 }
 
 test "buildGlyphBandData basic" {
@@ -719,7 +833,7 @@ test "buildGlyphBandData rebases curves by origin" {
 
     try std.testing.expectEqual(@as(u16, 1), bd.h_band_count);
     try std.testing.expectEqual(@as(u16, 1), bd.v_band_count);
-    try std.testing.expectEqual(@as(u16, 4), bd.texel_count);
+    try std.testing.expectEqual(@as(u16, 6), bd.texel_count);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.width(), bd.band_scale_x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0) / prepared_bbox.height(), bd.band_scale_y, 0.0001);
     try std.testing.expectApproxEqAbs(-prepared_bbox.min.x * bd.band_scale_x, bd.band_offset_x, 0.0001);
@@ -873,8 +987,8 @@ test "buildGlyphBandData sorts horizontal curves by shader max x" {
     );
     defer freeGlyphBandData(std.testing.allocator, &bd);
 
-    try std.testing.expectEqual(@as(u16, 0), bd.data[4]);
-    try std.testing.expectEqual(@as(u16, 4), bd.data[6]);
+    try std.testing.expectEqual(@as(u16, 0), bd.data[8]);
+    try std.testing.expectEqual(@as(u16, 4), bd.data[10]);
 }
 
 test "buildGlyphBandData direct encoding preserves local bbox semantics" {

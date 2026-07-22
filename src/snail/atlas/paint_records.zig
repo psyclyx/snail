@@ -77,7 +77,7 @@ pub fn write(
 }
 
 fn writeBandHeader(data: []f32, texel_width: u32, texel_offset: u32, band_entry: band_tex.GlyphBandEntry, tag: f32, fill_rule_bit: u16) void {
-    const packed_bands = render_abi.packBandCounts(band_entry.h_band_count, band_entry.v_band_count);
+    const packed_bands = render_abi.packBandCounts(band_entry.h_band_count, band_entry.v_band_count).?;
     std.debug.assert(band_entry.glyph_x < FILL_RULE_BIT);
     const glyph_x_with_fill_rule: u16 = band_entry.glyph_x | fill_rule_bit;
     setTexel(data, texel_width, texel_offset + 0, .{

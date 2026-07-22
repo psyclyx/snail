@@ -56,21 +56,24 @@ const RecordKeyContext = struct {
 pub const RecordLookup = hamt_mod.Hamt(RecordKey, AtlasRecord, RecordKeyContext);
 pub const PaintLookup = hamt_mod.Hamt(RecordKey, PaintRecordInfo, RecordKeyContext);
 pub const TtAdvanceLookup = hamt_mod.Hamt(RecordKey, i32, RecordKeyContext);
+pub const TtAdvanceEntry = struct { key: RecordKey, advance_26_6: i32 };
 
-pub const AtlasPage = page_mod.AtlasPage;
+const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const AtlasRecord = atlas_record_mod.AtlasRecord;
 pub const GlyphBandEntry = atlas_record_mod.GlyphBandEntry;
 pub const RecordKey = record_key_mod.RecordKey;
 pub const GlyphCurves = curves_mod.GlyphCurves;
 pub const Paint = paint_mod.Paint;
-/// A reference from a layer-info paint record to the image it samples.
-/// `texel_offset` is the flat texel index where the image-paint header
-/// lives in the atlas's layer-info buffer; backends use this to patch
-/// the (layer, uv_scale) view into the cache's image array per upload.
-pub const PaintImageRecord = struct {
-    image: *const @import("image.zig").Image,
+/// Ordered structural metadata for one layer-info paint record. The slab also
+/// contains TT/autohint payloads whose numeric fields can equal paint tags,
+/// so consumers must use these explicit boundaries instead of tag-scanning.
+/// Composite headers carry `layer_count > 1`; their following layer
+/// descriptors each carry `layer_count == 1`.
+pub const PaintRecordDescriptor = struct {
     texel_offset: u32,
+    layer_count: u16 = 1,
+    image: ?*const @import("image.zig").Image = null,
     /// Binding-relative image-array layer assigned by the atlas builder.
     /// Upload caches add their binding's `image_layer_base`.
     image_layer: u32 = 0,
@@ -107,11 +110,11 @@ const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
 /// for the entry and remembers (info_x, info_y) in `paint_lookup` so
 /// emit can encode a special-layer instance instead of a regular one.
 ///
-/// `extra_layers` extends a single-paint entry into a multi-layer
-/// composite group. With `extra_layers.len > 0` the atlas emits a
-/// composite-group header followed by `1 + extra_layers.len` paint
-/// records; the shader walks them per fragment and composites under
-/// `composite_mode`. `.fill_stroke_inside` is the inside-stroke trick
+/// Non-empty `extra_layers` extend a single-paint entry into a multi-layer
+/// composite group; empty layers are omitted. When the base curves are empty,
+/// the first visible extra is promoted to the base instead of dropping the
+/// entry. The shader walks the resulting records per fragment and composites
+/// under `composite_mode`. `.fill_stroke_inside` is the inside-stroke trick
 /// (first two layers' coverages are AND'd); `.source_over` does standard
 /// back-to-front porter-duff.
 pub const Entry = struct {
@@ -148,8 +151,11 @@ pub const Layer = struct {
 pub const CompositeMode = paint_mod.CompositeMode;
 
 pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || PagePool.IdentityError || error{
+    MapTooLarge,
+    ReferenceCountExhausted,
     RecordTooLargeForPage,
     InvalidCurves,
+    InvalidPaint,
     ImageCountOverflow,
     AtlasRevisionExhausted,
     NoPool,
@@ -157,6 +163,7 @@ pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || Page
     InvalidAutohintAnalysis,
     LayerInfoTooLarge,
     CorruptPaintRecord,
+    InvalidEntry,
 };
 
 pub const Atlas = struct {
@@ -176,8 +183,9 @@ pub const Atlas = struct {
     snapshot_id: u64 = 0,
     /// Exact source snapshot for an extension, or zero for a fresh root.
     parent_snapshot_id: u64 = 0,
-    /// Refcounted page references. Index into this slice is what
-    /// `AtlasRecord.page_index` refers to.
+    /// Refcounted opaque page handles. Index into this slice is what
+    /// `AtlasRecord.page_index` refers to; callers cannot inspect or mutate
+    /// the underlying storage.
     pages: []*AtlasPage,
     /// Persistent map: `Atlas.extend` shares unchanged subtrees with the
     /// parent atlas, so a 1-entry extension is O(log32 N) and copies
@@ -205,13 +213,9 @@ pub const Atlas = struct {
     /// CPU-only value records: read at shape time by advance providers,
     /// never uploaded. Written by `recordTtHintRun` / `recordTtAdvanceRun`.
     tt_advance_lookup: TtAdvanceLookup,
-    /// One slot per emitted paint record (in insertion order). The slot
-    /// is populated only for `.image` paints — gradient/solid records map
-    /// to `null`. The software renderer's `DeviceAtlas.upload`
-    /// hands this to `preparePathLayerInfoRecords`; the GPU upload path
-    /// patches the matching layer-info texel in place. Images themselves
-    /// are caller-owned references; the atlas only borrows.
-    paint_image_records: ?[]?PaintImageRecord = null,
+    /// One descriptor per emitted paint header/layer, in slab order. Image
+    /// pointers are caller-owned references; the atlas only borrows.
+    paint_records: ?[]PaintRecordDescriptor = null,
 
     /// Pool-less identity atlas. It can represent an empty result, but cannot
     /// be extended; use `init` for an initially empty growable atlas.
@@ -238,7 +242,7 @@ pub const Atlas = struct {
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool) PagePool.IdentityError!Atlas {
         var atlas = empty(allocator);
         atlas.pool = pool;
-        atlas.snapshot_id = try pool.nextAtlasSnapshotId();
+        atlas.snapshot_id = try page_pool_mod.nextAtlasSnapshotId(pool);
         atlas.lineage = atlas.snapshot_id;
         return atlas;
     }
@@ -263,13 +267,13 @@ pub const Atlas = struct {
 
     pub fn deinit(self: *Atlas) void {
         if (self.pool) |pool| {
-            for (self.pages) |p| pool.release(p);
+            for (self.pages) |p| page_pool_mod.release(pool, p);
         } else {
             std.debug.assert(self.pages.len == 0);
         }
         if (self.pages.len > 0) self.allocator.free(self.pages);
         if (self.layer_info_data) |d| self.allocator.free(d);
-        if (self.paint_image_records) |records| self.allocator.free(records);
+        if (self.paint_records) |records| self.allocator.free(records);
         self.paint_lookup.deinit();
         self.autohint_lookup.deinit();
         self.tt_hinted_lookup.deinit();
@@ -302,9 +306,22 @@ pub const Atlas = struct {
 
     /// Record a TT-hinted horizontal advance under a `ns.tt_advance` key.
     /// Idempotent: an existing record wins (advances are pure in the key).
-    pub fn recordTtAdvance(self: *Atlas, key: RecordKey, advance_26_6: i32) std.mem.Allocator.Error!void {
-        if (self.tt_advance_lookup.contains(key)) return;
-        const next = try self.tt_advance_lookup.put(key, advance_26_6);
+    pub fn recordTtAdvance(self: *Atlas, key: RecordKey, advance_26_6: i32) (std.mem.Allocator.Error || error{MapTooLarge})!void {
+        try self.recordTtAdvances(&.{.{ .key = key, .advance_26_6 = advance_26_6 }});
+    }
+
+    /// Atomically add a batch of page-free TT advances. Allocation failure
+    /// leaves the atlas's previous lookup untouched.
+    pub fn recordTtAdvances(self: *Atlas, advances: []const TtAdvanceEntry) (std.mem.Allocator.Error || error{MapTooLarge})!void {
+        if (advances.len == 0) return;
+        var next = self.tt_advance_lookup.clone();
+        errdefer next.deinit();
+        for (advances) |entry| {
+            if (next.contains(entry.key)) continue;
+            const grown = try next.put(entry.key, entry.advance_26_6);
+            next.deinit();
+            next = grown;
+        }
         self.tt_advance_lookup.deinit();
         self.tt_advance_lookup = next;
     }
@@ -418,6 +435,28 @@ pub const Atlas = struct {
         self.* = grown;
     }
 
+    /// Commit geometry and page-free TT advances in one snapshot. Any
+    /// allocation, validation, or producer error before this call leaves the
+    /// atlas untouched; any builder error during it aborts the whole batch.
+    pub fn extendWithAdvancesInPlace(
+        self: *Atlas,
+        allocator: std.mem.Allocator,
+        entries: []const Entry,
+        advances: []const TtAdvanceEntry,
+    ) InsertError!void {
+        if (entries.len == 0) return self.recordTtAdvances(advances);
+
+        const pool = self.pool orelse return error.NoPool;
+        var builder = try Builder.initFrom(allocator, pool, self);
+        errdefer builder.abort();
+        for (entries) |entry| try builder.insert(entry);
+        for (advances) |advance| try builder.putTtAdvance(advance.key, advance.advance_26_6);
+
+        const grown = try builder.finish();
+        self.deinit();
+        self.* = grown;
+    }
+
     /// Rebuild the store, freshly packed into the minimum number of pages.
     /// Every record kind is carried with full fidelity: geometry is
     /// repacked, paint layers and autohint analyses are copied
@@ -504,22 +543,24 @@ fn makeTestCurves(allocator: std.mem.Allocator) !GlyphCurves {
     // band header = 1 h-band + 1 v-band = 2 texels = 4 u16.
     // band refs = 2 refs per band * 2 bands = 4 texels = 8 u16. Plus 4
     // header words.
-    const band_bytes = try allocator.alloc(u16, 12);
-    band_bytes[0] = 2; // h-band 0 count
-    band_bytes[1] = 2; // h-band 0 offset (from glyph_loc, in texels) = 2
-    band_bytes[2] = 2; // v-band 0 count
-    band_bytes[3] = 4; // v-band 0 offset = 4
+    const band_bytes = try allocator.alloc(u16, 16);
+    const prefix = band_tex_format.packBlockPrefix(1, 1);
+    @memcpy(band_bytes[0..prefix.len], &prefix);
+    band_bytes[4] = 2; // h-band 0 count
+    band_bytes[5] = 2; // h-band 0 offset (from glyph_loc, in texels) = 2
+    band_bytes[6] = 2; // v-band 0 count
+    band_bytes[7] = 4; // v-band 0 offset = 4
 
     // h-band refs at curve texel 0 and 4 (i.e., curve 0 and curve 1).
-    band_bytes[4] = 0; // cx=0, first_member_band=0
-    band_bytes[5] = 0; // cy=0
-    band_bytes[6] = 4; // cx=4
-    band_bytes[7] = 0;
-    // v-band refs (same).
-    band_bytes[8] = 0;
-    band_bytes[9] = 0;
-    band_bytes[10] = 4;
+    band_bytes[8] = 0; // cx=0, first_member_band=0
+    band_bytes[9] = 0; // cy=0
+    band_bytes[10] = 4; // cx=4
     band_bytes[11] = 0;
+    // v-band refs (same).
+    band_bytes[12] = 0;
+    band_bytes[13] = 0;
+    band_bytes[14] = 4;
+    band_bytes[15] = 0;
 
     return .{
         .allocator = allocator,
@@ -534,6 +575,64 @@ fn makeTestCurves(allocator: std.mem.Allocator) !GlyphCurves {
         .band_offset_y = 0.0,
         .bbox = .{ .min = .zero, .max = .{ .x = 8, .y = 4 } },
     };
+}
+
+fn exerciseAtlasBuildAllocationFailures(
+    allocator: std.mem.Allocator,
+    pool: *PagePool,
+    curves: *const GlyphCurves,
+) !void {
+    const free_before = pool.stats().pages_free;
+    var atlas = Atlas.from(allocator, pool, &.{
+        .{ .key = record_key_mod.unhintedGlyph(7, 1), .curves = curves.*, .paint = .{ .solid = .{ 2, 1, 0.5, 1 } } },
+        .{ .key = record_key_mod.unhintedGlyph(7, 2), .curves = curves.* },
+    }) catch |err| {
+        try testing.expectEqual(free_before, pool.stats().pages_free);
+        return err;
+    };
+    defer atlas.deinit();
+    try testing.expectEqual(@as(u32, 2), atlas.recordCount());
+}
+
+test "Atlas.from cleans up every allocation failure without leaking pages" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        exerciseAtlasBuildAllocationFailures,
+        .{ pool, &curves },
+    );
+    try testing.expectEqual(pool.stats().pages_total, pool.stats().pages_free);
+}
+
+test "Atlas extension reports page reference exhaustion atomically" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+    const key = record_key_mod.unhintedGlyph(2, 3);
+    var base = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
+    defer base.deinit();
+    const page = base.pages[0];
+    try testing.expectEqual(@as(u32, 1), page_mod.refCount(page));
+    page_mod.testSetReferenceCount(page, std.math.maxInt(u32));
+    defer page_mod.testSetReferenceCount(page, 1);
+
+    try testing.expectError(error.ReferenceCountExhausted, base.extend(testing.allocator, &.{}));
+    try testing.expectEqual(@as(u32, 1), base.recordCount());
+    try testing.expect(base.contains(key));
+    try testing.expectEqual(std.math.maxInt(u32), page_mod.refCount(page));
 }
 
 test "from packs entries into pages and records lookup" {
@@ -618,22 +717,20 @@ test "image paint records carry stable preassigned unique layers" {
     });
     defer atlas.deinit();
 
-    const records = atlas.paint_image_records.?;
+    const records = atlas.paint_records.?;
     try testing.expectEqual(@as(usize, 3), records.len);
-    try testing.expectEqual(@as(u32, 0), records[0].?.image_layer);
-    try testing.expect(records[0].?.first_image_use);
-    try testing.expectEqual(@as(u32, 0), records[1].?.image_layer);
-    try testing.expect(!records[1].?.first_image_use);
-    try testing.expectEqual(@as(u32, 1), records[2].?.image_layer);
-    try testing.expect(records[2].?.first_image_use);
+    try testing.expectEqual(@as(u32, 0), records[0].image_layer);
+    try testing.expect(records[0].first_image_use);
+    try testing.expectEqual(@as(u32, 0), records[1].image_layer);
+    try testing.expect(!records[1].first_image_use);
+    try testing.expectEqual(@as(u32, 1), records[2].image_layer);
+    try testing.expect(records[2].first_image_use);
 
     var compacted = try atlas.compact(testing.allocator, testing.allocator, null);
     defer compacted.deinit();
     var first_uses: u32 = 0;
-    for (compacted.paint_image_records.?) |maybe_record| {
-        if (maybe_record) |record| {
-            if (record.first_image_use) first_uses += 1;
-        }
+    for (compacted.paint_records.?) |record| {
+        if (record.image != null and record.first_image_use) first_uses += 1;
     }
     try testing.expectEqual(@as(u32, 2), first_uses);
 }
@@ -662,10 +759,11 @@ test "from rewrites band refs to page-absolute texels" {
 
     const r1 = atlas.lookupRecord(k1).?;
     const page = atlas.pages[r1.page_index];
+    const band_data = page_mod.bandWordsUsed(page);
     const band_word_offset = (@as(usize, r1.bands.glyph_y) * BAND_TEX_WIDTH_USIZE + @as(usize, r1.bands.glyph_x)) * 2;
     // The first h-band ref (4 header words in, so index 4) should point at r1.curve_texel.
-    const ref_w0 = page.band.data[band_word_offset + 4];
-    const ref_w1 = page.band.data[band_word_offset + 5];
+    const ref_w0 = band_data[band_word_offset + 4];
+    const ref_w1 = band_data[band_word_offset + 5];
     const CURVE_LOC_X_MASK: u16 = (1 << 12) - 1;
     const cx = ref_w0 & CURVE_LOC_X_MASK;
     const cy: u32 = ref_w1;
@@ -685,10 +783,10 @@ test "atlas placement and compaction preserve band-reference curve kinds" {
     defer curves.deinit();
     const cubic_kind_bits: u16 = 2 << 14;
     const mutable_bands = @constCast(curves.band_bytes);
-    mutable_bands[5] |= cubic_kind_bits;
-    mutable_bands[7] |= cubic_kind_bits;
     mutable_bands[9] |= cubic_kind_bits;
     mutable_bands[11] |= cubic_kind_bits;
+    mutable_bands[13] |= cubic_kind_bits;
+    mutable_bands[15] |= cubic_kind_bits;
 
     const key = record_key_mod.unhintedGlyph(0, 1);
     var original = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
@@ -699,8 +797,9 @@ test "atlas placement and compaction preserve band-reference curve kinds" {
     for ([_]*const Atlas{ &original, &compacted }) |candidate| {
         const rec = candidate.lookupRecord(key).?;
         const page = candidate.pages[rec.page_index];
+        const band_data = page_mod.bandWordsUsed(page);
         const band_word_offset = (@as(usize, rec.bands.glyph_y) * BAND_TEX_WIDTH_USIZE + @as(usize, rec.bands.glyph_x)) * 2;
-        try testing.expectEqual(cubic_kind_bits, page.band.data[band_word_offset + 5] & 0xc000);
+        try testing.expectEqual(cubic_kind_bits, band_data[band_word_offset + 5] & 0xc000);
     }
 }
 
@@ -734,7 +833,7 @@ test "extend keeps original atlas valid" {
 
     // The original atlas's record for k0 references a page that's still
     // alive (b retained it).
-    try testing.expectEqual(@as(u32, 2), a.pages[0].refcount.load(.acquire));
+    try testing.expectEqual(@as(u32, 2), page_mod.refCount(a.pages[0]));
 }
 
 test "extendBatchesInPlace commits many slices as one snapshot" {
@@ -817,7 +916,7 @@ test "snapshot identities distinguish roots, extensions, and branches" {
     try testing.expect(a_id.snapshot_id != b_id.snapshot_id);
 }
 
-test "aborted extension restores its parent's shared page tail" {
+test "aborted extension preserves its parent while keeping page publication monotonic" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1024,
@@ -836,20 +935,109 @@ test "aborted extension restores its parent's shared page tail" {
     defer root.deinit();
 
     const page = root.pages[0];
-    const curve_before = page.curve.usedWords();
-    const band_before = page.band.usedWords();
+    const before = page_mod.publishedWords(page);
     var builder = try Builder.initFrom(testing.allocator, pool, &root);
     try builder.insert(.{
         .key = record_key_mod.unhintedGlyph(0, 2),
         .curves = c1,
     });
-    try testing.expect(page.curve.usedWords() > curve_before);
-    try testing.expect(page.band.usedWords() > band_before);
+    const after_insert = page_mod.publishedWords(page);
+    try testing.expect(after_insert.curve > before.curve);
+    try testing.expect(after_insert.band > before.band);
     builder.abort();
 
-    try testing.expectEqual(curve_before, page.curve.usedWords());
-    try testing.expectEqual(band_before, page.band.usedWords());
+    // Published append-only bytes never move backwards: a concurrent upload
+    // may already have consumed them. They remain unreachable from the parent
+    // snapshot and are reclaimed with the page generation.
+    try testing.expectEqual(after_insert, page_mod.publishedWords(page));
     try testing.expectEqual(@as(u32, 1), root.recordCount());
+}
+
+test "related atlas snapshots extend and release concurrently" {
+    const allocator = std.heap.page_allocator;
+    var pool = try PagePool.init(allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 16384,
+        .band_words_per_page = 8192,
+    });
+    defer pool.deinit();
+
+    var curves = try makeTestCurves(allocator);
+    defer curves.deinit();
+    var root = try Atlas.from(allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .curves = curves,
+    }});
+    defer root.deinit();
+
+    const Worker = struct {
+        fn run(base: *const Atlas, source: *const GlyphCurves, worker_id: u32, failed: *std.atomic.Value(bool)) void {
+            for (0..64) |i| {
+                const glyph_id: u16 = @intCast(i + 2);
+                var child = base.extend(std.heap.page_allocator, &.{.{
+                    .key = record_key_mod.unhintedGlyph(worker_id, glyph_id),
+                    .curves = source.*,
+                }}) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+                if (child.recordCount() != 2 or child.lookupRecord(record_key_mod.unhintedGlyph(worker_id, glyph_id)) == null) {
+                    failed.store(true, .release);
+                    child.deinit();
+                    return;
+                }
+                child.deinit();
+            }
+        }
+    };
+
+    var failed = std.atomic.Value(bool).init(false);
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*thread, i| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{ &root, &curves, @as(u32, @intCast(i + 1)), &failed });
+    }
+    for (threads) |thread| thread.join();
+
+    try testing.expect(!failed.load(.acquire));
+    try testing.expectEqual(@as(u32, 1), root.recordCount());
+    try testing.expectEqual(page_mod.PublishedWords{ .curve = 8224, .band = 4112 }, page_mod.publishedWords(root.pages[0]));
+}
+
+test "an empty composite base promotes its first visible extra layer" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var visible = try makeTestCurves(testing.allocator);
+    defer visible.deinit();
+    const key = record_key_mod.unhintedGlyph(0, 77);
+    var atlas = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = key,
+        .curves = GlyphCurves.empty(testing.allocator),
+        .extra_layers = &.{.{
+            .curves = visible,
+            .paint = .{ .solid = .{ 0.2, 0.4, 0.6, 1 } },
+        }},
+    }});
+    defer atlas.deinit();
+
+    try testing.expectEqual(@as(u16, 2), atlas.lookupRecord(key).?.curve_count);
+    try testing.expectEqual(@as(u16, 1), atlas.lookupPaintRecord(key).?.layer_count);
+}
+
+test "TT advance batches are allocation-failure atomic" {
+    var failing = std.testing.FailingAllocator.init(testing.allocator, .{ .fail_index = 1 });
+    var atlas = Atlas.empty(failing.allocator());
+    defer atlas.deinit();
+
+    try testing.expectError(error.OutOfMemory, atlas.recordTtAdvances(&.{
+        .{ .key = record_key_mod.ttAdvance(0, 1, 12), .advance_26_6 = 100 },
+        .{ .key = record_key_mod.ttAdvance(0, 2, 12), .advance_26_6 = 200 },
+    }));
+    try testing.expectEqual(@as(u32, 0), atlas.ttAdvanceCount());
 }
 
 test "extend dedups keys against existing atlas" {
@@ -956,7 +1144,7 @@ test "autohint entry rejects oversized immutable analysis" {
     defer base_curves.deinit();
     const base_key = record_key_mod.unhintedGlyph(0, 1);
     const FeatureEdge = autohint.FeatureEdge;
-    const max_knots = @import("font/autohint/warp.zig").max_knots;
+    const max_knots = autohint.max_features_per_axis;
     const too_many = [_]FeatureEdge{.{ .pos = 0, .width = 0, .stem = -1, .blue = -1, .flags = .{ .round = false } }} ** (max_knots + 1);
     try testing.expectError(error.InvalidAutohintAnalysis, Atlas.from(testing.allocator, pool, &.{
         .{ .key = base_key, .curves = base_curves },
@@ -987,11 +1175,11 @@ test "deinit releases pages back to the pool" {
     {
         var atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = k0, .curves = c0 }});
         defer atlas.deinit();
-        try testing.expectError(error.OutOfLayers, pool.acquire());
+        try testing.expectError(error.OutOfLayers, page_pool_mod.acquire(pool));
     }
     // Atlas has been deinit'd; pool should be drained again.
-    const reacquired = try pool.acquire();
-    pool.release(reacquired);
+    const reacquired = try page_pool_mod.acquire(pool);
+    page_pool_mod.release(pool, reacquired);
 }
 
 test "atlas + font extract: end-to-end smoke test" {
@@ -1156,7 +1344,7 @@ test "compact carries paint layers, autohint analyses, and advances byte-for-byt
     try testing.expectEqual(comp_base_rec.curve_texel, comp_auto_rec.curve_texel);
     const auto_info = compacted.lookupAutohintRecord(auto_key).?;
     const auto_off = (@as(usize, auto_info.info_y) * compacted.layer_info_width + auto_info.info_x) * 4;
-    const comp_x = @import("format/autohint_record.zig").xFeatures(comp_slab, auto_off);
+    const comp_x = (try @import("format/autohint_record.zig").decode(comp_slab, auto_off)).glyph.x;
     try testing.expectEqual(@as(usize, 1), comp_x.len);
     try testing.expectEqual(x_edges[0].pos, comp_x[0].pos);
     try testing.expectEqual(x_edges[0].width, comp_x[0].width);

@@ -6,10 +6,9 @@
 //!
 //! ## Invariants
 //!
-//! - Bytes at offsets below `curve_used` (resp. `band_used`) are immutable.
-//!   `reserve` extends these monotonically via atomic CAS.
-//! - `uploaded` <= `used` for both buffers; the gap is the GPU's pending
-//!   delta.
+//! - Reservations advance a private tail; they are not visible to readers.
+//! - A reservation's curve and band bytes become visible together when it is
+//!   committed. Bytes below the published watermarks are immutable.
 //! - `generation` advances when the page returns to the free list and is
 //!   then re-allocated. Records issued at an old generation are invalid; the
 //!   atlas itself holds the refcount that keeps a generation live.
@@ -31,71 +30,50 @@ pub const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * SEGMENT_WORDS_PER_TE
 pub const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 pub const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
 
-/// Per-axis (curve or band) buffer state. Kept compact and 8-byte aligned so
-/// the two atomics live on independent cache lines from neighbouring page
-/// fields under typical layouts.
-pub const Buffer = struct {
+/// Per-axis (curve or band) storage. Publication is owned by `Page` so
+/// the two planes always acquire one consistent pair of watermarks.
+const Buffer = struct {
     data: []Word,
     capacity_words: u32,
-    used_words: std.atomic.Value(u32),
-    uploaded_words: std.atomic.Value(u32),
 
     pub fn init(data: []Word) Buffer {
         return .{
             .data = data,
             .capacity_words = @intCast(data.len),
-            .used_words = std.atomic.Value(u32).init(0),
-            .uploaded_words = std.atomic.Value(u32).init(0),
         };
-    }
-
-    pub fn reset(self: *Buffer) void {
-        self.used_words.store(0, .release);
-        self.uploaded_words.store(0, .release);
-    }
-
-    /// Reserve `n` words at the current tail. Returns the starting word
-    /// offset or `null` if the page is full.
-    fn reserve(self: *Buffer, n: u32) ?u32 {
-        while (true) {
-            const cur = self.used_words.load(.acquire);
-            if (cur > self.capacity_words or self.capacity_words - cur < n) return null;
-            const next = cur + n;
-            if (self.used_words.cmpxchgWeak(cur, next, .acq_rel, .acquire) == null) {
-                return cur;
-            }
-        }
-    }
-
-    pub fn usedWords(self: *const Buffer) u32 {
-        return self.used_words.load(.acquire);
-    }
-
-    pub fn uploadedWords(self: *const Buffer) u32 {
-        return self.uploaded_words.load(.acquire);
-    }
-
-    /// Mark the buffer as uploaded up to `n` words. `n` must be <= current
-    /// used. Idempotent: monotonic update.
-    pub fn markUploaded(self: *Buffer, n: u32) void {
-        std.debug.assert(n <= self.used_words.load(.acquire));
-        while (true) {
-            const cur = self.uploaded_words.load(.acquire);
-            if (n <= cur) return;
-            if (self.uploaded_words.cmpxchgWeak(cur, n, .acq_rel, .acquire) == null) return;
-        }
     }
 };
 
-pub const AtlasPage = struct {
+pub const Reservation = struct {
+    curve_word_offset: u32,
+    band_word_offset: u32,
+    curve_word_count: u32,
+    band_word_count: u32,
+};
+
+pub const PublishedWords = struct {
+    curve: u32,
+    band: u32,
+};
+
+/// Opaque page handle stored by `Atlas`. Storage, reservations, publication,
+/// generation identity, and reference counts stay inside this module.
+pub const AtlasPage = opaque {};
+
+const Page = struct {
     allocator: std.mem.Allocator,
     layer_index: u16,
     generation: std.atomic.Value(u64),
     refcount: std.atomic.Value(u32),
     curve: Buffer,
     band: Buffer,
-    /// Serializes paired curve+band reservations so capacity is either
-    /// consumed from both buffers or from neither one.
+    /// Packed `(band_words << 32) | curve_words`. A single release store makes
+    /// both initialized planes visible as one publication event.
+    published_words: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    /// Private reservation tails, protected by `reservation_lock`.
+    reserved_curve_words: u32 = 0,
+    reserved_band_words: u32 = 0,
+    /// Serializes reservation-tail changes and ordered publication.
     reservation_lock: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
 
     pub fn init(
@@ -103,8 +81,8 @@ pub const AtlasPage = struct {
         layer_index: u16,
         curve_capacity_words: u32,
         band_capacity_words: u32,
-    ) !*AtlasPage {
-        const page = try allocator.create(AtlasPage);
+    ) !*Page {
+        const page = try allocator.create(Page);
         errdefer allocator.destroy(page);
         const curve_buf = try allocator.alloc(Word, curve_capacity_words);
         errdefer allocator.free(curve_buf);
@@ -124,46 +102,55 @@ pub const AtlasPage = struct {
         return page;
     }
 
-    pub fn deinit(self: *AtlasPage) void {
+    pub fn deinit(self: *Page) void {
         self.allocator.free(self.curve.data);
         self.allocator.free(self.band.data);
         self.allocator.destroy(self);
     }
 
-    pub fn retain(self: *AtlasPage) void {
-        _ = self.refcount.fetchAdd(1, .acq_rel);
+    pub fn retain(self: *Page) error{ReferenceCountExhausted}!void {
+        while (true) {
+            const prior = self.refcount.load(.acquire);
+            if (prior == std.math.maxInt(u32)) return error.ReferenceCountExhausted;
+            if (self.refcount.cmpxchgWeak(prior, prior + 1, .acq_rel, .acquire) == null) return;
+        }
     }
 
     /// Decrement refcount; returns true if the page should be returned to
     /// the pool's free list (i.e. refcount transitioned to zero).
-    pub fn release(self: *AtlasPage) bool {
-        const prior = self.refcount.fetchSub(1, .acq_rel);
-        std.debug.assert(prior > 0);
-        return prior == 1;
+    pub fn release(self: *Page) bool {
+        while (true) {
+            const prior = self.refcount.load(.acquire);
+            if (prior == 0) @panic("AtlasPage reference underflow");
+            if (self.refcount.cmpxchgWeak(prior, prior - 1, .acq_rel, .acquire) == null) return prior == 1;
+        }
     }
 
-    pub fn currentGeneration(self: *const AtlasPage) u64 {
+    pub fn currentGeneration(self: *const Page) u64 {
         return self.generation.load(.acquire);
     }
 
-    /// Reset for reuse: bumps generation, clears both buffers' used and
-    /// uploaded counters. Called by the pool when the page is recycled.
-    pub fn recycle(self: *AtlasPage) void {
+    /// Reset for reuse: bumps generation and clears the reservation and
+    /// publication tails. Called by the pool when the page is recycled.
+    pub fn recycle(self: *Page) void {
         const prior = self.generation.fetchAdd(1, .acq_rel);
         if (prior == std.math.maxInt(u64)) {
             @panic("AtlasPage generation space exhausted");
         }
-        self.curve.reset();
-        self.band.reset();
+        self.reserved_curve_words = 0;
+        self.reserved_band_words = 0;
+        self.published_words.store(0, .release);
     }
 
-    /// Reserve curve+band space for a record. Capacity is committed to both
-    /// buffers atomically: a failure leaves both watermarks unchanged.
+    /// Reserve curve+band space for a record. A reservation is private until
+    /// `commit` or `discard`; readers continue to observe the previous paired
+    /// watermark. Every successful reservation must eventually be committed
+    /// or discarded, otherwise later publication waits for the missing range.
     ///
     /// Returns the starting word offsets into curve and band buffers, or
     /// `null` if either buffer lacks room.
     pub fn reserve(
-        self: *AtlasPage,
+        self: *Page,
         curve_words: u32,
         band_words: u32,
     ) ?Reservation {
@@ -172,8 +159,8 @@ pub const AtlasPage = struct {
         }
         defer self.reservation_lock.store(0, .release);
 
-        const cw = self.curve.used_words.load(.acquire);
-        const bw = self.band.used_words.load(.acquire);
+        const cw = self.reserved_curve_words;
+        const bw = self.reserved_band_words;
         if (cw > self.curve.capacity_words or
             self.curve.capacity_words - cw < curve_words or
             bw > self.band.capacity_words or
@@ -181,85 +168,208 @@ pub const AtlasPage = struct {
         {
             return null;
         }
-        self.curve.used_words.store(cw + curve_words, .release);
-        self.band.used_words.store(bw + band_words, .release);
-        return .{ .curve_word_offset = cw, .band_word_offset = bw };
+        self.reserved_curve_words = cw + curve_words;
+        self.reserved_band_words = bw + band_words;
+        return .{
+            .curve_word_offset = cw,
+            .band_word_offset = bw,
+            .curve_word_count = curve_words,
+            .band_word_count = band_words,
+        };
     }
 
-    pub const Reservation = struct {
-        curve_word_offset: u32,
-        band_word_offset: u32,
-    };
+    fn packWords(words: PublishedWords) u64 {
+        return @as(u64, words.curve) | (@as(u64, words.band) << 32);
+    }
 
-    /// Roll back a private tail transaction if no other reservation or upload
-    /// has observed/appended beyond it. This is used by `Atlas.extend`'s
-    /// builder to preserve failure atomicity while still sharing unused tail
-    /// capacity with its parent snapshot. A concurrent append/upload makes the
-    /// rollback conservatively fail, leaving unreferenced append-only bytes
-    /// instead of disturbing another user.
-    pub fn rollbackTail(
-        self: *AtlasPage,
-        restore_curve_words: u32,
-        restore_band_words: u32,
-        expected_curve_words: u32,
-        expected_band_words: u32,
-    ) bool {
-        while (self.reservation_lock.cmpxchgWeak(0, 1, .acquire, .monotonic) != null) {
-            std.atomic.spinLoopHint();
-        }
-        defer self.reservation_lock.store(0, .release);
+    fn unpackWords(value: u64) PublishedWords {
+        return .{ .curve = @truncate(value), .band = @truncate(value >> 32) };
+    }
 
-        if (self.curve.used_words.load(.acquire) != expected_curve_words or
-            self.band.used_words.load(.acquire) != expected_band_words or
-            self.curve.uploaded_words.load(.acquire) > restore_curve_words or
-            self.band.uploaded_words.load(.acquire) > restore_band_words)
-        {
-            return false;
+    /// Atomically acquire the initialized curve+band watermarks.
+    pub fn publishedWords(self: *const Page) PublishedWords {
+        return unpackWords(self.published_words.load(.acquire));
+    }
+
+    /// Publish a fully initialized reservation. Reservations may be populated
+    /// concurrently, but are published in reservation order so no reader can
+    /// observe a hole or partially initialized bytes.
+    pub fn commit(self: *Page, reservation: Reservation) void {
+        const expected = packWords(.{
+            .curve = reservation.curve_word_offset,
+            .band = reservation.band_word_offset,
+        });
+        const next = packWords(.{
+            .curve = reservation.curve_word_offset + reservation.curve_word_count,
+            .band = reservation.band_word_offset + reservation.band_word_count,
+        });
+        while (true) {
+            if (self.published_words.load(.acquire) != expected) {
+                std.atomic.spinLoopHint();
+                continue;
+            }
+            if (self.reservation_lock.cmpxchgWeak(0, 1, .acquire, .monotonic) != null) {
+                std.atomic.spinLoopHint();
+                continue;
+            }
+            if (self.published_words.load(.monotonic) == expected) {
+                std.debug.assert(reservation.curve_word_offset + reservation.curve_word_count <= self.reserved_curve_words);
+                std.debug.assert(reservation.band_word_offset + reservation.band_word_count <= self.reserved_band_words);
+                self.published_words.store(next, .release);
+                self.reservation_lock.store(0, .release);
+                return;
+            }
+            self.reservation_lock.store(0, .release);
         }
-        self.curve.used_words.store(restore_curve_words, .release);
-        self.band.used_words.store(restore_band_words, .release);
-        return true;
+    }
+
+    /// Abandon a reservation without blocking later reservations. The range is
+    /// zeroed and published as immutable padding; committed watermarks never
+    /// move backwards, so upload planners cannot retain stale reused bytes.
+    pub fn discard(self: *Page, reservation: Reservation) void {
+        @memset(self.curve.data[reservation.curve_word_offset..][0..reservation.curve_word_count], 0);
+        @memset(self.band.data[reservation.band_word_offset..][0..reservation.band_word_count], 0);
+        self.commit(reservation);
     }
 
     /// Slice from offset 0 up to the current used watermark. The returned
     /// slice's bytes are immutable for the page's current generation.
-    pub fn curveBytesUsed(self: *const AtlasPage) []const Word {
-        return self.curve.data[0..self.curve.usedWords()];
+    pub fn curveBytesUsed(self: *const Page) []const Word {
+        return self.curve.data[0..self.publishedWords().curve];
     }
 
-    pub fn bandBytesUsed(self: *const AtlasPage) []const Word {
-        return self.band.data[0..self.band.usedWords()];
+    pub fn bandBytesUsed(self: *const Page) []const Word {
+        return self.band.data[0..self.publishedWords().band];
     }
 };
 
-test "buffer reserve grows monotonically and bounds correctly" {
-    const data = try std.testing.allocator.alloc(Word, 8);
-    defer std.testing.allocator.free(data);
-    var b = Buffer.init(data);
+pub const ReferenceError = error{ReferenceCountExhausted};
 
-    try std.testing.expectEqual(@as(?u32, 0), b.reserve(4));
-    try std.testing.expectEqual(@as(?u32, 4), b.reserve(4));
-    try std.testing.expectEqual(@as(?u32, null), b.reserve(1));
-    try std.testing.expectEqual(@as(u32, 8), b.usedWords());
+fn pageImpl(page: *AtlasPage) *Page {
+    return @ptrCast(@alignCast(page));
+}
+
+fn pageImplConst(page: *const AtlasPage) *const Page {
+    return @ptrCast(@alignCast(page));
+}
+
+pub fn init(
+    allocator: std.mem.Allocator,
+    layer_index: u16,
+    curve_capacity_words: u32,
+    band_capacity_words: u32,
+) !*AtlasPage {
+    return @ptrCast(try Page.init(allocator, layer_index, curve_capacity_words, band_capacity_words));
+}
+
+pub fn deinit(page: *AtlasPage) void {
+    pageImpl(page).deinit();
+}
+
+pub fn activate(page: *AtlasPage) void {
+    const impl = pageImpl(page);
+    std.debug.assert(impl.refcount.load(.acquire) == 0);
+    impl.refcount.store(1, .release);
+}
+
+pub fn isFree(page: *const AtlasPage) bool {
+    return pageImplConst(page).refcount.load(.acquire) == 0;
+}
+
+pub fn refCount(page: *const AtlasPage) u32 {
+    return pageImplConst(page).refcount.load(.acquire);
+}
+
+/// Test-only fault injection for callers that verify retain overflow
+/// propagation across atlas transactions.
+pub fn testSetReferenceCount(page: *AtlasPage, value: u32) void {
+    if (!@import("builtin").is_test) @panic("test-only page fault injection");
+    pageImpl(page).refcount.store(value, .release);
+}
+
+pub fn retain(page: *AtlasPage) ReferenceError!void {
+    return pageImpl(page).retain();
+}
+
+pub fn release(page: *AtlasPage) bool {
+    return pageImpl(page).release();
+}
+
+pub fn recycle(page: *AtlasPage) void {
+    pageImpl(page).recycle();
+}
+
+pub fn layerIndex(page: *const AtlasPage) u16 {
+    return pageImplConst(page).layer_index;
+}
+
+pub fn currentGeneration(page: *const AtlasPage) u64 {
+    return pageImplConst(page).currentGeneration();
+}
+
+pub fn publishedWords(page: *const AtlasPage) PublishedWords {
+    return pageImplConst(page).publishedWords();
+}
+
+pub fn reserve(page: *AtlasPage, curve_words: u32, band_words: u32) ?Reservation {
+    return pageImpl(page).reserve(curve_words, band_words);
+}
+
+pub fn reservationCurveWords(page: *AtlasPage, reservation: Reservation) []Word {
+    const impl = pageImpl(page);
+    return impl.curve.data[reservation.curve_word_offset..][0..reservation.curve_word_count];
+}
+
+pub fn reservationBandWords(page: *AtlasPage, reservation: Reservation) []Word {
+    const impl = pageImpl(page);
+    return impl.band.data[reservation.band_word_offset..][0..reservation.band_word_count];
+}
+
+pub fn commit(page: *AtlasPage, reservation: Reservation) void {
+    pageImpl(page).commit(reservation);
+}
+
+pub fn discard(page: *AtlasPage, reservation: Reservation) void {
+    pageImpl(page).discard(reservation);
+}
+
+pub fn curveWordsUsed(page: *const AtlasPage) []const Word {
+    return pageImplConst(page).curveBytesUsed();
+}
+
+pub fn bandWordsUsed(page: *const AtlasPage) []const Word {
+    return pageImplConst(page).bandBytesUsed();
+}
+
+test "reservation remains invisible until both planes are committed" {
+    var page = try Page.init(std.testing.allocator, 0, 16, 8);
+    defer page.deinit();
+
+    const reservation = page.reserve(4, 2).?;
+    @memset(page.curve.data[0..4], 0x1234);
+    @memset(page.band.data[0..2], 0x5678);
+    try std.testing.expectEqual(PublishedWords{ .curve = 0, .band = 0 }, page.publishedWords());
+
+    page.commit(reservation);
+    try std.testing.expectEqual(PublishedWords{ .curve = 4, .band = 2 }, page.publishedWords());
 }
 
 test "page recycle bumps generation and resets buffers" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 16, 8);
+    var page = try Page.init(std.testing.allocator, 0, 16, 8);
     defer page.deinit();
 
     const g0 = page.currentGeneration();
-    _ = page.curve.reserve(4);
-    _ = page.band.reserve(2);
-    try std.testing.expect(page.curve.usedWords() == 4);
+    const reservation = page.reserve(4, 2).?;
+    page.discard(reservation);
+    try std.testing.expectEqual(PublishedWords{ .curve = 4, .band = 2 }, page.publishedWords());
 
     page.recycle();
     try std.testing.expect(page.currentGeneration() != g0);
-    try std.testing.expect(page.curve.usedWords() == 0);
-    try std.testing.expect(page.band.usedWords() == 0);
+    try std.testing.expectEqual(PublishedWords{ .curve = 0, .band = 0 }, page.publishedWords());
 }
 
 test "page generation does not alias after the old 16-bit boundary" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 16, 8);
+    var page = try Page.init(std.testing.allocator, 0, 16, 8);
     defer page.deinit();
 
     page.generation.store(std.math.maxInt(u16), .release);
@@ -268,65 +378,115 @@ test "page generation does not alias after the old 16-bit boundary" {
 }
 
 test "paired reservation does not consume curve capacity when bands are full" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 16, 2);
+    var page = try Page.init(std.testing.allocator, 0, 16, 2);
     defer page.deinit();
 
-    try std.testing.expect(page.reserve(4, 2) != null);
-    try std.testing.expectEqual(@as(?AtlasPage.Reservation, null), page.reserve(4, 2));
-    try std.testing.expectEqual(@as(u32, 4), page.curve.usedWords());
-    try std.testing.expectEqual(@as(u32, 2), page.band.usedWords());
+    const reservation = page.reserve(4, 2).?;
+    try std.testing.expectEqual(@as(?Reservation, null), page.reserve(4, 2));
+    try std.testing.expectEqual(PublishedWords{ .curve = 0, .band = 0 }, page.publishedWords());
+    page.discard(reservation);
+    try std.testing.expectEqual(PublishedWords{ .curve = 4, .band = 2 }, page.publishedWords());
 }
 
-test "private tail transaction rolls back only at the expected watermark" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 32, 16);
+test "discard publishes immutable padding instead of rolling watermarks back" {
+    var page = try Page.init(std.testing.allocator, 0, 32, 16);
     defer page.deinit();
 
-    _ = page.reserve(4, 2);
-    _ = page.reserve(8, 4);
-    try std.testing.expect(page.rollbackTail(4, 2, 12, 6));
-    try std.testing.expectEqual(@as(u32, 4), page.curve.usedWords());
-    try std.testing.expectEqual(@as(u32, 2), page.band.usedWords());
-    try std.testing.expect(!page.rollbackTail(0, 0, 12, 6));
+    const first = page.reserve(4, 2).?;
+    @memset(page.curve.data[0..4], 1);
+    @memset(page.band.data[0..2], 1);
+    page.commit(first);
+    const abandoned = page.reserve(8, 4).?;
+    page.discard(abandoned);
+
+    try std.testing.expectEqual(PublishedWords{ .curve = 12, .band = 6 }, page.publishedWords());
+    try std.testing.expectEqualSlices(Word, &.{ 0, 0, 0, 0, 0, 0, 0, 0 }, page.curve.data[4..12]);
+    try std.testing.expectEqualSlices(Word, &.{ 0, 0, 0, 0 }, page.band.data[2..6]);
 }
 
 test "page refcount round-trips" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 16, 8);
+    var page = try Page.init(std.testing.allocator, 0, 16, 8);
     defer page.deinit();
 
-    page.retain();
-    page.retain();
+    try page.retain();
+    try page.retain();
     try std.testing.expectEqual(false, page.release());
     try std.testing.expectEqual(true, page.release());
 }
 
-test "concurrent reserve hands out disjoint ranges" {
-    var page = try AtlasPage.init(std.testing.allocator, 0, 1024, 512);
+test "page retain reports exhaustion without wrapping the refcount" {
+    var page = try Page.init(std.testing.allocator, 0, 16, 8);
+    defer page.deinit();
+    page.refcount.store(std.math.maxInt(u32), .release);
+
+    try std.testing.expectError(error.ReferenceCountExhausted, page.retain());
+    try std.testing.expectEqual(std.math.maxInt(u32), page.refcount.load(.acquire));
+}
+
+test "concurrent reserve initializes before ordered publication" {
+    var page = try Page.init(std.testing.allocator, 0, 1024, 512);
     defer page.deinit();
 
     const Worker = struct {
-        fn run(p: *AtlasPage, results: *std.atomic.Value(u32), gathered: []u32, idx: *std.atomic.Value(u32)) void {
+        fn run(p: *Page, results: *std.atomic.Value(u32), gathered: []u32, idx: *std.atomic.Value(u32)) void {
             while (true) {
                 const reservation = p.reserve(4, 2) orelse break;
+                const marker: Word = @intCast(reservation.curve_word_offset / 4 + 1);
+                @memset(p.curve.data[reservation.curve_word_offset..][0..4], marker);
+                @memset(p.band.data[reservation.band_word_offset..][0..2], marker);
+                p.commit(reservation);
                 _ = results.fetchAdd(1, .acq_rel);
                 const slot = idx.fetchAdd(1, .acq_rel);
                 if (slot < gathered.len) gathered[slot] = reservation.curve_word_offset;
             }
         }
     };
+    const Reader = struct {
+        fn run(p: *const Page, done: *std.atomic.Value(bool), failed: *std.atomic.Value(bool)) void {
+            while (!done.load(.acquire)) {
+                const published = p.publishedWords();
+                if (published.curve != published.band * 2) {
+                    failed.store(true, .release);
+                    return;
+                }
+                var curve_offset: usize = 0;
+                var band_offset: usize = 0;
+                while (curve_offset < published.curve) : ({
+                    curve_offset += 4;
+                    band_offset += 2;
+                }) {
+                    const marker = p.curve.data[curve_offset];
+                    if (marker == 0 or
+                        !std.mem.allEqual(Word, p.curve.data[curve_offset..][0..4], marker) or
+                        !std.mem.allEqual(Word, p.band.data[band_offset..][0..2], marker))
+                    {
+                        failed.store(true, .release);
+                        return;
+                    }
+                }
+            }
+        }
+    };
 
     var results = std.atomic.Value(u32).init(0);
     var slot = std.atomic.Value(u32).init(0);
+    var done = std.atomic.Value(bool).init(false);
+    var failed = std.atomic.Value(bool).init(false);
     var gathered: [256]u32 = undefined;
 
+    const reader = try std.Thread.spawn(.{}, Reader.run, .{ page, &done, &failed });
     var threads: [4]std.Thread = undefined;
     for (&threads) |*t| {
         t.* = try std.Thread.spawn(.{}, Worker.run, .{ page, &results, gathered[0..], &slot });
     }
     for (threads) |t| t.join();
+    done.store(true, .release);
+    reader.join();
 
     const count = results.load(.acquire);
+    try std.testing.expect(!failed.load(.acquire));
     try std.testing.expectEqual(@as(u32, 256), count);
-    try std.testing.expectEqual(@as(u32, 512), page.band.usedWords());
+    try std.testing.expectEqual(PublishedWords{ .curve = 1024, .band = 512 }, page.publishedWords());
 
     var seen: [256]bool = undefined;
     @memset(&seen, false);
@@ -334,5 +494,10 @@ test "concurrent reserve hands out disjoint ranges" {
         const idx = off / 4;
         try std.testing.expect(!seen[idx]);
         seen[idx] = true;
+    }
+    for (0..256) |i| {
+        const marker: Word = @intCast(i + 1);
+        try std.testing.expectEqualSlices(Word, &.{ marker, marker, marker, marker }, page.curve.data[i * 4 ..][0..4]);
+        try std.testing.expectEqualSlices(Word, &.{ marker, marker }, page.band.data[i * 2 ..][0..2]);
     }
 }

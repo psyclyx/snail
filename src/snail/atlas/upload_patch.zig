@@ -1,4 +1,4 @@
-//! Layer-info patching used by `AtlasUploadPlanner` when assigning live image
+//! Layer-info patching used by `atlas_upload.Planner` when assigning live image
 //! array layers. Renderer caches consume the already-patched upload regions.
 
 fn layerInfoTexelBase(width: u32, x: u32, y: u32) usize {

@@ -15,8 +15,9 @@
 //! they're shared by bumping their `refcount`. When the last handle to
 //! a subtree is released, the subtree is recursively freed.
 //!
-//! Not thread-safe: refcounts are plain `u32`s. Per-thread instances
-//! (one map per thread of computation) are the intended usage model.
+//! Node reference counts are atomic: independent handles may be cloned,
+//! extended, read, and destroyed on different threads. As with any value,
+//! mutating or destroying the same handle concurrently is not supported.
 //!
 //! Context contract (matches `std.HashMap`):
 //!     pub fn hash(self: Context, key: K) u64
@@ -45,6 +46,23 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         const SLOT_MASK: u64 = BRANCH_FACTOR - 1;
         const MAX_DEPTH: u6 = 13;
 
+        fn retainCount(refcount: *std.atomic.Value(u32)) void {
+            while (true) {
+                const prior = refcount.load(.acquire);
+                if (prior == std.math.maxInt(u32)) @panic("HAMT reference count exhausted");
+                if (refcount.cmpxchgWeak(prior, prior + 1, .acq_rel, .acquire) == null) return;
+            }
+        }
+
+        fn releaseCount(refcount: *std.atomic.Value(u32)) bool {
+            while (true) {
+                const prior = refcount.load(.acquire);
+                if (prior == 0) @panic("HAMT reference underflow");
+                if (refcount.cmpxchgWeak(prior, prior - 1, .acq_rel, .acquire) == null)
+                    return prior == 1;
+            }
+        }
+
         fn slotBit(hash: u64, depth: u6) u5 {
             return @intCast((hash >> @intCast(depth * BRANCH_BITS)) & SLOT_MASK);
         }
@@ -56,9 +74,9 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
 
             fn retained(self: Slot) Slot {
                 switch (self) {
-                    .branch => |n| n.refcount += 1,
-                    .leaf => |n| n.refcount += 1,
-                    .collision => |n| n.refcount += 1,
+                    .branch => |n| retainCount(&n.refcount),
+                    .leaf => |n| retainCount(&n.refcount),
+                    .collision => |n| retainCount(&n.refcount),
                 }
                 return self;
             }
@@ -73,7 +91,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         };
 
         const Branch = struct {
-            refcount: u32,
+            refcount: std.atomic.Value(u32),
             bitmap: u32,
             /// One entry per set bit in `bitmap`, in ascending bit
             /// order. Index of slot bit `b` is
@@ -81,8 +99,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
             children: []Slot,
 
             fn release(self: *Branch, alloc: Allocator) void {
-                self.refcount -= 1;
-                if (self.refcount == 0) {
+                if (releaseCount(&self.refcount)) {
                     for (self.children) |c| c.release(alloc);
                     alloc.free(self.children);
                     alloc.destroy(self);
@@ -100,18 +117,17 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         };
 
         const Leaf = struct {
-            refcount: u32,
+            refcount: std.atomic.Value(u32),
             hash: u64,
             key: K,
             value: V,
 
             fn release(self: *Leaf, alloc: Allocator) void {
-                self.refcount -= 1;
-                if (self.refcount == 0) alloc.destroy(self);
+                if (releaseCount(&self.refcount)) alloc.destroy(self);
             }
 
             fn retained(self: *Leaf) *Leaf {
-                self.refcount += 1;
+                retainCount(&self.refcount);
                 return self;
             }
         };
@@ -119,13 +135,12 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         const KV = struct { key: K, value: V };
 
         const Collision = struct {
-            refcount: u32,
+            refcount: std.atomic.Value(u32),
             hash: u64,
             entries: []KV,
 
             fn release(self: *Collision, alloc: Allocator) void {
-                self.refcount -= 1;
-                if (self.refcount == 0) {
+                if (releaseCount(&self.refcount)) {
                     alloc.free(self.entries);
                     alloc.destroy(self);
                 }
@@ -136,19 +151,19 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
 
         fn allocLeaf(alloc: Allocator, hash: u64, key: K, value: V) !*Leaf {
             const node = try alloc.create(Leaf);
-            node.* = .{ .refcount = 1, .hash = hash, .key = key, .value = value };
+            node.* = .{ .refcount = std.atomic.Value(u32).init(1), .hash = hash, .key = key, .value = value };
             return node;
         }
 
         fn allocCollision(alloc: Allocator, hash: u64, entries: []KV) !*Collision {
             const node = try alloc.create(Collision);
-            node.* = .{ .refcount = 1, .hash = hash, .entries = entries };
+            node.* = .{ .refcount = std.atomic.Value(u32).init(1), .hash = hash, .entries = entries };
             return node;
         }
 
         fn allocBranch(alloc: Allocator, bitmap: u32, children: []Slot) !*Branch {
             const node = try alloc.create(Branch);
-            node.* = .{ .refcount = 1, .bitmap = bitmap, .children = children };
+            node.* = .{ .refcount = std.atomic.Value(u32).init(1), .bitmap = bitmap, .children = children };
             return node;
         }
 
@@ -231,9 +246,16 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                     break :blk PutResult{ .slot = .{ .leaf = leaf }, .replaced = false };
                 }
             };
+            const new_len = if (result.replaced)
+                self.len
+            else
+                std.math.add(u32, self.len, 1) catch {
+                    result.slot.release(self.allocator);
+                    return error.MapTooLarge;
+                };
             return .{
                 .root = result.slot,
-                .len = self.len + (if (result.replaced) @as(u32, 0) else 1),
+                .len = new_len,
                 .allocator = self.allocator,
                 .context = self.context,
             };
@@ -254,6 +276,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                         }
                         // Same hash, different keys → collision.
                         const entries = try self.allocator.alloc(KV, 2);
+                        errdefer self.allocator.free(entries);
                         entries[0] = .{ .key = old.key, .value = old.value };
                         entries[1] = .{ .key = key, .value = value };
                         const coll = try allocCollision(self.allocator, h, entries);
@@ -278,6 +301,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                         for (old.entries, 0..) |e, i| {
                             if (self.context.eql(e.key, key)) {
                                 const entries = try self.allocator.alloc(KV, old.entries.len);
+                                errdefer self.allocator.free(entries);
                                 @memcpy(entries, old.entries);
                                 entries[i] = .{ .key = key, .value = value };
                                 const coll = try allocCollision(self.allocator, h, entries);
@@ -285,6 +309,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                             }
                         }
                         const entries = try self.allocator.alloc(KV, old.entries.len + 1);
+                        errdefer self.allocator.free(entries);
                         @memcpy(entries[0..old.entries.len], old.entries);
                         entries[old.entries.len] = .{ .key = key, .value = value };
                         const coll = try allocCollision(self.allocator, h, entries);
@@ -293,7 +318,7 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                     // Distinct hashes: collision becomes one child of a
                     // branch alongside the new leaf.
                     const new_leaf = try allocLeaf(self.allocator, h, key, value);
-                    old.refcount += 1; // we'll hold a reference inside the new branch
+                    retainCount(&old.refcount); // new branch owns one reference
                     const inner = try self.mergeDistinct(
                         Slot{ .collision = old },
                         old.hash,
@@ -309,10 +334,12 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
                     if (old.hasSlot(bit)) {
                         const idx = old.indexOf(bit);
                         const sub = try self.putSlot(old.children[idx], h, key, value, depth + 1);
+                        errdefer sub.slot.release(self.allocator);
                         const new_branch = try cloneBranchReplace(self.allocator, old, idx, sub.slot);
                         return .{ .slot = .{ .branch = new_branch }, .replaced = sub.replaced };
                     }
                     const new_leaf = try allocLeaf(self.allocator, h, key, value);
+                    errdefer new_leaf.release(self.allocator);
                     const new_branch = try cloneBranchInsert(self.allocator, old, bit, .{ .leaf = new_leaf });
                     return .{ .slot = .{ .branch = new_branch }, .replaced = false };
                 },
@@ -320,9 +347,9 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         }
 
         /// Build the smallest subtree containing two slots whose hashes
-        /// differ. Both `lhs` and `rhs` are owned by the caller (refcount
-        /// 1 from their respective creations); the returned slot
-        /// transitively owns them.
+        /// differ. Ownership of both `lhs` and `rhs` transfers on entry: the
+        /// returned slot owns them on success, and this function releases them
+        /// on failure.
         fn mergeDistinct(
             self: *const Self,
             lhs: Slot,
@@ -333,16 +360,27 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         ) !Slot {
             std.debug.assert(lhs_hash != rhs_hash);
             std.debug.assert(depth < MAX_DEPTH);
+            var owns_inputs = true;
+            errdefer if (owns_inputs) {
+                lhs.release(self.allocator);
+                rhs.release(self.allocator);
+            };
             const bit_l = slotBit(lhs_hash, depth);
             const bit_r = slotBit(rhs_hash, depth);
             if (bit_l == bit_r) {
+                // The recursive call now owns the two input references and
+                // releases them itself if it fails.
+                owns_inputs = false;
                 const inner = try self.mergeDistinct(lhs, lhs_hash, rhs, rhs_hash, depth + 1);
+                errdefer inner.release(self.allocator);
                 const children = try self.allocator.alloc(Slot, 1);
+                errdefer self.allocator.free(children);
                 children[0] = inner;
                 const branch = try allocBranch(self.allocator, @as(u32, 1) << bit_l, children);
                 return .{ .branch = branch };
             }
             const children = try self.allocator.alloc(Slot, 2);
+            errdefer self.allocator.free(children);
             if (bit_l < bit_r) {
                 children[0] = lhs;
                 children[1] = rhs;
@@ -357,6 +395,12 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
 
         fn cloneBranchReplace(alloc: Allocator, old: *const Branch, idx: usize, new_child: Slot) !*Branch {
             const children = try alloc.alloc(Slot, old.children.len);
+            errdefer {
+                for (children, 0..) |child, i| {
+                    if (i != idx) child.release(alloc);
+                }
+                alloc.free(children);
+            }
             for (old.children, 0..) |c, i| {
                 children[i] = if (i == idx) new_child else c.retained();
             }
@@ -366,6 +410,12 @@ pub fn Hamt(comptime K: type, comptime V: type, comptime Context: type) type {
         fn cloneBranchInsert(alloc: Allocator, old: *const Branch, bit: u5, new_child: Slot) !*Branch {
             const insert_at = old.indexOf(bit);
             const children = try alloc.alloc(Slot, old.children.len + 1);
+            errdefer {
+                for (children, 0..) |child, i| {
+                    if (i != insert_at) child.release(alloc);
+                }
+                alloc.free(children);
+            }
             for (old.children[0..insert_at], 0..) |c, i| children[i] = c.retained();
             children[insert_at] = new_child;
             for (old.children[insert_at..], 0..) |c, i| children[insert_at + 1 + i] = c.retained();
@@ -532,6 +582,76 @@ test "Hamt: clone bumps the refcount and both handles stay live" {
 
     try testing.expectEqual(@as(?u64, 100), b.get(1));
     try testing.expectEqual(@as(?u64, 100), c.get(1));
+}
+
+test "Hamt: independent handles may clone extend and release concurrently" {
+    const allocator = std.heap.page_allocator;
+    var empty = IntMap.init(allocator, .{});
+    defer empty.deinit();
+    var shared = try empty.put(1, 100);
+    defer shared.deinit();
+
+    const Worker = struct {
+        fn run(base: *const IntMap, worker_id: u32, failed: *std.atomic.Value(bool)) void {
+            for (0..256) |i| {
+                var clone = base.clone();
+                defer clone.deinit();
+                const key = @as(u64, worker_id) << 32 | @as(u64, @intCast(i + 2));
+                var extended = clone.put(key, key * 3) catch {
+                    failed.store(true, .release);
+                    return;
+                };
+                defer extended.deinit();
+                if (extended.get(1) != 100 or extended.get(key) != key * 3) {
+                    failed.store(true, .release);
+                    return;
+                }
+            }
+        }
+    };
+
+    var failed = std.atomic.Value(bool).init(false);
+    var threads: [4]std.Thread = undefined;
+    for (&threads, 0..) |*thread, i| {
+        thread.* = try std.Thread.spawn(.{}, Worker.run, .{ &shared, @as(u32, @intCast(i + 1)), &failed });
+    }
+    for (threads) |thread| thread.join();
+
+    try testing.expect(!failed.load(.acquire));
+    try testing.expectEqual(@as(?u64, 100), shared.get(1));
+    try testing.expectEqual(@as(u32, 1), shared.count());
+}
+
+fn exerciseHamtAllocationFailures(allocator: Allocator) !void {
+    var empty = IntMap.init(allocator, .{});
+    defer empty.deinit();
+    var one = try empty.put(0, 10);
+    defer one.deinit();
+    // These hashes share their low five bits, exercising recursive branch
+    // construction as well as branch replacement and insertion.
+    var deep = try one.put(1 << 20, 20);
+    defer deep.deinit();
+    var replaced = try deep.put(0, 11);
+    defer replaced.deinit();
+    var inserted = try deep.put(1, 30);
+    defer inserted.deinit();
+
+    var collide_empty = CollideMap.init(allocator, .{});
+    defer collide_empty.deinit();
+    var collide_one = try collide_empty.put(1, 10);
+    defer collide_one.deinit();
+    var collide_two = try collide_one.put(17, 20);
+    defer collide_two.deinit();
+    var collide_three = try collide_two.put(33, 30);
+    defer collide_three.deinit();
+    var collide_replaced = try collide_three.put(17, 21);
+    defer collide_replaced.deinit();
+    var collision_branched = try collide_three.put(2, 40);
+    defer collision_branched.deinit();
+}
+
+test "Hamt: every allocation failure releases transferred ownership" {
+    try testing.checkAllAllocationFailures(testing.allocator, exerciseHamtAllocationFailures, .{});
 }
 
 // Hash collision: force two distinct keys to map to the same hash via

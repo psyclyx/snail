@@ -66,7 +66,9 @@ pub const WorkingSet = struct {
     }
 
     pub fn beginFrame(self: *WorkingSet) void {
-        self.tick += 1;
+        // Saturation preserves age ordering forever; wrapping would make very
+        // old entries look newly touched and could retain them indefinitely.
+        self.tick +|= 1;
     }
 
     /// Mark one record as part of the current working set.
@@ -85,7 +87,7 @@ pub const WorkingSet = struct {
     /// runs low. Returns true when the atlas was replaced — every
     /// previously issued `Binding` is then stale and the caller re-uploads.
     pub fn ensureHeadroom(self: *WorkingSet, scratch: Allocator) !bool {
-        if (self.pool.free_count >= self.options.reserve_layers) return false;
+        if (self.pool.stats().pages_free >= self.options.reserve_layers) return false;
 
         const Filter = struct {
             ws: *WorkingSet,
@@ -98,23 +100,27 @@ pub const WorkingSet = struct {
             }
         };
         var filter = Filter{ .ws = self };
-        const compacted = try self.atlas.compact(self.allocator, scratch, .{
+        var compacted = try self.atlas.compact(self.allocator, scratch, .{
             .context = @ptrCast(&filter),
             .keep = Filter.keep,
         });
-        self.atlas.deinit();
-        self.atlas = compacted;
+        errdefer compacted.deinit();
 
-        // Drop touch entries for evicted records so the map tracks the
-        // resident set rather than growing with history.
+        // Stage every fallible cleanup allocation before replacing the live
+        // atlas. Allocation failure therefore leaves both the atlas and touch
+        // map unchanged instead of reporting an error after a successful
+        // compaction was already published.
         var stale: std.ArrayList(RecordKey) = .empty;
         defer stale.deinit(self.allocator);
         var it = self.last_touch.keyIterator();
         while (it.next()) |key| {
-            if (!self.atlas.contains(key.*) and self.atlas.lookupTtAdvance(key.*) == null) {
+            if (!compacted.contains(key.*) and compacted.lookupTtAdvance(key.*) == null) {
                 try stale.append(self.allocator, key.*);
             }
         }
+
+        self.atlas.deinit();
+        self.atlas = compacted;
         for (stale.items) |key| _ = self.last_touch.remove(key);
         return true;
     }
@@ -127,7 +133,7 @@ const testing = std.testing;
 test "working set evicts cold records and keeps the touched set drawable" {
     const allocator = testing.allocator;
     var font = try snail.Font.init(@import("assets").noto_sans_regular);
-    var faces = try snail.Faces.build(allocator, &.{.{ .font = &font }});
+    var faces = try snail.Faces.build(allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
 
     // A deliberately tiny pool: two content pages plus reserve headroom.
@@ -181,4 +187,49 @@ test "working set evicts cold records and keeps the touched set drawable" {
     try testing.expect(ws.atlas.recordCount() < before);
     for (hot_shapes) |shape| try testing.expect(ws.atlas.contains(shape.key));
     for (cold_shapes) |shape| try testing.expect(!ws.atlas.contains(shape.key));
+}
+
+test "working set frame counter saturates instead of reviving stale entries" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 32,
+        .band_words_per_page = 2,
+    });
+    defer pool.deinit();
+    var ws = try WorkingSet.init(testing.allocator, pool, .{});
+    defer ws.deinit();
+
+    ws.tick = std.math.maxInt(u64);
+    ws.beginFrame();
+    try testing.expectEqual(std.math.maxInt(u64), ws.tick);
+}
+
+fn exerciseWorkingSetAllocationFailures(allocator: Allocator, pool: *snail.PagePool) !void {
+    var ws = try WorkingSet.init(allocator, pool, .{ .reserve_layers = 2, .max_idle_ticks = 0 });
+    defer ws.deinit();
+    const stale_key = snail.record_key.unhintedGlyph(5, 9);
+    try ws.touch(stale_key);
+    const before = ws.atlas.snapshotIdentity();
+
+    const rebuilt = ws.ensureHeadroom(allocator) catch |err| {
+        try testing.expectEqualDeep(before, ws.atlas.snapshotIdentity());
+        try testing.expect(ws.last_touch.contains(stale_key));
+        return err;
+    };
+    try testing.expect(rebuilt);
+    try testing.expect(!ws.last_touch.contains(stale_key));
+}
+
+test "working set compaction is atomic across every allocation failure" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 32,
+        .band_words_per_page = 2,
+    });
+    defer pool.deinit();
+    try testing.checkAllAllocationFailures(
+        testing.allocator,
+        exerciseWorkingSetAllocationFailures,
+        .{pool},
+    );
 }

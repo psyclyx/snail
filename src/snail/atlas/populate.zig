@@ -16,7 +16,6 @@ const atlas_mod = @import("../atlas.zig");
 const font_mod = @import("../font.zig");
 const hint_vm_mod = @import("../font/tt_hint_vm.zig");
 const autohint_mod = @import("../font/autohint/producer.zig");
-const autohint_warp = @import("../font/autohint/warp.zig");
 const faces_mod = @import("../text/faces.zig");
 const text_mod = @import("../text.zig");
 const record_key = @import("record_key.zig");
@@ -28,6 +27,7 @@ const Font = font_mod.Font;
 const GlyphCurves = atlas_mod.GlyphCurves;
 const Layer = atlas_mod.Layer;
 const RecordKey = record_key.RecordKey;
+const TtAdvanceEntry = atlas_mod.TtAdvanceEntry;
 
 /// How `recordUnhintedRun` stores COLRv0 glyphs. Each mode pairs with a
 /// placement style; recording and placement must agree.
@@ -62,6 +62,8 @@ const Batch = struct {
     curves: std.ArrayList(GlyphCurves) = .empty,
     layer_storage: std.ArrayList([]Layer) = .empty,
     seen: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+    advances: std.ArrayList(TtAdvanceEntry) = .empty,
+    seen_advances: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
 
     fn init(allocator: Allocator) Batch {
         return .{
@@ -72,6 +74,8 @@ const Batch = struct {
 
     fn deinit(self: *Batch) void {
         self.seen.deinit(self.allocator);
+        self.seen_advances.deinit(self.allocator);
+        self.advances.deinit(self.allocator);
         for (self.layer_storage.items) |layers| self.allocator.free(layers);
         self.layer_storage.deinit(self.allocator);
         self.entries.deinit(self.allocator);
@@ -96,7 +100,13 @@ const Batch = struct {
     }
 
     fn apply(self: *Batch, atlas: *Atlas) !void {
-        try atlas.extendInPlace(self.allocator, self.entries.items);
+        try atlas.extendWithAdvancesInPlace(self.allocator, self.entries.items, self.advances.items);
+    }
+
+    fn shouldRecordAdvance(self: *Batch, atlas: *const Atlas, key: RecordKey) !bool {
+        if (atlas.lookupTtAdvance(key) != null) return false;
+        const result = try self.seen_advances.getOrPut(self.allocator, key);
+        return !result.found_existing;
     }
 };
 
@@ -195,7 +205,7 @@ pub fn recordUnhintedRun(
         try appendUnhintedGlyph(
             &batch,
             atlas,
-            faces.face(glyph.face_index).?.font,
+            faces.fontForFace(glyph.face_index).?,
             font_id,
             glyph.glyph_id,
             options,
@@ -231,8 +241,8 @@ pub fn recordAutohintRun(
             continue;
         }
 
-        const x = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_warp.max_knots);
-        const y = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_warp.max_knots);
+        const x = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
+        const y = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
         const analysis = try analyzer.analyzeGlyph(batch.scratch.allocator(), glyph.glyph_id, x, y);
         try batch.entries.append(allocator, .{
             .key = key,
@@ -266,26 +276,20 @@ pub fn recordTtHintRun(
     // `prepared` cannot be keyed.
     if (ppem.x_26_6 != ppem.y_26_6) return error.AnisotropicPpem;
     const ppem_26_6 = ppem.x_26_6;
-
-    try recordTtAdvanceRun(atlas, vm, prepared, font_id, shaped);
-
-    var has_missing = false;
-    for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != font_id) continue;
-        const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
-        if (!atlas.contains(key)) {
-            has_missing = true;
-            break;
-        }
-    }
-    // Keep repeat recording calls cheap when the store contains the run.
-    if (!has_missing) return;
+    const packed_ppem = try ppem.packed26Dot6();
 
     var batch = Batch.init(allocator);
     defer batch.deinit();
 
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != font_id) continue;
+
+        const advance_key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
+        if (try batch.shouldRecordAdvance(atlas, advance_key)) {
+            const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
+            try batch.advances.append(allocator, .{ .key = advance_key, .advance_26_6 = advance });
+        }
+
         const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
         if (!try batch.shouldInsert(atlas, key)) continue;
         var curves = try vm.hintGlyph(allocator, batch.scratch.allocator(), prepared, glyph.glyph_id);
@@ -312,13 +316,20 @@ pub fn recordTtAdvanceRun(
     shaped: *const text_mod.ShapedText,
 ) !void {
     const packed_ppem = try ppemOf(prepared).packed26Dot6();
+    var advances: std.ArrayList(TtAdvanceEntry) = .empty;
+    defer advances.deinit(atlas.allocator);
+    var seen: std.AutoHashMapUnmanaged(RecordKey, void) = .empty;
+    defer seen.deinit(atlas.allocator);
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != font_id) continue;
         const key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
         if (atlas.lookupTtAdvance(key) != null) continue;
+        const result = try seen.getOrPut(atlas.allocator, key);
+        if (result.found_existing) continue;
         const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
-        try atlas.recordTtAdvance(key, advance);
+        try advances.append(atlas.allocator, .{ .key = key, .advance_26_6 = advance });
     }
+    try atlas.recordTtAdvances(advances.items);
 }
 
 /// Read-side `AdvanceProvider` over recorded `ns.tt_advance` values,
@@ -369,7 +380,7 @@ pub const TtAdvanceSource = struct {
         if (ppem.x_26_6 != prepared_ppem.x_26_6 or ppem.y_26_6 != prepared_ppem.y_26_6) return null;
         return self.vm.hintedAdvance(self.prepared, glyph_id) catch |err| {
             self.last_error = err;
-            self.fallback_count += 1;
+            self.fallback_count +|= 1;
             return null;
         };
     }
@@ -381,8 +392,8 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     var regular = try Font.init(@import("assets").noto_sans_regular);
     var emoji = try Font.init(@import("assets").twemoji_mozilla);
     var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular },
-        .{ .font = &emoji, .fallback = true },
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     var shaped = try faces_mod.shape(testing.allocator, &faces, "AA\xf0\x9f\x8c\x8d", .{});
@@ -409,8 +420,8 @@ test "outline_only COLR handling records base outlines and ignores layers" {
     var regular = try Font.init(@import("assets").noto_sans_regular);
     var emoji = try Font.init(@import("assets").twemoji_mozilla);
     var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular },
-        .{ .font = &emoji, .fallback = true },
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
@@ -443,8 +454,8 @@ test "layers COLR handling records per-layer glyphs for fanout placement" {
     var regular = try Font.init(@import("assets").noto_sans_regular);
     var emoji = try Font.init(@import("assets").twemoji_mozilla);
     var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular },
-        .{ .font = &emoji, .fallback = true },
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
@@ -479,7 +490,7 @@ test "layers COLR handling records per-layer glyphs for fanout placement" {
 test "autohint and TT-hint run helpers cover empty and visible glyphs" {
     const bytes = @import("assets").dejavu_sans_mono;
     var font = try Font.init(bytes);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
     var shaped = try faces_mod.shape(testing.allocator, &faces, " A", .{});
     defer shaped.deinit();
@@ -521,7 +532,7 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
 test "TtAdvanceSource reads recorded advances and falls back to the VM" {
     const bytes = @import("assets").dejavu_sans_mono;
     var font = try Font.init(bytes);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font }});
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
     var shaped = try faces_mod.shape(testing.allocator, &faces, "Ab", .{});
     defer shaped.deinit();
@@ -557,4 +568,56 @@ test "TtAdvanceSource reads recorded advances and falls back to the VM" {
     const from_store = provider.get_advance(provider.context, 0, gid, ppem).?;
     try testing.expectEqual(from_vm, from_store);
     try testing.expectEqual(@as(u32, 0), source.fallback_count);
+}
+
+test "TT run failure is atomic and leaves the VM reusable" {
+    const bytes = @import("assets").dejavu_sans_mono;
+    var font = try Font.init(bytes);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
+    defer faces.deinit();
+    var valid = try faces_mod.shape(testing.allocator, &faces, "A", .{});
+    defer valid.deinit();
+
+    var glyphs = [_]text_mod.ShapedText.Glyph{
+        valid.glyphs[0],
+        .{
+            .face_index = valid.glyphs[0].face_index,
+            .glyph_id = std.math.maxInt(u16),
+            .x_offset = 0,
+            .y_offset = 0,
+            .x_advance = 0,
+            .y_advance = 0,
+            .source_start = 1,
+            .source_end = 2,
+            .font_id = 0,
+        },
+    };
+    const shaped = text_mod.ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
+
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = try Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+
+    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
+    defer vm.deinit();
+    var prepared = try vm.prepare(hint_vm_mod.TtHintPpem.uniform(13 * 64));
+    defer prepared.deinit();
+
+    if (recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped)) |_| {
+        return error.TestExpectedError;
+    } else |_| {}
+    try testing.expectEqual(@as(u32, 0), atlas.recordCount());
+    try testing.expectEqual(@as(u32, 0), atlas.ttAdvanceCount());
+    try testing.expectEqual(@as(usize, 0), atlas.pageCount());
+
+    // The failed topology cache insertion was removed: a valid glyph still
+    // executes, and the VM's deferred destruction must remain safe.
+    try testing.expect((try vm.hintedAdvance(&prepared, valid.glyphs[0].glyph_id)) > 0);
+    var curves = try vm.hintGlyph(testing.allocator, testing.allocator, &prepared, valid.glyphs[0].glyph_id);
+    curves.deinit();
 }

@@ -19,12 +19,13 @@ const page_mod = @import("page.zig");
 const page_pool_mod = @import("page_pool.zig");
 const draw_records = @import("../draw/records.zig");
 const paint_records = @import("paint_records.zig");
+const band_tex_format = @import("../format/band_texture.zig");
 const upload_patch = @import("upload_patch.zig");
 const image_mod = @import("../image.zig");
 
-pub const Atlas = atlas_mod.Atlas;
-pub const Binding = draw_records.Binding;
-pub const PagePool = page_pool_mod.PagePool;
+const Atlas = atlas_mod.Atlas;
+const Binding = draw_records.Binding;
+const PagePool = page_pool_mod.PagePool;
 
 pub const CURVE_TEX_WIDTH: u32 = page_mod.CURVE_TEX_WIDTH;
 pub const BAND_TEX_WIDTH: u32 = page_mod.BAND_TEX_WIDTH;
@@ -111,7 +112,7 @@ pub const Sizes = struct {
 pub fn sizes(pool: *const PagePool, opts: Options) InitError!Sizes {
     const bindings: usize = @intCast(opts.max_bindings);
     const images: usize = @intCast(opts.max_images);
-    const layers: usize = @intCast(pool.options.max_layers);
+    const layers: usize = @intCast(pool.config().max_layers);
     const info_free = std.math.add(usize, bindings, 1) catch return error.InvalidOptions;
     const image_free = info_free;
     const page_regions = std.math.mul(usize, layers, 6) catch return error.InvalidOptions;
@@ -255,7 +256,8 @@ pub const Planner = struct {
         info_free_backing: []Range,
         image_free_backing: []Range,
     ) InitError!Planner {
-        const layers: usize = @intCast(pool.options.max_layers);
+        const pool_config = pool.config();
+        const layers: usize = @intCast(pool_config.max_layers);
         const binding_count = std.math.cast(usize, opts.max_bindings) orelse return error.InvalidOptions;
         const free_count = std.math.add(usize, binding_count, 1) catch return error.InvalidOptions;
         if (generation.len < layers or
@@ -267,8 +269,8 @@ pub const Planner = struct {
         {
             return error.BackingTooSmall;
         }
-        if (pool.options.curve_words_per_page % (CURVE_TEX_WIDTH * 4) != 0 or
-            pool.options.band_words_per_page % (BAND_TEX_WIDTH * 2) != 0 or
+        if (pool_config.curve_words_per_page % (CURVE_TEX_WIDTH * 4) != 0 or
+            pool_config.band_words_per_page % (BAND_TEX_WIDTH * 2) != 0 or
             (opts.max_images > 0 and (opts.max_image_width == 0 or opts.max_image_height == 0 or opts.image_bytes_per_texel == 0)))
         {
             return error.InvalidOptions;
@@ -283,7 +285,7 @@ pub const Planner = struct {
         for (bindings_used) |*b| b.* = .{};
         var self = Planner{
             .pool = pool,
-            .source_id = try pool.nextBindingSourceId(),
+            .source_id = try page_pool_mod.nextBindingSourceId(pool),
             .opts = opts,
             .prepared_generation = generation_used,
             .prepared_curve_words = curve_words_used,
@@ -421,28 +423,29 @@ pub const Planner = struct {
         const replace_side_data = !exact_snapshot and !direct_child;
         var info_from_row: u32 = 0;
         for (atlas.pages) |p| {
-            const layer: u32 = p.layer_index;
-            if (layer >= self.pool.options.max_layers or self.pool.pages[layer] != p) return error.PageNotInPool;
-            const stale = self.prepared_generation[layer] != p.currentGeneration() or
-                p.curve.usedWords() != self.prepared_curve_words[layer] or
-                p.band.usedWords() != self.prepared_band_words[layer];
+            const layer: u32 = page_mod.layerIndex(p);
+            if (!page_pool_mod.ownsPage(self.pool, layer, p)) return error.PageNotInPool;
+            const published = page_mod.publishedWords(p);
+            const stale = self.prepared_generation[layer] != page_mod.currentGeneration(p) or
+                published.curve != self.prepared_curve_words[layer] or
+                published.band != self.prepared_band_words[layer];
             if (stale) region_count += 6;
         }
-        if (atlas.paint_image_records) |records| {
+        if (atlas.paint_records) |records| {
             var next_image_layer: u32 = 0;
-            for (records) |maybe_rec| {
-                const rec = maybe_rec orelse continue;
+            for (records) |rec| {
+                const image = rec.image orelse continue;
                 if (rec.first_image_use) {
                     if (rec.image_layer != next_image_layer) return error.InvalidAtlasData;
                     next_image_layer = std.math.add(u32, next_image_layer, 1) catch return error.InvalidAtlasData;
                 } else if (rec.image_layer >= next_image_layer) {
                     return error.InvalidAtlasData;
                 }
-                if (rec.image.width == 0 or rec.image.height == 0) return error.InvalidImageFormat;
-                if (rec.image.width > self.opts.max_image_width or rec.image.height > self.opts.max_image_height) return error.ImageTooLarge;
-                const pixel_count = std.math.mul(usize, @as(usize, rec.image.width), @as(usize, rec.image.height)) catch return error.InvalidImageFormat;
+                if (image.width == 0 or image.height == 0) return error.InvalidImageFormat;
+                if (image.width > self.opts.max_image_width or image.height > self.opts.max_image_height) return error.ImageTooLarge;
+                const pixel_count = std.math.mul(usize, @as(usize, image.width), @as(usize, image.height)) catch return error.InvalidImageFormat;
                 const expected_bytes = std.math.mul(usize, pixel_count, @as(usize, self.opts.image_bytes_per_texel)) catch return error.InvalidImageFormat;
-                if (rec.image.texels.len != expected_bytes) return error.InvalidImageFormat;
+                if (image.texels.len != expected_bytes) return error.InvalidImageFormat;
                 if (replace_side_data and rec.first_image_use) region_count += 1;
             }
         }
@@ -450,27 +453,31 @@ pub const Planner = struct {
             const expected_len = std.math.mul(usize, @as(usize, atlas.layer_info_width), @as(usize, atlas.layer_info_height)) catch return error.InvalidAtlasData;
             const expected_floats = std.math.mul(usize, expected_len, 4) catch return error.InvalidAtlasData;
             if (atlas.layer_info_width != INFO_WIDTH or info.len != expected_floats) return error.InvalidAtlasData;
-            if (atlas.paint_image_records) |records| {
+            if (atlas.paint_records) |records| {
                 const texel_count = expected_len;
-                for (records) |maybe_rec| {
-                    const rec = maybe_rec orelse continue;
+                for (records) |rec| {
                     const texel_offset: usize = rec.texel_offset;
-                    if (texel_offset > texel_count or texel_count - texel_offset < 6) return error.InvalidAtlasData;
+                    const record_texels = if (rec.layer_count > 1)
+                        1 + @as(usize, rec.layer_count) * 6
+                    else
+                        6;
+                    if (texel_offset > texel_count or texel_count - texel_offset < record_texels) return error.InvalidAtlasData;
                 }
             }
             if (info.len > layer_info_scratch.len) return error.LayerInfoScratchTooSmall;
             info_from_row = if (replace_side_data or slot.uploaded_info_rows > atlas.layer_info_height) 0 else slot.uploaded_info_rows;
             if (atlas.layer_info_height > info_from_row) region_count += 1;
-        } else if (atlas.layer_info_height != 0 or atlas.layer_info_width != 0 or atlas.paint_image_records != null) {
+        } else if (atlas.layer_info_height != 0 or atlas.layer_info_width != 0 or atlas.paint_records != null) {
             return error.InvalidAtlasData;
         }
         if (region_count > out.len) return error.RegionBufferFull;
 
         for (atlas.pages) |p| {
-            const layer: u32 = p.layer_index;
-            const cur_gen = p.currentGeneration();
-            const cur_curve = p.curve.usedWords();
-            const cur_band = p.band.usedWords();
+            const layer: u32 = page_mod.layerIndex(p);
+            const cur_gen = page_mod.currentGeneration(p);
+            const published = page_mod.publishedWords(p);
+            const cur_curve = published.curve;
+            const cur_band = published.band;
             const gen_match = self.prepared_generation[layer] == cur_gen;
             const stale = !gen_match or
                 cur_curve != self.prepared_curve_words[layer] or
@@ -485,8 +492,8 @@ pub const Planner = struct {
             // immutable, so rewriting it is redundant, never wrong.
             const curve_from: u32 = if (gen_match) @min(self.prepared_curve_words[layer], cur_curve) else 0;
             const band_from: u32 = if (gen_match) @min(self.prepared_band_words[layer], cur_band) else 0;
-            try emitPlaneTail(out, out_len, .curve, layer, p.curve.data, 4, CURVE_TEX_WIDTH, curve_from, cur_curve);
-            try emitPlaneTail(out, out_len, .band, layer, p.band.data, 2, BAND_TEX_WIDTH, band_from, cur_band);
+            try emitPlaneTail(out, out_len, .curve, layer, page_mod.curveWordsUsed(p), 4, CURVE_TEX_WIDTH, curve_from, cur_curve);
+            try emitPlaneTail(out, out_len, .band, layer, page_mod.bandWordsUsed(p), 2, BAND_TEX_WIDTH, band_from, cur_band);
             self.prepared_curve_words[layer] = cur_curve;
             self.prepared_band_words[layer] = cur_band;
         }
@@ -504,19 +511,19 @@ pub const Planner = struct {
         const copy_start = @as(usize, info_from_row) * row_floats;
         if (copy_start < info.len) @memcpy(info_dst[copy_start..], info[copy_start..]);
 
-        if (atlas.paint_image_records) |records| {
-            for (records) |maybe_rec| {
-                const rec = maybe_rec orelse continue;
+        if (atlas.paint_records) |records| {
+            for (records) |rec| {
+                const image = rec.image orelse continue;
                 const abs_layer = slot.image_layer_base + rec.image_layer;
                 // Initial bindings and conservative side-data replacements
                 // upload each image once. Exact snapshots and direct children
                 // preserve the slot's existing image layers.
                 if (replace_side_data and rec.first_image_use) {
-                    try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = rec.image.texels, .width = rec.image.width, .height = rec.image.height });
+                    try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = image.texels, .width = image.width, .height = image.height });
                 }
                 if (rec.texel_offset / INFO_WIDTH >= info_from_row) {
-                    const uv_x: f32 = @as(f32, @floatFromInt(rec.image.width)) / @as(f32, @floatFromInt(self.opts.max_image_width));
-                    const uv_y: f32 = @as(f32, @floatFromInt(rec.image.height)) / @as(f32, @floatFromInt(self.opts.max_image_height));
+                    const uv_x: f32 = @as(f32, @floatFromInt(image.width)) / @as(f32, @floatFromInt(self.opts.max_image_width));
+                    const uv_y: f32 = @as(f32, @floatFromInt(image.height)) / @as(f32, @floatFromInt(self.opts.max_image_height));
                     upload_patch.patchImagePaintRecord(info_dst, INFO_WIDTH, INFO_WIDTH, 0, rec.texel_offset, .{
                         .layer = abs_layer,
                         .uv_scale = .{ .x = uv_x, .y = uv_y },
@@ -728,10 +735,10 @@ fn emitRegion(out: []Region, out_len: *usize, r: Region) Error!void {
 }
 
 fn countUniqueImages(atlas: *const Atlas) Error!u32 {
-    const records = atlas.paint_image_records orelse return 0;
+    const records = atlas.paint_records orelse return 0;
     var seen: u32 = 0;
-    for (records) |maybe_rec| {
-        const rec = maybe_rec orelse continue;
+    for (records) |rec| {
+        if (rec.image == null) continue;
         if (rec.first_image_use) seen = std.math.add(u32, seen, 1) catch return error.InvalidAtlasData;
     }
     return seen;
@@ -778,6 +785,32 @@ test "OwnedPlanner owns only backend-neutral planner storage" {
     try std.testing.expect(planner.release(upload.binding));
 }
 
+fn exerciseOwnedPlannerAllocationFailures(allocator: std.mem.Allocator, pool: *PagePool) !void {
+    var planner = try OwnedPlanner.init(allocator, pool, .{
+        .max_bindings = 3,
+        .layer_info_height = 8,
+        .max_images = 4,
+        .max_image_width = 16,
+        .max_image_height = 16,
+    });
+    defer planner.deinit();
+    try std.testing.expectEqual(@as(usize, 3), planner.bindings.len);
+}
+
+test "OwnedPlanner init cleans up every allocation failure" {
+    var pool = try PagePool.init(std.testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = CURVE_TEX_WIDTH * 4,
+        .band_words_per_page = BAND_TEX_WIDTH * 2,
+    });
+    defer pool.deinit();
+    try std.testing.checkAllAllocationFailures(
+        std.testing.allocator,
+        exerciseOwnedPlannerAllocationFailures,
+        .{pool},
+    );
+}
+
 test "bindings are scoped to the exact planner even within one pool" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
@@ -818,7 +851,7 @@ test "Planner preflights atomically and is bound to one page pool" {
         .band_words_per_page = BAND_TEX_WIDTH * 2 * 2,
     });
     defer pool.deinit();
-    var other_pool = try PagePool.init(allocator, pool.options);
+    var other_pool = try PagePool.init(allocator, pool.config());
     defer other_pool.deinit();
 
     const path_mod = @import("../path.zig");
@@ -862,7 +895,7 @@ test "Planner preflights atomically and is bound to one page pool" {
     var region_len: usize = 0;
     try std.testing.expectError(error.RegionBufferFull, planner.plan(&atlas, regions[0..0], &region_len, &.{}));
     try std.testing.expect(!slots[0].active);
-    try std.testing.expectEqual(@as(u64, 0), generation[atlas.pages[0].layer_index]);
+    try std.testing.expectEqual(@as(u64, 0), generation[page_mod.layerIndex(atlas.pages[0])]);
 
     const binding = try planner.plan(&atlas, regions, &region_len, &.{});
     try std.testing.expectEqual(@as(usize, 2), region_len);
@@ -1038,15 +1071,17 @@ test "planDelta uploads only the grown row band of an append-only page" {
                 curve_bytes[curve_index * segment_words + 10] = 0; // packed quadratic
             }
             // 1 h-band + 1 v-band, one ref each, both pointing at curve 0.
-            const band_bytes = try alloc.alloc(u16, 8);
-            band_bytes[0] = 1;
-            band_bytes[1] = 2;
-            band_bytes[2] = 1;
-            band_bytes[3] = 3;
-            band_bytes[4] = 0;
-            band_bytes[5] = 0;
-            band_bytes[6] = 0;
-            band_bytes[7] = 0;
+            const band_bytes = try alloc.alloc(u16, 12);
+            const prefix = band_tex_format.packBlockPrefix(1, 1);
+            @memcpy(band_bytes[0..prefix.len], &prefix);
+            band_bytes[4] = 1;
+            band_bytes[5] = 2;
+            band_bytes[6] = 1;
+            band_bytes[7] = 3;
+            band_bytes[8] = 0;
+            band_bytes[9] = 0;
+            band_bytes[10] = 0;
+            band_bytes[11] = 0;
             return .{
                 .allocator = alloc,
                 .curve_bytes = curve_bytes,
@@ -1128,10 +1163,10 @@ test "planDelta uploads only the grown row band of an append-only page" {
                 try std.testing.expectEqual(@as(usize, 8 * 4 * 4) * 2, r.src.len);
             },
             .band => {
-                // Band watermark: 8 words already resident, 8 appended.
+                // Band watermark: 12 words already resident, 12 appended.
                 try std.testing.expectEqual(@as(u32, 0), r.row_base);
-                try std.testing.expectEqual(@as(u32, 4), r.col_base);
-                try std.testing.expectEqual(@as(u32, 4), r.width);
+                try std.testing.expectEqual(@as(u32, 6), r.col_base);
+                try std.testing.expectEqual(@as(u32, 6), r.width);
                 try std.testing.expectEqual(@as(u32, 1), r.height);
             },
             else => {},

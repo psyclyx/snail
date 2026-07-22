@@ -15,6 +15,7 @@
 const std = @import("std");
 const bezier = @import("../math/bezier.zig");
 const curve_tex = @import("../format/curve_texture.zig");
+const band_tex = @import("../format/band_texture.zig");
 
 pub const BBox = bezier.BBox;
 
@@ -24,8 +25,10 @@ pub const GlyphCurves = struct {
     /// Laid out exactly as the existing `format/curve_texture.zig`
     /// format expects, with the glyph's first segment at byte 0.
     curve_bytes: []const u16,
-    /// Packed band texture bytes (u16 indices). Curve refs are encoded
-    /// assuming the glyph's first curve sits at texel 0 of the curve
+    /// Packed band texture bytes (u16 indices). Each non-empty block starts
+    /// with the private self-describing prefix from `format/band_texture.zig`;
+    /// records point at the headers immediately after it. Curve refs are
+    /// encoded assuming the glyph's first curve sits at texel 0 of the curve
     /// texture; the atlas rewrites them at insertion time to absolute
     /// page-local texel positions.
     band_bytes: []const u16,
@@ -154,15 +157,22 @@ pub const GlyphCurves = struct {
             return error.InvalidCurves;
         }
 
+        const prefix_texels: usize = band_tex.block_prefix_texels;
         const header_count = @as(usize, self.h_band_count) + @as(usize, self.v_band_count);
         const total_texels = self.band_bytes.len / 2;
-        if (total_texels < header_count) return error.InvalidCurves;
+        if (total_texels < prefix_texels + header_count) return error.InvalidCurves;
+        const prefix = band_tex.unpackBlockPrefix(self.band_bytes[0..4].*) orelse
+            return error.InvalidCurves;
+        if (prefix.h_band_count != self.h_band_count or prefix.v_band_count != self.v_band_count) {
+            return error.InvalidCurves;
+        }
 
-        var expected_ref_texel = header_count;
+        var expected_ref_texel = prefix_texels + header_count;
         for (0..header_count) |band_index| {
-            const count = @as(usize, self.band_bytes[band_index * 2]);
-            const offset = @as(usize, self.band_bytes[band_index * 2 + 1]);
-            if (offset != expected_ref_texel or count > total_texels - expected_ref_texel) {
+            const header_word = (prefix_texels + band_index) * 2;
+            const count = @as(usize, self.band_bytes[header_word]);
+            const offset = @as(usize, self.band_bytes[header_word + 1]);
+            if (offset != expected_ref_texel - prefix_texels or count > total_texels - expected_ref_texel) {
                 return error.InvalidCurves;
             }
 
@@ -236,7 +246,7 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
 
     var curve_words = [_]u16{0} ** (curve_tex.SEGMENT_TEXELS * 4);
     // Two one-band headers followed by one reference for each axis.
-    var band_words = [_]u16{ 1, 2, 1, 3, 0, 0, 0, 0 };
+    var band_words = band_tex.packBlockPrefix(1, 1) ++ [_]u16{ 1, 2, 1, 3, 0, 0, 0, 0 };
     const valid = GlyphCurves{
         .allocator = allocator,
         .curve_bytes = &curve_words,
@@ -260,6 +270,6 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
     try std.testing.expectError(error.InvalidCurves, valid.validate());
     curve_words[10] = 0;
 
-    band_words[5] = 1; // local texel 4096 is outside the single curve
+    band_words[9] = 1; // local texel 4096 is outside the single curve
     try std.testing.expectError(error.InvalidCurves, valid.validate());
 }
