@@ -102,7 +102,7 @@ const snail = @import("snail");
 
 // Prepare: parse fonts, shape text.
 var font = try snail.Font.init(font_bytes);            // borrows the bytes
-var faces = try snail.Faces.build(alloc, &.{.{ .font = &font }});
+var faces = try snail.Faces.build(alloc, &.{.{ .font = &font, .font_id = 0 }});
 defer faces.deinit();
 var shaped = try snail.shape(alloc, &faces, "Hello, world", .{});
 defer shaped.deinit();
@@ -124,7 +124,7 @@ const upload_options: snail.atlas_upload.Options = .{
     .max_image_width = 2048,
     .max_image_height = 2048,
 };
-var planner = try snail.OwnedAtlasUploadPlanner.init(alloc, pool, upload_options);
+var planner = try snail.atlas_upload.OwnedPlanner.init(alloc, pool, upload_options);
 defer planner.deinit();
 const upload = try planner.plan(&atlas);
 for (upload.regions) |r| try myEngine.texSubImage(r); // curve/band/layer_info/image
@@ -182,12 +182,12 @@ const raster_records: raster.DrawRecords = .{
     .instances = instances[0..raster_ni], .batches = batches[0..raster_nb],
 };
 
-var renderer = try raster.Renderer.init(pixels, width, height, stride);
+var renderer = try raster.Renderer.init(pixels, width, height, stride, .rgba8_unorm);
 try raster.draw(&renderer, .{
     .mvp = mvp,
     .surface = .{
-        .pixel_width = @floatFromInt(width),
-        .pixel_height = @floatFromInt(height),
+        .pixel_width = width,
+        .pixel_height = height,
         .encoding = .srgb,
         .format = .rgba8_unorm,
     },
@@ -212,7 +212,11 @@ exhausted — that is your eviction moment, and the policy is yours:
 `Atlas.compact(alloc, scratch, filter)` rebuilds the store full-fidelity,
 keeping only records the `RecordFilter` accepts (pass `null` to keep
 everything, i.e. pure defragmentation). Compact acquires new pages before
-releasing old ones, so evict on `free_count` headroom, not on failure.
+releasing old ones, so evict while `pool.stats().pages_free` still provides
+headroom, not only after failure. `PagePool.config()` returns the immutable
+capacity configuration. Atlas page handles are opaque: storage, reservation,
+publication, reference counting, and recycling stay private, and renderer
+integrations receive immutable `atlas_upload.Region` copies.
 `src/support/working_set.zig` is a worked example (demo-only, not shipped).
 
 Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
@@ -275,14 +279,19 @@ hosts that compose snail's fragments into their own programs
 (`run-minimal-gl` does exactly this). WebGPU is validated by the
 `run-minimal-wgpu` example against the GL reference.
 
-**Texture ABI.** Curves RGBA16F, bands RG16UI, layer-info RGBA32F, plus the
-host-formatted image array. Layouts are stable and documented in
+**Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded
+f16 local bbox, affine transform/origin, glyph words, four payload words, and
+linear-f16 color/tint. All 256 atlas layers are directly representable; packed
+records are validated before a backend consumes them. Curves are RGBA16F,
+bands RG16UI, layer-info RGBA32F, plus the host-formatted image array. Layouts
+are versioned and documented in
 `snail.render` (byte-layout contract for caller-owned renderers), the
 `snail-shaders` module (per-target binding/name contracts of the
 generated shaders), and `snail.shader.glsl` (composable fragments).
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
-allocator; there is no global or threadlocal state. `Atlas` is value-typed
+allocator; the core preparation APIs keep no global or thread-local mutable
+state. `Atlas` is value-typed
 and persistent — `extend`/`compact` return new snapshots sharing retained,
 refcounted page storage while preserving prior logical snapshot contents, and
 lookups return records **by value**, so there is no entry-vs-eviction lifetime
@@ -295,22 +304,29 @@ the font bytes you pass it.
 
 **Validation is part of the API.** `PagePool.init`, `Atlas.init`, upload
 planner sizing/initialization, and software-renderer attachment are fallible.
-Atlas insertion rejects malformed curve/band payloads; paths reject non-finite
-geometry, invalid rational-conic weights, and unrepresentable complexity;
+Atlas insertion rejects malformed curve/band payloads; paints reject non-finite
+parameters, invalid alpha/radius/image payloads, and strokes with invalid
+widths or miter limits; paths reject non-finite geometry, invalid
+rational-conic weights, and unrepresentable complexity;
 `emit` rejects stale/foreign atlas records, invalid transforms, colors,
 policies, cursors, and insufficient output. Atlas insertion, draw emission,
 device resize, and renderer buffer replacement preflight or stage their work
 so failure leaves their published state unchanged; a failed multi-atlas upload
 releases every binding it planned but may retain prepared shared-page work.
-Path construction is deliberately incremental: a multi-segment convenience
-operation can retain a successfully appended prefix if a later allocation
-fails. Propagate typed errors instead of treating them as asserts.
+Fixed-size multi-segment path commands reserve their complete append capacity
+before mutation; lower-level adaptive construction remains explicitly
+incremental. Propagate typed errors instead of treating them as asserts.
 
-**Threading.** snail does not create threads. Values are single-threaded
-unless documented. `PagePool` acquisition/release and identity minting are
-synchronized, as are paired reservations within a shared page, so independent
-atlases over one pool can be built on different threads. `snail-raster` has an
-optional caller-driven `ThreadPool`.
+**Threading.** The core `snail` module does not create threads. Separate atlas handles, including
+children of the same persistent snapshot, may be extended and destroyed on
+different threads: shared HAMT/page references are atomic, `PagePool`
+acquisition and identity minting are synchronized, and initialized curve/band
+ranges are published as one ordered pair. Do not mutate or destroy the *same*
+handle concurrently. Each concurrent build must also use a distinct allocator
+or an allocator whose implementation is thread-safe; atomic atlas references
+cannot make a caller's allocator safe. Planners and other mutable values remain
+single-threaded unless documented. `snail-raster` has an optional caller-driven
+`ThreadPool`.
 
 ## Text and hinting
 
@@ -336,11 +352,16 @@ defer shaped.deinit();
 Feature ranges and each glyph's half-open `source_start..source_end` are UTF-8
 byte offsets into the original input. Cluster ranges are complete in both LTR
 and RTL output; glyph order follows HarfBuzz within each fallback-font run.
-The fallback itemizer keeps its supported font-sensitive combining, emoji, and
-Indic sequences together. Invalid UTF-8, feature ranges, empty/oversized
-language strings, ppem values, and missing ppem for an advance provider are
-reported as errors. `Faces.build` reports `TooManyFaces`, while `Faces.face`
-and `fontIdForFace` return `null` for an invalid index.
+Every face supplies a stable `font_id`; all `Faces` values that feed the same
+atlas must use the same id for the same font instance. Conflicting ids and
+empty face sets are rejected. The fallback itemizer keeps font-sensitive
+Unicode marks (using HarfBuzz's Unicode database), emoji, and Indic sequences
+together; it is not a general-purpose UAX #29 segmenter. Invalid UTF-8,
+feature ranges, empty/oversized language strings, ppem values, and missing
+ppem for an advance provider are reported as errors. `Faces.fontIdForFace`
+and `Faces.fontForFace` return `null` for an invalid index; HarfBuzz and
+fallback-chain ownership stays in type-erased storage inside `Faces` rather
+than leaking through inferable fields.
 
 `placeRun`/`placeRunAlloc` turn a run into `Shape`s under one of three modes,
 each pairing a record namespace with a population verb:
@@ -362,32 +383,40 @@ observable via `last_error`/`fallback_count`).
 
 Paths (`Path` → `PreparedPath`) and image/gradient paints ride the same
 store: author paths in a unit frame and place them with a transform, exactly
-like glyphs. `snail.snap` has pure pixel-grid helpers for rect edges and
-baselines.
+like glyphs. Paint remapping is fallible: radial records accept similarities,
+and conic records accept orientation-preserving similarities; transforms that
+would produce an ellipse, shear, or reversed conic sweep report
+`UnsupportedTransform`.
+`snail.snap` has pure pixel-grid helpers for rect edges and baselines.
 
 ## Modules
 
 - **`snail`** — everything above: fonts, shaping, placement, atlas store,
   upload planning, emit, render/shader contracts. Links libc and system
   HarfBuzz; no GPU or windowing dependencies.
-- **`snail-raster`** — optional software renderer consuming only the public
-  API: `DeviceAtlas` (host-side texture analog), `Renderer`, `draw`, explicit
-  `TargetEncoding`/`PixelFormat`, linear-light blending, optional subpixel AA.
+- **`snail-raster`** — optional software renderer: `DeviceAtlas` (host-side
+  texture analog), `Renderer`, `draw`, explicit `TargetEncoding`/`PixelFormat`,
+  linear-light blending, and optional subpixel AA. Its runtime fitter is wired
+  as package-private build support and adds no caller-visible module.
 - `src/demo`, `src/support`, `src/tools` — demos, reference GPU callers, and
   internal conveniences. Not published; copy freely.
 
-Public-surface encapsulation is enforced by
-[`src/tests/public_renderer_api.zig`](src/tests/public_renderer_api.zig),
-which compile-errors if internals leak.
+Public-surface encapsulation is enforced by the source-only
+[`src/tests/public_renderer_api.zig`](src/tests/public_renderer_api.zig) gate
+and the generated-artifact
+[`src/tests/public_shader_api.zig`](src/tests/public_shader_api.zig) gate,
+which compile-error if internals leak or module boundaries regress.
 
 ## Build
 
 Requires [Zig 0.16](https://ziglang.org/download/) and HarfBuzz (via
-pkg-config). The demos additionally need Wayland + EGL, Vulkan headers/loader,
-and `slangc` (shader-slang).
+pkg-config). The complete shader-contract suite additionally needs `slangc`,
+`spirv-cross`, and `naga`. Interactive demos need their corresponding window
+system and graphics APIs (Wayland + EGL/OpenGL or Vulkan on Linux).
 
 ```sh
-zig build test                    # unit tests (includes shader-parity and public-API gates)
+zig build test-core               # library/raster tests; no shader-generation tools required
+zig build test                    # complete suite, including generated-shader and public-API gates
 zig build run                     # interactive Wayland banner demo (C cycles backends)
 zig build run-game                # interactive 3D scene: world-space text, custom material shader
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga

@@ -10,6 +10,23 @@ Treat this as a from-scratch migration.
 
 ### Hardening and migration notes
 
+- This unreleased work prepares the next breaking API migration. Raw mutable
+  `AtlasPage` storage is now genuinely opaque, including through inferred
+  `Atlas.pages` element types; renderer integrations consume immutable
+  `atlas_upload.Region` copies and `render.geometry` decoders. The software
+  renderer now reconstructs its prepared device pages by applying those same
+  regions instead of reaching into CPU atlas storage.
+  Upload planners now live only under `snail.atlas_upload` (`Planner` and
+  `OwnedPlanner`) instead of duplicate top-level aliases.
+- `snail.autohint` is now the durable authoring surface: analyzer, policy,
+  immutable feature values, and `max_features_per_axis`. The implementation
+  namespaces (`analysis`, `blue`, `producer`, and runtime `warp`) are private;
+  `snail-raster` receives its CPU fitter through an unpublished build-wired
+  support module.
+- `zig build test-core` runs the library, software renderer, support code, and
+  public source-API gate without shader-generation tools. `zig build test`
+  additionally runs the generated-shader API/contracts and requires `slangc`,
+  `spirv-cross`, and `naga`.
 - Construction and sizing that can fail are now explicitly fallible:
   `PagePool.init`, `Atlas.init`, `atlas_upload.sizes`/planner initialization,
   and `snail-raster.Renderer.init`/`reinitBuffer` (which now take length-owned
@@ -17,9 +34,11 @@ Treat this as a from-scratch migration.
   buffers, incompatible strides, and target mismatches return typed errors
   rather than trapping or silently accepting a partial configuration.
 - `Faces.build` rejects a face set that cannot be represented by `FaceIndex`.
-  `Faces.face` and `Faces.fontIdForFace` now return `null` for an out-of-range
-  index instead of indexing unchecked; migrate callers to unwrap or propagate
-  the missing face.
+  `Faces.fontForFace` and `Faces.fontIdForFace` return `null` for an
+  out-of-range index instead of indexing unchecked. Internal `FaceState`,
+  fallback chains, HarfBuzz handles, identity maps, and the misleading
+  distinct-font counter now live behind type-erased storage and are no longer
+  inferable or exposed.
 - `Binding` identity is now complete and non-wrapping in practical use:
   `source_id` and `generation` are `u64`, and equality/cache validation covers
   the pool, issuing planner/device cache, generation, layer-info row, and image
@@ -43,11 +62,27 @@ Treat this as a from-scratch migration.
   curve/band reservations atomic. `emit` preflights bindings, records,
   transforms, colors, policies, cursors, and output capacity; failures leave
   both output cursors and buffers logically uncommitted.
+- The private physical band-block format now carries a two-texel structural
+  prefix (draw-record `glyphLoc` still points at the following headers). This
+  lets the CPU device walk shared-page and discarded-reservation boundaries
+  without snapshot metadata: it ignores prefixes/headers, prepares each H/V
+  reference only for its actual axis, and stores one coefficient array instead
+  of duplicate horizontal and vertical arrays. Custom producers must rebuild
+  `GlyphCurves` with the current packer rather than reusing older raw band bytes.
 - `snail-raster` validates image sizes/formats, render-target dimensions,
   pixel format, stride, and backing byte length. Failed multi-atlas uploads
   release every binding they planned; resize and renderer buffer replacement
   are failure-atomic. Unsupported resolve/format combinations are reported
   rather than reinterpreted.
+- The renderer record ABI is now version 2: one instance is 72 bytes / 18
+  words (down from 92 / 23), with outward-rounded f16 bounds, linear-f16
+  color/tint, a canonical four-word autohint policy, and direct encoding for
+  all 256 atlas layers. CPU and GPU entry points validate packed records before
+  consuming them; malformed/reserved encodings return typed errors without
+  mutating targets. Public autohint slab access is now one allocation-free
+  `render.geometry.autohint.decode` call returning a validated borrowed record;
+  the old unchecked per-field slicing helpers were removed. Packed band-count
+  decoding returns `null` for unrepresentable lanes instead of trapping.
 - Root exports add `TextDirection` and `ConicGradient`. The internal
   `snail.tt` namespace is no longer public; use the focused `TtHintVm`,
   `TtHintPpem`, `TtHintVmStats`, and `TtHintError` exports.
@@ -91,7 +126,7 @@ Treat this as a from-scratch migration.
 ### Added
 
 - `Faces` + free-function `shape()` → `ShapedText` (HarfBuzz shaping,
-  fallback chains, synthetic styles, `AdvanceProvider` hook for hinted
+  fallback chains, style selection, `AdvanceProvider` hook for hinted
   advances).
 - `placeRun` / `placeRunAlloc`: shaped run → `Shape`s, with `HintMode`
   (unhinted / autohint / tt_hint), `RunSnap` device-pixel origin snapping,
@@ -104,7 +139,7 @@ Treat this as a from-scratch migration.
   the caller-owned `PagePool`; `error.OutOfLayers` is the eviction moment;
   `compact(filter)` is defragmentation and eviction in one full-fidelity
   operation (`RecordFilter` keeps the working set).
-- `AtlasUploadPlanner` (`atlas_upload`): allocation-free, caller-owned
+- `atlas_upload.Planner`: allocation-free, caller-owned
   planner producing backend-neutral upload `Region`s; for a direct
   append-only child, `planDelta` uploads only grown sub-row spans and changed
   side data that fits the binding's fixed initial reservation. Branches and
@@ -115,13 +150,14 @@ Treat this as a from-scratch migration.
   GL / GLES 3.0 / Vulkan, composed into host-owned shaders.
 - `TtHintVm`: pure TrueType hinting VM (`prepare` → caller-owned
   `PreparedPpem`; `hintGlyph` / `hintedAdvance`), plus the
-  resolution-independent autohinter (`autohint.*`: analyzer, policies,
-  runtime warp).
+  resolution-independent autohinter (`autohint`: analyzer, policies, and
+  immutable feature values).
 - `snail.color`: boundary conversions (`srgbToLinearColor` /
   `linearToSrgbColor` and the scalar transfer functions).
-- `snail-raster`: optional software renderer consuming only the public API
-  (`Renderer`, `DeviceAtlas`, `draw`), with explicit target encodings and
-  linear-light blending.
+- `snail-raster`: optional software renderer (`Renderer`, `DeviceAtlas`,
+  `draw`), with explicit target encodings and linear-light blending. Runtime
+  autohint fitting is package-private build support, not a public snail
+  namespace.
 - `snail-shaders` (separate module, `@import("snail_shaders")`): complete
   shaders for every supported family/target combination across Vulkan SPIR-V,
   WGSL (dual-source subpixel included), GLSL 330, GLES 300, D3D11 HLSL, and
