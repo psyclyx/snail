@@ -9,9 +9,17 @@ pub const LayerInfoEntry = path_paint.LayerInfoEntry;
 const PreparedAxisCurve = coverage.PreparedAxisCurve;
 const PreparedAxisCurveCold = coverage.PreparedAxisCurveCold;
 const ResolvedLayerInfo = path_paint.ResolvedLayerInfo;
-const decodeCurveSegmentFromSlice = texture.decodeCurveSegmentFromSlice;
-const f16ToF32 = texture.f16ToF32;
 const readBandCurveRef = texture.readBandCurveRef;
+
+fn decodeCurveSegmentFromWords(data: []const u16, base: usize) @import("snail").render.geometry.CurveSegment {
+    const view = .{ .curve_data = data };
+    return texture.decodeCurveSegment(
+        texture.readCurveTexelF32Base(view, base),
+        texture.readCurveTexelF32Base(view, base + 4),
+        texture.readCurveTexelF32Base(view, base + 8),
+        texture.readCurveTexelF32Base(view, base + 12),
+    );
+}
 
 /// Per-page CPU-side rasterizer view of an atlas page.
 ///
@@ -36,11 +44,6 @@ pub const PreparedAtlasPage = struct {
         const curve_data = try allocator.dupe(u16, page.curve_data);
         errdefer allocator.free(curve_data);
 
-        const curve_data_f32 = try allocator.alloc(f32, page.curve_data.len);
-        defer allocator.free(curve_data_f32);
-        for (page.curve_data, 0..) |value, i| {
-            curve_data_f32[i] = f16ToF32(value);
-        }
         const band_texel_count = page.band_data.len / 2;
         const band_data = try allocator.dupe(u16, page.band_data);
         errdefer allocator.free(band_data);
@@ -58,7 +61,7 @@ pub const PreparedAtlasPage = struct {
         for (0..band_texel_count) |texel_idx| {
             const curve_ref = readBandCurveRef(page, texel_idx) orelse continue;
             const curve_base = curve_ref.base;
-            const segment = decodeCurveSegmentFromSlice(curve_data_f32, @intCast(curve_base));
+            const segment = decodeCurveSegmentFromWords(page.curve_data, curve_base);
 
             h_curves[texel_idx] = try coverage.prepareAxisCurve(allocator, &h_cold_curves, segment, true);
             h_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
@@ -77,6 +80,68 @@ pub const PreparedAtlasPage = struct {
             .v_curves = v_curves,
             .h_cold_curves = h_cold_curves_owned,
             .v_cold_curves = v_cold_curves_owned,
+            .curve_width = page.curve_width,
+            .curve_height = page.curve_height,
+            .band_width = page.band_width,
+            .band_height = page.band_height,
+        };
+    }
+
+    /// Prepare an append-only revision of a page without re-decoding the band
+    /// entries that were already prepared. The returned page owns fresh
+    /// storage, so allocation failure leaves `previous` untouched.
+    pub fn initExtended(allocator: std.mem.Allocator, previous: *const PreparedAtlasPage, page: anytype) !PreparedAtlasPage {
+        if (page.curve_width != previous.curve_width or
+            page.band_width != previous.band_width or
+            page.curve_data.len < previous.curve_data.len or
+            page.band_data.len < previous.band_data.len)
+        {
+            return initFromView(allocator, page);
+        }
+
+        const curve_data = try allocator.dupe(u16, page.curve_data);
+        errdefer allocator.free(curve_data);
+        const band_data = try allocator.dupe(u16, page.band_data);
+        errdefer allocator.free(band_data);
+
+        const band_texel_count = page.band_data.len / 2;
+        const previous_texel_count = previous.band_data.len / 2;
+        const h_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
+        errdefer allocator.free(h_curves);
+        const v_curves = try allocator.alloc(PreparedAxisCurve, band_texel_count);
+        errdefer allocator.free(v_curves);
+        @memcpy(h_curves[0..previous_texel_count], previous.h_curves);
+        @memcpy(v_curves[0..previous_texel_count], previous.v_curves);
+        @memset(h_curves[previous_texel_count..], .{});
+        @memset(v_curves[previous_texel_count..], .{});
+
+        var h_cold_curves: std.ArrayList(PreparedAxisCurveCold) = .empty;
+        errdefer h_cold_curves.deinit(allocator);
+        try h_cold_curves.appendSlice(allocator, previous.h_cold_curves);
+        var v_cold_curves: std.ArrayList(PreparedAxisCurveCold) = .empty;
+        errdefer v_cold_curves.deinit(allocator);
+        try v_cold_curves.appendSlice(allocator, previous.v_cold_curves);
+
+        for (previous_texel_count..band_texel_count) |texel_idx| {
+            const curve_ref = readBandCurveRef(page, texel_idx) orelse continue;
+            const segment = decodeCurveSegmentFromWords(page.curve_data, curve_ref.base);
+            h_curves[texel_idx] = try coverage.prepareAxisCurve(allocator, &h_cold_curves, segment, true);
+            h_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
+            v_curves[texel_idx] = try coverage.prepareAxisCurve(allocator, &v_cold_curves, segment, false);
+            v_curves[texel_idx].first_member_band = @intCast(curve_ref.first_member_band);
+        }
+
+        const h_cold_owned = try h_cold_curves.toOwnedSlice(allocator);
+        errdefer allocator.free(h_cold_owned);
+        const v_cold_owned = try v_cold_curves.toOwnedSlice(allocator);
+
+        return .{
+            .curve_data = curve_data,
+            .band_data = band_data,
+            .h_curves = h_curves,
+            .v_curves = v_curves,
+            .h_cold_curves = h_cold_owned,
+            .v_cold_curves = v_cold_owned,
             .curve_width = page.curve_width,
             .curve_height = page.curve_height,
             .band_width = page.band_width,

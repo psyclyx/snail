@@ -57,11 +57,22 @@ pub const Builder = struct {
     autohint_lookup: PaintLookup,
     tt_hinted_lookup: PaintLookup,
     tt_advance_lookup: TtAdvanceLookup,
+    lineage: u64,
+    revision: u64,
+    snapshot_id: u64,
+    parent_snapshot_id: u64,
+    rollback_page: ?*AtlasPage,
+    rollback_curve_words: u32,
+    rollback_band_words: u32,
+    rollback_curve_added: u32,
+    rollback_band_added: u32,
     /// Per-record slot for image paints. Indexed in insertion order;
     /// non-image paints land as `null`. Empty when no paints emitted.
     paint_image_records: std.ArrayList(?PaintImageRecord),
+    unique_image_count: u32,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) Builder {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) PagePool.IdentityError!Builder {
+        const snapshot_id = try pool.nextAtlasSnapshotId();
         return .{
             .allocator = allocator,
             .pool = pool,
@@ -74,6 +85,16 @@ pub const Builder = struct {
             .tt_hinted_lookup = PaintLookup.init(allocator, .{}),
             .tt_advance_lookup = TtAdvanceLookup.init(allocator, .{}),
             .paint_image_records = .empty,
+            .unique_image_count = 0,
+            .lineage = snapshot_id,
+            .revision = 0,
+            .snapshot_id = snapshot_id,
+            .parent_snapshot_id = 0,
+            .rollback_page = null,
+            .rollback_curve_words = 0,
+            .rollback_band_words = 0,
+            .rollback_curve_added = 0,
+            .rollback_band_added = 0,
         };
     }
 
@@ -81,7 +102,11 @@ pub const Builder = struct {
         allocator: std.mem.Allocator,
         pool: *PagePool,
         base: *const Atlas,
-    ) std.mem.Allocator.Error!Builder {
+    ) InsertError!Builder {
+        const revision = std.math.add(u64, base.revision, 1) catch return error.AtlasRevisionExhausted;
+        // Mint before cloning persistent maps. If identity space is exhausted,
+        // no refcounted state has been acquired and there is nothing to unwind.
+        const snapshot_id = try pool.nextAtlasSnapshotId();
         var b = Builder{
             .allocator = allocator,
             .pool = pool,
@@ -97,6 +122,16 @@ pub const Builder = struct {
             .tt_hinted_lookup = base.tt_hinted_lookup.clone(),
             .tt_advance_lookup = base.tt_advance_lookup.clone(),
             .paint_image_records = .empty,
+            .unique_image_count = 0,
+            .lineage = base.lineage,
+            .revision = revision,
+            .snapshot_id = snapshot_id,
+            .parent_snapshot_id = base.snapshot_id,
+            .rollback_page = if (base.pages.len == 0) null else base.pages[base.pages.len - 1],
+            .rollback_curve_words = if (base.pages.len == 0) 0 else base.pages[base.pages.len - 1].curve.usedWords(),
+            .rollback_band_words = if (base.pages.len == 0) 0 else base.pages[base.pages.len - 1].band.usedWords(),
+            .rollback_curve_added = 0,
+            .rollback_band_added = 0,
         };
         errdefer b.abort();
 
@@ -113,11 +148,27 @@ pub const Builder = struct {
 
         if (base.paint_image_records) |src| {
             try b.paint_image_records.appendSlice(allocator, src);
+            for (src) |maybe_record| {
+                const record = maybe_record orelse continue;
+                if (record.first_image_use) {
+                    b.unique_image_count = @max(b.unique_image_count, record.image_layer + 1);
+                }
+            }
         }
         return b;
     }
 
     pub fn abort(self: *Builder) void {
+        if (self.rollback_page) |page| {
+            if (self.rollback_curve_added != 0 or self.rollback_band_added != 0) {
+                _ = page.rollbackTail(
+                    self.rollback_curve_words,
+                    self.rollback_band_words,
+                    self.rollback_curve_words + self.rollback_curve_added,
+                    self.rollback_band_words + self.rollback_band_added,
+                );
+            }
+        }
         for (self.pages.items) |p| self.pool.release(p);
         self.pages.deinit(self.allocator);
         self.lookup.deinit();
@@ -155,6 +206,37 @@ pub const Builder = struct {
         const next = try self.tt_hinted_lookup.put(key, value);
         self.tt_hinted_lookup.deinit();
         self.tt_hinted_lookup = next;
+    }
+
+    fn appendPaintImageRecord(
+        self: *Builder,
+        image: ?*const @import("../image.zig").Image,
+        texel_offset: u32,
+    ) InsertError!void {
+        const source = image orelse {
+            try self.paint_image_records.append(self.allocator, null);
+            return;
+        };
+        for (self.paint_image_records.items) |maybe_record| {
+            const record = maybe_record orelse continue;
+            if (record.image == source) {
+                try self.paint_image_records.append(self.allocator, .{
+                    .image = source,
+                    .texel_offset = texel_offset,
+                    .image_layer = record.image_layer,
+                    .first_image_use = false,
+                });
+                return;
+            }
+        }
+        const image_layer = self.unique_image_count;
+        self.unique_image_count = std.math.add(u32, self.unique_image_count, 1) catch return error.ImageCountOverflow;
+        try self.paint_image_records.append(self.allocator, .{
+            .image = source,
+            .texel_offset = texel_offset,
+            .image_layer = image_layer,
+            .first_image_use = true,
+        });
     }
 
     /// Write the two texels a TT-hinted-text instance needs to resolve the
@@ -238,15 +320,21 @@ pub const Builder = struct {
         self.layer_info_texels = new_texels;
     }
 
-    pub fn finish(self: *Builder) std.mem.Allocator.Error!Atlas {
+    pub fn finish(self: *Builder) InsertError!Atlas {
         const pages_slice = try self.pages.toOwnedSlice(self.allocator);
+        errdefer {
+            for (pages_slice) |page| self.pool.release(page);
+            self.allocator.free(pages_slice);
+        }
         var layer_info_data: ?[]f32 = null;
+        errdefer if (layer_info_data) |data| self.allocator.free(data);
         var layer_info_height: u32 = 0;
         if (self.layer_info_texels > 0) {
             layer_info_height = (self.layer_info_texels + paint_records.info_width - 1) / paint_records.info_width;
             // Pad the buffer's tail with zeros so the slice can be uploaded
             // directly as a `INFO_WIDTH × height` RGBA32F texture.
-            const full_floats = @as(usize, paint_records.info_width) * @as(usize, layer_info_height) * 4;
+            const row_floats = std.math.mul(usize, paint_records.info_width, 4) catch return error.LayerInfoTooLarge;
+            const full_floats = std.math.mul(usize, row_floats, layer_info_height) catch return error.LayerInfoTooLarge;
             if (self.layer_info_buf.items.len < full_floats) {
                 const old_len = self.layer_info_buf.items.len;
                 try self.layer_info_buf.resize(self.allocator, full_floats);
@@ -259,6 +347,7 @@ pub const Builder = struct {
         // Only carry a paint_image_records slice if any image paints were
         // emitted; otherwise drop it so consumers can shortcut on null.
         var paint_image_records_out: ?[]?PaintImageRecord = null;
+        errdefer if (paint_image_records_out) |records| self.allocator.free(records);
         var has_image_paint = false;
         for (self.paint_image_records.items) |rec| {
             if (rec != null) {
@@ -274,6 +363,10 @@ pub const Builder = struct {
         return .{
             .allocator = self.allocator,
             .pool = self.pool,
+            .lineage = self.lineage,
+            .revision = self.revision,
+            .snapshot_id = self.snapshot_id,
+            .parent_snapshot_id = self.parent_snapshot_id,
             .pages = pages_slice,
             .lookup = self.lookup,
             .layer_info_data = layer_info_data,
@@ -289,7 +382,7 @@ pub const Builder = struct {
 
     pub const Placement = struct {
         page_index: u16,
-        page_generation: u16,
+        page_generation: u64,
         curve_texel: u32,
         curve_count: u16,
         bands: GlyphBandEntry,
@@ -322,6 +415,10 @@ pub const Builder = struct {
                 page_idx = @intCast(self.pages.items.len - 1);
                 reservation = r;
                 placed = true;
+                if (self.rollback_page == tail) {
+                    self.rollback_curve_added += curve_words;
+                    self.rollback_band_added += band_words;
+                }
             }
         }
 
@@ -379,14 +476,17 @@ pub const Builder = struct {
         extra_layers: []const Layer,
         extra_placements: []const Placement,
         layer_count: u32,
-    ) std.mem.Allocator.Error!void {
+    ) InsertError!void {
         std.debug.assert(extra_placements.len + 1 == layer_count);
         std.debug.assert(extra_placements.len <= extra_layers.len);
 
         const header_offset = self.layer_info_texels;
-        const total_texels: u32 = 1 + layer_count * paint_records.texels_per_record;
-        const new_texels = header_offset + total_texels;
-        const need_floats = @as(usize, new_texels) * 4;
+        const layer_texels = std.math.mul(u32, layer_count, paint_records.texels_per_record) catch return error.LayerInfoTooLarge;
+        const total_texels = std.math.add(u32, 1, layer_texels) catch return error.LayerInfoTooLarge;
+        const new_texels = std.math.add(u32, header_offset, total_texels) catch return error.LayerInfoTooLarge;
+        const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        if (new_texels > max_texels) return error.LayerInfoTooLarge;
+        const need_floats = std.math.mul(usize, new_texels, 4) catch return error.LayerInfoTooLarge;
         if (self.layer_info_buf.items.len < need_floats) {
             try self.layer_info_buf.resize(self.allocator, need_floats);
             @memset(self.layer_info_buf.items[header_offset * 4 .. need_floats], 0);
@@ -401,7 +501,7 @@ pub const Builder = struct {
         });
 
         // Image-paint slot for the header carries no image.
-        try self.paint_image_records.append(self.allocator, null);
+        try self.appendPaintImageRecord(null, header_offset);
 
         var layer_texel = header_offset + 1;
         try self.writeLayerRecord(layer_texel, base_bands, base_paint, base_fill_rule);
@@ -431,20 +531,22 @@ pub const Builder = struct {
         bands: GlyphBandEntry,
         paint: Paint,
         fill_rule: paint_mod.FillRule,
-    ) std.mem.Allocator.Error!void {
+    ) InsertError!void {
         const band_tex_entry = bandToTexFormat(bands);
         const rule_bit: u16 = if (fill_rule == .even_odd) paint_records.FILL_RULE_BIT else 0;
         paint_records.write(self.layer_info_buf.items, paint_records.info_width, layer_texel, band_tex_entry, paint, rule_bit);
-        try self.paint_image_records.append(self.allocator, switch (paint) {
-            .image => |img| .{ .image = img.image, .texel_offset = layer_texel },
+        try self.appendPaintImageRecord(switch (paint) {
+            .image => |img| img.image,
             else => null,
-        });
+        }, layer_texel);
     }
 
-    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: paint_mod.FillRule) std.mem.Allocator.Error!void {
+    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: paint_mod.FillRule) InsertError!void {
         const texel_offset = self.layer_info_texels;
-        const new_texels = texel_offset + paint_records.texels_per_record;
-        const need_floats = @as(usize, new_texels) * 4;
+        const new_texels = std.math.add(u32, texel_offset, paint_records.texels_per_record) catch return error.LayerInfoTooLarge;
+        const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        if (new_texels > max_texels) return error.LayerInfoTooLarge;
+        const need_floats = std.math.mul(usize, new_texels, 4) catch return error.LayerInfoTooLarge;
         if (self.layer_info_buf.items.len < need_floats) {
             try self.layer_info_buf.resize(self.allocator, need_floats);
             @memset(self.layer_info_buf.items[texel_offset * 4 .. need_floats], 0);
@@ -457,10 +559,10 @@ pub const Builder = struct {
             .info_y = @intCast(texel_offset / paint_records.info_width),
             .layer_count = 1,
         });
-        try self.paint_image_records.append(self.allocator, switch (paint) {
-            .image => |img| .{ .image = img.image, .texel_offset = texel_offset },
+        try self.appendPaintImageRecord(switch (paint) {
+            .image => |img| img.image,
             else => null,
-        });
+        }, texel_offset);
         self.layer_info_texels = new_texels;
     }
 
@@ -479,6 +581,17 @@ pub const Builder = struct {
                 return;
             }
         }
+
+        // Validate every caller-constructible packed payload before making
+        // any page reservation. This keeps malformed input a typed error and
+        // prevents a bad extra layer from partially consuming atlas space.
+        try entry.curves.validate();
+        for (entry.extra_layers) |layer| try layer.curves.validate();
+        var nonempty_extra_count: usize = 0;
+        for (entry.extra_layers) |layer| {
+            if (!layer.curves.isEmpty()) nonempty_extra_count += 1;
+        }
+        if (nonempty_extra_count >= std.math.maxInt(u16)) return error.LayerInfoTooLarge;
 
         const curves = entry.curves;
 
@@ -705,7 +818,7 @@ pub const Builder = struct {
 
         // Mirror `insert`'s image-slot pattern: composites carry a null
         // header slot, then one slot per layer record.
-        if (is_composite) try self.paint_image_records.append(self.allocator, null);
+        if (is_composite) try self.appendPaintImageRecord(null, dst_texel);
 
         var layer_index: u32 = 0;
         while (layer_index < layer_count) : (layer_index += 1) {
@@ -760,10 +873,13 @@ pub const Builder = struct {
             const is_image = t0[3] == paint_records.tag_image;
             // An image-tagged layer always has a slot (insert appends one
             // per image paint); a miss means the source store is corrupt.
-            try self.paint_image_records.append(self.allocator, if (is_image)
-                .{ .image = findSourceImage(src, src_layer_texel) orelse return error.CorruptPaintRecord, .texel_offset = dst_layer_texel }
-            else
-                null);
+            try self.appendPaintImageRecord(
+                if (is_image)
+                    findSourceImage(src, src_layer_texel) orelse return error.CorruptPaintRecord
+                else
+                    null,
+                dst_layer_texel,
+            );
         }
 
         try self.paintLookupPut(key, .{
@@ -812,7 +928,7 @@ fn curveRangeForBands(src_page: *const AtlasPage, bands: GlyphBandEntry) ?struct
     var j: usize = 0;
     while (j + 1 < refs.len) : (j += 2) {
         const cx: u32 = refs[j] & CURVE_LOC_X_MASK;
-        const cy: u32 = refs[j + 1];
+        const cy: u32 = refs[j + 1] & CURVE_LOC_Y_MASK;
         const abs_texel = cy * CURVE_TEX_WIDTH + cx;
         min_texel = @min(min_texel, abs_texel);
         max_texel = @max(max_texel, abs_texel);
@@ -852,6 +968,8 @@ fn toAbiCompositeMode(mode: paint_mod.CompositeMode) enum(u8) { source_over = 0,
 
 const CURVE_LOC_X_BITS: u5 = 12;
 const CURVE_LOC_X_MASK: u16 = (1 << CURVE_LOC_X_BITS) - 1;
+const CURVE_LOC_Y_BITS = band_tex_format.curve_loc_y_bits;
+const CURVE_LOC_Y_MASK: u16 = (1 << CURVE_LOC_Y_BITS) - 1;
 
 fn rewriteBandRefs(band_words: []u16, h_band_count: u16, v_band_count: u16, base_curve_texel: u32) void {
     const header_word_count: usize = (@as(usize, h_band_count) + @as(usize, v_band_count)) * 2;
@@ -863,15 +981,16 @@ fn rewriteBandRefs(band_words: []u16, h_band_count: u16, v_band_count: u16, base
         const w1 = band_words[i + 1];
         const first_member_band: u16 = w0 >> CURVE_LOC_X_BITS;
         const cx_orig: u32 = w0 & CURVE_LOC_X_MASK;
-        const cy_orig: u32 = w1;
+        const cy_orig: u32 = w1 & CURVE_LOC_Y_MASK;
+        const kind_bits = w1 & ~CURVE_LOC_Y_MASK;
         const orig_texel = cy_orig * CURVE_TEX_WIDTH + cx_orig;
         const new_texel = orig_texel + base_curve_texel;
         const cx_new = new_texel % CURVE_TEX_WIDTH;
         const cy_new = new_texel / CURVE_TEX_WIDTH;
         std.debug.assert(cx_new <= CURVE_LOC_X_MASK);
-        std.debug.assert(cy_new <= std.math.maxInt(u16));
+        std.debug.assert(cy_new <= CURVE_LOC_Y_MASK);
         band_words[i] = @as(u16, @intCast(cx_new)) | (first_member_band << CURVE_LOC_X_BITS);
-        band_words[i + 1] = @intCast(cy_new);
+        band_words[i + 1] = kind_bits | @as(u16, @intCast(cy_new));
     }
 }
 
@@ -899,7 +1018,8 @@ pub fn extractAndLocalizeBand(src_page: *const AtlasPage, rec: AtlasRecord, out:
         const w1 = refs_dst[j + 1];
         const first_member_band: u16 = w0 >> CURVE_LOC_X_BITS;
         const cx_orig: u32 = w0 & CURVE_LOC_X_MASK;
-        const cy_orig: u32 = w1;
+        const cy_orig: u32 = w1 & CURVE_LOC_Y_MASK;
+        const kind_bits = w1 & ~CURVE_LOC_Y_MASK;
         const abs_texel = cy_orig * CURVE_TEX_WIDTH + cx_orig;
         std.debug.assert(abs_texel >= rec.curve_texel);
         const local_texel = abs_texel - rec.curve_texel;
@@ -907,7 +1027,8 @@ pub fn extractAndLocalizeBand(src_page: *const AtlasPage, rec: AtlasRecord, out:
         const cy_local = local_texel / CURVE_TEX_WIDTH;
         std.debug.assert(cx_local <= CURVE_LOC_X_MASK);
         refs_dst[j] = @as(u16, @intCast(cx_local)) | (first_member_band << CURVE_LOC_X_BITS);
-        refs_dst[j + 1] = @intCast(cy_local);
+        std.debug.assert(cy_local <= CURVE_LOC_Y_MASK);
+        refs_dst[j + 1] = kind_bits | @as(u16, @intCast(cy_local));
     }
 }
 

@@ -410,7 +410,7 @@ const VulkanDriver = struct {
 
         const cmd: embed_vulkan.vk.VkCommandBuffer = @ptrCast(platform_cmd);
         self.caller.beginFrame(vulkan_platform.currentFrameIndex());
-        const desc_set = self.cache.?.descriptorSet();
+        const cache = &self.cache.?;
 
         for (passes, records_buf[0..passes.len], 0..) |pass, rec, i| {
             // CPU-side draw command recording. Issue GPU timestamps
@@ -419,7 +419,7 @@ const VulkanDriver = struct {
             // reads the timestamp results (= MAX_FRAMES_IN_FLIGHT
             // frames later, when this slot is reused).
             vulkan_platform.beginPassTimestamp(platform_cmd, @intCast(i));
-            self.caller.render(cmd, desc_set, pass.draw_state, rec.instances, rec.batches);
+            try self.caller.render(cmd, cache, pass.draw_state, rec.instances, rec.batches);
             vulkan_platform.endPassTimestamp(platform_cmd, @intCast(i));
         }
 
@@ -669,7 +669,8 @@ const CpuDriver = struct {
         errdefer cpu_platform.deinit();
         const px = cpu_platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = cpu_platform.getBufferSize();
-        const renderer_state = raster.Renderer.init(px, bsz[0], bsz[1], bsz[0] * 4);
+        const buffer_len: usize = @as(usize, bsz[0]) * @as(usize, bsz[1]) * 4;
+        const renderer_state = try raster.Renderer.init(px[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4);
 
         const pool_ptr = try allocator.create(raster.ThreadPool);
         errdefer allocator.destroy(pool_ptr);
@@ -720,7 +721,8 @@ const CpuDriver = struct {
         // pointer changes most frames even when size doesn't.
         self.buf_width = bsz[0];
         self.buf_height = bsz[1];
-        self.renderer_state.reinitBuffer(fb_ptr, bsz[0], bsz[1], bsz[0] * 4);
+        const buffer_len: usize = @as(usize, bsz[0]) * @as(usize, bsz[1]) * 4;
+        try self.renderer_state.reinitBuffer(fb_ptr[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4);
 
         // Clear the framebuffer in the storage encoding (shared by all passes).
         // Splat the RGBA bytes into a single u32 word and `@memset` it across

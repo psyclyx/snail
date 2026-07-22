@@ -333,24 +333,24 @@ pub const VkSceneRenderer = struct {
         // (see Scene.labelBeforePanel) — otherwise the panel paints over a
         // nearer label.
         if (scene.labelBeforePanel()) {
-            try self.drawSnailPass(cmd, desc0, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
-            try self.drawSnailPass(cmd, desc0, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
         } else {
-            try self.drawSnailPass(cmd, desc0, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
-            try self.drawSnailPass(cmd, desc0, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
+            try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
         }
         // 4. HUD.
         const hud_mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1);
-        try self.drawSnailPass(cmd, desc0, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
+        try self.drawSnailPass(cmd, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
     }
 
-    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, desc0: vk.VkDescriptorSet, pass: *const PreparedPass, path_b: snail.render.records.Binding, text_b: snail.render.records.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
+    fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, pass: *const PreparedPass, path_b: snail.render.records.Binding, text_b: snail.render.records.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
         var wlen: usize = 0;
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, path_b, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, text_b, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
         const ds = @import("snail-raster").DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
-        self.caller.render(cmd, desc0, ds, self.scratch[0..wlen], self.segs[0..slen]);
+        try self.caller.render(cmd, &self.cache, ds, self.scratch[0..wlen], self.segs[0..slen]);
     }
 };
 

@@ -96,7 +96,7 @@ pub const PassBuilder = struct {
     text_atlas: snail.Atlas,
     text_shapes: std.ArrayList(snail.Shape),
 
-    pub fn init(allocator: std.mem.Allocator, fonts: *Fonts) PassBuilder {
+    pub fn init(allocator: std.mem.Allocator, fonts: *Fonts) snail.PagePool.IdentityError!PassBuilder {
         return .{
             .allocator = allocator,
             .fonts = fonts,
@@ -105,7 +105,7 @@ pub const PassBuilder = struct {
             .path_shapes = .empty,
             .extra_layer_storage = .empty,
             .next_path_id = 0,
-            .text_atlas = snail.Atlas.init(allocator, fonts.pool),
+            .text_atlas = try snail.Atlas.init(allocator, fonts.pool),
             .text_shapes = .empty,
         };
     }

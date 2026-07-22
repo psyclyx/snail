@@ -23,12 +23,17 @@ pub const ShapeKind = enum {
 };
 
 /// Identifies which `PagePool` an atlas was uploaded against plus the
-/// cache-side slot identity (`generation`) and the offsets into the
+/// exact planner/device cache that owns the slot (`source_id`), its slot
+/// identity (`generation`), and the offsets into the
 /// cache's persistent layer-info / image-array storage. emit applies
 /// `info_row_base` to paint records so the GPU sees absolute coords.
 pub const Binding = struct {
     pool: *PagePool,
-    generation: u32 = 0,
+    /// Unique nonzero identity of the planner/device cache that issued this
+    /// binding. Zero is reserved for caller-authored, untracked bindings used
+    /// by custom renderers; device caches reject it.
+    source_id: u64 = 0,
+    generation: u64 = 0,
     /// Row offset within the cache's persistent layer-info texture.
     info_row_base: u32 = 0,
     /// Layer offset within the cache's persistent image array.
@@ -36,6 +41,7 @@ pub const Binding = struct {
 
     pub fn eql(self: Binding, other: Binding) bool {
         return self.pool == other.pool and
+            self.source_id == other.source_id and
             self.generation == other.generation and
             self.info_row_base == other.info_row_base and
             self.image_layer_base == other.image_layer_base;
@@ -97,10 +103,12 @@ test "binding equality compares pool, generation, and offsets" {
     const b1 = Binding{ .pool = pool_a, .generation = 0 };
     const b1_dup = Binding{ .pool = pool_a, .generation = 0 };
     const b1_other_gen = Binding{ .pool = pool_a, .generation = 1 };
+    const b1_other_source = Binding{ .pool = pool_a, .source_id = 1 };
     const b1_other_row = Binding{ .pool = pool_a, .generation = 0, .info_row_base = 4 };
 
     try std.testing.expect(b1.eql(b1_dup));
     try std.testing.expect(!b1.eql(b1_other_gen));
+    try std.testing.expect(!b1.eql(b1_other_source));
     try std.testing.expect(!b1.eql(b1_other_row));
 }
 

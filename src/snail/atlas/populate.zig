@@ -190,12 +190,12 @@ pub fn recordUnhintedRun(
     for (shaped.glyphs) |glyph| {
         const face_index: usize = @intCast(glyph.face_index);
         if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
-        const font_id = faces.fontIdForFace(glyph.face_index);
+        const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
         if (font_id != glyph.font_id) return error.MismatchedFontId;
         try appendUnhintedGlyph(
             &batch,
             atlas,
-            faces.face(glyph.face_index).font,
+            faces.face(glyph.face_index).?.font,
             font_id,
             glyph.glyph_id,
             options,
@@ -394,7 +394,7 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
         .band_words_per_page = 1 << 13,
     });
     defer pool.deinit();
-    var atlas = Atlas.init(testing.allocator, pool);
+    var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
@@ -422,7 +422,7 @@ test "outline_only COLR handling records base outlines and ignores layers" {
         .band_words_per_page = 1 << 13,
     });
     defer pool.deinit();
-    var atlas = Atlas.init(testing.allocator, pool);
+    var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .outline_only });
@@ -456,7 +456,7 @@ test "layers COLR handling records per-layer glyphs for fanout placement" {
         .band_words_per_page = 1 << 13,
     });
     defer pool.deinit();
-    var atlas = Atlas.init(testing.allocator, pool);
+    var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .layers });
@@ -490,7 +490,7 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
         .band_words_per_page = 1 << 13,
     });
     defer pool.deinit();
-    var atlas = Atlas.init(testing.allocator, pool);
+    var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
 
@@ -532,7 +532,7 @@ test "TtAdvanceSource reads recorded advances and falls back to the VM" {
         .band_words_per_page = 1 << 13,
     });
     defer pool.deinit();
-    var atlas = Atlas.init(testing.allocator, pool);
+    var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
     var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);

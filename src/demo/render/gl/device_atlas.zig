@@ -67,7 +67,11 @@ pub const DeviceAtlasOptions = struct {
     max_image_height: u32 = 1024,
 };
 
-pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{ImageTooLarge};
+pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
+    ImageTooLarge,
+    BindingOutputLengthMismatch,
+    ActiveBindingCountOverflow,
+};
 pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{ActiveBindingsPreventResize};
 
 pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
@@ -96,7 +100,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         // The cache keeps only the GL textures; allocation/deltas/patching are the
         // planner's. Backing slices are cache-owned.
         planner: upload_plan.Planner,
-        plan_gen: []u16,
+        plan_gen: []u64,
         plan_curve: []u32,
         plan_band: []u32,
         plan_slots: []upload_plan.Slot,
@@ -106,10 +110,6 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         plan_info_scratch: []f32,
         info_scratch_stride: usize,
         active_bindings: u32 = 0,
-        // Highest atlas generation uploaded so far — a coarse residency proxy the
-        // reference GL renderer's stale-binding guard consumes. Advanced by the
-        // planner-driven upload paths; never affects texel output.
-        upload_generation: u32 = 0,
 
         fn plannerOptions(options: DeviceAtlasOptions) upload_plan.Options {
             return .{
@@ -121,11 +121,28 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             };
         }
 
-        pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !Self {
-            const opts = plannerOptions(options);
-            const sz = upload_plan.sizes(pool, opts);
+        fn validateDeviceLimits(pool: *const PagePool, options: DeviceAtlasOptions) upload_plan.InitError!void {
+            const curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW;
+            const band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW;
+            if (curve_height > std.math.maxInt(i32) or
+                band_height > std.math.maxInt(i32) or
+                pool.options.max_layers > std.math.maxInt(i32) or
+                options.layer_info_height > std.math.maxInt(i32) or
+                options.max_image_width > std.math.maxInt(i32) or
+                options.max_image_height > std.math.maxInt(i32) or
+                options.max_images > std.math.maxInt(i32))
+            {
+                return error.InvalidOptions;
+            }
+        }
 
-            const gen = try allocator.alloc(u16, sz.generation);
+        pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !Self {
+            try validateDeviceLimits(pool, options);
+            const opts = plannerOptions(options);
+            const sz = try upload_plan.sizes(pool, opts);
+            const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
+
+            const gen = try allocator.alloc(u64, sz.generation);
             errdefer allocator.free(gen);
             const curve_words = try allocator.alloc(u32, sz.curve_words);
             errdefer allocator.free(curve_words);
@@ -139,7 +156,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             errdefer allocator.free(image_free);
             const regions = try allocator.alloc(upload_plan.Region, sz.regions);
             errdefer allocator.free(regions);
-            const info_scratch = try allocator.alloc(f32, sz.layer_info_scratch * options.max_bindings);
+            const info_scratch = try allocator.alloc(f32, info_scratch_len);
             errdefer allocator.free(info_scratch);
 
             return .{
@@ -195,6 +212,21 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             return self.image_array_tex;
         }
 
+        /// Validate the complete cache-issued identity and slot placement.
+        pub fn isBindingLive(self: *const Self, binding: Binding) bool {
+            if (binding.pool != self.pool or binding.source_id != self.planner.source_id) return false;
+            for (self.plan_slots) |slot| {
+                if (slot.active and
+                    slot.generation == binding.generation and
+                    slot.info_row_base == binding.info_row_base and
+                    slot.image_layer_base == binding.image_layer_base)
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
         fn destroyTextures(self: *Self) void {
             if (self.curve_array != 0) gl.glDeleteTextures(1, &self.curve_array);
             if (self.band_array != 0) gl.glDeleteTextures(1, &self.band_array);
@@ -210,21 +242,59 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
 
         pub fn resize(self: *Self, options: DeviceAtlasOptions) ResizeError!void {
             if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
+            try validateDeviceLimits(self.pool, options);
+            const opts = plannerOptions(options);
+            const sz = try upload_plan.sizes(self.pool, opts);
+            const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
+
+            const new_gen = try self.allocator.alloc(u64, sz.generation);
+            errdefer self.allocator.free(new_gen);
+            const new_curve = try self.allocator.alloc(u32, sz.curve_words);
+            errdefer self.allocator.free(new_curve);
+            const new_band = try self.allocator.alloc(u32, sz.band_words);
+            errdefer self.allocator.free(new_band);
+            const new_slots = try self.allocator.alloc(upload_plan.Slot, sz.bindings);
+            errdefer self.allocator.free(new_slots);
+            const new_info_free = try self.allocator.alloc(upload_plan.Range, sz.info_free);
+            errdefer self.allocator.free(new_info_free);
+            const new_image_free = try self.allocator.alloc(upload_plan.Range, sz.image_free);
+            errdefer self.allocator.free(new_image_free);
+            const new_regions = try self.allocator.alloc(upload_plan.Region, sz.regions);
+            errdefer self.allocator.free(new_regions);
+            const new_info_scratch = try self.allocator.alloc(f32, info_scratch_len);
+            errdefer self.allocator.free(new_info_scratch);
+            const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free);
+
+            const old_gen = self.plan_gen;
+            const old_curve = self.plan_curve;
+            const old_band = self.plan_band;
+            const old_slots = self.plan_slots;
+            const old_info_free = self.plan_info_free;
+            const old_image_free = self.plan_image_free;
+            const old_regions = self.plan_regions;
+            const old_info_scratch = self.plan_info_scratch;
+
             self.destroyTextures();
             self.options = options;
-
-            const opts = plannerOptions(options);
-            const sz = upload_plan.sizes(self.pool, opts);
-            self.plan_gen = try self.allocator.realloc(self.plan_gen, sz.generation);
-            self.plan_curve = try self.allocator.realloc(self.plan_curve, sz.curve_words);
-            self.plan_band = try self.allocator.realloc(self.plan_band, sz.band_words);
-            self.plan_slots = try self.allocator.realloc(self.plan_slots, sz.bindings);
-            self.plan_info_free = try self.allocator.realloc(self.plan_info_free, sz.info_free);
-            self.plan_image_free = try self.allocator.realloc(self.plan_image_free, sz.image_free);
-            self.plan_regions = try self.allocator.realloc(self.plan_regions, sz.regions);
-            self.plan_info_scratch = try self.allocator.realloc(self.plan_info_scratch, sz.layer_info_scratch * options.max_bindings);
+            self.plan_gen = new_gen;
+            self.plan_curve = new_curve;
+            self.plan_band = new_band;
+            self.plan_slots = new_slots;
+            self.plan_info_free = new_info_free;
+            self.plan_image_free = new_image_free;
+            self.plan_regions = new_regions;
+            self.plan_info_scratch = new_info_scratch;
             self.info_scratch_stride = sz.layer_info_scratch;
-            self.planner = try upload_plan.Planner.init(self.pool, opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
+            self.planner = new_planner;
+
+            self.allocator.free(old_gen);
+            self.allocator.free(old_curve);
+            self.allocator.free(old_band);
+            self.allocator.free(old_slots);
+            self.allocator.free(old_info_free);
+            self.allocator.free(old_image_free);
+            self.allocator.free(old_regions);
+            self.allocator.free(old_info_scratch);
         }
 
         /// Upload one or more atlases into the cache, allocating a slot
@@ -237,7 +307,10 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             atlases: []const *const Atlas,
             out_bindings: []Binding,
         ) UploadError!void {
-            std.debug.assert(atlases.len == out_bindings.len);
+            if (atlases.len != out_bindings.len) return error.BindingOutputLengthMismatch;
+            const binding_count = std.math.cast(u32, atlases.len) orelse return error.ActiveBindingCountOverflow;
+            const next_active = std.math.add(u32, self.active_bindings, binding_count) catch return error.ActiveBindingCountOverflow;
+            if (next_active > self.options.max_bindings) return error.NoFreeBinding;
 
             for (atlases) |atlas| {
                 if (atlas.pool) |p| {
@@ -245,27 +318,31 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
                 }
             }
 
-            _ = scratch;
-            self.ensurePoolTextures();
-            self.ensureLayerInfoTexture();
-            try self.ensureImageArrayTexture(atlases);
-
             var planned: usize = 0;
             errdefer {
                 self.planner.invalidateUploads();
                 for (out_bindings[0..planned]) |b| _ = self.planner.release(b);
             }
 
+            var staged_regions: std.ArrayList(upload_plan.Region) = .empty;
+            defer staged_regions.deinit(scratch);
+
             for (atlases, 0..) |atlas, i| {
                 var len: usize = 0;
                 const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
                 out_bindings[i] = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
                 planned = i + 1;
-                for (self.plan_regions[0..len]) |r| self.applyRegion(r);
-                self.upload_generation = @max(self.upload_generation, out_bindings[i].generation);
+                try staged_regions.appendSlice(scratch, self.plan_regions[0..len]);
             }
 
-            self.active_bindings += @intCast(atlases.len);
+            // `ensureImageArrayTexture` is the only fallible resource setup;
+            // run it before the void GL allocations so an allocator failure
+            // leaves the cache's handles untouched.
+            try self.ensureImageArrayTexture(atlases);
+            self.ensurePoolTextures();
+            self.ensureLayerInfoTexture();
+            for (staged_regions.items) |region| self.applyRegion(region);
+            self.active_bindings = next_active;
         }
 
         /// Incrementally upload `atlas` into the existing slot held by
@@ -277,19 +354,14 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         /// uploaded.
         ///
         /// Semantics across `atlas` shapes:
-        /// - **Extension of the prior atlas** (the design target). Pages
-        ///   share identity with the prior upload; only pages whose
-        ///   `usedWords` advanced past the cache's recorded watermark
-        ///   ship new bytes. Layer-info rows are fully rewritten in the
-        ///   slot's reserved row band (cheap — this is one
-        ///   `TexSubImage2D` over a small region).
-        /// - **Different atlas on the same pool**. Permitted. The
-        ///   cache's per-layer page tracking notices the `currentGeneration()`
-        ///   change and re-uploads each affected page in full. Layer-info
-        ///   rows and images are overwritten in the slot's reservation
-        ///   the same way. This is `upload(scratch, &.{atlas})` in
-        ///   essence — same correctness, more bytes than a pure
-        ///   extension would have shipped.
+        /// - **Direct extension of the prior snapshot** (the design target).
+        ///   Only appended page spans and layer-info rows are uploaded.
+        /// - **Exact same snapshot**. No unchanged page or layer-info data is
+        ///   uploaded.
+        /// - **A branch, skipped descendant, or unrelated atlas on the same
+        ///   pool**. Permitted. Page generations/watermarks still suppress
+        ///   unchanged geometry, while binding-relative side data is replaced
+        ///   conservatively so stale paint/image records cannot survive.
         /// - **Different pool**. `error.UnknownPool`.
         /// - **Slot already released** (or never minted by this
         ///   cache). `error.UnknownBinding` — caller must call `upload`
@@ -312,23 +384,22 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             prev_binding: Binding,
             atlas: *const Atlas,
         ) UploadError!Binding {
-            _ = scratch;
-            if (atlas.pool) |p| {
-                if (p != self.pool) return error.UnknownPool;
-            }
-            self.ensurePoolTextures();
-            self.ensureLayerInfoTexture();
-            try self.ensureImageArrayTexture(&.{atlas});
-
+            if (prev_binding.pool != self.pool) return error.UnknownPool;
+            if (!self.isBindingLive(prev_binding)) return error.UnknownBinding;
             var len: usize = 0;
             const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
             const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
+            errdefer self.planner.invalidateUploads();
+            try self.ensureImageArrayTexture(&.{atlas});
+            self.ensurePoolTextures();
+            self.ensureLayerInfoTexture();
             for (self.plan_regions[0..len]) |r| self.applyRegion(r);
-            self.upload_generation = @max(self.upload_generation, binding.generation);
+            _ = scratch;
             return binding;
         }
 
         pub fn release(self: *Self, binding: Binding) void {
+            if (!self.isBindingLive(binding)) return;
             if (self.planner.release(binding)) {
                 if (self.active_bindings > 0) self.active_bindings -= 1;
             }
@@ -404,6 +475,9 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             const mw: u32 = self.options.max_image_width;
             const mh: u32 = self.options.max_image_height;
             const layers: u32 = self.options.max_images;
+            if (mw > std.math.maxInt(i32) or mh > std.math.maxInt(i32) or layers > std.math.maxInt(i32)) {
+                return error.ImageTooLarge;
+            }
 
             // Zero-initialize the whole array. Each image is uploaded to the
             // top-left w×h corner of a mw×mh layer, but the sampler is GL_LINEAR:
@@ -414,7 +488,10 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             // makes the rendered image edges non-deterministic run-to-run. A
             // one-time clear to transparent black makes the edge blend toward 0
             // deterministically.
-            const zeros = try self.allocator.alloc(u8, @as(usize, mw) * mh * layers * 4);
+            const pixel_count = std.math.mul(usize, mw, mh) catch return error.ImageTooLarge;
+            const layer_pixels = std.math.mul(usize, pixel_count, layers) catch return error.ImageTooLarge;
+            const byte_count = std.math.mul(usize, layer_pixels, 4) catch return error.ImageTooLarge;
+            const zeros = try self.allocator.alloc(u8, byte_count);
             defer self.allocator.free(zeros);
             @memset(zeros, 0);
 
@@ -517,4 +594,8 @@ test "GlDeviceAtlas init allocates fixed-capacity slots" {
     // now lives in `snail.AtlasUploadPlanner`, unit-tested in upload_plan.zig).
     try testing.expectEqual(@as(usize, 3), cache.plan_slots.len);
     try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
+
+    var unexpected_binding: [1]Binding = undefined;
+    try testing.expectError(error.BindingOutputLengthMismatch, cache.upload(testing.allocator, &.{}, &unexpected_binding));
+    try testing.expectEqual(@as(u32, 0), cache.active_bindings);
 }

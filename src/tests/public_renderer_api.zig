@@ -21,7 +21,11 @@ test "external renderers need only the public snail api" {
         if (@hasDecl(snail, "Binding")) @compileError("draw records belong under snail.render.records");
         if (@hasDecl(snail, "RecordKey")) @compileError("record-key names belong under snail.record_key");
         if (@hasDecl(snail, "ns")) @compileError("record-key names belong under snail.record_key");
+        if (@hasDecl(snail, "tt")) @compileError("TrueType implementation internals must not be public");
+        if (@hasDecl(snail.font, "tt")) @compileError("TrueType implementation internals must not be public through font");
 
+        _ = snail.TextDirection;
+        _ = snail.ConicGradient;
         _ = snail.render.records.abi_version;
         _ = snail.render.records.BYTES_PER_INSTANCE;
         _ = snail.render.records.DrawRecords;
@@ -69,7 +73,7 @@ test "external renderers need only the public snail api" {
         .max_image_width = 0,
         .max_image_height = 0,
     };
-    const sizes = snail.atlas_upload.sizes(pool, options);
+    const sizes = try snail.atlas_upload.sizes(pool, options);
     try std.testing.expectEqual(@as(usize, 1), sizes.bindings);
     try std.testing.expect(sizes.regions > 0);
 }

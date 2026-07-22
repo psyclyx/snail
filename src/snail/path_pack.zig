@@ -94,7 +94,7 @@ pub fn packCurves(
     // Single-shape direct encoding: skip `buildCurveTexture`'s TEX_WIDTH
     // padding (~32 KB per shape allocated to drop most of it on the
     // floor). Same fix as the font extractor uses.
-    const curve_count: u16 = @intCast(prepared.len);
+    const curve_count = try checkedCurveCount(prepared.len);
     const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
     errdefer allocator.free(curve_bytes);
 
@@ -137,6 +137,10 @@ pub fn packCurves(
     };
 }
 
+fn checkedCurveCount(count: usize) error{ShapeTooComplex}!u16 {
+    return std.math.cast(u16, count) orelse error.ShapeTooComplex;
+}
+
 fn mergeBBoxes(base: BBox, bboxes: []const BBox) BBox {
     if (bboxes.len == 0) return base;
     var merged = base;
@@ -145,6 +149,11 @@ fn mergeBBoxes(base: BBox, bboxes: []const BBox) BBox {
 }
 
 const testing = std.testing;
+
+test "curve count overflow is a typed error" {
+    try testing.expectEqual(@as(u16, std.math.maxInt(u16)), try checkedCurveCount(std.math.maxInt(u16)));
+    try testing.expectError(error.ShapeTooComplex, checkedCurveCount(@as(usize, std.math.maxInt(u16)) + 1));
+}
 
 test "pathToCurves packs a rectangle fill" {
     var path = Path.init(testing.allocator);

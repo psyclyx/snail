@@ -25,7 +25,7 @@
 //! page-free and never pressure the pool). `src/support/working_set.zig`
 //! is the worked example of a bounded-residency policy over this model.
 //!
-//! See `docs/rewrite/02-atlas-and-pages.md` for the design rationale.
+//! See the README's capacity-model section for the public eviction recipe.
 
 const std = @import("std");
 const page_mod = @import("atlas/page.zig");
@@ -69,6 +69,12 @@ pub const Paint = paint_mod.Paint;
 pub const PaintImageRecord = struct {
     image: *const @import("image.zig").Image,
     texel_offset: u32,
+    /// Binding-relative image-array layer assigned by the atlas builder.
+    /// Upload caches add their binding's `image_layer_base`.
+    image_layer: u32 = 0,
+    /// True only on the first record that references `image` in this atlas.
+    /// Upload planning can therefore count and emit unique images in O(n).
+    first_image_use: bool = false,
 };
 
 /// Lookup result for a key whose entry carries a paint. Holds the
@@ -139,8 +145,11 @@ pub const Layer = struct {
 
 pub const CompositeMode = paint_mod.CompositeMode;
 
-pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || error{
+pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || PagePool.IdentityError || error{
     RecordTooLargeForPage,
+    InvalidCurves,
+    ImageCountOverflow,
+    AtlasRevisionExhausted,
     NoPool,
     MissingAutohintBase,
     InvalidAutohintAnalysis,
@@ -154,6 +163,17 @@ pub const Atlas = struct {
     /// identity atlas (`empty(allocator)`); operations that allocate pages
     /// require a non-null pool.
     pool: ?*PagePool,
+    /// Stable identity of the root snapshot family. Extensions inherit it;
+    /// independently built and compacted atlases receive a fresh lineage.
+    lineage: u64 = 0,
+    /// Extension depth within a lineage. It is descriptive only: branched
+    /// children can have the same revision and are distinguished by
+    /// `snapshot_id`.
+    revision: u64 = 0,
+    /// Unique identity of this exact immutable snapshot within `pool`.
+    snapshot_id: u64 = 0,
+    /// Exact source snapshot for an extension, or zero for a fresh root.
+    parent_snapshot_id: u64 = 0,
     /// Refcounted page references. Index into this slice is what
     /// `AtlasRecord.page_index` refers to.
     pages: []*AtlasPage,
@@ -191,12 +211,16 @@ pub const Atlas = struct {
     /// are caller-owned references; the atlas only borrows.
     paint_image_records: ?[]?PaintImageRecord = null,
 
-    /// Identity atlas. Has no pool; usable as the neutral element of
-    /// `combine` but not extensible on its own.
+    /// Pool-less identity atlas. It can represent an empty result, but cannot
+    /// be extended; use `init` for an initially empty growable atlas.
     pub fn empty(allocator: std.mem.Allocator) Atlas {
         return .{
             .allocator = allocator,
             .pool = null,
+            .lineage = 0,
+            .revision = 0,
+            .snapshot_id = 0,
+            .parent_snapshot_id = 0,
             .pages = &.{},
             .lookup = RecordLookup.init(allocator, .{}),
             .paint_lookup = PaintLookup.init(allocator, .{}),
@@ -209,10 +233,30 @@ pub const Atlas = struct {
     /// Empty atlas associated with `pool`. Unlike `empty`, this value can be
     /// populated with `extend` / `extendInPlace`; it is useful for callers
     /// whose atlas starts empty and grows on demand.
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) Atlas {
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) PagePool.IdentityError!Atlas {
         var atlas = empty(allocator);
         atlas.pool = pool;
+        atlas.snapshot_id = try pool.nextAtlasSnapshotId();
+        atlas.lineage = atlas.snapshot_id;
         return atlas;
+    }
+
+    pub const SnapshotIdentity = struct {
+        lineage: u64,
+        revision: u64,
+        snapshot_id: u64,
+        parent_snapshot_id: u64,
+    };
+
+    /// Identity used by upload caches to distinguish an exact snapshot from
+    /// its direct append-only child and from a branch/unrelated atlas.
+    pub fn snapshotIdentity(self: *const Atlas) SnapshotIdentity {
+        return .{
+            .lineage = self.lineage,
+            .revision = self.revision,
+            .snapshot_id = self.snapshot_id,
+            .parent_snapshot_id = self.parent_snapshot_id,
+        };
     }
 
     pub fn deinit(self: *Atlas) void {
@@ -233,8 +277,7 @@ pub const Atlas = struct {
     }
 
     /// Look up the paint record (if any) bound to `key`. Returns null
-    /// for keys whose entry had no paint, or for entries that came from
-    /// `empty()` / `combine` of atlases without paints.
+    /// for keys whose entry had no paint or for a pool-less empty atlas.
     pub fn lookupPaintRecord(self: *const Atlas, key: RecordKey) ?PaintRecordInfo {
         return self.paint_lookup.get(key);
     }
@@ -295,7 +338,7 @@ pub const Atlas = struct {
         pool: *PagePool,
         entries: []const Entry,
     ) InsertError!Atlas {
-        var builder = Builder.init(allocator, pool);
+        var builder = try Builder.init(allocator, pool);
         errdefer builder.abort();
 
         for (entries) |entry| {
@@ -305,8 +348,8 @@ pub const Atlas = struct {
         return builder.finish();
     }
 
-    /// Sugar for `combine(allocator, &.{self, from(entries)})` that avoids
-    /// the intermediate allocation. The original atlas is not mutated.
+    /// Return a persistent snapshot containing the existing records plus new
+    /// `entries`. The original atlas remains valid and logically unchanged.
     pub fn extend(
         self: *const Atlas,
         allocator: std.mem.Allocator,
@@ -323,16 +366,52 @@ pub const Atlas = struct {
         return builder.finish();
     }
 
-    /// Replace this atlas with an extension while preserving `extend`'s
+    /// Replace this atlas with one extension while preserving `extend`'s
     /// failure atomicity: on error `self` remains valid and unchanged.
     /// Empty entry slices are a no-op.
+    ///
+    /// Each non-empty call commits a persistent snapshot and therefore copies
+    /// the atlas's flat page-pointer and paint-side-data arrays once. Do not
+    /// call this in a one-entry loop for bulk ingestion; pass the entries in
+    /// one slice, or use `extendBatchesInPlace` when producers naturally
+    /// supply several slices.
     pub fn extendInPlace(
         self: *Atlas,
         allocator: std.mem.Allocator,
         entries: []const Entry,
     ) InsertError!void {
         if (entries.len == 0) return;
-        const grown = try self.extend(allocator, entries);
+        return self.extendBatchesInPlace(allocator, &.{entries});
+    }
+
+    /// Commit several entry slices in one builder transaction. This avoids
+    /// the repeated O(existing flat metadata) copies caused by a loop of
+    /// `extendInPlace` calls, without requiring callers to allocate and flatten
+    /// a temporary entry array. All slices are consumed synchronously and the
+    /// operation is failure-atomic. A list containing only empty slices is a
+    /// no-op and does not mint a new snapshot identity.
+    pub fn extendBatchesInPlace(
+        self: *Atlas,
+        allocator: std.mem.Allocator,
+        batches: []const []const Entry,
+    ) InsertError!void {
+        var has_entries = false;
+        for (batches) |entries| {
+            if (entries.len != 0) {
+                has_entries = true;
+                break;
+            }
+        }
+        if (!has_entries) return;
+
+        const pool = self.pool orelse return error.NoPool;
+        var builder = try Builder.initFrom(allocator, pool, self);
+        errdefer builder.abort();
+        for (batches) |entries| {
+            for (entries) |entry| try builder.insert(entry);
+        }
+
+        const grown = try builder.finish();
         self.deinit();
         self.* = grown;
     }
@@ -364,7 +443,7 @@ pub const Atlas = struct {
         filter: ?RecordFilter,
     ) InsertError!Atlas {
         const pool = self.pool orelse return Atlas.empty(allocator);
-        var builder = Builder.init(allocator, pool);
+        var builder = try Builder.init(allocator, pool);
         errdefer builder.abort();
 
         // Two passes: autohint records re-alias their base glyphs, so the
@@ -490,6 +569,70 @@ test "from packs entries into pages and records lookup" {
     try testing.expectEqual(@as(u16, 2), r0.curve_count);
 }
 
+test "from rejects malformed caller-provided curves before reserving a page" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+    curves.curve_count = 1; // payload still contains two encoded segments
+
+    try testing.expectError(error.InvalidCurves, Atlas.from(testing.allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .curves = curves,
+    }}));
+    const stats = pool.stats();
+    try testing.expectEqual(@as(u32, 0), stats.pages_in_use);
+    try testing.expectEqual(@as(u64, 0), stats.curve_bytes_used);
+    try testing.expectEqual(@as(u64, 0), stats.band_bytes_used);
+}
+
+test "image paint records carry stable preassigned unique layers" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 3,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+    var image_a = try @import("image.zig").Image.init(testing.allocator, 1, 1, &.{ 1, 2, 3, 4 });
+    defer image_a.deinit();
+    var image_b = try @import("image.zig").Image.init(testing.allocator, 1, 1, &.{ 5, 6, 7, 8 });
+    defer image_b.deinit();
+
+    var atlas = try Atlas.from(testing.allocator, pool, &.{
+        .{ .key = record_key_mod.unhintedGlyph(0, 1), .curves = curves, .paint = .{ .image = .{ .image = &image_a } } },
+        .{ .key = record_key_mod.unhintedGlyph(0, 2), .curves = curves, .paint = .{ .image = .{ .image = &image_a } } },
+        .{ .key = record_key_mod.unhintedGlyph(0, 3), .curves = curves, .paint = .{ .image = .{ .image = &image_b } } },
+    });
+    defer atlas.deinit();
+
+    const records = atlas.paint_image_records.?;
+    try testing.expectEqual(@as(usize, 3), records.len);
+    try testing.expectEqual(@as(u32, 0), records[0].?.image_layer);
+    try testing.expect(records[0].?.first_image_use);
+    try testing.expectEqual(@as(u32, 0), records[1].?.image_layer);
+    try testing.expect(!records[1].?.first_image_use);
+    try testing.expectEqual(@as(u32, 1), records[2].?.image_layer);
+    try testing.expect(records[2].?.first_image_use);
+
+    var compacted = try atlas.compact(testing.allocator, testing.allocator, null);
+    defer compacted.deinit();
+    var first_uses: u32 = 0;
+    for (compacted.paint_image_records.?) |maybe_record| {
+        if (maybe_record) |record| {
+            if (record.first_image_use) first_uses += 1;
+        }
+    }
+    try testing.expectEqual(@as(u32, 2), first_uses);
+}
+
 test "from rewrites band refs to page-absolute texels" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
@@ -525,6 +668,37 @@ test "from rewrites band refs to page-absolute texels" {
     try testing.expectEqual(r1.curve_texel, decoded);
 }
 
+test "atlas placement and compaction preserve band-reference curve kinds" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 3,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+    const cubic_kind_bits: u16 = 2 << 14;
+    const mutable_bands = @constCast(curves.band_bytes);
+    mutable_bands[5] |= cubic_kind_bits;
+    mutable_bands[7] |= cubic_kind_bits;
+    mutable_bands[9] |= cubic_kind_bits;
+    mutable_bands[11] |= cubic_kind_bits;
+
+    const key = record_key_mod.unhintedGlyph(0, 1);
+    var original = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
+    defer original.deinit();
+    var compacted = try original.compact(testing.allocator, testing.allocator, null);
+    defer compacted.deinit();
+
+    for ([_]*const Atlas{ &original, &compacted }) |candidate| {
+        const rec = candidate.lookupRecord(key).?;
+        const page = candidate.pages[rec.page_index];
+        const band_word_offset = (@as(usize, rec.bands.glyph_y) * BAND_TEX_WIDTH_USIZE + @as(usize, rec.bands.glyph_x)) * 2;
+        try testing.expectEqual(cubic_kind_bits, page.band.data[band_word_offset + 5] & 0xc000);
+    }
+}
+
 test "extend keeps original atlas valid" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 4,
@@ -556,6 +730,121 @@ test "extend keeps original atlas valid" {
     // The original atlas's record for k0 references a page that's still
     // alive (b retained it).
     try testing.expectEqual(@as(u32, 2), a.pages[0].refcount.load(.acquire));
+}
+
+test "extendBatchesInPlace commits many slices as one snapshot" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var curves = try makeTestCurves(testing.allocator);
+    defer curves.deinit();
+    var atlas = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .curves = curves,
+    }});
+    defer atlas.deinit();
+
+    const before = atlas.snapshotIdentity();
+    const batch_a = [_]Entry{.{
+        .key = record_key_mod.unhintedGlyph(0, 2),
+        .curves = curves,
+    }};
+    const batch_b = [_]Entry{.{
+        .key = record_key_mod.unhintedGlyph(0, 3),
+        .curves = curves,
+    }};
+    const batches = [_][]const Entry{ &batch_a, &.{}, &batch_b };
+    try atlas.extendBatchesInPlace(testing.allocator, &batches);
+
+    const after = atlas.snapshotIdentity();
+    try testing.expectEqual(@as(u32, 3), atlas.recordCount());
+    try testing.expectEqual(before.revision + 1, after.revision);
+    try testing.expectEqual(before.snapshot_id, after.parent_snapshot_id);
+
+    const only_empty = [_][]const Entry{ &.{}, &.{} };
+    try atlas.extendBatchesInPlace(testing.allocator, &only_empty);
+    try testing.expectEqualDeep(after, atlas.snapshotIdentity());
+}
+
+test "snapshot identities distinguish roots, extensions, and branches" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var c0 = try makeTestCurves(testing.allocator);
+    defer c0.deinit();
+    var c1 = try makeTestCurves(testing.allocator);
+    defer c1.deinit();
+
+    var root = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .curves = c0,
+    }});
+    defer root.deinit();
+    var child_a = try root.extend(testing.allocator, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 2),
+        .curves = c1,
+    }});
+    defer child_a.deinit();
+    var child_b = try root.extend(testing.allocator, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 3),
+        .curves = c1,
+    }});
+    defer child_b.deinit();
+
+    const root_id = root.snapshotIdentity();
+    const a_id = child_a.snapshotIdentity();
+    const b_id = child_b.snapshotIdentity();
+    try testing.expect(root_id.snapshot_id != 0);
+    try testing.expectEqual(root_id.lineage, a_id.lineage);
+    try testing.expectEqual(root_id.lineage, b_id.lineage);
+    try testing.expectEqual(root_id.snapshot_id, a_id.parent_snapshot_id);
+    try testing.expectEqual(root_id.snapshot_id, b_id.parent_snapshot_id);
+    try testing.expectEqual(@as(u64, 1), a_id.revision);
+    try testing.expectEqual(a_id.revision, b_id.revision);
+    try testing.expect(a_id.snapshot_id != b_id.snapshot_id);
+}
+
+test "aborted extension restores its parent's shared page tail" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1024,
+        .band_words_per_page = 256,
+    });
+    defer pool.deinit();
+
+    var c0 = try makeTestCurves(testing.allocator);
+    defer c0.deinit();
+    var c1 = try makeTestCurves(testing.allocator);
+    defer c1.deinit();
+    var root = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, 1),
+        .curves = c0,
+    }});
+    defer root.deinit();
+
+    const page = root.pages[0];
+    const curve_before = page.curve.usedWords();
+    const band_before = page.band.usedWords();
+    var builder = try Builder.initFrom(testing.allocator, pool, &root);
+    try builder.insert(.{
+        .key = record_key_mod.unhintedGlyph(0, 2),
+        .curves = c1,
+    });
+    try testing.expect(page.curve.usedWords() > curve_before);
+    try testing.expect(page.band.usedWords() > band_before);
+    builder.abort();
+
+    try testing.expectEqual(curve_before, page.curve.usedWords());
+    try testing.expectEqual(band_before, page.band.usedWords());
+    try testing.expectEqual(@as(u32, 1), root.recordCount());
 }
 
 test "extend dedups keys against existing atlas" {

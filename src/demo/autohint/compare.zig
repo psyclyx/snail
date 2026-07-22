@@ -182,7 +182,7 @@ pub const Compare = struct {
 
         var faces = try snail.Faces.build(allocator, &.{.{ .font = font }});
         errdefer faces.deinit();
-        const font_id = faces.fontIdForFace(0);
+        const font_id = faces.fontIdForFace(0).?;
 
         const auto = try snail.autohint.AutohintAnalyzer.init(allocator, font_bytes);
         const tt = snail.TtHintVm.init(allocator, font) catch null;

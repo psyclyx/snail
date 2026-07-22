@@ -247,7 +247,7 @@ pub const material_roughness: f32 = 0.018;
 // ── Content builders ──
 
 fn buildMaterialText(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
-    var b = PassBuilder.init(allocator, fonts);
+    var b = try PassBuilder.init(allocator, fonts);
     defer b.deinit();
     // Authored in the material scene frame (material_scene_w × material_scene_h).
     // This text is *sampled by the material shader* and carved into the lit
@@ -263,7 +263,7 @@ fn buildLabel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     // quad (depth-tested → occluded), the rest reads clearly. The plate makes the
     // occlusion obvious.
     const w: f32 = label_scene_w;
-    var b = PassBuilder.init(allocator, fonts);
+    var b = try PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const rect = snail.Rect{ .x = 8.0, .y = 8.0, .w = w - 16.0, .h = label_scene_h - 16.0 };
     try b.addRoundedRectFilledStroked(
@@ -286,7 +286,7 @@ pub const label_scene_h: f32 = 198.0;
 fn buildPanel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     // Authored in a 460×300 frame.
     const w: f32 = 460.0;
-    var b = PassBuilder.init(allocator, fonts);
+    var b = try PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const rect = snail.Rect{ .x = 16.0, .y = 16.0, .w = w - 32.0, .h = 268.0 };
     try b.addRoundedRectFilledStroked(
@@ -308,7 +308,7 @@ pub const panel_scene_h: f32 = 300.0;
 
 fn buildHud(allocator: std.mem.Allocator, fonts: *Fonts, window_w: u32, backend: []const u8, perf: []const u8) !PreparedPass {
     _ = window_w;
-    var b = PassBuilder.init(allocator, fonts);
+    var b = try PassBuilder.init(allocator, fonts);
     defer b.deinit();
     const x = 30.0;
     _ = try b.appendText(.{ .weight = .bold }, backend, x, 48.0, 26.0, srgb(.{ 0.55, 0.9, 1.0, 1.0 }));

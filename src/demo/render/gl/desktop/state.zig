@@ -285,9 +285,12 @@ fn TextStateFor(comptime backend: Backend) type {
             defer if (scissor_restore) |r| r.restore();
 
             for (records.batches) |batch| {
-                const cache = findCache(caches, batch.binding.pool) orelse return error.MissingBinding;
-                if (batch.binding.generation != 0 and cache.upload_generation < batch.binding.generation) return error.StaleBinding;
-                if (@as(usize, batch.first_instance) + batch.instance_count > records.instances.len) return error.MalformedBatch;
+                const cache = findCache(caches, batch.binding) orelse {
+                    for (caches) |candidate| if (candidate.pool == batch.binding.pool) return error.StaleBinding;
+                    return error.MissingBinding;
+                };
+                const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
+                if (end > records.instances.len) return error.MalformedBatch;
                 const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
                 _ = scratch;
                 try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
@@ -715,10 +718,10 @@ fn detectDualSourceBlendSupport() bool {
 
 fn findCache(
     caches: anytype,
-    pool: *snail_mod.PagePool,
+    binding: draw_records_mod.Binding,
 ) ?@TypeOf(caches[0]) {
     for (caches) |c| {
-        if (c.pool == pool) return c;
+        if (c.isBindingLive(binding)) return c;
     }
     return null;
 }

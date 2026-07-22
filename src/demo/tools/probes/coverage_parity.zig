@@ -36,7 +36,7 @@ const stroke_paint = snail.Paint{ .solid = snail.color.srgbToLinearColor(.{ 0.85
 const Mode = enum { composite, separate, fill_only };
 
 fn buildPanel(allocator: std.mem.Allocator, fonts: *passes.Fonts, mode: Mode) !passes.PreparedPass {
-    var b = passes.PassBuilder.init(allocator, fonts);
+    var b = try passes.PassBuilder.init(allocator, fonts);
     defer b.deinit();
     switch (mode) {
         .composite => try b.addRoundedRectWithInsideStroke(
@@ -100,7 +100,7 @@ const Panel = struct {
     /// Render into `pixels` (RGBA8, linear target: alpha == raw coverage).
     fn draw(self: *Panel, pixels: []u8, mvp: snail.Mat4) !void {
         @memset(pixels, 0);
-        var renderer = raster.Renderer.init(pixels.ptr, W, H, W * 4);
+        var renderer = try raster.Renderer.init(pixels, W, H, W * 4);
         const ds = raster.DrawState{
             .surface = .{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = .linear },
             .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },

@@ -634,7 +634,7 @@ pub fn main() !void {
         .{ .font = &emoji_font, .fallback = true },
     });
     defer faces.deinit();
-    const font_id = faces.fontIdForFace(0);
+    const font_id = faces.fontIdForFace(0).?;
 
     var seed = try snail.shape(allocator, &faces, "Hello, ", .{});
     defer seed.deinit();
@@ -654,7 +654,7 @@ pub fn main() !void {
     defer gpu_atlas.deinit();
 
     // Round 1: seed a new atlas with the first part of the unhinted run.
-    var atlas = snail.Atlas.init(allocator, pool);
+    var atlas = try snail.Atlas.init(allocator, pool);
     defer atlas.deinit();
     try snail.recordUnhintedRun(&atlas, allocator, &faces, &seed, .{});
     try gpu_atlas.upload(&atlas);

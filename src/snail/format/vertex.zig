@@ -60,6 +60,42 @@ pub const DecodedInstance = struct {
 
 const identity_tint = [4]f32{ 1, 1, 1, 1 };
 
+fn allFinite(values: anytype) bool {
+    inline for (values) |value| {
+        if (!std.math.isFinite(value)) return false;
+    }
+    return true;
+}
+
+fn validTransform(transform: vec.Transform2D) bool {
+    if (!allFinite(.{ transform.xx, transform.xy, transform.tx, transform.yx, transform.yy, transform.ty })) return false;
+    const det = transform.xx * transform.yy - transform.xy * transform.yx;
+    return std.math.isFinite(det) and @abs(det) >= 1e-10;
+}
+
+fn validBBox(bbox: BBox) bool {
+    const values = .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y };
+    if (!allFinite(values)) return false;
+    if (bbox.min.x > bbox.max.x or bbox.min.y > bbox.max.y) return false;
+    const f16_max: f32 = std.math.floatMax(f16);
+    inline for (values) |value| {
+        if (@abs(value) > f16_max) return false;
+    }
+    return true;
+}
+
+fn validColor(color: [4]f32) bool {
+    return allFinite(color);
+}
+
+fn validBandEntry(entry: band_tex.GlyphBandEntry) bool {
+    return entry.h_band_count != 0 and
+        entry.v_band_count != 0 and
+        entry.h_band_count <= 16 and
+        entry.v_band_count <= 16 and
+        allFinite(.{ entry.band_scale_x, entry.band_scale_y, entry.band_offset_x, entry.band_offset_y });
+}
+
 fn f16BitsToF32(bits: u16) f32 {
     return @floatCast(@as(f16, @bitCast(bits)));
 }
@@ -216,8 +252,19 @@ pub fn generateGlyphVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    if (@abs(det) < 1e-10) return false;
+    // Layer 0xff changes the meaning of the complete glyph word, and a zero
+    // band count would underflow the count-minus-one representation. Keep the
+    // low-level custom-shader helper safe even when bypassing Atlas/PagePool.
+    if (buf.len < WORDS_PER_INSTANCE or
+        atlas_layer == render_abi.special_layer_sentinel or
+        !validBBox(bbox) or
+        !validBandEntry(band_entry) or
+        !validColor(color) or
+        !validColor(tint) or
+        !validTransform(transform))
+    {
+        return false;
+    }
 
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
     const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
@@ -324,8 +371,16 @@ fn generateSpecialLayerVerticesTransformedTinted(
     transform: vec.Transform2D,
     kind: SpecialLayerKind,
 ) bool {
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    if (@abs(det) < 1e-10) return false;
+    if (buf.len < WORDS_PER_INSTANCE or
+        atlas_layer == render_abi.special_layer_sentinel or
+        layer_count == 0 or
+        !validBBox(bbox) or
+        !validColor(color) or
+        !validColor(tint) or
+        !validTransform(transform))
+    {
+        return false;
+    }
 
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
     const gw = specialGlyphWord(layer_count, kind);
@@ -364,6 +419,18 @@ test "instance data produces correct layout" {
 
     const transform = vec.Transform2D{ .xx = 24.0, .xy = 0, .tx = 100.0, .yx = 0, .yy = -24.0, .ty = 200.0 };
     try std.testing.expect(generateGlyphVerticesTransformedTinted(&buf, bbox, band_entry, color, identity_tint, 0, transform));
+    try std.testing.expect(!generateGlyphVerticesTransformedTinted(
+        &buf,
+        bbox,
+        band_entry,
+        color,
+        identity_tint,
+        render_abi.special_layer_sentinel,
+        transform,
+    ));
+    var invalid_bands = band_entry;
+    invalid_bands.h_band_count = 0;
+    try std.testing.expect(!generateGlyphVerticesTransformedTinted(&buf, bbox, invalid_bands, color, identity_tint, 0, transform));
     const decoded = decodeInstance(&buf);
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), decoded.rect[0], 0.001);
@@ -384,6 +451,68 @@ test "instance data produces correct layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[3], 0.001);
+}
+
+test "instance generators reject non-finite and unrepresentable inputs" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .zero, .max = .{ .x = 1, .y = 1 } };
+    const band_entry = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const color = [4]f32{ 1, 1, 1, 1 };
+
+    var transform = vec.Transform2D.identity;
+    transform.tx = std.math.nan(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, band_entry, color, 0, transform));
+
+    var invalid_color = color;
+    invalid_color[0] = std.math.inf(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, band_entry, invalid_color, 0, .identity));
+
+    var invalid_band = band_entry;
+    invalid_band.band_scale_x = std.math.nan(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+
+    invalid_band = band_entry;
+    invalid_band.h_band_count = 17;
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+    invalid_band = band_entry;
+    invalid_band.v_band_count = 17;
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+
+    const invalid_bbox = BBox{ .min = .zero, .max = .{ .x = std.math.inf(f32), .y = 1 } };
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, invalid_bbox, band_entry, color, 0, .identity));
+    try std.testing.expect(!generateGlyphVerticesTransformed(buf[0 .. WORDS_PER_INSTANCE - 1], bbox, band_entry, color, 0, .identity));
+
+    try std.testing.expect(!generatePathRecordVerticesTransformedTinted(
+        &buf,
+        bbox,
+        0,
+        0,
+        0,
+        color,
+        color,
+        0,
+        .identity,
+    ));
+    try std.testing.expect(!generatePathRecordVerticesTransformedTinted(
+        &buf,
+        bbox,
+        0,
+        0,
+        1,
+        invalid_color,
+        color,
+        0,
+        .identity,
+    ));
 }
 
 test "instance rect half encoding encloses source bbox" {

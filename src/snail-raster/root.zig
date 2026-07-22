@@ -27,6 +27,7 @@ pub const DrawState = target.DrawState;
 pub const resolveRect = target.resolveRect;
 
 pub const Renderer = renderer.Renderer;
+pub const BufferError = renderer.Renderer.BufferError;
 pub const InstanceProfileEntry = renderer.InstanceProfileEntry;
 pub const InstanceProfileBuffer = renderer.InstanceProfileBuffer;
 pub const DeviceAtlas = device_atlas.DeviceAtlas;

@@ -1,6 +1,6 @@
 //! Software rasterizer for snail glyph data.
 //! Evaluates the same Bezier curve/band data the GPU shaders use, but per-pixel
-//! into a caller-owned RGBA8888 memory buffer.  Intended for headless rendering
+//! into a caller-owned, explicitly formatted memory buffer. Intended for headless rendering
 //! and bootstrap frames (before EGL/Vulkan is available).
 //!
 //! Pixel parity vs GL/Vulkan: matches within 1 sRGB LSB on virtually every
@@ -140,10 +140,10 @@ fn monotonicNanos() u64 {
 const one_lsb_8bit: f32 = 1.0 / 255.0;
 
 pub const Renderer = struct {
-    pixels: [*]u8, // RGBA8888 buffer, caller-owned
+    pixels: []u8, // caller-owned; validated before every operation that writes
     width: u32,
     height: u32,
-    stride: u32, // bytes per row (usually width * 4)
+    stride: u32, // bytes per row (at least width * format.bytesPerPixel())
     subpixel_order: SubpixelOrder,
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
@@ -175,7 +175,17 @@ pub const Renderer = struct {
     // evaluation.
     const MAX_COMPOSITE_LAYERS: usize = 8;
 
-    pub fn init(pixels: [*]u8, width: u32, height: u32, stride: u32) Renderer {
+    pub const BufferError = error{
+        InvalidBuffer,
+        InvalidStride,
+        InvalidTargetSurface,
+    };
+
+    /// Attach a caller-owned pixel buffer. The format-specific row size is
+    /// checked when a `DrawState` selects the target format; this initial
+    /// validation still guarantees that every declared row is present.
+    pub fn init(pixels: []u8, width: u32, height: u32, stride: u32) BufferError!Renderer {
+        try validateBuffer(pixels, width, height, stride, null);
         return .{
             .pixels = pixels,
             .width = width,
@@ -197,7 +207,8 @@ pub const Renderer = struct {
     }
 
     /// Update the pixel buffer and dimensions without clearing atlas state.
-    pub fn reinitBuffer(self: *Renderer, pixels: [*]u8, width: u32, height: u32, stride: u32) void {
+    pub fn reinitBuffer(self: *Renderer, pixels: []u8, width: u32, height: u32, stride: u32) BufferError!void {
+        try validateBuffer(pixels, width, height, stride, null);
         self.pixels = pixels;
         self.width = width;
         self.height = height;
@@ -208,6 +219,25 @@ pub const Renderer = struct {
         self.col_clip_max = width;
     }
 
+    fn validateBuffer(pixels: []u8, width: u32, height: u32, stride: u32, format: ?render_state.PixelFormat) BufferError!void {
+        const min_row_bytes = std.math.mul(u32, width, if (format) |fmt| fmt.bytesPerPixel() else 1) catch
+            return error.InvalidStride;
+        if (stride < min_row_bytes) return error.InvalidStride;
+        const required = std.math.mul(usize, @as(usize, stride), @as(usize, height)) catch
+            return error.InvalidBuffer;
+        if (pixels.len < required) return error.InvalidBuffer;
+    }
+
+    pub fn validateTarget(self: *const Renderer, surface: render_state.TargetSurface) BufferError!void {
+        if (!std.math.isFinite(surface.pixel_width) or !std.math.isFinite(surface.pixel_height) or
+            surface.pixel_width != @as(f32, @floatFromInt(self.width)) or
+            surface.pixel_height != @as(f32, @floatFromInt(self.height)))
+        {
+            return error.InvalidTargetSurface;
+        }
+        try validateBuffer(self.pixels, self.width, self.height, self.stride, surface.format);
+    }
+
     pub const LinearResolveRestore = struct {
         row_clip_min: u32,
         row_clip_max: u32,
@@ -216,10 +246,13 @@ pub const Renderer = struct {
         target_encoding: render_state.TargetEncoding,
         target_resolve: blend_mod.ResolveMode,
         linear_resolve_active: bool,
+        format: render_state.PixelFormat,
     };
 
     pub fn beginLinearResolve(self: *Renderer, surface: render_state.TargetSurface, resolve: render_state.LinearResolve) !LinearResolveRestore {
+        try self.validateTarget(surface);
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
+        if (resolve.intermediate_format != .rgba16f) return error.UnsupportedResolve;
         if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
         const rect = render_state.resolveRect(surface, resolve);
         if (rect.w == 0 or rect.h == 0) return error.InvalidTargetSurface;
@@ -231,12 +264,14 @@ pub const Renderer = struct {
             .target_encoding = self.target_encoding,
             .target_resolve = self.target_resolve,
             .linear_resolve_active = self.linear_resolve_active,
+            .format = self.format,
         };
         self.col_clip_min = @intCast(rect.x);
         self.row_clip_min = @intCast(rect.y);
         self.col_clip_max = self.col_clip_min + rect.w;
         self.row_clip_max = self.row_clip_min + rect.h;
         self.target_encoding = surface.encoding;
+        self.format = surface.format;
         self.target_resolve = .{ .linear = resolve };
         self.linear_resolve_active = true;
         self.seedLinearResolveBackdrop(surface.encoding, rect, resolve.backdrop);
@@ -252,17 +287,18 @@ pub const Renderer = struct {
         self.target_encoding = restore.target_encoding;
         self.target_resolve = restore.target_resolve;
         self.linear_resolve_active = restore.linear_resolve_active;
+        self.format = restore.format;
     }
 
-    fn seedLinearResolveBackdrop(self: *Renderer, encoding: render_state.TargetEncoding, rect: render_state.PixelRect, backdrop: render_state.LinearResolve.Backdrop) void {
+    fn seedLinearResolveBackdrop(self: *Renderer, _: render_state.TargetEncoding, rect: render_state.PixelRect, backdrop: render_state.LinearResolve.Backdrop) void {
         switch (backdrop) {
             .target, .dont_care => return,
             .transparent => self.fillResolveRect(rect, .{ 0, 0, 0, 0 }),
-            .clear => |color| self.fillResolveRect(rect, blend_mod.colorBytesForEncoding(encoding, color)),
+            .clear => |color| self.fillResolveRect(rect, color),
         }
     }
 
-    fn fillResolveRect(self: *Renderer, rect: render_state.PixelRect, color: [4]u8) void {
+    fn fillResolveRect(self: *Renderer, rect: render_state.PixelRect, color: [4]f32) void {
         if (rect.w == 0 or rect.h == 0) return;
         var row: u32 = @intCast(rect.y);
         const y1 = row + rect.h;
@@ -270,11 +306,9 @@ pub const Renderer = struct {
             var col: u32 = @intCast(rect.x);
             const x1 = col + rect.w;
             while (col < x1) : (col += 1) {
-                const off = row * self.stride + col * 4;
-                self.pixels[off + 0] = color[0];
-                self.pixels[off + 1] = color[1];
-                self.pixels[off + 2] = color[2];
-                self.pixels[off + 3] = color[3];
+                switch (self.format) {
+                    inline else => |fmt| blend_mod.writeClearPixel(fmt, self.blendTarget(), row, col, color),
+                }
             }
         }
     }
@@ -296,20 +330,8 @@ pub const Renderer = struct {
         };
     }
 
-    fn clear(self: *Renderer, r: u8, g: u8, b: u8, a: u8) void {
-        for (0..self.height) |row| {
-            const row_start = row * self.stride;
-            for (0..self.width) |col| {
-                const off = row_start + col * 4;
-                self.pixels[off + 0] = r;
-                self.pixels[off + 1] = g;
-                self.pixels[off + 2] = b;
-                self.pixels[off + 3] = a;
-            }
-        }
-    }
-
     pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
+        try self.validateTarget(state.surface);
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -317,6 +339,7 @@ pub const Renderer = struct {
         // when one is active).
         self.subpixel_order = state.raster.subpixel_order;
         self.target_encoding = state.surface.encoding;
+        self.format = state.surface.format;
         if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
         self.coverage_transfer = state.raster.coverage_transfer;
 
@@ -470,7 +493,15 @@ pub const Renderer = struct {
         const y1 = @min(self.row_clip_max, dispatch_range.max);
         if (y1 <= y0) return;
         const rows = y1 - y0;
-        const strip_count: u32 = (rows + TILE_ROWS - 1) / TILE_ROWS;
+        // Bound the number of jobs that each rescan the instance stream. Tiny
+        // two-row jobs are useful for load balancing, but become quadratic
+        // overhead on tall targets with large batches.
+        const worker_limit: usize = std.math.maxInt(u32) / 4;
+        const worker_count: u32 = @intCast(@min(@max(pool.threadCount(), 1), worker_limit));
+        const target_jobs = worker_count * 4;
+        const adaptive_rows = rows / target_jobs + @intFromBool(rows % target_jobs != 0);
+        const strip_rows = @max(TILE_ROWS, adaptive_rows);
+        const strip_count: u32 = rows / strip_rows + @intFromBool(rows % strip_rows != 0);
         var ctx = TileCtx{
             .base = self,
             .prepared = prepared,
@@ -478,7 +509,7 @@ pub const Renderer = struct {
             .scene_to_pixel = scene_to_pixel,
             .texture_layer_base = texture_layer_base,
             .allow_subpixel = allow_subpixel,
-            .strip_rows = TILE_ROWS,
+            .strip_rows = strip_rows,
             .y0 = y0,
             .y1 = y1,
         };
@@ -1890,8 +1921,14 @@ pub const Renderer = struct {
                 const bytes = blend_mod.opaqueBytesForTarget(fmt, self.blendTarget(), .{ linear[0], linear[1], linear[2] });
                 const word: u32 = @as(u32, bytes[0]) | (@as(u32, bytes[1]) << 8) | (@as(u32, bytes[2]) << 16) | (@as(u32, bytes[3]) << 24);
                 const offset = @as(usize, row) * self.stride + @as(usize, col_start) * 4;
-                const dst_u32: [*]u32 = @ptrCast(@alignCast(self.pixels + offset));
-                @memset(dst_u32[0..(col_end_excl - col_start)], word);
+                const pixel_count: usize = col_end_excl - col_start;
+                const dst = self.pixels[offset..][0 .. pixel_count * 4];
+                if (@intFromPtr(dst.ptr) % @alignOf(u32) == 0) {
+                    const dst_u32: [*]u32 = @ptrCast(@alignCast(dst.ptr));
+                    @memset(dst_u32[0..pixel_count], word);
+                } else {
+                    for (0..pixel_count) |i| @memcpy(dst[i * 4 ..][0..4], &bytes);
+                }
                 return true;
             },
         }
@@ -1899,7 +1936,7 @@ pub const Renderer = struct {
 
     inline fn blendTarget(self: *Renderer) blend_mod.Target {
         return .{
-            .pixels = self.pixels,
+            .pixels = self.pixels.ptr,
             .stride = self.stride,
             .height = self.height,
             .target_encoding = self.target_encoding,
@@ -1931,3 +1968,56 @@ pub const Renderer = struct {
         }
     }
 };
+
+const testing = std.testing;
+
+test "renderer validates slice length and format-specific stride" {
+    var pixels: [8]u8 = .{0} ** 8;
+    try testing.expectError(error.InvalidStride, Renderer.init(&pixels, 4, 2, 3));
+    try testing.expectError(error.InvalidBuffer, Renderer.init(pixels[0..7], 4, 2, 4));
+
+    var renderer = try Renderer.init(&pixels, 4, 2, 4);
+    var prepared = PreparedResources{ .allocator = testing.allocator };
+    const wf: f32 = 4;
+    const hf: f32 = 2;
+    var state = render_state.DrawState{
+        .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
+        .surface = .{
+            .pixel_width = wf,
+            .pixel_height = hf,
+            .encoding = .linear,
+            .format = .rgba8_unorm,
+        },
+    };
+    try testing.expectError(error.InvalidStride, renderer.drawBatch(&prepared, &.{}, state, 0, null));
+    state.surface.format = .r8_unorm;
+    try renderer.drawBatch(&prepared, &.{}, state, 0, null);
+    try testing.expectEqual(render_state.PixelFormat.r8_unorm, renderer.format);
+}
+
+test "linear resolve clear honors target pixel format" {
+    var pixels: [2]u8 = .{ 0, 0 };
+    var renderer = try Renderer.init(&pixels, 2, 1, 2);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 2,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+        .format = .a8_unorm,
+    };
+    const restore = try renderer.beginLinearResolve(surface, .{ .backdrop = .{ .clear = .{ 1, 0, 0, 0.5 } } });
+    defer renderer.endLinearResolve(restore);
+    try testing.expectApproxEqAbs(@as(f32, 0.5), @as(f32, @floatFromInt(pixels[0])) / 255.0, 1.0 / 255.0);
+    try testing.expectEqual(pixels[0], pixels[1]);
+    try testing.expectError(error.LinearResolveAlreadyActive, renderer.beginLinearResolve(surface, .{}));
+}
+
+test "linear resolve rejects an unsupported intermediate format" {
+    var pixels: [4]u8 = .{0} ** 4;
+    var renderer = try Renderer.init(&pixels, 1, 1, 4);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+    };
+    try testing.expectError(error.UnsupportedResolve, renderer.beginLinearResolve(surface, .{ .intermediate_format = .rgba32f }));
+}

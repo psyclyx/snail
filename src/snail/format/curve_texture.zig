@@ -12,6 +12,29 @@ pub const PACKED_BAND_DILATION: f32 = 1.0;
 pub const DIRECT_ENCODING_KIND_BIAS: f32 = 4.0;
 const PACKED_CURVE_MAX_SPLIT_DEPTH: u8 = 24;
 
+fn pointIsFinite(point: Vec2) bool {
+    return std.math.isFinite(point.x) and std.math.isFinite(point.y);
+}
+
+fn curveIsFinite(curve: CurveSegment) bool {
+    if (!pointIsFinite(curve.p0) or !pointIsFinite(curve.p1) or
+        !pointIsFinite(curve.p2) or !pointIsFinite(curve.p3))
+    {
+        return false;
+    }
+    for (curve.weights) |weight| {
+        if (!std.math.isFinite(weight)) return false;
+    }
+    return true;
+}
+
+pub fn validateCurveData(curves: []const CurveSegment, origin: Vec2) error{InvalidCurveData}!void {
+    if (!pointIsFinite(origin)) return error.InvalidCurveData;
+    for (curves) |curve| {
+        if (!curveIsFinite(curve)) return error.InvalidCurveData;
+    }
+}
+
 /// Convert f32 to IEEE 754 binary16 (half-float). Uses Zig's f16
 /// type which the backend lowers to F16C `vcvtps2ph` on x86 and to
 /// the equivalent FCVT on ARM — both are single-instruction.
@@ -193,6 +216,7 @@ pub fn splitCubicsAtExtrema(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
 ) ![]CurveSegment {
+    try validateCurveData(curves, .zero);
     // The GL/GLES path shader inverts cubics as monotonic spans. Split only
     // cubics; conics still use the exact quadratic root path in the shader.
     var out: std.ArrayList(CurveSegment) = .empty;
@@ -212,6 +236,7 @@ pub fn splitCurvesForPacking(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
 ) ![]CurveSegment {
+    try validateCurveData(curves, .zero);
     var out: std.ArrayList(CurveSegment) = .empty;
     errdefer out.deinit(allocator);
     try out.ensureTotalCapacity(allocator, curves.len);
@@ -296,6 +321,7 @@ pub fn encodeDirectSingleGlyphCurves(
     allocator: std.mem.Allocator,
     prepared: []const CurveSegment,
 ) ![]u16 {
+    try validateCurveData(prepared, .zero);
     const total_words = prepared.len * SEGMENT_TEXELS * 4;
     const buf = try allocator.alloc(u16, total_words);
     var cursor: usize = 0;
@@ -313,14 +339,21 @@ pub fn buildCurveTexture(
 ) !struct { texture: CurveTexture, entries: []GlyphCurveEntry } {
     var total_texels: u32 = 0;
     for (glyphs) |g| {
+        try validateCurveData(g.curves, g.origin);
+        if (g.prepared_curves) |prepared| try validateCurveData(prepared, .zero);
         const curve_count = if (g.prepared_curves) |prepared| prepared.len else g.curves.len;
-        total_texels += @as(u32, @intCast(curve_count)) * SEGMENT_TEXELS;
+        const count_u16 = std.math.cast(u16, curve_count) orelse return error.ShapeTooComplex;
+        const glyph_texels = std.math.mul(u32, count_u16, SEGMENT_TEXELS) catch return error.ShapeTooComplex;
+        total_texels = std.math.add(u32, total_texels, glyph_texels) catch return error.ShapeTooComplex;
     }
 
-    const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
-    const total = TEX_WIDTH * height;
+    const rounded_texels = std.math.add(u32, total_texels, TEX_WIDTH - 1) catch return error.ShapeTooComplex;
+    const height = @max(1, rounded_texels / TEX_WIDTH);
+    if (height > (@as(u32, 1) << 14)) return error.ShapeTooComplex;
+    const total = std.math.mul(u32, TEX_WIDTH, height) catch return error.ShapeTooComplex;
+    const total_words = std.math.mul(usize, total, 4) catch return error.ShapeTooComplex;
 
-    var data = try data_allocator.alloc(u16, total * 4);
+    var data = try data_allocator.alloc(u16, total_words);
     errdefer data_allocator.free(data);
     @memset(data, 0);
 
@@ -571,9 +604,12 @@ fn prepareGlyphCurves(
     comptime mode: PreparedCurveMode,
     bboxes_out: ?[]bezier_mod.BBox,
 ) ![]CurveSegment {
+    try validateCurveData(curves, origin);
+    if (bboxes_out) |bo| {
+        if (bo.len != curves.len) return error.InvalidOutputBufferSize;
+    }
     const out = try allocator.alloc(CurveSegment, curves.len);
     errdefer allocator.free(out);
-    if (bboxes_out) |bo| std.debug.assert(bo.len == curves.len);
 
     const delta = Vec2.new(-origin.x, -origin.y);
     var contour_start: usize = 0;
@@ -703,6 +739,31 @@ test "f32ToF16 basic conversions" {
     try std.testing.expectEqual(@as(u16, 0x3C00), f32ToF16(1.0));
     try std.testing.expectEqual(@as(u16, 0x3800), f32ToF16(0.5));
     try std.testing.expectEqual(@as(u16, 0xBC00), f32ToF16(-1.0));
+}
+
+test "curve preparation rejects non-finite producer data before packing" {
+    var curve = CurveSegment.fromLine(.zero, .{ .x = 1, .y = 1 });
+    curve.p1.x = std.math.nan(f32);
+
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForPacking(std.testing.allocator, &.{curve}, .zero),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        splitCurvesForPacking(std.testing.allocator, &.{curve}),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        encodeDirectSingleGlyphCurves(std.testing.allocator, &.{curve}),
+    );
+
+    const valid = CurveSegment.fromLine(.zero, .{ .x = 1, .y = 1 });
+    var wrong_size: [0]BBox = .{};
+    try std.testing.expectError(
+        error.InvalidOutputBufferSize,
+        prepareGlyphCurvesForDirectEncodingWithBBoxes(std.testing.allocator, &.{valid}, .zero, &wrong_size),
+    );
 }
 
 test "buildCurveTexture packs FP16" {

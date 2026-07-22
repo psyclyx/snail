@@ -69,7 +69,7 @@ pub fn main() !void {
         harness.bg_srgb_f32[3],
     }));
     caller.beginFrame(0);
-    caller.render(cmd, cache.descriptorSet(), harness.drawState(W, H), instances[0..e.instances_len], batches[0..e.batches_len]);
+    try caller.render(cmd, &cache, harness.drawState(W, H), instances[0..e.instances_len], batches[0..e.batches_len]);
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();
 

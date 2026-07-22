@@ -7,7 +7,7 @@
 //! tracking plus evict-by-filtered-compact — written as demo support so
 //! embedders copy the shape rather than inherit the policy:
 //!
-//!   var ws = WorkingSet.init(allocator, pool, .{});
+//!   var ws = try WorkingSet.init(allocator, pool, .{});
 //!   // each frame:
 //!   ws.beginFrame();
 //!   try snail.recordUnhintedRun(&ws.atlas, allocator, &faces, &shaped, .{});
@@ -50,11 +50,11 @@ pub const WorkingSet = struct {
     last_touch: std.AutoHashMapUnmanaged(RecordKey, u64) = .empty,
     tick: u64 = 0,
 
-    pub fn init(allocator: Allocator, pool: *snail.PagePool, options: Options) WorkingSet {
+    pub fn init(allocator: Allocator, pool: *snail.PagePool, options: Options) snail.PagePool.IdentityError!WorkingSet {
         return .{
             .allocator = allocator,
             .pool = pool,
-            .atlas = snail.Atlas.init(allocator, pool),
+            .atlas = try snail.Atlas.init(allocator, pool),
             .options = options,
         };
     }
@@ -138,7 +138,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
     });
     defer pool.deinit();
 
-    var ws = WorkingSet.init(allocator, pool, .{ .reserve_layers = 4, .max_idle_ticks = 1 });
+    var ws = try WorkingSet.init(allocator, pool, .{ .reserve_layers = 4, .max_idle_ticks = 1 });
     defer ws.deinit();
 
     var scratch = std.heap.ArenaAllocator.init(allocator);

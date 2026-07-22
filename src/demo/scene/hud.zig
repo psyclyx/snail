@@ -84,8 +84,8 @@ pub const Overlay = struct {
         pool: *snail.PagePool,
         face_index: snail.FaceIndex,
     ) !Overlay {
-        const face = faces.face(face_index);
-        const font_id = faces.fontIdForFace(face_index);
+        const face = faces.face(face_index) orelse return error.UnknownFaceIndex;
+        const font_id = faces.fontIdForFace(face_index).?;
         return .{
             .allocator = allocator,
             .faces = faces,

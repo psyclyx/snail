@@ -44,7 +44,7 @@ const stroke_paint = snail.Paint{ .solid = snail.color.srgbToLinearColor(.{ 0.85
 const Mode = enum { composite, separate, fill_only };
 
 fn buildPanel(allocator: std.mem.Allocator, fonts: *passes.Fonts, mode: Mode) !passes.PreparedPass {
-    var b = passes.PassBuilder.init(allocator, fonts);
+    var b = try passes.PassBuilder.init(allocator, fonts);
     defer b.deinit();
     switch (mode) {
         .composite => try b.addRoundedRectWithInsideStroke(

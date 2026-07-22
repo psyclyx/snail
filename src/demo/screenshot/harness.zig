@@ -101,7 +101,6 @@ pub fn shapeBudget(scene: Scene) usize {
     return scene.paths_picture.shapes.len + scene.text_picture.shapes.len;
 }
 
-
 pub const EmitOut = struct { instances_len: usize, batches_len: usize };
 
 /// Emit both atlases' pictures into `instances` / `batches`. The buffers
@@ -171,11 +170,12 @@ pub fn renderCpuToPixelsFmt(
     defer allocator.free(batches);
     const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
-    renderer.format = format;
+    var renderer = try raster.Renderer.init(pixels, width, height, stride);
+    var state = drawState(width, height);
+    state.surface.format = format;
     try raster.draw(
         &renderer,
-        drawState(width, height),
+        state,
         .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
         null,
@@ -213,7 +213,7 @@ pub fn renderCpuToPixels(
     defer allocator.free(batches);
     const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
+    var renderer = try raster.Renderer.init(pixels, width, height, stride);
     try raster.draw(
         &renderer,
         drawStateRaster(width, height, opts.coverage_exponent, opts.subpixel_order),

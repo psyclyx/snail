@@ -41,6 +41,8 @@ pub const PlaceRunError = error{
     InvalidWorldToPixel,
     /// Caller-provided shape storage was too small.
     BufferTooSmall,
+    /// The expanded COLR shape count cannot be represented by `usize`.
+    ShapeCountOverflow,
 };
 
 pub const PlaceRunAllocError = PlaceRunError || std.mem.Allocator.Error;
@@ -192,8 +194,9 @@ pub fn placedRunShapeCount(
     for (shaped.glyphs) |g| {
         const fi: usize = @intCast(g.face_index);
         if (fi >= fc.faceCount()) return error.UnknownFaceIndex;
-        const layer_count = fc.face(g.face_index).font.colrLayers(g.glyph_id).count();
-        count += if (layer_count > 0) layer_count else 1;
+        const layer_count = fc.face(g.face_index).?.font.colrLayers(g.glyph_id).count();
+        count = std.math.add(usize, count, if (layer_count > 0) layer_count else 1) catch
+            return error.ShapeCountOverflow;
     }
     return count;
 }
@@ -226,7 +229,7 @@ pub fn placeRun(
     var cursor: usize = 0;
     for (shaped.glyphs, 0..) |g, i| {
         const origin = placer.originFor(g, i);
-        var iter = fc.face(g.face_index).font.colrLayers(g.glyph_id);
+        var iter = fc.face(g.face_index).?.font.colrLayers(g.glyph_id);
         if (iter.count() > 0) {
             while (iter.next()) |layer| {
                 const layer_color: [4]f32 = if (layer.color[0] < 0) p.color else layer.color;

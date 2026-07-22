@@ -60,14 +60,19 @@ pub const DeviceAtlasOptions = struct {
 };
 
 pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
+    BindingOutputLengthMismatch,
+    ActiveBindingCountOverflow,
     ImageTooLarge,
     MissingCommandBuffer,
     NoSuitableMemory,
+    IncompleteResourceState,
+    UploadSizeOverflow,
     VulkanError,
     VulkanMapMemoryReturnedNull,
 };
 pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{
     ActiveBindingsPreventResize,
+    PendingUploadsPreventResize,
     VulkanError,
 };
 
@@ -123,7 +128,7 @@ pub const VulkanDeviceAtlas = struct {
     // The GPU images + descriptor set stay here; the CPU allocation + region/
     // delta computation is the planner's. Backing slices are cache-owned.
     planner: upload_plan.Planner,
-    plan_gen: []u16,
+    plan_gen: []u64,
     plan_curve: []u32,
     plan_band: []u32,
     plan_slots: []upload_plan.Slot,
@@ -157,11 +162,26 @@ pub const VulkanDeviceAtlas = struct {
         };
     }
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: DeviceAtlasOptions) !Self {
-        const opts = plannerOptions(options);
-        const sz = upload_plan.sizes(pool, opts);
+    fn validateDeviceLimits(pool: *const PagePool, options: DeviceAtlasOptions) upload_plan.InitError!void {
+        const curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW;
+        const band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW;
+        if (curve_height > std.math.maxInt(i32) or
+            band_height > std.math.maxInt(i32) or
+            options.layer_info_height > std.math.maxInt(i32) or
+            options.max_image_width > std.math.maxInt(i32) or
+            options.max_image_height > std.math.maxInt(i32))
+        {
+            return error.InvalidOptions;
+        }
+    }
 
-        const gen = try allocator.alloc(u16, sz.generation);
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: DeviceAtlasOptions) !Self {
+        try validateDeviceLimits(pool, options);
+        const opts = plannerOptions(options);
+        const sz = try upload_plan.sizes(pool, opts);
+        const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
+
+        const gen = try allocator.alloc(u64, sz.generation);
         errdefer allocator.free(gen);
         const curve_words = try allocator.alloc(u32, sz.curve_words);
         errdefer allocator.free(curve_words);
@@ -175,7 +195,7 @@ pub const VulkanDeviceAtlas = struct {
         errdefer allocator.free(image_free);
         const regions = try allocator.alloc(upload_plan.Region, sz.regions);
         errdefer allocator.free(regions);
-        const info_scratch = try allocator.alloc(f32, sz.layer_info_scratch * options.max_bindings);
+        const info_scratch = try allocator.alloc(f32, info_scratch_len);
         errdefer allocator.free(info_scratch);
 
         return .{
@@ -244,6 +264,21 @@ pub const VulkanDeviceAtlas = struct {
         return self.image_array_view;
     }
 
+    /// Validate the complete cache-issued identity and slot placement.
+    pub fn isBindingLive(self: *const Self, binding: Binding) bool {
+        if (binding.pool != self.pool or binding.source_id != self.planner.source_id) return false;
+        for (self.plan_slots) |slot| {
+            if (slot.active and
+                slot.generation == binding.generation and
+                slot.info_row_base == binding.info_row_base and
+                slot.image_layer_base == binding.image_layer_base)
+            {
+                return true;
+            }
+        }
+        return false;
+    }
+
     fn destroyGpuResources(self: *Self) void {
         const dev = self.pipeline.ctx.device;
         if (dev == null) return;
@@ -275,21 +310,60 @@ pub const VulkanDeviceAtlas = struct {
 
     pub fn resize(self: *Self, options: DeviceAtlasOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
+        if (self.pending_staging.items.len > 0) return error.PendingUploadsPreventResize;
+        try validateDeviceLimits(self.pool, options);
+        const opts = plannerOptions(options);
+        const sz = try upload_plan.sizes(self.pool, opts);
+        const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
+
+        const new_gen = try self.allocator.alloc(u64, sz.generation);
+        errdefer self.allocator.free(new_gen);
+        const new_curve = try self.allocator.alloc(u32, sz.curve_words);
+        errdefer self.allocator.free(new_curve);
+        const new_band = try self.allocator.alloc(u32, sz.band_words);
+        errdefer self.allocator.free(new_band);
+        const new_slots = try self.allocator.alloc(upload_plan.Slot, sz.bindings);
+        errdefer self.allocator.free(new_slots);
+        const new_info_free = try self.allocator.alloc(upload_plan.Range, sz.info_free);
+        errdefer self.allocator.free(new_info_free);
+        const new_image_free = try self.allocator.alloc(upload_plan.Range, sz.image_free);
+        errdefer self.allocator.free(new_image_free);
+        const new_regions = try self.allocator.alloc(upload_plan.Region, sz.regions);
+        errdefer self.allocator.free(new_regions);
+        const new_info_scratch = try self.allocator.alloc(f32, info_scratch_len);
+        errdefer self.allocator.free(new_info_scratch);
+        const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free);
+
+        const old_gen = self.plan_gen;
+        const old_curve = self.plan_curve;
+        const old_band = self.plan_band;
+        const old_slots = self.plan_slots;
+        const old_info_free = self.plan_info_free;
+        const old_image_free = self.plan_image_free;
+        const old_regions = self.plan_regions;
+        const old_info_scratch = self.plan_info_scratch;
+
         self.destroyGpuResources();
         self.options = options;
-
-        const opts = plannerOptions(options);
-        const sz = upload_plan.sizes(self.pool, opts);
-        self.plan_gen = try self.allocator.realloc(self.plan_gen, sz.generation);
-        self.plan_curve = try self.allocator.realloc(self.plan_curve, sz.curve_words);
-        self.plan_band = try self.allocator.realloc(self.plan_band, sz.band_words);
-        self.plan_slots = try self.allocator.realloc(self.plan_slots, sz.bindings);
-        self.plan_info_free = try self.allocator.realloc(self.plan_info_free, sz.info_free);
-        self.plan_image_free = try self.allocator.realloc(self.plan_image_free, sz.image_free);
-        self.plan_regions = try self.allocator.realloc(self.plan_regions, sz.regions);
-        self.plan_info_scratch = try self.allocator.realloc(self.plan_info_scratch, sz.layer_info_scratch * options.max_bindings);
+        self.plan_gen = new_gen;
+        self.plan_curve = new_curve;
+        self.plan_band = new_band;
+        self.plan_slots = new_slots;
+        self.plan_info_free = new_info_free;
+        self.plan_image_free = new_image_free;
+        self.plan_regions = new_regions;
+        self.plan_info_scratch = new_info_scratch;
         self.info_scratch_stride = sz.layer_info_scratch;
-        self.planner = try upload_plan.Planner.init(self.pool, opts, self.plan_gen, self.plan_curve, self.plan_band, self.plan_slots, self.plan_info_free, self.plan_image_free);
+        self.planner = new_planner;
+
+        self.allocator.free(old_gen);
+        self.allocator.free(old_curve);
+        self.allocator.free(old_band);
+        self.allocator.free(old_slots);
+        self.allocator.free(old_info_free);
+        self.allocator.free(old_image_free);
+        self.allocator.free(old_regions);
+        self.allocator.free(old_info_scratch);
     }
 
     pub fn descriptorSet(self: *const Self) vk.VkDescriptorSet {
@@ -309,7 +383,10 @@ pub const VulkanDeviceAtlas = struct {
         atlases: []const *const Atlas,
         out_bindings: []Binding,
     ) UploadError!void {
-        std.debug.assert(atlases.len == out_bindings.len);
+        if (atlases.len != out_bindings.len) return error.BindingOutputLengthMismatch;
+        const binding_count = std.math.cast(u32, atlases.len) orelse return error.ActiveBindingCountOverflow;
+        const next_active = std.math.add(u32, self.active_bindings, binding_count) catch return error.ActiveBindingCountOverflow;
+        if (next_active > self.options.max_bindings) return error.NoFreeBinding;
 
         for (atlases) |atlas| {
             if (atlas.pool) |p| {
@@ -323,8 +400,6 @@ pub const VulkanDeviceAtlas = struct {
                 }
             }
         }
-
-        try self.ensureGpuResources();
 
         var batch = UploadBatch{};
         defer batch.deinit(scratch);
@@ -344,8 +419,9 @@ pub const VulkanDeviceAtlas = struct {
             try appendRegions(scratch, &batch, self.plan_regions[0..len]);
         }
 
+        try self.ensureGpuResources();
         try self.flushBatch(scratch, &batch);
-        self.active_bindings += @intCast(atlases.len);
+        self.active_bindings = next_active;
     }
 
     /// Incrementally update `prev_binding`'s slot with `atlas`'s
@@ -359,6 +435,8 @@ pub const VulkanDeviceAtlas = struct {
         prev_binding: Binding,
         atlas: *const Atlas,
     ) UploadError!Binding {
+        if (prev_binding.pool != self.pool) return error.UnknownPool;
+        if (!self.isBindingLive(prev_binding)) return error.UnknownBinding;
         if (atlas.pool) |p| {
             if (p != self.pool) return error.UnknownPool;
         }
@@ -371,8 +449,6 @@ pub const VulkanDeviceAtlas = struct {
             }
         }
 
-        try self.ensureGpuResources();
-
         var batch = UploadBatch{};
         defer batch.deinit(scratch);
 
@@ -381,11 +457,13 @@ pub const VulkanDeviceAtlas = struct {
         const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
         errdefer self.planner.invalidateUploads();
         try appendRegions(scratch, &batch, self.plan_regions[0..len]);
+        try self.ensureGpuResources();
         try self.flushBatch(scratch, &batch);
         return binding;
     }
 
     pub fn release(self: *Self, binding: Binding) void {
+        if (!self.isBindingLive(binding)) return;
         if (self.planner.release(binding)) {
             if (self.active_bindings > 0) self.active_bindings -= 1;
         }
@@ -394,10 +472,23 @@ pub const VulkanDeviceAtlas = struct {
     // ── Resident image creation ──
 
     fn ensureGpuResources(self: *Self) UploadError!void {
-        if (self.curve_image == null) try self.createPoolImages();
-        if (self.layer_info_image == null and self.options.layer_info_height > 0) try self.createLayerInfoImage();
-        if (self.image_array_image == null and self.options.max_images > 0) try self.createImageArrayImage();
-        if (self.desc_pool == null) try self.createDescriptorSet();
+        const complete = self.curve_image != null and
+            self.band_image != null and
+            (self.options.layer_info_height == 0 or self.layer_info_image != null) and
+            (self.options.max_images == 0 or self.image_array_image != null) and
+            self.desc_pool != null and self.desc_set != null;
+        if (complete) return;
+
+        const empty = self.curve_image == null and self.band_image == null and
+            self.layer_info_image == null and self.image_array_image == null and
+            self.desc_pool == null and self.desc_set == null;
+        if (!empty) return error.IncompleteResourceState;
+        errdefer self.destroyGpuResources();
+
+        try self.createPoolImages();
+        if (self.options.layer_info_height > 0) try self.createLayerInfoImage();
+        if (self.options.max_images > 0) try self.createImageArrayImage();
+        try self.createDescriptorSet();
     }
 
     fn createPoolImages(self: *Self) UploadError!void {
@@ -497,10 +588,10 @@ pub const VulkanDeviceAtlas = struct {
 
     fn flushBatch(self: *Self, _: std.mem.Allocator, batch: *UploadBatch) UploadError!void {
         var total: usize = 0;
-        for (batch.curve_ops.items) |op| total += op.src.len;
-        for (batch.band_ops.items) |op| total += op.src.len;
-        for (batch.image_ops.items) |op| total += op.src.len;
-        for (batch.layer_info_ops.items) |op| total += op.src.len;
+        for (batch.curve_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
+        for (batch.band_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
+        for (batch.image_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
+        for (batch.layer_info_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
         if (total == 0) return;
 
         var staging_buf: vk.VkBuffer = null;
@@ -530,6 +621,7 @@ pub const VulkanDeviceAtlas = struct {
 
         const transfer = try vk_device.beginTransferCommand(&self.pipeline);
         errdefer vk_device.discardTransferCommand(&self.pipeline, transfer);
+        if (!transfer.owned) try self.pending_staging.ensureUnusedCapacity(self.allocator, 1);
         const cmd = transfer.cmd;
 
         // Transition every touched image once.
@@ -580,22 +672,22 @@ pub const VulkanDeviceAtlas = struct {
 
         if (batch.curve_ops.items.len > 0) {
             vk_device.transitionImageLayout(cmd, self.curve_image, self.layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            self.curve_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (batch.band_ops.items.len > 0) {
             vk_device.transitionImageLayout(cmd, self.band_image, self.layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            self.band_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (batch.image_ops.items.len > 0) {
             vk_device.transitionImageLayout(cmd, self.image_array_image, self.options.max_images, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            self.image_array_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
         if (batch.layer_info_ops.items.len > 0) {
             vk_device.transitionImageLayout(cmd, self.layer_info_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
-            self.layer_info_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         }
 
         try vk_device.finishTransferCommand(&self.pipeline, transfer);
+        if (batch.curve_ops.items.len > 0) self.curve_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (batch.band_ops.items.len > 0) self.band_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (batch.image_ops.items.len > 0) self.image_array_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+        if (batch.layer_info_ops.items.len > 0) self.layer_info_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         if (transfer.owned) {
             // Owned one-shot: finishTransferCommand already submitted + waited,
             // so the copy is done and the staging buffer is safe to free.
@@ -603,7 +695,7 @@ pub const VulkanDeviceAtlas = struct {
         } else {
             // Caller-provided command buffer: the copy hasn't executed yet.
             // Retain the staging buffer until the caller calls releaseUploads.
-            try self.pending_staging.append(self.allocator, .{ .buffer = staging_buf, .memory = staging_mem });
+            self.pending_staging.appendAssumeCapacity(.{ .buffer = staging_buf, .memory = staging_mem });
         }
     }
 };
@@ -672,4 +764,8 @@ test "VulkanDeviceAtlas init allocates fixed-capacity slots" {
     // by the planner itself; the cache owns these slices).
     try testing.expectEqual(@as(usize, 3), cache.plan_slots.len);
     try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
+
+    var unexpected_binding: [1]Binding = undefined;
+    try testing.expectError(error.BindingOutputLengthMismatch, cache.upload(testing.allocator, &.{}, &unexpected_binding));
+    try testing.expectEqual(@as(u32, 0), cache.active_bindings);
 }

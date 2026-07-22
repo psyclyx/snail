@@ -103,6 +103,7 @@ pub const Faces = struct {
     font_count: u32,
 
     pub fn build(allocator: Allocator, specs: []const Face) !Faces {
+        if (specs.len > @as(usize, std.math.maxInt(FaceIndex)) + 1) return error.TooManyFaces;
         const faces = try buildFaceStates(allocator, specs);
         errdefer deinitFaceStates(allocator, faces);
 
@@ -132,11 +133,16 @@ pub const Faces = struct {
         return self.faces.len;
     }
 
-    pub fn fontIdForFace(self: *const Faces, face_index: FaceIndex) u32 {
+    /// Return the stable font id for a valid face index, or null when a
+    /// caller-provided index is outside this set.
+    pub fn fontIdForFace(self: *const Faces, face_index: FaceIndex) ?u32 {
+        if (face_index >= self.face_to_font_id.len) return null;
         return self.face_to_font_id[face_index];
     }
 
-    pub fn face(self: *const Faces, index: FaceIndex) *const FaceState {
+    /// Borrow one face, returning null for an out-of-range index.
+    pub fn face(self: *const Faces, index: FaceIndex) ?*const FaceState {
+        if (index >= self.faces.len) return null;
         return &self.faces[index];
     }
 };
@@ -852,9 +858,11 @@ test "Faces builds, dedups font_id by pointer identity, exposes fontIdForFace" {
 
     try testing.expectEqual(@as(usize, 3), faces.faceCount());
     try testing.expectEqual(@as(u32, 2), faces.font_count);
-    try testing.expectEqual(@as(u32, 0), faces.fontIdForFace(0));
-    try testing.expectEqual(@as(u32, 1), faces.fontIdForFace(1));
-    try testing.expectEqual(@as(u32, 0), faces.fontIdForFace(2));
+    try testing.expectEqual(@as(?u32, 0), faces.fontIdForFace(0));
+    try testing.expectEqual(@as(?u32, 1), faces.fontIdForFace(1));
+    try testing.expectEqual(@as(?u32, 0), faces.fontIdForFace(2));
+    try testing.expectEqual(@as(?u32, null), faces.fontIdForFace(3));
+    try testing.expectEqual(@as(?*const FaceState, null), faces.face(3));
 }
 
 test "Faces with fallback face populates global chain and missing-glyph replacement" {

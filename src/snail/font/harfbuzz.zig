@@ -85,6 +85,7 @@ pub const HarfBuzzShaper = struct {
         units_per_em: u16,
         variations: []const font_types.Variation,
     ) !HarfBuzzShaper {
+        if (font_data.len > std.math.maxInt(c_uint)) return error.FontDataTooLarge;
         const blob = hb.hb_blob_create(
             font_data.ptr,
             @intCast(font_data.len),

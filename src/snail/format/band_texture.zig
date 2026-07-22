@@ -389,6 +389,7 @@ fn packBandLists(
 
     const total_texels = header_count + total_indices;
     var data = try allocator.alloc(u16, total_texels * 2);
+    errdefer allocator.free(data);
     // No @memset — the header + ref-list loops below write every word
     // in the buffer. Sufficient texels are allocated for exactly
     // header_count + total_indices texels (`total_texels * 2` words).
@@ -396,6 +397,7 @@ fn packBandLists(
     var index_offset: u32 = header_count;
     for (0..h_bands) |bi| {
         const band_len = lists.h_lens[bi];
+        if (index_offset > std.math.maxInt(u16)) return error.ShapeTooComplex;
         data[bi * 2 + 0] = band_len;
         data[bi * 2 + 1] = @intCast(index_offset);
         index_offset += band_len;
@@ -404,6 +406,7 @@ fn packBandLists(
     for (0..v_bands) |bi| {
         const off = (h_bands + bi) * 2;
         const band_len = lists.v_lens[bi];
+        if (index_offset > std.math.maxInt(u16)) return error.ShapeTooComplex;
         data[off + 0] = band_len;
         data[off + 1] = @intCast(index_offset);
         index_offset += band_len;
@@ -489,11 +492,27 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     precomputed_bboxes: ?[]const BBox,
 ) !GlyphBandData {
     if (curves.len == 0) {
-        std.debug.assert(prepared_curves.len == 0);
+        if (prepared_curves.len != 0) return error.InvalidCurveData;
         return emptyGlyphBandData();
     }
-    std.debug.assert(prepared_curves.len == curves.len);
-    if (precomputed_bboxes) |pb| std.debug.assert(pb.len == prepared_curves.len);
+    if (prepared_curves.len != curves.len) return error.InvalidCurveData;
+    if (curves.len > std.math.maxInt(u16)) return error.ShapeTooComplex;
+    try curve_tex.validateCurveData(curves, origin);
+    try curve_tex.validateCurveData(prepared_curves, .zero);
+    const bbox_values = .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y };
+    inline for (bbox_values) |value| {
+        if (!std.math.isFinite(value)) return error.InvalidCurveData;
+    }
+    if (bbox.min.x > bbox.max.x or bbox.min.y > bbox.max.y) return error.InvalidCurveData;
+    if (precomputed_bboxes) |pb| {
+        if (pb.len != prepared_curves.len) return error.InvalidOutputBufferSize;
+        for (pb) |prepared_bbox| {
+            const values = .{ prepared_bbox.min.x, prepared_bbox.min.y, prepared_bbox.max.x, prepared_bbox.max.y };
+            inline for (values) |value| {
+                if (!std.math.isFinite(value)) return error.InvalidCurveData;
+            }
+        }
+    }
 
     const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
     const h_bands = bandCount(band_curve_count);

@@ -188,28 +188,18 @@ pub inline fn opaqueBytesForTarget(comptime fmt: PixelFormat, target: Target, co
     return buf;
 }
 
-pub fn colorBytesForEncoding(encoding: render_state.TargetEncoding, color_srgb: [4]f32) [4]u8 {
+/// Replace a target pixel with an sRGB straight-alpha clear color, converted
+/// to the target's byte layout and storage encoding.
+pub inline fn writeClearPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, color_srgb: [4]f32) void {
     const alpha = clamp01(color_srgb[3]);
     const linear = srgbColorToLinear(color_srgb);
-    const premul = [3]f32{
+    const off = pixelOffset(fmt, target, row, col);
+    writePixel(fmt, target, off, .{
         linear[0] * alpha,
         linear[1] * alpha,
         linear[2] * alpha,
-    };
-    return switch (encoding.stored_pixels) {
-        .srgb => .{
-            linearToSrgbByte(premul[0]),
-            linearToSrgbByte(premul[1]),
-            linearToSrgbByte(premul[2]),
-            srgbToByte(alpha),
-        },
-        .linear => .{
-            srgbToByte(premul[0]),
-            srgbToByte(premul[1]),
-            srgbToByte(premul[2]),
-            srgbToByte(alpha),
-        },
-    };
+        alpha,
+    }, 0.0, false);
 }
 
 pub inline fn blendPremultipliedPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {

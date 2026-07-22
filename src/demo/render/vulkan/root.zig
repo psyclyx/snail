@@ -8,8 +8,8 @@
 //! built from the public surface alone.
 //!
 //! It renders into a caller-provided command buffer + render pass; the caller
-//! owns the offscreen/swapchain target, the descriptor set (from
-//! `VulkanDeviceAtlas`), and frame synchronization.
+//! owns the offscreen/swapchain target, `VulkanDeviceAtlas`, and frame
+//! synchronization.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -30,6 +30,12 @@ pub const cachePipelineShape = embeddable.cachePipelineShape;
 pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
 
 const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .tt_hinted_text, .autohint };
+
+pub const RenderError = error{
+    StaleBinding,
+    MalformedBatch,
+    VertexBufferFull,
+};
 
 pub const Renderer = struct {
     device: vk.VkDevice,
@@ -116,20 +122,26 @@ pub const Renderer = struct {
 
     /// Record one draw (one `emit` stream) into `cmd`, inside an active render
     /// pass, appending its vertices after any earlier `render` calls this
-    /// frame. `desc_set` is the cache's descriptor set.
+    /// frame. Every batch must carry a live binding issued by `cache`.
     pub fn render(
         self: *Renderer,
         cmd: vk.VkCommandBuffer,
-        desc_set: vk.VkDescriptorSet,
+        cache: *const VulkanDeviceAtlas,
         draw_state: render_state.DrawState,
         instances: []const snail.render.records.Instance,
         batches: []const snail.render.records.DrawBatch,
-    ) void {
+    ) RenderError!void {
         const instance_bytes = std.mem.sliceAsBytes(instances);
-        std.debug.assert(self.cursor + instance_bytes.len <= self.slot_bytes);
+        const next_cursor = std.math.add(usize, self.cursor, instance_bytes.len) catch return error.VertexBufferFull;
+        if (next_cursor > self.slot_bytes) return error.VertexBufferFull;
+        for (batches) |batch| {
+            if (!cache.isBindingLive(batch.binding)) return error.StaleBinding;
+            const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
+            if (end > instances.len) return error.MalformedBatch;
+        }
         const base = self.cur_slot_base + self.cursor;
         @memcpy(self.vbo.bytes()[base..][0..instance_bytes.len], instance_bytes);
-        defer self.cursor += instance_bytes.len;
+        defer self.cursor = next_cursor;
 
         vk.vkCmdBindIndexBuffer(cmd, self.ibo.buffer, 0, vk.VK_INDEX_TYPE_UINT32);
 
@@ -144,11 +156,10 @@ pub const Renderer = struct {
         };
         vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 
-        var set = desc_set;
+        var set = cache.descriptorSet();
         vk.vkCmdBindDescriptorSets(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipeline_layout, 0, 1, &set, 0, null);
 
         for (batches) |batch| {
-            std.debug.assert(@as(usize, batch.first_instance) + batch.instance_count <= instances.len);
             const mode: contract.TextRenderMode = if (contract.kindHasSubpixelFamily(batch.kind))
                 contract.textRenderMode(draw_state, self.supports_dual_src)
             else

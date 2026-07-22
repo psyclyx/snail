@@ -107,7 +107,7 @@ var shaped = try snail.shape(alloc, &faces, "Hello, world", .{});
 var pool = try snail.PagePool.init(alloc, .{
     .max_layers = 8, .curve_words_per_page = 1 << 17, .band_words_per_page = 1 << 14,
 });
-var atlas = snail.Atlas.init(alloc, pool);
+var atlas = try snail.Atlas.init(alloc, pool);
 try snail.recordUnhintedRun(&atlas, alloc, &faces, &shaped, .{});
 
 // Upload: plan backend-neutral texel regions, copy them into YOUR textures.
@@ -148,6 +148,12 @@ everything, i.e. pure defragmentation). Compact acquires new pages before
 releasing old ones, so evict on `free_count` headroom, not on failure.
 `src/support/working_set.zig` is a worked example (demo-only, not shipped).
 
+Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
+copies the atlas's flat page-pointer and paint-side-data arrays once. Bulk
+callers should not put it in a one-entry loop: pass one entry slice, or use
+`extendBatchesInPlace` to consume several producer slices in one transaction
+without allocating a flattened array.
+
 ## Contracts
 
 These are the fixed points a host must know. Everything else is explicit
@@ -175,8 +181,10 @@ convention, separate from the scene axis.
 **Image texels are opaque.** `Image` holds raw texel bytes; snail never
 decodes them. The contract is that *sampling yields linear color* — bind an
 sRGB texture format for sRGB bytes, or a UNORM/float format for
-pre-linearized data. `snail-raster` documents its own device format: 4
-bytes/texel RGBA, sRGB-encoded, straight alpha.
+pre-linearized data. `atlas_upload.Options.image_bytes_per_texel` declares the
+host array format (4 by default); every planned image must match it and fit
+`max_image_width` × `max_image_height`. `snail-raster` uses 4-byte RGBA,
+sRGB-encoded, straight alpha.
 
 **Shader targets.** The native Slang modules in `src/snail/shader/slang/`
 are the source of truth. From them, the separate `snail-shaders` module
@@ -211,9 +219,11 @@ allocator; there is no global or threadlocal state. `Atlas` is value-typed
 and persistent — `extend`/`compact` return new snapshots sharing
 unchanged pages, and lookups return records **by value**, so there is no
 entry-vs-eviction lifetime hazard. Upload `Region`s alias planner scratch
-(`layer_info`/`image`) or live page memory (`curve`/`band`): apply them
-before the next `plan`/`planDelta`, and don't free or compact the atlas in
-between. `Font` borrows the font bytes you pass it.
+(`layer_info`), live page memory (`curve`/`band`), or caller-owned `Image`
+texels: apply them before the next `plan`/`planDelta`, and keep the atlas and
+images alive and unchanged until the copies finish. A `PagePool` must outlive
+every atlas, binding planner, and device cache created from it. `Font` borrows
+the font bytes you pass it.
 
 **Threading.** snail does not create threads. Values are single-threaded
 unless documented; `PagePool` acquire/release is the one internally

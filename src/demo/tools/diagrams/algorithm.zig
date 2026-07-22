@@ -178,13 +178,13 @@ const Ctx = struct {
     text_atlas: snail.Atlas,
     text_pics: std.ArrayList(support.Picture) = .empty,
 
-    fn init(allocator: Allocator, pool: *snail.PagePool, faces: *snail.Faces) Ctx {
+    fn init(allocator: Allocator, pool: *snail.PagePool, faces: *snail.Faces) snail.PagePool.IdentityError!Ctx {
         return .{
             .allocator = allocator,
             .scratch = std.heap.ArenaAllocator.init(allocator),
             .pool = pool,
             .faces = faces,
-            .text_atlas = snail.Atlas.init(allocator, pool),
+            .text_atlas = try snail.Atlas.init(allocator, pool),
         };
     }
 
@@ -420,7 +420,7 @@ fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[0], scene.paths_atlas, scene.paths_picture.shapes, world, white);
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[1], scene.text_atlas, scene.text_picture.shapes, world, white);
 
-    var renderer = raster.Renderer.init(pixels.ptr, W, H, stride);
+    var renderer = try raster.Renderer.init(pixels, W, H, stride);
     try raster.draw(
         &renderer,
         harness.drawState(W, H),
@@ -909,7 +909,7 @@ pub fn main() !void {
     defer pool.deinit();
 
     for (diagrams) |d| {
-        var ctx = Ctx.init(allocator, pool, &faces);
+        var ctx = try Ctx.init(allocator, pool, &faces);
         defer ctx.deinit();
         try d.build(&ctx);
         try ctx.render(d.name);

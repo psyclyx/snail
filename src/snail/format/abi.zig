@@ -5,6 +5,10 @@ const std = @import("std");
 pub const version: u32 = 1;
 
 pub const special_layer_sentinel: u8 = 0xff;
+/// Number of atlas texture layers available to ordinary glyphs. Layer value
+/// `special_layer_sentinel` is reserved by the instance ABI and must never be
+/// assigned to an atlas page.
+pub const max_regular_atlas_layers: u32 = special_layer_sentinel;
 
 pub const SpecialLayerKind = enum(u8) {
     colr = 0,

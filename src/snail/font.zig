@@ -16,7 +16,7 @@ pub const OutlineFormat = ttf.OutlineFormat;
 pub const Variation = font_types.Variation;
 pub const VariationAxis = font_types.VariationAxis;
 pub const Options = font_types.Options;
-pub const tt = struct {
+const tt = struct {
     pub const exec = @import("font/truetype/exec.zig");
     pub const graphics = @import("font/truetype/graphics.zig");
     pub const outline = @import("font/truetype/outline.zig");
@@ -313,7 +313,7 @@ fn packGlyphCurves(
     // padding (which would allocate ~32 KB per glyph just to drop most of
     // it on the floor) — write the curve bytes directly into a tight
     // buffer the atlas can consume verbatim.
-    const curve_count: u16 = @intCast(prepared.len);
+    const curve_count = try checkedCurveCount(prepared.len);
     const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
     errdefer allocator.free(curve_bytes);
 
@@ -355,6 +355,10 @@ fn packGlyphCurves(
         .band_offset_y = bd.band_offset_y,
         .bbox = render_bbox,
     };
+}
+
+fn checkedCurveCount(count: usize) error{ShapeTooComplex}!u16 {
+    return std.math.cast(u16, count) orelse error.ShapeTooComplex;
 }
 
 fn glyphRenderBBox(metrics_bbox: bezier.BBox, prepared: []const CurveSegment) bezier.BBox {

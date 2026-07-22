@@ -99,6 +99,9 @@ pub const TtHintError = error{
     CallDepthExceeded,
     InvalidFunctionDefinition,
     ExecutionLimitExceeded,
+    InvalidCurveData,
+    InvalidOutputBufferSize,
+    ShapeTooComplex,
     // Font-table parse (mirrors truetype/tables.zig ParseError).
     InvalidFont,
     MissingRequiredTable,
@@ -113,6 +116,9 @@ comptime {
         InvalidPpem,
         GlyphTopologyChanged,
         InvalidStorageSnapshot,
+        InvalidCurveData,
+        InvalidOutputBufferSize,
+        ShapeTooComplex,
     } || std.mem.Allocator.Error || tt_exec.Error || tt_tables.ParseError || tt_points.Error;
     assertErrorSetsMatch(TtHintError, expected);
 }
@@ -226,7 +232,8 @@ pub const TtHintVm = struct {
         // (origin-zero, quantized). Pack them into the standard curve
         // bytes the atlas consumes — single-shape encoder skips the
         // `buildCurveTexture` TEX_WIDTH padding.
-        const curve_count: u16 = @intCast(hint_value.prepared_curves.len);
+        const curve_count = std.math.cast(u16, hint_value.prepared_curves.len) orelse
+            return error.ShapeTooComplex;
         const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, hint_value.prepared_curves);
         errdefer allocator.free(curve_bytes);
 
