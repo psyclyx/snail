@@ -25,6 +25,11 @@ fn curveIsFinite(curve: CurveSegment) bool {
     for (curve.weights) |weight| {
         if (!std.math.isFinite(weight)) return false;
     }
+    if (curve.kind == .conic) {
+        for (curve.weights) |weight| {
+            if (weight <= 0) return false;
+        }
+    }
     return true;
 }
 
@@ -681,9 +686,25 @@ pub fn prepareGlyphCurvesForDirectEncodingWithBBoxes(
 }
 
 pub fn decodeSegmentAt(data: []const u16, curve_texel: u32) ?CurveSegment {
-    const index = @as(usize, curve_texel) * 4;
-    if (index + SEGMENT_TEXELS * 4 > data.len) return null;
-    return decodeStoredSegment(data[index..][0 .. SEGMENT_TEXELS * 4]);
+    const index = std.math.mul(usize, curve_texel, 4) catch return null;
+    const segment_words: usize = SEGMENT_TEXELS * 4;
+    const end = std.math.add(usize, index, segment_words) catch return null;
+    if (end > data.len) return null;
+    const stored = data[index..end];
+    for (stored) |bits| {
+        if (!std.math.isFinite(f16BitsToF32(bits))) return null;
+    }
+    const stored_kind = f16BitsToF32(stored[10]);
+    const rounded_kind = @round(stored_kind);
+    if (stored_kind != rounded_kind or
+        !((rounded_kind >= 0 and rounded_kind <= 3) or
+            (rounded_kind >= DIRECT_ENCODING_KIND_BIAS and rounded_kind <= DIRECT_ENCODING_KIND_BIAS + 3)))
+    {
+        return null;
+    }
+    const decoded = decodeStoredSegment(stored);
+    if (!curveIsFinite(decoded)) return null;
+    return decoded;
 }
 
 fn decodeStoredSegment(data: []const u16) CurveSegment {
@@ -739,6 +760,19 @@ test "f32ToF16 basic conversions" {
     try std.testing.expectEqual(@as(u16, 0x3C00), f32ToF16(1.0));
     try std.testing.expectEqual(@as(u16, 0x3800), f32ToF16(0.5));
     try std.testing.expectEqual(@as(u16, 0xBC00), f32ToF16(-1.0));
+}
+
+test "decodeSegmentAt rejects malformed half-float payloads" {
+    var words = [_]u16{0} ** (SEGMENT_TEXELS * 4);
+    try std.testing.expect(decodeSegmentAt(&words, 0) != null);
+
+    words[0] = @bitCast(std.math.nan(f16));
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, 0));
+    words[0] = 0;
+
+    words[10] = f32ToF16(9);
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, 0));
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, std.math.maxInt(u32)));
 }
 
 test "curve preparation rejects non-finite producer data before packing" {

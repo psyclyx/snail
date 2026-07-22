@@ -37,7 +37,7 @@ pub fn pathToCurves(
     defer scratch.free(segs);
     if (segs.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
-    return packCurves(allocator, scratch, segs, bb, path.filledBandCurveCount());
+    return packCurves(allocator, scratch, segs, bb, try path.filledBandCurveCount());
 }
 
 /// Pack a path's stroked outline as `GlyphCurves`. Returns an empty value

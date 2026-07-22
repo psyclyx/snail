@@ -37,9 +37,12 @@ pub const Vec2 = struct {
     }
 
     pub fn lerp(a: Vec2, b: Vec2, t: f32) Vec2 {
+        const one_minus_t = 1.0 - t;
         return .{
-            .x = a.x + (b.x - a.x) * t,
-            .y = a.y + (b.y - a.y) * t,
+            // Weighted form avoids overflowing `b - a` for opposite-sign,
+            // individually-finite endpoints near the f32 limits.
+            .x = a.x * one_minus_t + b.x * t,
+            .y = a.y * one_minus_t + b.y * t,
         };
     }
 };
@@ -96,14 +99,16 @@ pub const Transform2D = struct {
     }
 
     pub fn inverse(self: Transform2D) ?Transform2D {
+        const values = [_]f32{ self.xx, self.xy, self.tx, self.yx, self.yy, self.ty };
+        for (values) |value| if (!std.math.isFinite(value)) return null;
         const det = self.xx * self.yy - self.xy * self.yx;
-        if (@abs(det) <= 1e-12) return null;
+        if (!std.math.isFinite(det) or @abs(det) <= 1e-12) return null;
         const inv_det = 1.0 / det;
         const xx = self.yy * inv_det;
         const xy = -self.xy * inv_det;
         const yx = -self.yx * inv_det;
         const yy = self.xx * inv_det;
-        return .{
+        const result = Transform2D{
             .xx = xx,
             .xy = xy,
             .tx = -(xx * self.tx + xy * self.ty),
@@ -111,6 +116,9 @@ pub const Transform2D = struct {
             .yy = yy,
             .ty = -(yx * self.tx + yy * self.ty),
         };
+        const result_values = [_]f32{ result.xx, result.xy, result.tx, result.yx, result.yy, result.ty };
+        for (result_values) |value| if (!std.math.isFinite(value)) return null;
+        return result;
     }
 
     pub fn applyPoint(self: Transform2D, p: Vec2) Vec2 {
@@ -206,6 +214,22 @@ test "Vec2 basic operations" {
 
     const d = Vec2.dot(a, b);
     try std.testing.expectApproxEqAbs(d, 11.0, 1e-6);
+}
+
+test "Vec2 lerp keeps the midpoint of extreme finite endpoints finite" {
+    const limit = std.math.floatMax(f32);
+    const midpoint = Vec2.lerp(.{ .x = -limit, .y = limit }, .{ .x = limit, .y = -limit }, 0.5);
+    try std.testing.expectEqual(@as(f32, 0), midpoint.x);
+    try std.testing.expectEqual(@as(f32, 0), midpoint.y);
+}
+
+test "Transform2D inverse rejects non-finite input and output" {
+    var invalid = Transform2D.identity;
+    invalid.tx = std.math.nan(f32);
+    try std.testing.expectEqual(@as(?Transform2D, null), invalid.inverse());
+
+    const overflowing = Transform2D{ .xx = std.math.floatMin(f32), .yy = std.math.floatMin(f32) };
+    try std.testing.expectEqual(@as(?Transform2D, null), overflowing.inverse());
 }
 
 test "Mat4 identity multiply" {

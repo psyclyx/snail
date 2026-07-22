@@ -495,6 +495,9 @@ fn makeTestCurves(allocator: std.mem.Allocator) !GlyphCurves {
     const curve_words = 2 * CURVE_SEGMENT_WORDS;
     const curve_bytes = try allocator.alloc(u16, curve_words);
     for (curve_bytes, 0..) |*w, i| w.* = @intCast(@as(u16, @intCast(i)) +% 0x1000);
+    for (0..2) |curve_index| {
+        curve_bytes[curve_index * CURVE_SEGMENT_WORDS + 10] = 0; // packed quadratic
+    }
 
     // band header = 1 h-band + 1 v-band = 2 texels = 4 u16.
     // band refs = 2 refs per band * 2 bands = 4 texels = 8 u16. Plus 4

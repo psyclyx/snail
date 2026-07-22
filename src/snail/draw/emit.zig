@@ -357,6 +357,7 @@ fn makeTinyCurves(allocator: std.mem.Allocator) !GlyphCurves {
     const curve_words = curve_tex_format.SEGMENT_TEXELS * 4; // one segment
     const curve_bytes = try allocator.alloc(u16, curve_words);
     for (curve_bytes, 0..) |*w, i| w.* = @intCast(@as(u16, @intCast(i)) +% 0x100);
+    curve_bytes[10] = 0; // packed quadratic
 
     // 1 h-band + 1 v-band, 1 ref each.
     const band_bytes = try allocator.alloc(u16, 8);

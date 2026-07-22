@@ -114,6 +114,10 @@ pub const GlyphCurves = struct {
         const segment_words = curve_tex.SEGMENT_TEXELS * 4;
         const expected_curve_words = @as(usize, self.curve_count) * segment_words;
         if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
+        for (0..self.curve_count) |curve_index| {
+            const curve_texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
+            if (curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) == null) return error.InvalidCurves;
+        }
 
         const scalar_values = [_]f32{
             self.band_scale_x,
@@ -230,7 +234,7 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
     empty.curve_count = 1;
     try std.testing.expectError(error.InvalidCurves, empty.validate());
 
-    const curve_words = [_]u16{0} ** (curve_tex.SEGMENT_TEXELS * 4);
+    var curve_words = [_]u16{0} ** (curve_tex.SEGMENT_TEXELS * 4);
     // Two one-band headers followed by one reference for each axis.
     var band_words = [_]u16{ 1, 2, 1, 3, 0, 0, 0, 0 };
     const valid = GlyphCurves{
@@ -247,6 +251,14 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
         .bbox = .{ .min = .zero, .max = .{ .x = 1, .y = 1 } },
     };
     try valid.validate();
+
+    curve_words[0] = @bitCast(std.math.nan(f16));
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
+    curve_words[0] = 0;
+
+    curve_words[10] = curve_tex.f32ToF16(9);
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
+    curve_words[10] = 0;
 
     band_words[5] = 1; // local texel 4096 is outside the single curve
     try std.testing.expectError(error.InvalidCurves, valid.validate());

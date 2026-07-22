@@ -974,6 +974,9 @@ test "planDelta uploads only the grown row band of an append-only page" {
         fn curves(alloc: std.mem.Allocator, segment_count: u16) !GlyphCurves {
             const curve_bytes = try alloc.alloc(u16, @as(usize, segment_count) * segment_words);
             for (curve_bytes, 0..) |*w, i| w.* = @truncate(i);
+            for (0..segment_count) |curve_index| {
+                curve_bytes[curve_index * segment_words + 10] = 0; // packed quadratic
+            }
             // 1 h-band + 1 v-band, one ref each, both pointing at curve 0.
             const band_bytes = try alloc.alloc(u16, 8);
             band_bytes[0] = 1;

@@ -46,6 +46,7 @@ pub const SyntheticStyle = text_mod.SyntheticStyle;
 pub const SourceRange = text_mod.SourceRange;
 pub const OpenTypeFeature = text_mod.OpenTypeFeature;
 pub const ShapeOptions = text_mod.ShapeOptions;
+pub const TextDirection = text_mod.TextDirection;
 pub const AdvanceProvider = text_mod.AdvanceProvider;
 pub const MissingGlyphReplacement = text_mod.MissingGlyphReplacement;
 
@@ -61,7 +62,6 @@ pub const placeRun = run_placement.placeRun;
 pub const placeRunAlloc = run_placement.placeRunAlloc;
 
 pub const Font = font.Font;
-pub const tt = font.tt;
 
 // ── Paint ──
 
@@ -69,6 +69,7 @@ pub const PaintExtend = paint_mod.Extend;
 pub const ImageFilter = paint_mod.ImageFilter;
 pub const LinearGradient = paint_mod.LinearGradient;
 pub const RadialGradient = paint_mod.RadialGradient;
+pub const ConicGradient = paint_mod.ConicGradient;
 pub const ImagePaint = paint_mod.ImagePaint;
 pub const Paint = paint_mod.Paint;
 pub const FillStyle = paint_mod.FillStyle;

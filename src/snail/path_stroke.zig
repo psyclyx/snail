@@ -180,7 +180,6 @@ fn buildOffsetBoundary(
 fn appendBoundaryCurves(dst: *Path, src: *const Path, reverse: bool) !void {
     if (!reverse) {
         for (src.curves.items) |curve| {
-            dst.band_curve_count += 1;
             try dst.appendSegment(curve);
         }
         return;
@@ -188,7 +187,6 @@ fn appendBoundaryCurves(dst: *Path, src: *const Path, reverse: bool) !void {
     var i = src.curves.items.len;
     while (i > 0) {
         i -= 1;
-        dst.band_curve_count += 1;
         try dst.appendSegment(path_mod.reverseCurveSegment(src.curves.items[i]));
     }
 }

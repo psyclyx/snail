@@ -39,6 +39,46 @@ fn makePathLineSegment(p0: Vec2, p1: Vec2) CurveSegment {
     return CurveSegment.fromLine(p0, p1);
 }
 
+fn finiteVec(point: Vec2) bool {
+    return std.math.isFinite(point.x) and std.math.isFinite(point.y);
+}
+
+fn finiteCurve(curve: CurveSegment) bool {
+    if (!finiteVec(curve.p0) or !finiteVec(curve.p1) or !finiteVec(curve.p2)) return false;
+    if (curve.kind == .cubic and !finiteVec(curve.p3)) return false;
+    if (curve.kind == .conic) {
+        // Positive rational weights keep the homogeneous denominator away
+        // from zero over t in [0, 1]. Non-positive weights can introduce a
+        // pole even though every input scalar is finite.
+        for (curve.weights) |weight| if (!std.math.isFinite(weight) or weight <= 0) return false;
+    }
+    return true;
+}
+
+fn finiteRect(rect: Rect) bool {
+    if (!std.math.isFinite(rect.x) or !std.math.isFinite(rect.y) or
+        !std.math.isFinite(rect.w) or !std.math.isFinite(rect.h)) return false;
+    const width = @max(rect.w, 0.0);
+    const height = @max(rect.h, 0.0);
+    return std.math.isFinite(rect.x + width) and std.math.isFinite(rect.y + height);
+}
+
+const max_adaptive_arc_segments: usize = 4096;
+
+fn arcSubdivisionFits(span: f32, max_piece_span: f32, depth: ?u8) bool {
+    if (!std.math.isFinite(span)) return false;
+    var piece_span = @abs(span);
+    var pieces: usize = 1;
+    var remaining: usize = if (depth) |value| value else std.math.maxInt(usize);
+    while (piece_span > max_piece_span + 1e-6 and remaining > 0) {
+        if (pieces >= max_adaptive_arc_segments) return false;
+        pieces *= 2;
+        piece_span *= 0.5;
+        remaining -= 1;
+    }
+    return true;
+}
+
 // Snap near-axis trig results to exact 0/±1. Without this, rounded-rect
 // corner arcs (whose endpoints lie at angles that are multiples of π/2)
 // land an ULP off the adjacent line endpoints, leaving a visible seam in
@@ -101,13 +141,16 @@ pub fn appendAdaptiveArcCurve(
     end_angle: f32,
     depth: u8,
 ) !void {
+    if (!finiteVec(center) or !finiteVec(radii) or !std.math.isFinite(start_angle) or !std.math.isFinite(end_angle)) {
+        return error.InvalidGeometry;
+    }
     const span = end_angle - start_angle;
+    if (!arcSubdivisionFits(span, std.math.pi * 0.125, depth)) return error.ShapeTooComplex;
     if (depth == 0 or @abs(span) <= std.math.pi * 0.125 + 1e-6) {
-        path.band_curve_count += 1;
         try path.appendSegment(CurveSegment.fromQuad(makePathArcCurve(center, radii, start_angle, end_angle)));
         return;
     }
-    const mid_angle = (start_angle + end_angle) * 0.5;
+    const mid_angle = start_angle + span * 0.5;
     try appendAdaptiveArcCurve(path, center, radii, start_angle, mid_angle, depth - 1);
     try appendAdaptiveArcCurve(path, center, radii, mid_angle, end_angle, depth - 1);
 }
@@ -122,12 +165,11 @@ fn appendAdaptiveArcConic(
     const span = end_angle - start_angle;
     if (@abs(span) <= 1e-6) return;
     if (@abs(span) > std.math.pi * 0.5 + 1e-6) {
-        const mid_angle = (start_angle + end_angle) * 0.5;
+        const mid_angle = start_angle + span * 0.5;
         try appendAdaptiveArcConic(path, center, radii, start_angle, mid_angle);
         try appendAdaptiveArcConic(path, center, radii, mid_angle, end_angle);
         return;
     }
-    path.band_curve_count += 1;
     try path.appendSegment(makePathArcConic(center, radii, start_angle, end_angle));
 }
 
@@ -138,10 +180,14 @@ pub fn appendAdaptiveArcCubic(
     start_angle: f32,
     end_angle: f32,
 ) !void {
+    if (!finiteVec(center) or !finiteVec(radii) or !std.math.isFinite(start_angle) or !std.math.isFinite(end_angle)) {
+        return error.InvalidGeometry;
+    }
     const span = end_angle - start_angle;
+    if (!arcSubdivisionFits(span, std.math.pi * 0.5, null)) return error.ShapeTooComplex;
     if (@abs(span) <= 1e-6) return;
     if (@abs(span) > std.math.pi * 0.5 + 1e-6) {
-        const mid_angle = (start_angle + end_angle) * 0.5;
+        const mid_angle = start_angle + span * 0.5;
         try appendAdaptiveArcCubic(path, center, radii, start_angle, mid_angle);
         try appendAdaptiveArcCubic(path, center, radii, mid_angle, end_angle);
         return;
@@ -156,7 +202,6 @@ pub fn appendAdaptiveArcCubic(
     const handle = (4.0 / 3.0) * @tan(span * 0.25);
     const tangent0 = Vec2.new(-ss * radii.x, cs * radii.y);
     const tangent1 = Vec2.new(-se * radii.x, ce * radii.y);
-    path.band_curve_count += 1;
     try path.appendSegment(CurveSegment.fromCubic(.{
         .p0 = p0,
         .p1 = Vec2.add(p0, Vec2.scale(tangent0, handle)),
@@ -306,7 +351,6 @@ fn appendOffsetCurveApproxKind(
     if (curve.flatnessKind(kind) <= 1e-6) {
         const contour = path.requireContour() orelse return error.PathMissingMoveTo;
         const target = offsetPointAtKind(kind, curve, 1.0, tangent1, offset);
-        path.band_curve_count += 1;
         try path.appendSegmentKind(.line, makePathLineSegment(contour.current_point, target));
         return;
     }
@@ -341,7 +385,6 @@ fn appendOffsetCurveApproxKind(
         const start_delta = Vec2.sub(contour.current_point, fitted.p0);
         fitted.p0 = contour.current_point;
         fitted.p1 = Vec2.add(fitted.p1, start_delta);
-        path.band_curve_count += 1;
         try path.appendSegmentKind(.cubic, fitted);
         return;
     }
@@ -358,6 +401,9 @@ pub fn appendOffsetCurveApprox(
     depth: u8,
     tolerance: f32,
 ) !void {
+    if (!finiteCurve(curve) or !std.math.isFinite(offset) or !std.math.isFinite(tolerance) or tolerance < 0) {
+        return error.InvalidGeometry;
+    }
     const t0 = curveUnitTangent(curve, 0.0);
     const t1 = curveUnitTangent(curve, 1.0);
     switch (curve.kind) {
@@ -431,8 +477,11 @@ pub const Path = struct {
             .design_to_source = .identity,
             .source_to_design = .identity,
         };
-        const width = bb.max.x - bb.min.x;
-        const height = bb.max.y - bb.min.y;
+        // Do the normalization math in f64: two individually-finite f32
+        // endpoints can have a difference larger than f32 and must still be
+        // normalized instead of falling back to unencodable source values.
+        const width = @as(f64, bb.max.x) - @as(f64, bb.min.x);
+        const height = @as(f64, bb.max.y) - @as(f64, bb.min.y);
         const extent = @max(width, height);
         if (!std.math.isFinite(extent) or extent <= 1.0 / 65536.0) return .{
             .source = source,
@@ -442,19 +491,40 @@ pub const Path = struct {
         };
 
         const min_axis_extent = extent * std.math.floatEps(f32);
-        const scale_x = (2.0 * PREPARED_PATH_RADIUS) / (if (width > min_axis_extent) width else extent);
-        const scale_y = (2.0 * PREPARED_PATH_RADIUS) / (if (height > min_axis_extent) height else extent);
-        const center_x = bb.min.x + width * 0.5;
-        const center_y = bb.min.y + height * 0.5;
+        const scale_x_64 = (2.0 * PREPARED_PATH_RADIUS) / (if (width > min_axis_extent) width else extent);
+        const scale_y_64 = (2.0 * PREPARED_PATH_RADIUS) / (if (height > min_axis_extent) height else extent);
+        const center_x_64 = @as(f64, bb.min.x) + width * 0.5;
+        const center_y_64 = @as(f64, bb.min.y) + height * 0.5;
+        const inv_scale_x_64 = 1.0 / scale_x_64;
+        const inv_scale_y_64 = 1.0 / scale_y_64;
+        const tx_64 = -center_x_64 * scale_x_64;
+        const ty_64 = -center_y_64 * scale_y_64;
+        const transform_values = [_]f64{
+            scale_x_64,
+            scale_y_64,
+            center_x_64,
+            center_y_64,
+            inv_scale_x_64,
+            inv_scale_y_64,
+            tx_64,
+            ty_64,
+        };
+        for (transform_values) |value| {
+            if (!std.math.isFinite(value) or @abs(value) > std.math.floatMax(f32)) return error.InvalidGeometry;
+        }
+        const scale_x: f32 = @floatCast(scale_x_64);
+        const scale_y: f32 = @floatCast(scale_y_64);
+        const center_x: f32 = @floatCast(center_x_64);
+        const center_y: f32 = @floatCast(center_y_64);
         const source_to_design = Transform2D{
             .xx = scale_x,
             .yy = scale_y,
-            .tx = -center_x * scale_x,
-            .ty = -center_y * scale_y,
+            .tx = @floatCast(tx_64),
+            .ty = @floatCast(ty_64),
         };
         const design_to_source = Transform2D{
-            .xx = 1.0 / scale_x,
-            .yy = 1.0 / scale_y,
+            .xx = @floatCast(inv_scale_x_64),
+            .yy = @floatCast(inv_scale_y_64),
             .tx = center_x,
             .ty = center_y,
         };
@@ -462,7 +532,6 @@ pub const Path = struct {
         for (self.contours.items) |contour| {
             try design.moveTo(source_to_design.applyPoint(contour.start_point));
             for (self.curves.items[contour.curve_start..contour.curve_end]) |curve| {
-                design.band_curve_count += 1;
                 try design.appendSegment(transformCurve(curve, source_to_design));
             }
             if (contour.closed) try design.close();
@@ -477,6 +546,7 @@ pub const Path = struct {
     }
 
     pub fn moveTo(self: *Path, point: Vec2) !void {
+        if (!finiteVec(point)) return error.InvalidGeometry;
         if (self.contours.items.len > 0) {
             var contour = &self.contours.items[self.contours.items.len - 1];
             if (contour.curve_end == contour.curve_start and !contour.closed) {
@@ -498,13 +568,11 @@ pub const Path = struct {
 
     pub fn lineTo(self: *Path, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
-        self.band_curve_count += 1;
         try self.appendSegment(makePathLineSegment(contour.current_point, point));
     }
 
     pub fn quadTo(self: *Path, control: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
-        self.band_curve_count += 1;
         try self.appendSegment(CurveSegment.fromQuad(.{
             .p0 = contour.current_point,
             .p1 = control,
@@ -514,7 +582,6 @@ pub const Path = struct {
 
     pub fn cubicTo(self: *Path, control1: Vec2, control2: Vec2, point: Vec2) !void {
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
-        self.band_curve_count += 1;
         try self.appendSegment(CurveSegment.fromCubic(.{
             .p0 = contour.current_point,
             .p1 = control1,
@@ -528,7 +595,6 @@ pub const Path = struct {
             var contour = initial_contour;
             if (contour.closed) return;
             if (contour.curve_end > contour.curve_start and !pointsApproxEqual(contour.current_point, contour.start_point)) {
-                self.band_curve_count += 1;
                 try self.appendSegment(makePathLineSegment(contour.current_point, contour.start_point));
                 contour = self.requireContour().?;
             }
@@ -538,6 +604,7 @@ pub const Path = struct {
     }
 
     pub fn addRect(self: *Path, rect: Rect) !void {
+        if (!finiteRect(rect)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -549,6 +616,7 @@ pub const Path = struct {
     }
 
     pub fn addRectReversed(self: *Path, rect: Rect) !void {
+        if (!finiteRect(rect)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -560,6 +628,7 @@ pub const Path = struct {
     }
 
     pub fn addRoundedRect(self: *Path, rect: Rect, corner_radius: f32) !void {
+        if (!finiteRect(rect) or !std.math.isFinite(corner_radius)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -587,6 +656,7 @@ pub const Path = struct {
     }
 
     pub fn addRoundedRectReversed(self: *Path, rect: Rect, corner_radius: f32) !void {
+        if (!finiteRect(rect) or !std.math.isFinite(corner_radius)) return error.InvalidGeometry;
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
@@ -614,6 +684,7 @@ pub const Path = struct {
     }
 
     pub fn addEllipse(self: *Path, rect: Rect) !void {
+        if (!finiteRect(rect)) return error.InvalidGeometry;
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
@@ -627,6 +698,7 @@ pub const Path = struct {
     }
 
     pub fn addEllipseReversed(self: *Path, rect: Rect) !void {
+        if (!finiteRect(rect)) return error.InvalidGeometry;
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
@@ -655,10 +727,13 @@ pub const Path = struct {
     /// curve's kind at the call site (e.g. the recursive offset-quad
     /// boundary builder).
     inline fn appendSegmentKind(self: *Path, comptime kind: bezier.CurveKind, curve: CurveSegment) !void {
+        if (!finiteCurve(curve)) return error.InvalidGeometry;
+        if (self.band_curve_count == std.math.maxInt(usize)) return error.ShapeTooComplex;
         // Append to `curves` doesn't move `contours`, so the contour
         // pointer survives the append — no need to reacquire.
         const contour = self.requireContour() orelse return error.PathMissingMoveTo;
         try self.curves.append(self.allocator, curve);
+        self.band_curve_count += 1;
         contour.curve_end = self.curves.items.len;
         contour.current_point = switch (kind) {
             .cubic => curve.p3,
@@ -699,7 +774,9 @@ pub const Path = struct {
 
     pub fn cloneFilledCurves(self: *const Path, allocator: std.mem.Allocator) ![]CurveSegment {
         const close_count = self.unclosedContourCount();
-        const out = try allocator.alloc(CurveSegment, self.curves.items.len + close_count);
+        const total_count = std.math.add(usize, self.curves.items.len, close_count) catch
+            return error.ShapeTooComplex;
+        const out = try allocator.alloc(CurveSegment, total_count);
         @memcpy(out[0..self.curves.items.len], self.curves.items);
         var write = self.curves.items.len;
         for (self.contours.items) |contour| {
@@ -711,8 +788,9 @@ pub const Path = struct {
         return out;
     }
 
-    pub fn filledBandCurveCount(self: *const Path) usize {
-        return self.band_curve_count + self.unclosedContourCount();
+    pub fn filledBandCurveCount(self: *const Path) error{ShapeTooComplex}!usize {
+        return std.math.add(usize, self.band_curve_count, self.unclosedContourCount()) catch
+            error.ShapeTooComplex;
     }
 
     pub fn cloneStrokedCurves(
@@ -752,7 +830,8 @@ pub const Path = struct {
         return .{
             .curves = curves,
             .bbox = bbox,
-            .logical_curve_count = self.filledBandCurveCount() * 2,
+            .logical_curve_count = std.math.mul(usize, try self.filledBandCurveCount(), 2) catch
+                return error.ShapeTooComplex,
         };
     }
 };
@@ -823,6 +902,78 @@ pub const PreparedPath = struct {
         return Transform2D.multiply(outer, self.design_to_source);
     }
 };
+
+test "path curve accounting changes only after a successful append" {
+    var path = Path.init(std.testing.allocator);
+    defer {
+        path.allocator = std.testing.allocator;
+        path.deinit();
+    }
+    try path.moveTo(.zero);
+
+    var no_memory: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&no_memory);
+    path.allocator = fixed.allocator();
+    try std.testing.expectError(error.OutOfMemory, path.lineTo(.{ .x = 1, .y = 1 }));
+    try std.testing.expectEqual(@as(usize, 0), path.band_curve_count);
+    try std.testing.expectEqual(@as(usize, 0), path.curves.items.len);
+
+    path.allocator = std.testing.allocator;
+    try path.lineTo(.{ .x = 1, .y = 1 });
+    try std.testing.expectEqual(@as(usize, 1), path.band_curve_count);
+    try std.testing.expectEqual(@as(usize, 1), path.curves.items.len);
+}
+
+test "path rejects non-finite public geometry without mutation" {
+    var path = Path.init(std.testing.allocator);
+    defer path.deinit();
+
+    try std.testing.expectError(error.InvalidGeometry, path.moveTo(.{ .x = std.math.nan(f32), .y = 0 }));
+    try std.testing.expectError(error.InvalidGeometry, path.addRect(.{ .x = 0, .y = 0, .w = std.math.inf(f32), .h = 1 }));
+    try std.testing.expectError(error.InvalidGeometry, path.addRect(.{ .x = std.math.floatMax(f32), .y = 0, .w = std.math.floatMax(f32), .h = 1 }));
+    try std.testing.expectError(error.InvalidGeometry, appendAdaptiveArcCubic(
+        &path,
+        .zero,
+        .{ .x = 1, .y = 1 },
+        0,
+        std.math.nan(f32),
+    ));
+    try std.testing.expectEqual(@as(usize, 0), path.contours.items.len);
+    try std.testing.expectEqual(@as(usize, 0), path.curves.items.len);
+    try std.testing.expectEqual(@as(usize, 0), path.band_curve_count);
+}
+
+test "adaptive arcs reject explosive subdivision counts before mutation" {
+    var path = Path.init(std.testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.zero);
+
+    try std.testing.expectError(error.ShapeTooComplex, appendAdaptiveArcCubic(
+        &path,
+        .zero,
+        .{ .x = 1, .y = 1 },
+        0,
+        std.math.pi * @as(f32, max_adaptive_arc_segments + 1),
+    ));
+    try std.testing.expectEqual(@as(usize, 0), path.curves.items.len);
+    try std.testing.expectEqual(@as(usize, 0), path.band_curve_count);
+}
+
+test "path preparation normalizes the full finite f32 range" {
+    const limit = std.math.floatMax(f32);
+    var path = Path.init(std.testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = -limit, .y = -limit });
+    try path.lineTo(.{ .x = limit, .y = limit });
+
+    var prepared = try path.prepare(std.testing.allocator);
+    defer prepared.deinit();
+    const bounds = prepared.design.bounds().?;
+    try std.testing.expect(finiteVec(bounds.min));
+    try std.testing.expect(finiteVec(bounds.max));
+    try std.testing.expect(@abs(bounds.min.x) <= PREPARED_PATH_RADIUS);
+    try std.testing.expect(@abs(bounds.max.x) <= PREPARED_PATH_RADIUS);
+}
 
 test "prepare normalizes arbitrary coordinates and preserves placement" {
     var source = Path.init(std.testing.allocator);
