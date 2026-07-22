@@ -1,9 +1,0 @@
-{
-  "name": "autohint-quality-optimization",
-  "status": "completed",
-  "iteration": 25,
-  "maxIterations": 25,
-  "completedAt": "2026-07-13",
-  "verificationCommand": "./.auto/checks.sh && ./.auto/measure.sh",
-  "active": false
-}
