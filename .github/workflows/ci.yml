@@ -358,22 +358,31 @@ jobs:
 
       # Reference is the GL render of the identical scene
       # (src/demo/app/minimal_reference.png, from zig-out/minimal-gl.tga).
-      # Known cross-backend deltas at a 4% max-channel threshold: wgpu = 679,
-      # d3d11 = 679 (AA-edge class); 2000 is generous headroom over that
-      # while still catching real breakage (flip / blank / wrong-binding
-      # classes are tens of thousands of pixels).
+      # Measured Apple-GPU class (M-series, 2026-07, fast-math disabled —
+      # confirmed by the compile-options marker in the log): 2883 over 4%,
+      # 1252 over 25%, 386 over 50%; artifact analysis showed interiors
+      # exact to 1 LSB with ALL excess in glyph-AA-edge clusters — genuine
+      # rasterizer/interpolator variance vs the llvmpipe reference, not
+      # a defect (fast-math was ruled out empirically). Two-tier gate so a
+      # looser edge budget cannot hide real breakage: broken bindings /
+      # transposed matrices / missing families measure in the tens of
+      # thousands and hit both tiers.
       #
       # Not `compare -metric AE`: ImageMagick 7.1.2's AE regressed to a Q16
       # channel-distance sum (one differing pixel reports 65535), so the
       # differing-pixel count is computed explicitly instead.
       - name: Gate the Metal render
         run: |
-          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-metal.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
-          echo "pixels over 4% channel delta: $n (threshold 2000; wgpu/d3d11 baseline: 679)"
-          case "$n" in
-            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          diff_count() {
+            nix-shell --run "magick src/demo/app/minimal_reference.png zig-out/minimal-metal.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold $1% -format '%[fx:round(mean*w*h)]' info:"
+          }
+          n4=$(diff_count 4); n25=$(diff_count 25)
+          echo "pixels over 4%: $n4 (limit 4000; measured Apple class 2883)"
+          echo "pixels over 25%: $n25 (limit 2000; measured Apple class 1252)"
+          case "$n4$n25" in
+            ''|*[!0-9]*) echo "unexpected magick output: '$n4' '$n25'" >&2; exit 1 ;;
           esac
-          test "$n" -le 2000
+          test "$n4" -le 4000 && test "$n25" -le 2000
 
       # wgpu-native from the same nixpkgs pin, Metal backend (the only
       # backend on macOS). Same scene/reference/threshold as the other
