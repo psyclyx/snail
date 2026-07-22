@@ -24,5 +24,7 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
     mod.addAnonymousImport("snail_autohint_native.vert.spv", .{ .root_source_file = slang_shaders.vulkanVertexSpv(b, "autohint") });
     mod.addAnonymousImport("snail_autohint_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint") });
     mod.addAnonymousImport("snail_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "text_subpixel") });
+    mod.addAnonymousImport("snail_tt_hinted_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text_subpixel") });
+    mod.addAnonymousImport("snail_autohint_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint_subpixel") });
     return mod;
 }

@@ -50,7 +50,7 @@ pub fn main() !void {
         .paths_picture = &noto_picture,
         .text_picture = &text_picture,
     };
-    try harness.renderCpu(allocator, scene, W, H, OUT_PATH, .{});
+    try harness.renderCpu(allocator, scene, W, H, OUT_PATH, .{ .subpixel_order = harness.subpixelOrderFromEnv() });
     std.debug.print("autohint-screenshot: wrote {s} ({d}x{d})\n", .{ OUT_PATH, W, H });
 
     // Also render through GL to verify the shader-side warp matches the CPU.
@@ -61,6 +61,6 @@ pub fn main() !void {
     defer gl_ctx.deinit();
     var target = try harness.OffscreenGlTarget.init(W, H);
     defer target.deinit();
-    try harness.renderGl(.gl33, allocator, scene, W, H, "zig-out/autohint-screenshot-gl.tga", .{ .layer_info_height = 256 });
+    try harness.renderGl(.gl33, allocator, scene, W, H, "zig-out/autohint-screenshot-gl.tga", .{ .layer_info_height = 256, .subpixel_order = harness.subpixelOrderFromEnv() });
     std.debug.print("autohint-screenshot: wrote zig-out/autohint-screenshot-gl.tga (GL33)\n", .{});
 }

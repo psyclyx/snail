@@ -20,9 +20,18 @@ const TargetSurface = render_state.TargetSurface;
 const ShapeKind = draw_records_mod.ShapeKind;
 const TextRenderMode = enum { grayscale, subpixel_dual_source };
 
-fn regularTextRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextRenderMode {
+fn textRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextRenderMode {
     if (order != .none and supports_dual_source) return .subpixel_dual_source;
     return .grayscale;
+}
+
+/// Whether a shape kind has an LCD dual-source program (the three text
+/// kinds). colr/path always render premultiplied grayscale.
+fn kindHasSubpixelProgram(kind: ShapeKind) bool {
+    return switch (kind) {
+        .regular, .tt_hinted_text, .autohint => true,
+        .colr, .path => false,
+    };
 }
 
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
@@ -61,7 +70,9 @@ fn TextStateFor(comptime backend: Backend) type {
         colr_program: ProgramState = .{},
         path_program: ProgramState = .{},
         tt_hinted_text_program: ProgramState = .{},
+        tt_hinted_subpixel_dual_program: ProgramState = .{},
         autohint_program: ProgramState = .{},
+        autohint_subpixel_dual_program: ProgramState = .{},
         linear_resolve: LinearResolveState = .{},
         vao: gl.GLuint = 0,
         vbo: gl.GLuint = 0,
@@ -83,7 +94,7 @@ fn TextStateFor(comptime backend: Backend) type {
         // and (defensively) when the bound cache changes.
         active_cache: ?*const GlDeviceAtlas = null,
         program_cache_count: usize = 0,
-        program_uniform_caches: [6]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 6,
+        program_uniform_caches: [8]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 8,
         // Per-draw GL state shadows.
         cached_blend_mode: BlendMode = .uninitialized,
         cached_heterogeneous_vao_bound: bool = false,
@@ -126,10 +137,12 @@ fn TextStateFor(comptime backend: Backend) type {
             self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
             self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
             if (self.supports_dual_source_blend) {
-                // Native subpixel fragment carries its own
+                // Native subpixel fragments carry their own
                 // layout(location = 0, index = N) qualifiers, so no
                 // glBindFragDataLocationIndexed calls are needed.
                 self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel-native", shaders.native_text_vertex_shader, shaders.native_subpixel_fragment_shader);
+                self.tt_hinted_subpixel_dual_program = try gl_programs.loadNativeProgramState("hinted-subpixel-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_subpixel_fragment_shader);
+                self.autohint_subpixel_dual_program = try gl_programs.loadNativeProgramState("autohint-subpixel-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_subpixel_fragment_shader);
             }
             try self.linear_resolve.init();
 
@@ -201,7 +214,9 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.colr_program);
             deleteProgramState(&self.path_program);
             deleteProgramState(&self.tt_hinted_text_program);
+            deleteProgramState(&self.tt_hinted_subpixel_dual_program);
             deleteProgramState(&self.autohint_program);
+            deleteProgramState(&self.autohint_subpixel_dual_program);
             self.linear_resolve.deinit();
             if (self.vao != 0) gl.glDeleteVertexArrays(1, &self.vao);
             if (self.vbo != 0) gl.glDeleteBuffers(1, &self.vbo);
@@ -312,15 +327,11 @@ fn TextStateFor(comptime backend: Backend) type {
             if (total_glyphs == 0) return;
             self.ensureHeterogeneousVaoBound();
 
-            const allow_subpixel = true;
-            const run_mode: TextRenderMode = if (kind != .regular)
-                .grayscale
+            const run_mode: TextRenderMode = if (kindHasSubpixelProgram(kind))
+                textRenderMode(draw_state.raster.subpixel_order, self.supports_dual_source_blend)
             else
-                regularTextRenderMode(
-                    if (allow_subpixel) draw_state.raster.subpixel_order else .none,
-                    self.supports_dual_source_blend,
-                );
-            self.setBlendMode(textBlendMode(kind != .regular, run_mode));
+                .grayscale;
+            self.setBlendMode(textBlendMode(run_mode));
             const prog_state = switch (kind) {
                 .regular => switch (run_mode) {
                     .grayscale => &self.text_program,
@@ -328,8 +339,14 @@ fn TextStateFor(comptime backend: Backend) type {
                 },
                 .colr => self.ensureColrProgram(),
                 .path => self.ensurePathProgram(),
-                .tt_hinted_text => self.ensureTtHintedTextProgram(),
-                .autohint => self.ensureAutohintProgram(),
+                .tt_hinted_text => switch (run_mode) {
+                    .grayscale => self.ensureTtHintedTextProgram(),
+                    .subpixel_dual_source => &self.tt_hinted_subpixel_dual_program,
+                },
+                .autohint => switch (run_mode) {
+                    .grayscale => self.ensureAutohintProgram(),
+                    .subpixel_dual_source => &self.autohint_subpixel_dual_program,
+                },
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
             self.drawGlyphRange(instances, 0, total_glyphs);
@@ -450,10 +467,11 @@ fn TextStateFor(comptime backend: Backend) type {
         }
 
         /// Return the shadow-cache slot for `program`, allocating one
-        /// on first sighting. The slot array is small (six entries —
-        /// text, text-subpixel, colr, path, hinted text, and autohint);
-        /// a linear scan is faster than a hashmap at
-        /// this size and keeps `bindProgramState` allocation-free.
+        /// on first sighting. The slot array is small (eight entries —
+        /// text, colr, path, hinted text, autohint, and the three
+        /// dual-source subpixel variants); a linear scan is faster than
+        /// a hashmap at this size and keeps `bindProgramState`
+        /// allocation-free.
         fn programUniformCache(self: *GlTextState, program: gl.GLuint) *ProgramUniformCache {
             for (self.program_uniform_caches[0..self.program_cache_count]) |*slot| {
                 if (slot.program == program) return slot;
@@ -680,8 +698,10 @@ fn applyBlendMode(mode: BlendMode) void {
     }
 }
 
-fn textBlendMode(special: bool, render_mode: TextRenderMode) BlendMode {
-    if (!special and render_mode == .subpixel_dual_source) return .dual_source;
+fn textBlendMode(render_mode: TextRenderMode) BlendMode {
+    // `render_mode` is already forced to .grayscale for kinds without a
+    // dual-source program (colr/path), so the mode alone decides the blend.
+    if (render_mode == .subpixel_dual_source) return .dual_source;
     return .normal;
 }
 

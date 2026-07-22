@@ -56,5 +56,5 @@ pub fn main() !void {
         .text_atlas = &content.text_atlas,
         .paths_picture = &content.paths_picture,
         .text_picture = &text_picture,
-    }, W, H, OUT_PATH, .{ .layer_info_height = 256 });
+    }, W, H, OUT_PATH, .{ .layer_info_height = 256, .subpixel_order = harness.subpixelOrderFromEnv() });
 }

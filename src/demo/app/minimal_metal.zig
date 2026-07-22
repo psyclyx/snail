@@ -61,25 +61,11 @@ const ppem: u32 = 34 * 64;
 
 const slang_gen = @import("snail_shaders");
 
-/// The Vulkan push-constant block as a Metal `constant` buffer at
-/// [[buffer(0)]]. The generated MSL declares it with NATURAL (C) layout
-/// (`SnailPushConstants_natural`), so this extern struct's bytes are the
-/// buffer contents verbatim. Must stay in sync with the Vulkan contract's
-/// `PushConstants`.
-const PushConstants = extern struct {
-    mvp: [16]f32,
-    viewport: [2]f32,
-    subpixel_order: i32 = 0,
-    output_srgb: i32 = 0, // hardware-sRGB render target: emit linear
-    layer_base: i32 = 0,
-    coverage_exponent: f32 = 1.0,
-    dither_scale: f32 = 0.0,
-    mask_output: i32 = 0,
-};
-
-comptime {
-    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
-}
+/// The parameter block as a Metal `constant` buffer at [[buffer(0)]] —
+/// the machine-derived layout from slangc reflection. The generated MSL
+/// declares it with NATURAL (C) layout (`SnailPushConstants_natural`), so
+/// this extern struct's bytes are the buffer contents verbatim.
+const PushConstants = slang_gen.reflection.PushConstants;
 
 // ── Objective-C runtime shim ──
 //
@@ -692,6 +678,12 @@ pub fn main() !void {
     const push_constants = PushConstants{
         .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
         .viewport = .{ width, height },
+        .subpixel_order = 0,
+        .output_srgb = 0, // hardware-sRGB render target: emit linear
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+        .dither_scale = 0.0,
+        .mask_output = 0,
     };
     const pc_buffer = msg(id, device, "newBufferWithBytes:length:options:", .{
         @as(*const anyopaque, &push_constants),

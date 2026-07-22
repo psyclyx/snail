@@ -27,10 +27,14 @@
 //!
 //! ## Interface contracts
 //!
-//! All targets share the 96-byte parameter block of
-//! `src/demo/render/vulkan/contract.zig:PushConstants` (mvp @ 0, viewport
-//! @ 64, subpixel_order @ 72, output_srgb @ 76, layer_base @ 80,
-//! coverage_exponent @ 84, dither_scale @ 88, mask_output @ 92):
+//! The parameter-passing ABI (the shared parameter block's layout and the
+//! binding slot numbers) is NOT a hand-pinned promise: it is derived from
+//! slangc reflection at generation time and shipped as the `reflection`
+//! module below — consume `reflection.PushConstants` /
+//! `reflection.binding` instead of hard-coding numbers. What snail OWNS
+//! is the data ABI: instance-stream semantics, atlas texel layouts, and
+//! blend semantics (src/snail/format/abi.zig + the emit/record
+//! contracts). The per-target notes:
 //!
 //!  - `spirv`: bound as the push-constant range; curve/band textures are
 //!    sampled images at set 0, bindings 0/1 (compatible with the existing
@@ -79,6 +83,13 @@
 //!    `[[color(0), index(1)]]` before compiling for dual-source use.
 
 pub const Stage = enum { vertex, fragment };
+
+/// The machine-derived parameter ABI (generated per build from slangc
+/// reflection over the shared-parameter-block families; see
+/// build/gen_shader_reflection_zig.zig): the `PushConstants` CPU struct
+/// and the `binding` slot numbers. Hosts consume these instead of
+/// hand-mirroring layouts.
+pub const reflection = @import("reflection.zig");
 
 /// GLSL uniform-block name the GL hosts resolve with
 /// `glGetUniformBlockIndex`. Both stages of every family declare the same
@@ -178,17 +189,45 @@ pub fn ttHintedFragWgsl() [:0]const u8 {
     return @embedFile("generated/wgsl/tt_hinted_text.frag.wgsl");
 }
 
-// ── LCD subpixel (dual-source; desktop GL + Vulkan only) ──
+// ── LCD subpixel (dual-source; no GLES artifacts — ES 3.0 has no
+// dual-source blending). Three families: regular text (pairs with
+// text.vert), TT-hinted text (pairs with text.vert), and autohint (pairs
+// with autohint.vert). ──
 //
-// No GLES artifact: ES 3.0 has no dual-source blending. A WGSL artifact
-// is generated (generated/wgsl/text_subpixel.frag.wgsl; its dual-source
-// entry is `fragmentDualMain`, injected via the __requirePrelude interop
-// in the family source) but not exposed here: it depends on slang's name
-// mangling, so it stays a regeneration-time artifact until slang lowers
-// [[vk::index(1)]] to @blend_src natively. See slang/README-notes.
+// WGSL: each artifact carries TWO fragment entries. `fragmentMain` is
+// plain MRT (locations 0/1 — valid WGSL, wrong blend semantics); the
+// dual-source entry is `wgsl_dual_fragment_entry` (`fragmentDualMain`,
+// @blend_src 0/1), injected via the __requirePrelude interop in the
+// family source and referencing slang's MANGLED names — regeneration is
+// guarded by naga validation (see slang/README-notes). Dual-source
+// consumers need the `dual_source_blending` WGSL extension
+// (WGPUFeatureName_DualSourceBlending) and must select the dual entry.
+
+/// WGSL dual-source fragment entry point of the subpixel families.
+pub const wgsl_dual_fragment_entry = "fragmentDualMain";
 
 pub fn subpixelFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/text_subpixel.frag.glsl");
+}
+
+pub fn ttHintedSubpixelFragGlsl330() [:0]const u8 {
+    return @embedFile("generated/glsl330/tt_hinted_text_subpixel.frag.glsl");
+}
+
+pub fn autohintSubpixelFragGlsl330() [:0]const u8 {
+    return @embedFile("generated/glsl330/autohint_subpixel.frag.glsl");
+}
+
+pub fn subpixelFragWgsl() [:0]const u8 {
+    return @embedFile("generated/wgsl/text_subpixel.frag.wgsl");
+}
+
+pub fn ttHintedSubpixelFragWgsl() [:0]const u8 {
+    return @embedFile("generated/wgsl/tt_hinted_text_subpixel.frag.wgsl");
+}
+
+pub fn autohintSubpixelFragWgsl() [:0]const u8 {
+    return @embedFile("generated/wgsl/autohint_subpixel.frag.wgsl");
 }
 
 // ── Linear resolve (GL hosts only: fullscreen seed/encode pass) ──
@@ -304,6 +343,14 @@ pub fn subpixelFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/text_subpixel.frag.hlsl");
 }
 
+pub fn ttHintedSubpixelFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/tt_hinted_text_subpixel.frag.hlsl");
+}
+
+pub fn autohintSubpixelFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/autohint_subpixel.frag.hlsl");
+}
+
 pub fn textSampleFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/text_sample.frag.hlsl");
 }
@@ -350,6 +397,16 @@ pub fn subpixelFragMsl() [:0]const u8 {
     return @embedFile("generated/msl/text_subpixel.frag.metal");
 }
 
+/// Same plain-MRT caveat as subpixelFragMsl.
+pub fn ttHintedSubpixelFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/tt_hinted_text_subpixel.frag.metal");
+}
+
+/// Same plain-MRT caveat as subpixelFragMsl.
+pub fn autohintSubpixelFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/autohint_subpixel.frag.metal");
+}
+
 pub fn textSampleFragMsl() [:0]const u8 {
     return @embedFile("generated/msl/text_sample.frag.metal");
 }
@@ -370,6 +427,10 @@ const raw_autohint_frag_spv = @embedFile("generated/spirv/autohint.frag.spv");
 const aligned_autohint_frag_spv: [raw_autohint_frag_spv.len]u8 align(4) = raw_autohint_frag_spv.*;
 const raw_subpixel_frag_spv = @embedFile("generated/spirv/text_subpixel.frag.spv");
 const aligned_subpixel_frag_spv: [raw_subpixel_frag_spv.len]u8 align(4) = raw_subpixel_frag_spv.*;
+const raw_tt_hinted_subpixel_frag_spv = @embedFile("generated/spirv/tt_hinted_text_subpixel.frag.spv");
+const aligned_tt_hinted_subpixel_frag_spv: [raw_tt_hinted_subpixel_frag_spv.len]u8 align(4) = raw_tt_hinted_subpixel_frag_spv.*;
+const raw_autohint_subpixel_frag_spv = @embedFile("generated/spirv/autohint_subpixel.frag.spv");
+const aligned_autohint_subpixel_frag_spv: [raw_autohint_subpixel_frag_spv.len]u8 align(4) = raw_autohint_subpixel_frag_spv.*;
 const raw_text_sample_frag_spv = @embedFile("generated/spirv/text_sample.frag.spv");
 const aligned_text_sample_frag_spv: [raw_text_sample_frag_spv.len]u8 align(4) = raw_text_sample_frag_spv.*;
 
@@ -402,6 +463,14 @@ pub fn autohintSpv(comptime stage: Stage) []align(4) const u8 {
 
 pub fn subpixelFragSpv() []align(4) const u8 {
     return &aligned_subpixel_frag_spv;
+}
+
+pub fn ttHintedSubpixelFragSpv() []align(4) const u8 {
+    return &aligned_tt_hinted_subpixel_frag_spv;
+}
+
+pub fn autohintSubpixelFragSpv() []align(4) const u8 {
+    return &aligned_autohint_subpixel_frag_spv;
 }
 
 pub fn textSampleFragSpv() []align(4) const u8 {
@@ -453,13 +522,34 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_layer_tex_name) != null);
     }
     try std.testing.expect(std.mem.indexOf(u8, autohintWgsl(.vertex), "fn " ++ wgsl_vertex_entry) != null);
-    // Subpixel: dual-source output qualifiers must survive to the GL 3.3
-    // artifact (SPIRV-Cross leaves the index-0 output implicit — the GL
-    // default — and qualifies only the blend output), and the SPIR-V must
-    // exist.
-    try std.testing.expect(std.mem.indexOf(u8, subpixelFragGlsl330(), "layout(location = 0) out") != null);
-    try std.testing.expect(std.mem.indexOf(u8, subpixelFragGlsl330(), "layout(location = 0, index = 1) out") != null);
-    try std.testing.expect(std.mem.readInt(u32, subpixelFragSpv()[0..4], .little) == 0x0723_0203);
+    // Subpixel families: dual-source output qualifiers must survive to the
+    // GL 3.3 artifacts (SPIRV-Cross leaves the index-0 output implicit —
+    // the GL default — and qualifies only the blend output), the SPIR-V
+    // must exist, and the WGSL artifacts must carry BOTH entries (plain
+    // MRT fragmentMain + the prelude-injected dual-source entry with the
+    // dual_source_blending extension enabled).
+    inline for (.{ subpixelFragGlsl330(), ttHintedSubpixelFragGlsl330(), autohintSubpixelFragGlsl330() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0) out") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0, index = 1) out") != null);
+    }
+    inline for (.{ subpixelFragSpv(), ttHintedSubpixelFragSpv(), autohintSubpixelFragSpv() }) |spv| {
+        try std.testing.expect(std.mem.readInt(u32, spv[0..4], .little) == 0x0723_0203);
+    }
+    inline for (.{ subpixelFragWgsl(), ttHintedSubpixelFragWgsl(), autohintSubpixelFragWgsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "enable dual_source_blending;") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "fn " ++ wgsl_fragment_entry) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "fn " ++ wgsl_dual_fragment_entry) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "@blend_src(1)") != null);
+    }
+    inline for (.{ ttHintedSubpixelFragHlsl(), autohintSubpixelFragHlsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "SV_Target0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "SV_Target1") != null);
+    }
+    inline for (.{ ttHintedSubpixelFragMsl(), autohintSubpixelFragMsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[color(0)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[color(1)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "index(1)") == null);
+    }
     // Text-sample canonical artifacts (consumer migration is stage C).
     try std.testing.expect(std.mem.readInt(u32, textSampleFragSpv()[0..4], .little) == 0x0723_0203);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragWgsl(), "fn " ++ wgsl_fragment_entry) != null);

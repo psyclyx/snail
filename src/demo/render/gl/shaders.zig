@@ -89,6 +89,8 @@ pub const Gl330 = struct {
     pub const native_autohint_vertex_shader = slang_gen.autohintGlsl330(.vertex);
     pub const native_autohint_fragment_shader = slang_gen.autohintGlsl330(.fragment);
     pub const native_subpixel_fragment_shader = slang_gen.subpixelFragGlsl330();
+    pub const native_tt_hinted_subpixel_fragment_shader = slang_gen.ttHintedSubpixelFragGlsl330();
+    pub const native_autohint_subpixel_fragment_shader = slang_gen.autohintSubpixelFragGlsl330();
     pub const native_linear_resolve_vertex_shader = slang_gen.linearResolveGlsl330(.vertex);
     pub const native_linear_resolve_fragment_shader = slang_gen.linearResolveGlsl330(.fragment);
 };

@@ -68,13 +68,32 @@ pub fn drawState(width: u32, height: u32) @import("snail-raster").DrawState {
 /// `drawState` with an explicit coverage-transfer exponent (the demo's
 /// hinting-comparison view uses 0.55; screenshots default to 1.0).
 pub fn drawStateExp(width: u32, height: u32, exponent: f32) @import("snail-raster").DrawState {
+    return drawStateRaster(width, height, exponent, .none);
+}
+
+/// Fully explicit raster options: exponent + AA policy. Backends without a
+/// dual-source path (GLES 3.0) render a non-none order as grayscale.
+pub fn drawStateRaster(width: u32, height: u32, exponent: f32, subpixel_order: raster.SubpixelOrder) @import("snail-raster").DrawState {
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{
         .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
-        .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = exponent } },
+        .raster = .{ .subpixel_order = subpixel_order, .coverage_transfer = .{ .exponent = exponent } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
+}
+
+/// Screenshot-tool knob: parse `SNAIL_SUBPIXEL` (rgb|bgr|vrgb|vbgr) into an
+/// AA policy; unset or unknown values mean grayscale.
+pub fn subpixelOrderFromEnv() raster.SubpixelOrder {
+    const value = std.c.getenv("SNAIL_SUBPIXEL") orelse return .none;
+    const span = std.mem.span(value);
+    if (std.mem.eql(u8, span, "rgb")) return .rgb;
+    if (std.mem.eql(u8, span, "bgr")) return .bgr;
+    if (std.mem.eql(u8, span, "vrgb")) return .vrgb;
+    if (std.mem.eql(u8, span, "vbgr")) return .vbgr;
+    std.debug.print("unknown SNAIL_SUBPIXEL '{s}' (rgb|bgr|vrgb|vbgr); rendering grayscale\n", .{span});
+    return .none;
 }
 
 /// Sum of the shape counts for both pictures in the scene.
@@ -117,6 +136,8 @@ pub const CpuOptions = struct {
     /// Coverage-transfer exponent — match the demo's compare view (0.55) when
     /// diffing hinting; leave at 1.0 for a faithful linear-coverage capture.
     coverage_exponent: f32 = 1.0,
+    /// AA policy for the draw (LCD subpixel when not .none).
+    subpixel_order: raster.SubpixelOrder = .none,
 };
 
 /// CPU end-to-end into a caller-owned buffer of the given `format` (stride =
@@ -195,7 +216,7 @@ pub fn renderCpuToPixels(
     var renderer = raster.Renderer.init(pixels.ptr, width, height, stride);
     try raster.draw(
         &renderer,
-        drawStateExp(width, height, opts.coverage_exponent),
+        drawStateRaster(width, height, opts.coverage_exponent, opts.subpixel_order),
         .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
         null,
@@ -227,6 +248,9 @@ pub const GlOptions = struct {
     max_images: u32 = 8,
     max_image_width: u32 = 256,
     max_image_height: u32 = 256,
+    /// AA policy for the draw (LCD subpixel when not .none; GLES 3.0 has
+    /// no dual-source blending and renders it as grayscale).
+    subpixel_order: raster.SubpixelOrder = .none,
 };
 
 const GL_SRGB8_ALPHA8: gl.GLint = 0x8C43;
@@ -331,7 +355,7 @@ pub fn renderGlToPixels(
     renderer.state.beginDraw();
     try renderer.state.draw(
         allocator,
-        drawState(width, height),
+        drawStateRaster(width, height, 1.0, opts.subpixel_order),
         .{ .instances = instances[0..e.instances_len], .batches = batches[0..e.batches_len] },
         &.{&cache},
     );

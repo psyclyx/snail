@@ -94,7 +94,9 @@ pub const Renderer = struct {
             self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family), depth_test);
         }
         if (self.supports_dual_src) {
-            self.pipelines[@intFromEnum(contract.Family.subpixel)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(.subpixel), depth_test);
+            for ([_]contract.Family{ .subpixel, .tt_hinted_subpixel, .autohint_subpixel }) |family| {
+                self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family), depth_test);
+            }
         }
 
         self.ibo = try HostBuffer.init(ctx, @sizeOf(@TypeOf(contract.QUAD_INDICES)), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
@@ -147,7 +149,7 @@ pub const Renderer = struct {
 
         for (batches) |batch| {
             std.debug.assert(@as(usize, batch.first_instance) + batch.instance_count <= instances.len);
-            const mode: contract.TextRenderMode = if (batch.kind == .regular)
+            const mode: contract.TextRenderMode = if (contract.kindHasSubpixelFamily(batch.kind))
                 contract.textRenderMode(draw_state, self.supports_dual_src)
             else
                 .grayscale;

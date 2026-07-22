@@ -24,27 +24,20 @@ const render_state = @import("render-state");
 const vertex = snail.render.records;
 const vulkan_types = @import("vulkan_types");
 const vk_shaders = @import("vulkan_shaders");
+const snail_shaders = @import("snail_shaders");
 
 pub const vk = vulkan_types.vk;
 
 // ── Push constants ──
 
-/// Per-draw push-constant block. `extern` + fixed 96-byte size to match the
-/// GLSL declaration in the compiled shader modules.
-pub const PushConstants = extern struct {
-    mvp: [16]f32, // mat4, column-major
-    viewport: [2]f32,
-    subpixel_order: i32 = 1, // 1=RGB, 2=BGR, 3=VRGB, 4=VBGR
-    output_srgb: i32 = 0, // 0 = emit linear, 1 = sRGB-encode before write
-    layer_base: i32 = 0,
-    coverage_exponent: f32 = 1.0,
-    dither_scale: f32 = 1.0 / 255.0, // gradient dither amplitude; 0 for float targets
-    mask_output: i32 = 0, // 1 = single-channel mask target: emit painted alpha
-};
-
-comptime {
-    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
-}
+/// Per-draw push-constant block: the machine-derived layout from slangc
+/// reflection over the family compiles (`snail_shaders.reflection`) — the
+/// CPU side can't drift from what the shaders read. Semantics of the
+/// fields: mvp column-major; subpixel_order 0=none 1=RGB 2=BGR 3=VRGB
+/// 4=VBGR; output_srgb 0=emit linear 1=sRGB-encode before write;
+/// dither_scale is the gradient dither amplitude (0 for float targets);
+/// mask_output 1 = single-channel mask target (emit painted alpha).
+pub const PushConstants = snail_shaders.reflection.PushConstants;
 
 /// Size of the push-constant range the caller's pipeline layout must declare.
 pub const PUSH_CONSTANT_SIZE: u32 = @sizeOf(PushConstants);
@@ -132,6 +125,8 @@ pub const frag_tt_hinted_native_spv = vk_shaders.frag_tt_hinted_native_spv;
 pub const vert_autohint_native_spv = vk_shaders.vert_autohint_native_spv;
 pub const frag_autohint_native_spv = vk_shaders.frag_autohint_native_spv;
 pub const frag_subpixel_native_spv = vk_shaders.frag_subpixel_native_spv;
+pub const frag_tt_hinted_subpixel_native_spv = vk_shaders.frag_tt_hinted_subpixel_native_spv;
+pub const frag_autohint_subpixel_native_spv = vk_shaders.frag_autohint_subpixel_native_spv;
 
 // ── Blend ──
 
@@ -160,9 +155,10 @@ pub fn blendAttachment(mode: Blend) vk.VkPipelineColorBlendAttachmentState {
 
 // ── Pipeline recipes ──
 
-/// A shape family the caller builds one pipeline for. `subpixel` is the LCD
-/// variant of regular text; the rest map 1:1 to `ShapeKind`.
-pub const Family = enum { text, colr, path, tt_hinted_text, autohint, subpixel };
+/// A shape family the caller builds one pipeline for. The `*subpixel`
+/// families are the LCD dual-source variants of the three text kinds
+/// (regular, TT-hinted, autohint); the rest map 1:1 to `ShapeKind`.
+pub const Family = enum { text, colr, path, tt_hinted_text, autohint, subpixel, tt_hinted_subpixel, autohint_subpixel };
 
 /// The frag module + blend the caller's pipeline for `family` must use. Vertex
 /// input, descriptor-set layout and push constants are the same for all.
@@ -183,14 +179,17 @@ pub fn recipe(family: Family) PipelineRecipe {
         .tt_hinted_text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_tt_hinted_native_spv, .blend = .premultiplied },
         .autohint => .{ .vert_spv = vert_autohint_native_spv, .frag_spv = frag_autohint_native_spv, .blend = .premultiplied },
         .subpixel => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_subpixel_native_spv, .blend = .dual_source, .requires_dual_src_blend = true },
+        .tt_hinted_subpixel => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_tt_hinted_subpixel_native_spv, .blend = .dual_source, .requires_dual_src_blend = true },
+        .autohint_subpixel => .{ .vert_spv = vert_autohint_native_spv, .frag_spv = frag_autohint_subpixel_native_spv, .blend = .dual_source, .requires_dual_src_blend = true },
     };
 }
 
-/// The subpixel decision for regular text: `grayscale` uses the `.text`
-/// pipeline, `subpixel_dual_source` uses `.subpixel` (dual-source blend).
+/// The subpixel decision for a text run (regular, TT-hinted, or autohint):
+/// `grayscale` uses the kind's premultiplied pipeline,
+/// `subpixel_dual_source` its dual-source LCD variant.
 pub const TextRenderMode = enum { grayscale, subpixel_dual_source };
 
-/// Choose the render mode for a regular-text run, matching the reference
+/// Choose the render mode for a text run, matching the reference
 /// renderer. Returns `.grayscale` unless subpixel is requested (`draw_state`'s
 /// subpixel order) and `supports_dual_src` is true. The caller passes the
 /// result to `familyForKind` and to
@@ -205,17 +204,34 @@ pub fn textRenderMode(
     return .grayscale;
 }
 
-/// The family whose pipeline draws a segment. Non-regular kinds map 1:1; regular
-/// text picks `.text` or `.subpixel` from `regular_mode` (see `textRenderMode`).
-pub fn familyForKind(kind: vertex.ShapeKind, regular_mode: TextRenderMode) Family {
+/// Whether a shape kind participates in the text render-mode decision
+/// (i.e. has an LCD dual-source family). colr/path always stay
+/// premultiplied.
+pub fn kindHasSubpixelFamily(kind: vertex.ShapeKind) bool {
     return switch (kind) {
-        .regular => switch (regular_mode) {
+        .regular, .tt_hinted_text, .autohint => true,
+        .colr, .path => false,
+    };
+}
+
+/// The family whose pipeline draws a segment. colr/path map 1:1; the text
+/// kinds pick their premultiplied or dual-source family from `text_mode`
+/// (see `textRenderMode`).
+pub fn familyForKind(kind: vertex.ShapeKind, text_mode: TextRenderMode) Family {
+    return switch (kind) {
+        .regular => switch (text_mode) {
             .grayscale => .text,
             .subpixel_dual_source => .subpixel,
         },
         .colr => .colr,
         .path => .path,
-        .tt_hinted_text => .tt_hinted_text,
-        .autohint => .autohint,
+        .tt_hinted_text => switch (text_mode) {
+            .grayscale => .tt_hinted_text,
+            .subpixel_dual_source => .tt_hinted_subpixel,
+        },
+        .autohint => switch (text_mode) {
+            .grayscale => .autohint,
+            .subpixel_dual_source => .autohint_subpixel,
+        },
     };
 }

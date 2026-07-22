@@ -559,7 +559,7 @@ pub const Renderer = struct {
     fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: *const vertex.Instance, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
         const decoded = decodeBatchInstance(inst, scene_to_pixel);
         if (decoded.isSpecialLayer()) {
-            self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base);
+            self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base, allow_subpixel);
         } else {
             self.renderRegularBatchInstance(prepared, decoded, texture_layer_base, allow_subpixel);
         }
@@ -584,7 +584,7 @@ pub const Renderer = struct {
         self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), allow_subpixel);
     }
 
-    fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32) void {
+    fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const info_x = render_abi.glyphLocationX(gz);
@@ -595,11 +595,11 @@ pub const Renderer = struct {
         const entry = resolved.entry;
         const special_kind = render_abi.specialGlyphWordKind(gw) orelse .colr;
         if (special_kind == .tt_hinted_text) {
-            self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
+            self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y, allow_subpixel);
             return;
         }
         if (special_kind == .autohint) {
-            self.renderAutohintBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y);
+            self.renderAutohintBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y, allow_subpixel);
             return;
         }
 
@@ -618,6 +618,7 @@ pub const Renderer = struct {
         entry: *const LayerInfoEntry,
         info_x: u16,
         info_y: u16,
+        allow_subpixel: bool,
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
@@ -639,7 +640,7 @@ pub const Renderer = struct {
             be,
             decoded.transform,
             multiplyLinearColor(decoded.color, decoded.tint),
-            false,
+            allow_subpixel,
         );
     }
 
@@ -651,6 +652,7 @@ pub const Renderer = struct {
         entry: *const LayerInfoEntry,
         info_x: u16,
         info_y: u16,
+        allow_subpixel: bool,
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const off = (@as(usize, info_y) * entry.width + @as(usize, info_x)) * 4;
@@ -676,6 +678,7 @@ pub const Renderer = struct {
             entry.data,
             off,
             policy,
+            allow_subpixel,
         );
     }
 
@@ -1576,7 +1579,7 @@ pub const Renderer = struct {
     }
 
     /// Fit the immutable analysis once for this draw, then render the shared
-    /// base glyph through caller-owned transient knots. Grayscale only.
+    /// base glyph through caller-owned transient knots.
     fn renderTransformedAutohintGlyph(
         self: *Renderer,
         page: anytype,
@@ -1587,6 +1590,7 @@ pub const Renderer = struct {
         record_data: []const f32,
         record_off: usize,
         policy: autohint_policy.AutohintPolicy,
+        allow_subpixel: bool,
     ) void {
         const scale = Vec2.new(
             @sqrt(transform.xx * transform.xx + transform.yx * transform.yx),
@@ -1599,7 +1603,7 @@ pub const Renderer = struct {
             .y = autohint_record.yFeatures(record_data, record_off),
             .left = autohint_record.glyphLeft(record_data, record_off),
         }, autohint_record.fontFeatures(record_data, record_off), policy, scale, &x_out, &y_out);
-        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, false, .{ .x = fitted.x, .y = fitted.y });
+        self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, .{ .x = fitted.x, .y = fitted.y });
     }
 
     fn renderTransformedGlyphMaybeHinted(
@@ -1747,13 +1751,15 @@ pub const Renderer = struct {
                 // = ppe_screen / inv_slope). Identity when there's no warp.
                 var sample = display_local;
                 var sppe = ppe;
+                var warp_slope = Vec2.new(1.0, 1.0);
                 if (warp) |w| {
                     const sx = autohint_warp.inverseWarp(w.x, display_local.x);
                     const sy = autohint_warp.inverseWarp(w.y, display_local.y);
                     sample = .{ .x = sx.base, .y = sy.base };
                     sppe = .{ .x = ppe.x / sx.inv_slope, .y = ppe.y / sy.inv_slope };
+                    warp_slope = .{ .x = sx.inv_slope, .y = sy.inv_slope };
                 }
-                if (!allow_subpixel or self.subpixel_order == .none or warp != null) {
+                if (!allow_subpixel or self.subpixel_order == .none) {
                     // Glyphs from fonts use non-zero winding by convention.
                     const raw_cov = if (row_state_ready)
                         evalGlyphCoverageRowH(page, sample.x, sample.y, &row_state, sppe.x, sppe.y, be, band_max_h, band_max_v, .non_zero)
@@ -1776,10 +1782,23 @@ pub const Renderer = struct {
                     if (max3(cov.rgb) < one_lsb_8bit) continue;
                     self.blendSubpixelPixel(row, col, color, cov.rgb, cov.alpha);
                 } else {
+                    // Subpixel under a warp linearizes around the pixel
+                    // center: evaluate the 7 lanes from the warped sample
+                    // with the lane step and footprint scaled by the local
+                    // inverse-warp slope per axis — the same approximation
+                    // the GPU fragment applies to its derivatives
+                    // (autohint_subpixel_frag.slang). Identity when no
+                    // warp is active (`sample` == `display_local`,
+                    // slope 1).
+                    var plan = subpixel_plan;
+                    if (warp != null) {
+                        plan.step = .{ .x = plan.step.x * warp_slope.x, .y = plan.step.y * warp_slope.y };
+                        plan.ppe = .{ .x = plan.ppe.x / warp_slope.x, .y = plan.ppe.y / warp_slope.y };
+                    }
                     const cov = self.applySubpixelCoverageTransfer(evalGlyphCoverageSubpixel(
                         page,
-                        display_local,
-                        subpixel_plan,
+                        sample,
+                        plan,
                         be,
                         band_max_h,
                         band_max_v,

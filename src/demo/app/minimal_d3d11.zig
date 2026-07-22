@@ -41,24 +41,10 @@ const ppem: u32 = 34 * 64;
 
 const slang_gen = @import("snail_shaders");
 
-/// The Vulkan push-constant block as a D3D11 constant buffer (the cbuffer
-/// packing of `SnailPushConstants` matches the C struct's offsets; 96 bytes
-/// is a legal multiple of 16). Must stay in sync with the Vulkan contract's
-/// `PushConstants`.
-const PushConstants = extern struct {
-    mvp: [16]f32,
-    viewport: [2]f32,
-    subpixel_order: i32 = 0,
-    output_srgb: i32 = 0, // hardware-sRGB render target: emit linear
-    layer_base: i32 = 0,
-    coverage_exponent: f32 = 1.0,
-    dither_scale: f32 = 0.0,
-    mask_output: i32 = 0,
-};
-
-comptime {
-    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
-}
+/// The parameter block as a D3D11 constant buffer — the machine-derived
+/// layout from slangc reflection (the cbuffer packing matches the C
+/// struct's offsets; the size is a legal multiple of 16).
+const PushConstants = slang_gen.reflection.PushConstants;
 
 fn check(hr: c.HRESULT, what: []const u8) !void {
     if (hr < 0) {
@@ -595,6 +581,12 @@ pub fn main() !void {
     const push_constants = PushConstants{
         .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
         .viewport = .{ width, height },
+        .subpixel_order = 0,
+        .output_srgb = 0, // hardware-sRGB render target: emit linear
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+        .dither_scale = 0.0,
+        .mask_output = 0,
     };
     const cbuffer_desc = c.D3D11_BUFFER_DESC{
         .ByteWidth = @sizeOf(PushConstants),

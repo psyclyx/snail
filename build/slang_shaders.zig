@@ -239,6 +239,12 @@ pub const families = [_]Family{
     // families/text_subpixel.slang; the plain `fragmentMain` entry keeps
     // MRT locations 0/1. See README-notes for the mangled-name caveat.
     .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
+    // LCD subpixel variants of the hinted text families. Fragment-only:
+    // tt_hinted_text_subpixel pairs with text.vert, autohint_subpixel with
+    // autohint.vert (identical varying interfaces). Same dual-source and
+    // WGSL-prelude story as text_subpixel.
+    .{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
+    .{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
     // Canonical artifacts for every target. Desktop GL is a plain
     // `usamplerBuffer` texel buffer. GLES 3.0 has no texel buffers at any
     // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
@@ -372,6 +378,52 @@ fn vulkanStageSpv(b: *std.Build, comptime family: Family, stage: Stage) std.Buil
     return slangcFamily(b, family, stage, &.{"SNAIL_TARGET_VULKAN"}, &.{ "-target", "spirv", "-profile", "spirv_1_3" }, b.fmt("{s}.{s}.spv", .{ family.name, stage.short }));
 }
 
+/// A slang reflection JSON for one family+stage+target (an extra compile:
+/// adding `-reflection-json` to the artifact compiles would churn every
+/// cache key; slangc runs are cheap). Input registration matches
+/// slangcFamily.
+fn stageReflectionJson(b: *std.Build, comptime family: Family, stage: Stage, target_define: []const u8, target_args: []const []const u8, label: []const u8) std.Build.LazyPath {
+    const cmd = b.addSystemCommand(&.{"slangc"});
+    attachSlangcGate(b, &cmd.step);
+    cmd.addArg(b.fmt("-D{s}", .{target_define}));
+    inline for (family.defines) |d| cmd.addArg("-D" ++ d);
+    cmd.addArgs(&.{
+        "-entry",
+        stage.entry,
+        "-stage",
+        stage.stage,
+        "-default-image-format-unknown",
+        "-warnings-disable",
+        "39001",
+        "-I",
+    });
+    cmd.addDirectoryArg(b.path(module_dir));
+    addModuleInputs(b, cmd, module_dir);
+    if (comptime !std.mem.eql(u8, family.dir, module_dir)) addModuleInputs(b, cmd, family.dir);
+    cmd.addFileArg(b.path(family.dir ++ "/" ++ family.source));
+    cmd.addArgs(target_args);
+    cmd.addArg("-reflection-json");
+    const json = cmd.addOutputFileArg(b.fmt("{s}.{s}.{s}.reflection.json", .{ family.name, stage.short, label }));
+    cmd.addArg("-o");
+    _ = cmd.addOutputFileArg(b.fmt("{s}.{s}.{s}.refl.out", .{ family.name, stage.short, label }));
+    return json;
+}
+
+/// Families sharing the SnailPushConstants parameter block; their
+/// reflections feed the generated parameter-ABI module (reflection.zig).
+/// text_sample / linear_resolve / the game material own different
+/// parameter blocks.
+fn familyHasReflectionContract(comptime name: []const u8) bool {
+    return comptime std.mem.eql(u8, name, "text") or
+        std.mem.eql(u8, name, "colr") or
+        std.mem.eql(u8, name, "path") or
+        std.mem.eql(u8, name, "tt_hinted_text") or
+        std.mem.eql(u8, name, "autohint") or
+        std.mem.eql(u8, name, "text_subpixel") or
+        std.mem.eql(u8, name, "tt_hinted_text_subpixel") or
+        std.mem.eql(u8, name, "autohint_subpixel");
+}
+
 /// Compile the native text family to Vulkan SPIR-V (both stages). Used by
 /// the demo Vulkan build for the text pipeline and by `collectArtifacts`
 /// for the module artifact.
@@ -433,6 +485,10 @@ pub const Entry = struct {
 pub const Artifacts = struct {
     library: []const Entry,
     game: []const Entry,
+    /// The generated parameter-ABI module (see
+    /// build/gen_shader_reflection_zig.zig), copied next to the accessor
+    /// root in every scope as `reflection.zig`.
+    reflection_zig: std.Build.LazyPath,
 };
 
 fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), target: Target, sub_path: []const u8, file: std.Build.LazyPath) void {
@@ -467,6 +523,37 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
             .optimize = .Debug,
         }),
     });
+    const wgsl_dual_entry_tool = b.addExecutable(.{
+        .name = "wgsl-gen-dual-entry",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/wgsl_gen_dual_entry.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    // The parameter-ABI generator: every shared-block family's Vulkan-leg
+    // reflection (both stages) plus one WGSL-leg reflection (the uniform
+    // buffer's group/binding) → reflection.zig, laid out next to the
+    // accessor root in every scope. Uniformity across families is asserted
+    // by the tool.
+    const reflection_gen_tool = b.addExecutable(.{
+        .name = "gen-shader-reflection-zig",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/gen_shader_reflection_zig.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
+    const reflection_gen = b.addRunArtifact(reflection_gen_tool);
+    const reflection_zig = reflection_gen.addOutputFileArg("reflection.zig");
+    reflection_gen.addFileArg(stageReflectionJson(b, comptime findFamily("text"), fragment_stage, "SNAIL_TARGET_WGSL", &.{ "-target", "wgsl" }, "wgsl"));
+    inline for (families) |family| {
+        if (comptime familyHasReflectionContract(family.name)) {
+            inline for (family.stages) |stage| {
+                reflection_gen.addFileArg(stageReflectionJson(b, family, stage, "SNAIL_TARGET_VULKAN", &.{ "-target", "spirv", "-profile", "spirv_1_3" }, "vk"));
+            }
+        }
+    }
 
     inline for (families) |family| {
         inline for (family.stages) |stage| {
@@ -481,13 +568,24 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const spv = vulkanStageSpv(b, family, stage);
                 appendEntry(b, list, .spirv, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
 
-                // WGSL — direct target. The subpixel family carries the
-                // prelude-injected dual-source entry (mangled-name
-                // dependent), so its artifact gets a naga validation step;
-                // the other families are runtime-validated by the wgpu
-                // example gates.
-                const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
-                const wgsl_validation: ?*std.Build.Step = if (comptime std.mem.eql(u8, family.name, "text_subpixel"))
+                // WGSL — direct target. The subpixel families' artifacts
+                // then gain their dual-source entry (`fragmentDualMain`,
+                // @blend_src) via wgsl-gen-dual-entry — a mechanical clone
+                // of fragmentMain derived from the emitted text (slangc's
+                // WGSL backend cannot express @blend_src; see the tool's
+                // header) — and get a naga validation step re-proving the
+                // transform. The other families are runtime-validated by
+                // the wgpu example gates.
+                const raw_wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
+                const is_dual_source_family = comptime std.mem.eql(u8, family.name, "text_subpixel") or
+                    std.mem.eql(u8, family.name, "tt_hinted_text_subpixel") or
+                    std.mem.eql(u8, family.name, "autohint_subpixel");
+                const wgsl = if (is_dual_source_family) blk: {
+                    const gen = b.addRunArtifact(wgsl_dual_entry_tool);
+                    gen.addFileArg(raw_wgsl);
+                    break :blk gen.addOutputFileArg("dual-" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
+                } else raw_wgsl;
+                const wgsl_validation: ?*std.Build.Step = if (is_dual_source_family)
                     nagaValidation(b, wgsl)
                 else
                     null;
@@ -553,6 +651,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
     return .{
         .library = library.toOwnedSlice(b.allocator) catch @panic("OOM"),
         .game = game.toOwnedSlice(b.allocator) catch @panic("OOM"),
+        .reflection_zig = reflection_zig,
     };
 }
 
@@ -588,6 +687,9 @@ pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifac
 pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target, run_validations: bool) GeneratedModule {
     const wf = b.addWriteFiles();
     const root = wf.addCopyFile(b.path("src/snail/shader/generated_root.zig"), "root.zig");
+    // The parameter-ABI module rides along in every scope (tiny, and the
+    // reflection compiles are cheap slangc runs).
+    _ = wf.addCopyFile(artifacts.reflection_zig, "reflection.zig");
     for (artifacts.library) |e| {
         if (std.mem.indexOfScalar(Target, targets, e.target) == null) continue;
         _ = wf.addCopyFile(e.file, b.pathJoin(&.{ "generated", e.sub_path }));
@@ -605,6 +707,7 @@ pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Art
 /// consumers embed straight from the build cache via `snail-shaders`.
 pub fn addGenShadersStep(b: *std.Build, artifacts: Artifacts) void {
     const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + spirv-cross + naga)");
+    step.dependOn(&b.addInstallFile(artifacts.reflection_zig, "shaders/reflection.zig").step);
     for (artifacts.library) |e| {
         step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);
         if (e.validate) |v| step.dependOn(v);

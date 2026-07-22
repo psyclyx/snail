@@ -103,6 +103,7 @@ fn createEmbedVulkanModule(
     render_state_mod: *std.Build.Module,
     vk_shaders: *std.Build.Module,
     vulkan_types_mod: *std.Build.Module,
+    shaders_reflection_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
         .root_source_file = b.path("src/demo/render/vulkan/root.zig"),
@@ -114,6 +115,7 @@ fn createEmbedVulkanModule(
             .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "vulkan_shaders", .module = vk_shaders },
             .{ .name = "vulkan_types", .module = vulkan_types_mod },
+            .{ .name = "snail_shaders", .module = shaders_reflection_mod },
         },
     });
 }
@@ -320,6 +322,11 @@ const ProjectModules = struct {
     shaders_wgsl: *std.Build.Module,
     shaders_hlsl: *std.Build.Module,
     shaders_msl: *std.Build.Module,
+    /// Empty-target scope: root.zig + the generated parameter-ABI module
+    /// (reflection.zig) only. For consumers that need the reflected
+    /// PushConstants/bindings but embed no artifacts (the Vulkan
+    /// reference renderer — its SPIR-V arrives via `vulkan_shaders`).
+    shaders_reflection: *std.Build.Module,
     /// The game material family's build-time GL dialects (anonymous-import
     /// wiring via addGameShaderGl).
     game_material_gl: []const slang_shaders.Entry,
@@ -422,7 +429,7 @@ fn addScreenshotSteps(
     const release_render_state_mod = createRenderStateModule(b, config.target, .ReleaseFast, release_snail_mod);
     const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
-    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types);
+    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
     const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.shaders_gl);
 
     // CPU screenshot.
@@ -875,7 +882,7 @@ fn addInteractiveDemoStep(
     // override (e.g. `-Doptimize=Debug` for debugging) still wins.
     const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
     const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.shaders_gl);
-    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types);
+    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
     const demo_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
@@ -974,7 +981,7 @@ fn addGameDemoStep(
     // vk_scene uses the reference caller renderer; the windowed Vulkan
     // platform is a relative file compiled into game_mod (its own vk cImport
     // via linkSystemLibrary). game/game_shaders.zig gets the material SPIR-V.
-    game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types));
+    game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection));
     game_mod.addImport("vulkan_types", modules.demo_vulkan_types);
     addGameShaderSpirv(b, game_mod);
     game_mod.linkSystemLibrary("vulkan", .{});
@@ -1325,6 +1332,13 @@ pub fn build(b: *std.Build) void {
     // Consumers use `dependency.namedLazyPath(...)` for slangc `-I` arguments;
     // the paths stay dependency-relative instead of assuming their build root.
     b.addNamedLazyPath("snail_glsl", b.path("src/snail/shader/glsl"));
+    // The native-Slang module catalog. Callers authoring their own Slang
+    // families `import` snail's caller-facing modules (see the "Caller
+    // integration" section of src/snail/shader/slang/README-notes for the
+    // public module list and the pattern) and pass this path to slangc via
+    // `-I`; the in-tree reference is the game demo's material family
+    // (src/demo/game/slang/game_material.slang).
+    b.addNamedLazyPath("snail_slang", b.path(slang_shaders.module_dir));
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config);
     const render_state_mod = createRenderStateModule(b, config.target, config.optimize, snail_mod);
@@ -1359,6 +1373,7 @@ pub fn build(b: *std.Build) void {
         .shaders_wgsl = slang_shaders.createGeneratedModule(b, "snail-shaders-wgsl", shader_artifacts, &.{.wgsl}).module,
         .shaders_hlsl = slang_shaders.createGeneratedModule(b, "snail-shaders-hlsl", shader_artifacts, &.{.hlsl}).module,
         .shaders_msl = slang_shaders.createGeneratedModule(b, "snail-shaders-msl", shader_artifacts, &.{.msl}).module,
+        .shaders_reflection = slang_shaders.createGeneratedModule(b, "snail-shaders-reflection", shader_artifacts, &.{}).module,
         .game_material_gl = shader_artifacts.game,
     };
 

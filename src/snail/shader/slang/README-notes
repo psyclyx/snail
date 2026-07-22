@@ -750,3 +750,81 @@ zig-out/shaders/game/ (game material) for inspection. It never writes into
 src/. The artifact-contract tests (binding names, entries, no #line, ...)
 still live in the accessor file's test block and run under `zig build test`
 as a compilation of the laid-out module root.
+
+Caller integration (2026-07-22): the module catalog is caller API
+=================================================================
+A caller authoring their own Slang shaders integrates at one of two tiers.
+
+Tier 1 — draw text, no shading composition: consume the generated
+artifacts (`snail-shaders-<target>` scoped modules / the generated_root
+accessors) and the generated parameter ABI that ships next to them
+(`reflection.PushConstants` / `reflection.binding` — machine-derived per
+build, not hand-pinned numbers), plus snail's data ABI (the instance
+stream at locations 0..8, format/abi.zig). The caller's own shaders
+being Slang is irrelevant; snail's families are opaque artifacts.
+
+Tier 2 — compose custom shading over snail's evaluators: author a family
+file and import snail's modules. The catalog path is exported by
+build.zig as the named lazy path `snail_slang`
+(`dependency.namedLazyPath("snail_slang")` → slangc `-I`). The load-
+bearing design property: the shared modules declare NO resource bindings
+— textures and scalars are function parameters; global bindings, the
+parameter block, and entry points live in the family file the CALLER
+owns. Wire your own bindings from slang reflection over your own
+compile; the only ABI inherited from snail is the CPU-side byte
+contracts (instance-record stride — comptime-assert against
+snail.render.records.BYTES_PER_INSTANCE like game_material does — and
+the render-ABI constants pinned by src/snail/format/abi.zig). The
+in-tree reference consumer is src/demo/game/slang/game_material.slang.
+
+Public (caller-facing) modules — import these:
+  render_abi       shared ABI constants (versioned via format/abi.zig)
+  color_common     sRGB transfer + premultiply helpers
+  coverage_common  root-code / band-span / coverage-transfer machinery
+  text_coverage    grayscale glyph coverage evaluator
+  subpixel_body    LCD 7-tap subpixel evaluator + dual-source packing
+  text_sample      text-as-material sampling (ISnailTextRecords impls)
+
+Internal modules — importable but NOT a stability surface (they track
+snail's special-layer record layouts and may change with the render-ABI
+version): vertex, text_main, path_body, tt_hinted, tt_hinted_subpixel,
+autohint_warp, autohint_vertex, autohint_frag, autohint_subpixel_frag,
+and every families/*.slang (those own snail's shipped bindings). Promote
+a module to the public list deliberately, with this file as the record.
+
+Dual-source WGSL + contract verification (2026-07-22): tooling upgrade
+======================================================================
+The __requirePrelude interop (spike item 3 above) is RETIRED. The subpixel
+families' WGSL dual-source entry is now synthesized POST-GENERATION by
+build/wgsl_gen_dual_entry.zig: it clones the emitted `fragmentMain` as
+`fragmentDualMain` with a @blend_src output struct that reuses the same
+field names (so the body clones verbatim), and prepends the enable
+directive. No slang-internal mangled name is ever written by hand — the
+tool anchors only on the entry name and its output struct, both stable
+API-level facts of the artifact. Rendering is byte-identical to the
+prelude-era artifacts (verified on the wgpu subpixel frame). naga
+validation of the patched artifact remains the tripwire for the
+transform's assumptions (single @fragment entry, two-field located output
+struct). This deliberately reinstates a patch-class tool: mechanical
+derivation beats hand-maintained mangling, and unlike the retired
+GLSL-side patchers it transforms structure, not generated identifier text.
+
+Reflection IS the parameter ABI (boundary shift, same day): the pinned
+contract constants and the interim verifier tool are GONE. snail ships
+Slang source plus the machinery to make it work; the parameter-passing
+ABI (block layout, binding slots) is derived per build from `slangc
+-reflection-json` by build/gen_shader_reflection_zig.zig into a
+generated `reflection.zig` (PushConstants extern struct with reflected-
+offset comptime asserts + binding slot consts), laid out next to the
+accessor root in EVERY snail-shaders scope (plus the empty-target
+`snail-shaders-reflection` scope for consumers that embed no artifacts,
+e.g. the Vulkan reference renderer). contract.zig, the GL UBO block, and
+all three minimal demos consume it — the hand-mirrored copies are
+deleted. The generator asserts all shared-block families agree on layout
+and slots. What snail still OWNS is the data ABI: instance-stream
+semantics, atlas texel layouts, blend semantics (format/abi.zig + the
+emit/record contracts). Residue that stays pinned + textually tested:
+the SPIRV-Cross-minted GL names (SnailPushConstants_std140,
+SPIRV_Cross_Combined*) — no reflection surface reaches them — and
+text_sample / linear_resolve / game_material, which own different
+parameter blocks.

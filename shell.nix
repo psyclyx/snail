@@ -13,14 +13,26 @@ let
     tar --strip-components=1 -xf ${pkgs.harfbuzz.src} -C $out
   '';
 
+  # Upstream wgpu-native Linux (x86_64) release, used on Linux instead of
+  # the nixpkgs build (27.0.4): naga < 29 rejects a module that carries
+  # both a plain-MRT fragment entry and a @blend_src dual-source entry —
+  # exactly the shape of the subpixel WGSL artifacts — while naga 29's
+  # per-entry validation accepts it (matching the wgpu-utils naga CLI
+  # 29.0.1 that gates generation). include/ + lib/ tree, same layout the
+  # Windows zip ships.
+  wgpuNativeLinux = pkgs.fetchzip {
+    url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-linux-x86_64-release.zip";
+    sha256 = "sha256-/EJ6yy1PETqcny5d2ZM2ZJ5VgVTDvqGaSSmIvqamcwM=";
+    stripRoot = false;
+  };
+
   # Upstream wgpu-native Windows (x86_64-gnu) release: mingw import lib +
   # wgpu_native.dll for the cross-built Windows WebGPU gate
-  # (`install-windows-gates` in build.zig). Version-matched to the nixpkgs
-  # wgpu-native used by the native `run-minimal-wgpu` (27.0.4.0), so both
-  # legs exercise the same wgpu.
+  # (`install-windows-gates` in build.zig). Version-matched to the Linux
+  # release above, so both legs exercise the same wgpu.
   wgpuNativeWindows = pkgs.fetchzip {
-    url = "https://github.com/gfx-rs/wgpu-native/releases/download/v27.0.4.0/wgpu-windows-x86_64-gnu-release.zip";
-    sha256 = "0fdjfhha27mfwvqcnyvy8c0yj8gjd4782yfm7sq3pc1al4m52cil";
+    url = "https://github.com/gfx-rs/wgpu-native/releases/download/v29.0.1.1/wgpu-windows-x86_64-gnu-release.zip";
+    sha256 = "sha256-tJzZp6fU48rlaIZuXRteVyH+2mp7sPHGaDKVoyWMB4M=";
     stripRoot = false;
   };
 
@@ -82,17 +94,20 @@ pkgs.mkShell ({
   HARFBUZZ_SRC = "${harfbuzzSrc}";
 
   # wgpu-native ships no pkg-config file; build.zig picks these up for the
-  # minimal WebGPU example (all platforms — Metal backend on macOS).
+  # minimal WebGPU example. macOS keeps the nixpkgs build (27.0.4; the
+  # subpixel dual-source WGSL needs >= 29 and the Metal leg is best-effort
+  # — bump when nixpkgs catches up); Linux overrides both vars below.
   WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
   WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
 } // lib.optionalAttrs stdenv.isLinux {
-  LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
+  WGPU_NATIVE_INCLUDE = "${wgpuNativeLinux}/include";
+  WGPU_NATIVE_LIB = "${wgpuNativeLinux}/lib";
+  LD_LIBRARY_PATH = lib.makeLibraryPath ((with pkgs; [
     libGL
     wayland
     harfbuzz
     vulkan-loader
-    wgpu-native
-  ]);
+  ]) ++ [ wgpuNativeLinux ]);
 
   # The wgpu-native Windows release tree (include/ + lib/ with the mingw
   # import lib and wgpu_native.dll) for the cross-built Windows WebGPU gate.

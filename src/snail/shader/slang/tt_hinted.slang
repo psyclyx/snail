@@ -13,7 +13,7 @@ import color_common;
 import coverage_common;
 import text_coverage;
 
-int2 offsetTtHintedInfoLoc(Texture2D<float4> layer_tex, int2 base, int offset) {
+public int2 offsetTtHintedInfoLoc(Texture2D<float4> layer_tex, int2 base, int offset) {
     uint uw, uh;
     layer_tex.GetDimensions(uw, uh);
     int width = int(uw);

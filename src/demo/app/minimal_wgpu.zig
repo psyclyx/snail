@@ -42,24 +42,11 @@ const ppem: u32 = 34 * 64;
 
 const slang_gen = @import("snail_shaders");
 
-/// The Vulkan push-constant block reshaped as a uniform buffer (std140; the
-/// scalar fields land on the same offsets as the C struct's). Must stay in
-/// sync with `SLANG_ParameterGroup_PushConstants_std140_` in the generated
-/// WGSL and the Vulkan contract's `PushConstants`.
-const PushConstants = extern struct {
-    mvp: [16]f32,
-    viewport: [2]f32,
-    subpixel_order: i32 = 0,
-    output_srgb: i32 = 0, // hardware-sRGB render target: emit linear
-    layer_base: i32 = 0,
-    coverage_exponent: f32 = 1.0,
-    dither_scale: f32 = 0.0,
-    mask_output: i32 = 0,
-};
-
-comptime {
-    if (@sizeOf(PushConstants) != 96) @compileError("PushConstants must be 96 bytes");
-}
+/// The parameter block as a WGSL uniform buffer — the machine-derived
+/// layout from slangc reflection (std140: the scalar fields land on the
+/// same offsets as the C struct's). Bound at
+/// `reflection.binding.wgsl_params_group` / `.wgsl_params_binding`.
+const PushConstants = slang_gen.reflection.PushConstants;
 
 fn sv(s: []const u8) c.WGPUStringView {
     return .{ .data = s.ptr, .length = s.len };
@@ -120,6 +107,10 @@ const Gpu = struct {
     adapter: c.WGPUAdapter,
     device: c.WGPUDevice,
     queue: c.WGPUQueue,
+    /// Device was created with WGPUFeatureName_DualSourceBlending — the
+    /// LCD subpixel pipelines (entry `fragmentDualMain`, @blend_src) are
+    /// available.
+    supports_dual_src: bool,
 
     fn init() !Gpu {
         if (getenv("SNAIL_WGPU_LOG") != null) {
@@ -189,8 +180,18 @@ const Gpu = struct {
             if (info.device.data != null) std.debug.print("adapter: {s} (backend {d})\n", .{ info.device.data[0..info.device.length], info.backendType });
         }
 
+        // Request dual-source blending when the adapter offers it — the
+        // LCD subpixel pipelines need it; everything else falls back to
+        // grayscale like the Vulkan reference renderer.
+        const supports_dual_src = c.wgpuAdapterHasFeature(adapter, c.WGPUFeatureName_DualSourceBlending) != 0;
+        var required_features = [1]c.WGPUFeatureName{c.WGPUFeatureName_DualSourceBlending};
+
         var device_req = DeviceRequest{};
         var device_desc = std.mem.zeroInit(c.WGPUDeviceDescriptor, .{});
+        if (supports_dual_src) {
+            device_desc.requiredFeatureCount = required_features.len;
+            device_desc.requiredFeatures = &required_features;
+        }
         device_desc.uncapturedErrorCallbackInfo = .{
             .nextInChain = null,
             .callback = &onUncapturedError,
@@ -209,7 +210,7 @@ const Gpu = struct {
         errdefer c.wgpuDeviceRelease(device);
 
         const queue = c.wgpuDeviceGetQueue(device) orelse return error.NoQueue;
-        return .{ .instance = instance, .adapter = adapter, .device = device, .queue = queue };
+        return .{ .instance = instance, .adapter = adapter, .device = device, .queue = queue, .supports_dual_src = supports_dual_src };
     }
 
     fn deinit(self: *Gpu) void {
@@ -353,8 +354,14 @@ const Pipelines = struct {
     tt_hint: c.WGPURenderPipeline,
     path: c.WGPURenderPipeline,
     colr: c.WGPURenderPipeline,
+    // LCD dual-source variants of the three text families (null unless the
+    // device has WGPUFeatureName_DualSourceBlending). Their fragment entry
+    // is the prelude-injected `fragmentDualMain` (@blend_src 0/1).
+    regular_subpixel: c.WGPURenderPipeline = null,
+    autohint_subpixel: c.WGPURenderPipeline = null,
+    tt_hint_subpixel: c.WGPURenderPipeline = null,
 
-    fn init(device: c.WGPUDevice, layout: c.WGPUPipelineLayout) !Pipelines {
+    fn init(device: c.WGPUDevice, layout: c.WGPUPipelineLayout, dual_src: bool) !Pipelines {
         // Entry points keep their Slang names (`vertexMain`/`fragmentMain`);
         // fragment-only families pair with the text vertex module.
         const native_text_vert = try createShaderModule(device, slang_gen.textWgsl(.vertex), "snail-text-native-vert");
@@ -372,13 +379,25 @@ const Pipelines = struct {
         const native_colr_frag = try createShaderModule(device, slang_gen.colrFragWgsl(), "snail-colr-native-frag");
         defer c.wgpuShaderModuleRelease(native_colr_frag);
 
-        return .{
-            .regular = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_text_frag, slang_gen.wgsl_fragment_entry, "snail-text"),
-            .autohint = try createPipelineEntries(device, layout, autohint_vert, slang_gen.wgsl_vertex_entry, autohint_frag, slang_gen.wgsl_fragment_entry, "snail-autohint"),
-            .tt_hint = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, tt_frag, slang_gen.wgsl_fragment_entry, "snail-tt-hint"),
-            .path = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_path_frag, slang_gen.wgsl_fragment_entry, "snail-path"),
-            .colr = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_colr_frag, slang_gen.wgsl_fragment_entry, "snail-colr"),
+        var pipelines = Pipelines{
+            .regular = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_text_frag, slang_gen.wgsl_fragment_entry, false, "snail-text"),
+            .autohint = try createPipelineEntries(device, layout, autohint_vert, slang_gen.wgsl_vertex_entry, autohint_frag, slang_gen.wgsl_fragment_entry, false, "snail-autohint"),
+            .tt_hint = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, tt_frag, slang_gen.wgsl_fragment_entry, false, "snail-tt-hint"),
+            .path = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_path_frag, slang_gen.wgsl_fragment_entry, false, "snail-path"),
+            .colr = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_colr_frag, slang_gen.wgsl_fragment_entry, false, "snail-colr"),
         };
+        if (dual_src) {
+            const subpixel_frag = try createShaderModule(device, slang_gen.subpixelFragWgsl(), "snail-subpixel-native-frag");
+            defer c.wgpuShaderModuleRelease(subpixel_frag);
+            const tt_subpixel_frag = try createShaderModule(device, slang_gen.ttHintedSubpixelFragWgsl(), "snail-tt-subpixel-native-frag");
+            defer c.wgpuShaderModuleRelease(tt_subpixel_frag);
+            const autohint_subpixel_frag = try createShaderModule(device, slang_gen.autohintSubpixelFragWgsl(), "snail-autohint-subpixel-native-frag");
+            defer c.wgpuShaderModuleRelease(autohint_subpixel_frag);
+            pipelines.regular_subpixel = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, subpixel_frag, slang_gen.wgsl_dual_fragment_entry, true, "snail-text-subpixel");
+            pipelines.tt_hint_subpixel = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, tt_subpixel_frag, slang_gen.wgsl_dual_fragment_entry, true, "snail-tt-hint-subpixel");
+            pipelines.autohint_subpixel = try createPipelineEntries(device, layout, autohint_vert, slang_gen.wgsl_vertex_entry, autohint_subpixel_frag, slang_gen.wgsl_dual_fragment_entry, true, "snail-autohint-subpixel");
+        }
+        return pipelines;
     }
 
     fn deinit(self: *Pipelines) void {
@@ -387,13 +406,16 @@ const Pipelines = struct {
         c.wgpuRenderPipelineRelease(self.tt_hint);
         c.wgpuRenderPipelineRelease(self.path);
         c.wgpuRenderPipelineRelease(self.colr);
+        if (self.regular_subpixel != null) c.wgpuRenderPipelineRelease(self.regular_subpixel);
+        if (self.tt_hint_subpixel != null) c.wgpuRenderPipelineRelease(self.tt_hint_subpixel);
+        if (self.autohint_subpixel != null) c.wgpuRenderPipelineRelease(self.autohint_subpixel);
     }
 
-    fn forKind(self: Pipelines, kind: snail.render.records.ShapeKind) c.WGPURenderPipeline {
+    fn forKind(self: Pipelines, kind: snail.render.records.ShapeKind, subpixel: bool) c.WGPURenderPipeline {
         return switch (kind) {
-            .regular => self.regular,
-            .autohint => self.autohint,
-            .tt_hinted_text => self.tt_hint,
+            .regular => if (subpixel) self.regular_subpixel else self.regular,
+            .autohint => if (subpixel) self.autohint_subpixel else self.autohint,
+            .tt_hinted_text => if (subpixel) self.tt_hint_subpixel else self.tt_hint,
             .path => self.path,
             .colr => self.colr,
         };
@@ -406,6 +428,7 @@ const Pipelines = struct {
         vert_entry: []const u8,
         frag: c.WGPUShaderModule,
         frag_entry: []const u8,
+        dual_source: bool,
         label: []const u8,
     ) !c.WGPURenderPipeline {
         var attributes = vertexAttributes();
@@ -415,9 +438,14 @@ const Pipelines = struct {
             .attributeCount = attributes.len,
             .attributes = &attributes,
         }};
-        // Premultiplied-over, matching the Vulkan contract's blendAttachment.
+        // Premultiplied-over (or per-channel dual-source for the subpixel
+        // families), matching the Vulkan contract's blendAttachment.
         const blend = c.WGPUBlendState{
-            .color = .{ .operation = c.WGPUBlendOperation_Add, .srcFactor = c.WGPUBlendFactor_One, .dstFactor = c.WGPUBlendFactor_OneMinusSrcAlpha },
+            .color = .{
+                .operation = c.WGPUBlendOperation_Add,
+                .srcFactor = c.WGPUBlendFactor_One,
+                .dstFactor = if (dual_source) c.WGPUBlendFactor_OneMinusSrc1 else c.WGPUBlendFactor_OneMinusSrcAlpha,
+            },
             .alpha = .{ .operation = c.WGPUBlendOperation_Add, .srcFactor = c.WGPUBlendFactor_One, .dstFactor = c.WGPUBlendFactor_OneMinusSrcAlpha },
         };
         const targets = [1]c.WGPUColorTargetState{.{
@@ -730,8 +758,27 @@ pub fn main() !void {
 
     var layouts = try Layouts.init(gpu.device);
     defer layouts.deinit();
-    var pipelines = try Pipelines.init(gpu.device, layouts.pipeline);
+    // The dual-source pipelines are created whenever the device supports
+    // them (validating the artifacts + @blend_src entries even on grayscale
+    // frames); the frame only routes through them when SNAIL_WGPU_SUBPIXEL
+    // selects an LCD stripe order.
+    var pipelines = try Pipelines.init(gpu.device, layouts.pipeline, gpu.supports_dual_src);
     defer pipelines.deinit();
+
+    const subpixel_order: i32 = blk: {
+        const name = getenv("SNAIL_WGPU_SUBPIXEL") orelse break :blk 0;
+        if (!gpu.supports_dual_src) {
+            std.debug.print("SNAIL_WGPU_SUBPIXEL set but the device lacks dual-source blending; rendering grayscale\n", .{});
+            break :blk 0;
+        }
+        if (std.mem.eql(u8, name, "rgb")) break :blk 1;
+        if (std.mem.eql(u8, name, "bgr")) break :blk 2;
+        if (std.mem.eql(u8, name, "vrgb")) break :blk 3;
+        if (std.mem.eql(u8, name, "vbgr")) break :blk 4;
+        std.debug.print("unknown SNAIL_WGPU_SUBPIXEL '{s}' (rgb|bgr|vrgb|vbgr); rendering grayscale\n", .{name});
+        break :blk 0;
+    };
+    const use_subpixel = subpixel_order != 0;
 
     const curve_view = try GpuAtlas.arrayView(gpu_atlas.curve_tex);
     defer c.wgpuTextureViewRelease(curve_view);
@@ -773,6 +820,12 @@ pub fn main() !void {
     const push_constants = PushConstants{
         .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
         .viewport = .{ width, height },
+        .subpixel_order = subpixel_order,
+        .output_srgb = 0, // hardware-sRGB render target: emit linear
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+        .dither_scale = 0.0,
+        .mask_output = 0,
     };
     c.wgpuQueueWriteBuffer(gpu.queue, uniform_buffer, 0, &push_constants, @sizeOf(PushConstants));
 
@@ -878,7 +931,7 @@ pub fn main() !void {
     c.wgpuRenderPassEncoderSetIndexBuffer(pass, index_buffer, c.WGPUIndexFormat_Uint32, 0, @sizeOf(@TypeOf(indices)));
     c.wgpuRenderPassEncoderSetVertexBuffer(pass, 0, instance_buffer, 0, instance_bytes.len);
     for (batches[0..batch_len]) |batch| {
-        c.wgpuRenderPassEncoderSetPipeline(pass, pipelines.forKind(batch.kind));
+        c.wgpuRenderPassEncoderSetPipeline(pass, pipelines.forKind(batch.kind, use_subpixel));
         c.wgpuRenderPassEncoderDrawIndexed(pass, indices.len, batch.instance_count, 0, 0, batch.first_instance);
     }
     c.wgpuRenderPassEncoderEnd(pass);

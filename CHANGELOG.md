@@ -71,6 +71,47 @@ Treat this as a from-scratch migration.
   catalog (`shader.glsl`) stays as the behavioral spec and the GL
   source-injection surface. Validated by the headless GL, GLES, Vulkan,
   and wgpu-native (`run-minimal-wgpu`) examples and gates.
+- **LCD subpixel AA for hinted text, on every dual-source backend.** AA
+  policy (`RasterOptions.subpixel_order`) and hinting mode now compose:
+  new `tt_hinted_text_subpixel` and `autohint_subpixel` shader families
+  (dual-source blended, fragment-only — they pair with the text/autohint
+  vertex stages) plus the matching CPU raster paths. The autohint variant
+  linearizes the warp around the pixel center — the 7-tap lane step and
+  AA footprint scale by the per-axis inverse-warp slope, the same
+  approximation the grayscale path has always used for its footprint —
+  and the CPU rasterizer mirrors it exactly. Backends without
+  dual-source blending (GLES 3.0; devices lacking the feature) keep the
+  silent grayscale fallback.
+- **wgpu dual-source subpixel path enabled.** The WGSL subpixel
+  artifacts carry a dual-source entry (`fragmentDualMain`, `@blend_src`)
+  synthesized post-generation by `build/wgsl_gen_dual_entry.zig` — a
+  mechanical clone of the emitted `fragmentMain`, replacing the earlier
+  mangled-name `__requirePrelude` interop; naga-validated at generation.
+  Exposed through `snail-shaders` accessors and wired in `minimal_wgpu`
+  behind `WGPUFeatureName_DualSourceBlending` with grayscale fallback
+  (`SNAIL_WGPU_SUBPIXEL=rgb|bgr|vrgb|vbgr` selects the stripe order).
+  wgpu-native is pinned to v29.0.1.1 (upstream release zips, Linux +
+  Windows legs matched): naga < 29 rejected modules carrying both a
+  plain-MRT entry and a `@blend_src` entry.
+- **Reflection IS the parameter ABI.** snail ships Slang source plus the
+  machinery to make it work; the parameter-passing ABI (block layout,
+  binding slots) is no longer a hand-pinned promise. A generated
+  `reflection.zig` (from `slangc -reflection-json`, via
+  `build/gen_shader_reflection_zig.zig`; uniformity across families
+  asserted) ships in every `snail-shaders` scope — plus the
+  artifact-free `snail-shaders-reflection` scope — exposing the
+  `PushConstants` CPU struct (reflected-offset comptime asserts) and the
+  `binding` slot numbers. The reference renderers' hand-mirrored copies
+  (Vulkan contract, GL UBO block, wgpu/D3D11/Metal demos) are deleted in
+  favor of it. snail still owns the data ABI — instance-stream
+  semantics, atlas texel layouts, blend semantics — which reflection
+  cannot describe. The SPIRV-Cross-minted GL names stay guarded by the
+  textual artifact tests; reflection cannot reach them either.
+- **Slang module catalog is caller API.** build.zig exports the catalog
+  path as the named lazy path `snail_slang`
+  (`dependency.namedLazyPath("snail_slang")` → slangc `-I`); the
+  caller-facing module list is pinned in the "Caller integration"
+  section of `src/snail/shader/slang/README-notes`.
 
 ### Changed
 

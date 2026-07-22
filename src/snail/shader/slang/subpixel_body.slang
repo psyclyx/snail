@@ -114,9 +114,10 @@ float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_m
     return evalGlyphCoverageRaw(rc, display_epp, ppe, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
 }
 
-float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
-    float2 display_dx = ddx(rc);
-    float2 display_dy = ddy(rc);
+// Deriv-parameterized evaluator: callers with a remapped sample space
+// (autohint's inverse warp) pass display-space derivatives already scaled
+// into that space; the plain wrapper below feeds raw ddx/ddy.
+public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
     float2 sample_step = ((subpixel_order <= 2) ? display_dx : display_dy) * (1.0 / 3.0);
     float2 display_epp = subpixelCoverageEdgePixels(display_dx, display_dy, subpixel_order);
     float2 rc_m3 = rc - sample_step * 3.0;
@@ -146,6 +147,36 @@ float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float
     return float4(applyCoverageTransfer3(coverage.rgb, coverage_exponent), applyCoverageTransfer(coverage.a, coverage_exponent));
 }
 
+public float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
+    return snailEvalGlyphCoverageSubpixelDerivs(rc, ddx(rc), ddy(rc), glyph_loc, band_max, banding, layer, subpixel_order, coverage_exponent, curve_tex, band_tex);
+}
+
+// Shared dual-source packaging: `color` is the linear, unpremultiplied,
+// tint-multiplied paint. Threshold, sRGB-domain encode, per-channel
+// premultiply, and the blend-attenuation output — identical to the tail
+// of the regular-text subpixel fragment.
+public SubpixelResult snailPackSubpixelResult(float4 color, float4 cov_alpha, int output_srgb) {
+    SubpixelResult r;
+    r.color = float4(0.0);
+    r.blend = float4(0.0);
+    r.discard_fragment = false;
+
+    float3 cov = cov_alpha.rgb;
+    if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) { r.discard_fragment = true; return r; }
+    // For sRGB-output mode, encode the unpremultiplied color first; the
+    // per-channel coverage is then applied to the encoded values to keep
+    // the destination in sRGB-domain.
+    float4 effective = (output_srgb != 0)
+        ? float4(srgbEncode(max(color.r, 0.0)),
+                 srgbEncode(max(color.g, 0.0)),
+                 srgbEncode(max(color.b, 0.0)),
+                 color.a)
+        : color;
+    r.color = premultiplyColorSubpixel(effective, cov, cov_alpha.a);
+    r.blend = float4(float3(color.a) * cov, 0.0);
+    return r;
+}
+
 public SubpixelResult snailSubpixelFragment(
     SubpixelVaryings v,
     Texture2DArray<float4> curve_tex,
@@ -170,20 +201,6 @@ public SubpixelResult snailSubpixelFragment(
     float4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v.banding, layer,
                                                 subpixel_order, coverage_exponent, curve_tex, band_tex);
 
-    float3 cov = cov_alpha.rgb;
-    if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) { r.discard_fragment = true; return r; }
     // v.color / v.tint are already sRGB-decoded in the vertex shader.
-    float4 color = v.color * v.tint;
-    // For sRGB-output mode, encode the unpremultiplied color first; the
-    // per-channel coverage is then applied to the encoded values to keep
-    // the destination in sRGB-domain.
-    float4 effective = (output_srgb != 0)
-        ? float4(srgbEncode(max(color.r, 0.0)),
-                 srgbEncode(max(color.g, 0.0)),
-                 srgbEncode(max(color.b, 0.0)),
-                 color.a)
-        : color;
-    r.color = premultiplyColorSubpixel(effective, cov, cov_alpha.a);
-    r.blend = float4(float3(color.a) * cov, 0.0);
-    return r;
+    return snailPackSubpixelResult(v.color * v.tint, cov_alpha, output_srgb);
 }

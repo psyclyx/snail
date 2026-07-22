@@ -90,16 +90,27 @@ float snailInverseFastAxis(
     return loBase + (hinted - loTarget) * invSlope;
 }
 
-public float4 snailAutohintFragment(
+// The per-fragment warp state: everything the coverage evaluators need
+// after the inverse warp has been resolved. `epp` is the UNWARPED
+// footprint (fwidth of the varying); `slope` is the per-axis inverse-warp
+// slope the caller multiplies into its footprint/derivatives (the local
+// linearization the grayscale path has always used).
+public struct SnailAutohintWarped {
+    public float2 rc;
+    public float2 epp;
+    public float2 slope;
+    public int2 gLoc;
+    public int2 bandMax;
+    public float4 band;
+    public int texLayer;
+};
+
+public SnailAutohintWarped snailAutohintWarpSample(
     AutohintVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
     Texture2D<float4> layer_tex,
-    int layer_base,
-    int output_srgb,
-    float coverage_exponent,
-    int mask_output)
+    int layer_base)
 {
+    SnailAutohintWarped w;
     float4 h0 = layer_tex.Load(int3(v.info, 0));
     float4 h1 = layer_tex.Load(int3(snailAhLayerLoc(layer_tex, v.info, 1), 0));
     int2 gLoc = int2(int(h0.x + 0.5), int(h0.y + 0.5));
@@ -157,9 +168,30 @@ public float4 snailAutohintFragment(
     if (!fallbackX) rc.x = snailInverseFastAxis(layer_tex, v.info, xCount, v.x_targets, v.x_sources, xRun, snailWarpF(layer_tex, v.info, 0, 11), rc.x, slopeX);
     if (!fallbackY) rc.y = snailInverseFastAxis(layer_tex, v.info, yCount, v.y_targets, v.y_sources, yRun, 0.0, rc.y, slopeY);
 
-    epp *= float2(slopeX, slopeY);
+    w.rc = rc;
+    w.epp = epp;
+    w.slope = float2(slopeX, slopeY);
+    w.gLoc = gLoc;
+    w.bandMax = int2(bandMaxV, bandMaxH);
+    w.band = h1;
+    w.texLayer = texLayer;
+    return w;
+}
+
+public float4 snailAutohintFragment(
+    AutohintVaryings v,
+    Texture2DArray<float4> curve_tex,
+    Texture2DArray<uint2> band_tex,
+    Texture2D<float4> layer_tex,
+    int layer_base,
+    int output_srgb,
+    float coverage_exponent,
+    int mask_output)
+{
+    SnailAutohintWarped w = snailAutohintWarpSample(v, layer_tex, layer_base);
+    float2 epp = w.epp * w.slope;
     float2 ppe = float2(1.0 / max(epp.x, 1.0 / 65536.0), 1.0 / max(epp.y, 1.0 / 65536.0));
-    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, int2(bandMaxV, bandMaxH), h1, texLayer,
+    float cov = evalGlyphCoverage(w.rc, epp, ppe, w.gLoc, w.bandMax, w.band, w.texLayer,
                                   curve_tex, band_tex, coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     float4 premul = premultiplyColor(v.paint, cov);
