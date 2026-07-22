@@ -97,12 +97,12 @@ pub const CompoundGlyph = struct {
 };
 
 fn readU16(data: []const u8, offset: usize) ParseError!u16 {
-    if (offset + 2 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 2) return error.UnexpectedEof;
     return std.mem.readInt(u16, data[offset..][0..2], .big);
 }
 
 fn readI16(data: []const u8, offset: usize) ParseError!i16 {
-    if (offset + 2 > data.len) return error.UnexpectedEof;
+    if (offset > data.len or data.len - offset < 2) return error.UnexpectedEof;
     return std.mem.readInt(i16, data[offset..][0..2], .big);
 }
 
@@ -149,8 +149,8 @@ fn readFlags(
         if (offset.* >= data.len) return error.UnexpectedEof;
         const repeat = data[offset.*];
         offset.* += 1;
+        if (@as(u32, repeat) > num_points - i) return error.InvalidFont;
         for (0..repeat) |_| {
-            if (i >= num_points) break;
             flags[i] = flag;
             i += 1;
         }
@@ -169,18 +169,18 @@ fn readCoords(
     const coords = try allocator.alloc(i16, flags.len);
     errdefer allocator.free(coords);
 
-    var coord: i16 = 0;
+    var coord: i32 = 0;
     for (flags, 0..) |flag, i| {
         if (flag & short_vector_bit != 0) {
             if (offset.* >= data.len) return error.UnexpectedEof;
-            const delta: i16 = @intCast(data[offset.*]);
+            const delta: i32 = data[offset.*];
             offset.* += 1;
             if (flag & same_or_positive_bit != 0) coord += delta else coord -= delta;
         } else if (flag & same_or_positive_bit == 0) {
             coord += try readI16(data, offset.*);
             offset.* += 2;
         }
-        coords[i] = coord;
+        coords[i] = std.math.cast(i16, coord) orelse return error.InvalidFont;
     }
     return coords;
 }
@@ -348,6 +348,8 @@ fn readComponentArgs(data: []const u8, offset: *usize, flags: u16) ParseError![2
 }
 
 fn readComponentTransform(data: []const u8, offset: *usize, flags: u16) ParseError!ComponentTransform {
+    const transform_flags = flags & (component_has_scale | component_has_xy_scale | component_has_two_by_two);
+    if (@popCount(transform_flags) > 1) return error.InvalidFont;
     if (flags & component_has_scale != 0) {
         const scale = try readF2Dot14(data, offset.*);
         offset.* += 2;
@@ -515,6 +517,27 @@ test "parse compound glyph preserves component flags transform and instructions"
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.xx, 1e-6);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), glyph.components[0].transform.yy, 1e-6);
     try std.testing.expectEqualSlices(u8, &.{0x2A}, glyph.instructions);
+}
+
+test "malformed simple-glyph repeats and coordinate overflow are rejected" {
+    var offset: usize = 0;
+    try std.testing.expectError(
+        error.InvalidFont,
+        readFlags(std.testing.allocator, &.{ 8, 1 }, 1, &offset),
+    );
+
+    offset = 0;
+    try std.testing.expectError(
+        error.InvalidFont,
+        readCoords(std.testing.allocator, &.{ 255, 0x7F, 0xFF }, &.{ 2 | 16, 0 }, &offset, 2, 16),
+    );
+}
+
+test "compound glyph rejects conflicting transform encodings" {
+    var data = [_]u8{0} ** 24;
+    std.mem.writeInt(i16, data[0..2], -1, .big);
+    std.mem.writeInt(u16, data[10..12], component_has_scale | component_has_xy_scale, .big);
+    try std.testing.expectError(error.InvalidFont, parseCompoundGlyph(std.testing.allocator, &data, 0, 1));
 }
 
 test "component transform applies and composes two by two matrices" {

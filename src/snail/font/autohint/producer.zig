@@ -9,7 +9,6 @@ const std = @import("std");
 
 const analysis = @import("analysis.zig");
 const blue_mod = @import("blue.zig");
-const warp = @import("warp.zig");
 const outline = @import("../truetype/outline.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
@@ -23,6 +22,11 @@ const Vec2 = @import("../../math/vec.zig").Vec2;
 /// program (outlines) and the derived blue zones. Cheap to keep alongside a
 /// font; not thread-safe (mirrors `TtHintVm`).
 pub const FeatureEdge = analysis.FeatureEdge;
+
+/// Maximum feature records accepted per axis. Allocate this many
+/// `FeatureEdge` values for each scratch slice passed to `analyzeGlyph` to
+/// preserve every feature the runtime fitter can consume.
+pub const max_features_per_axis: usize = 32;
 
 pub const GlyphFeatures = struct {
     x: []const FeatureEdge,
@@ -486,19 +490,23 @@ fn addExtremumCandidate(
     tolerance: f32,
     em: f32,
 ) void {
+    if (!std.math.isFinite(extremum) or !std.math.isFinite(tolerance) or
+        tolerance < 0 or !std.math.isFinite(em) or em <= 0) return;
     var best: ?analysis.Edge = null;
     var best_gap = tolerance;
     for (edges) |edge| {
+        if (!std.math.isFinite(edge.pos)) continue;
         const gap = @abs(edge.pos - extremum);
         if (gap >= best_gap) continue;
         best = edge;
         best_gap = gap;
     }
     const edge = best orelse return;
-    const quantized: i32 = @intFromFloat(@round(edge.pos / em * statistical_zone_bins_per_em));
-    const index = quantized + statistical_zone_bin_offset;
+    const scaled = @as(f64, edge.pos) / @as(f64, em) * statistical_zone_bins_per_em;
+    if (!std.math.isFinite(scaled)) return;
+    const index = @round(scaled) + statistical_zone_bin_offset;
     if (index < 0 or index >= statistical_zone_bin_count) return;
-    bins[@intCast(index)].add(edge.pos, edge.round);
+    bins[@intFromFloat(index)].add(edge.pos, edge.round);
 }
 
 const ZonePeak = struct {
@@ -526,8 +534,8 @@ fn strongestZonePeak(bottom: *const [statistical_zone_bin_count]ZoneBin, top: *c
 }
 
 fn convertEdges(edges: []const analysis.Edge, upm: f32, zones: []const blue_mod.FeatureZone, out: []FeatureEdge) []const FeatureEdge {
-    if (edges.len > warp.max_knots or edges.len > out.len) return out[0..0];
-    var all: [warp.max_knots]FeatureEdge = undefined;
+    if (edges.len > max_features_per_axis or edges.len > out.len) return out[0..0];
+    var all: [max_features_per_axis]FeatureEdge = undefined;
     for (edges, all[0..edges.len]) |edge, *feature| {
         feature.* = .{
             .pos = edge.pos / upm,
@@ -552,13 +560,13 @@ fn convertEdges(edges: []const analysis.Edge, upm: f32, zones: []const blue_mod.
     // longer participate in fitting. Keep only actual stem/blue operations and
     // the companions referenced by those operations; remap their indices into
     // a compact, ppem-independent fit program.
-    var keep = [_]bool{false} ** warp.max_knots;
+    var keep = [_]bool{false} ** max_features_per_axis;
     for (features, 0..) |feature, i| keep[i] = feature.stem >= 0 or feature.blue >= 0;
     for (features) |feature| {
         if (feature.flags.grid_companion < 62) keep[feature.flags.grid_companion] = true;
         if (feature.flags.blue_companion < 62) keep[feature.flags.blue_companion] = true;
     }
-    var remap = [_]i16{-1} ** warp.max_knots;
+    var remap = [_]i16{-1} ** max_features_per_axis;
     var count: usize = 0;
     for (features, 0..) |feature, i| {
         if (!keep[i]) continue;
@@ -574,7 +582,7 @@ fn convertEdges(edges: []const analysis.Edge, upm: f32, zones: []const blue_mod.
     return out[0..count];
 }
 
-fn remapCompanion(encoded: u6, remap: *const [warp.max_knots]i16) u6 {
+fn remapCompanion(encoded: u6, remap: *const [max_features_per_axis]i16) u6 {
     if (encoded >= 62) return encoded;
     const mapped = remap[encoded];
     return if (mapped < 0) 62 else @intCast(mapped);
@@ -683,16 +691,42 @@ fn appendSimple(
     pts: *std.ArrayList(outline.Point),
     contours: *std.ArrayList(outline.ContourRange),
 ) !void {
-    const base: u32 = @intCast(pts.items.len);
-    for (s.contours) |c| try contours.append(allocator, .{ .start = base + c.start, .end = base + c.end });
+    const base = pts.items.len;
+    _ = std.math.cast(u32, base) orelse return error.InvalidFont;
+    for (s.contours) |c| {
+        if (c.start > c.end or c.end > s.points.len) return error.InvalidFont;
+        const end = std.math.add(usize, base, c.end) catch return error.InvalidFont;
+        _ = std.math.cast(u32, end) orelse return error.InvalidFont;
+    }
     for (s.points) |p| {
         const v = Vec2.add(transform.apply(.{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y) }), offset);
-        try pts.append(allocator, .{
-            .x = @intFromFloat(@round(v.x)),
-            .y = @intFromFloat(@round(v.y)),
+        _ = roundedI16(v.x) orelse return error.InvalidFont;
+        _ = roundedI16(v.y) orelse return error.InvalidFont;
+    }
+
+    try contours.ensureUnusedCapacity(allocator, s.contours.len);
+    try pts.ensureUnusedCapacity(allocator, s.points.len);
+    for (s.contours) |c| {
+        contours.appendAssumeCapacity(.{
+            .start = @intCast(base + @as(usize, c.start)),
+            .end = @intCast(base + @as(usize, c.end)),
+        });
+    }
+    for (s.points) |p| {
+        const v = Vec2.add(transform.apply(.{ .x = @floatFromInt(p.x), .y = @floatFromInt(p.y) }), offset);
+        pts.appendAssumeCapacity(.{
+            .x = roundedI16(v.x).?,
+            .y = roundedI16(v.y).?,
             .on_curve = p.on_curve,
         });
     }
+}
+
+fn roundedI16(value: f32) ?i16 {
+    if (!std.math.isFinite(value)) return null;
+    const rounded = @round(@as(f64, value));
+    if (rounded < std.math.minInt(i16) or rounded > std.math.maxInt(i16)) return null;
+    return @intFromFloat(rounded);
 }
 
 // ── tests ────────────────────────────────────────────────────────────────
@@ -700,13 +734,50 @@ fn appendSimple(
 const testing = std.testing;
 const assets = @import("assets");
 
+test "compound flattening rejects unrepresentable transforms atomically" {
+    var source_points = [_]outline.Point{.{ .x = std.math.maxInt(i16), .y = 1, .on_curve = true }};
+    var source_contours = [_]outline.ContourRange{.{ .start = 0, .end = 1 }};
+    const simple = outline.SimpleGlyph{
+        .allocator = testing.allocator,
+        .contours = &source_contours,
+        .points = &source_points,
+        .instructions = &.{},
+    };
+    var points: std.ArrayList(outline.Point) = .empty;
+    defer points.deinit(testing.allocator);
+    var contours: std.ArrayList(outline.ContourRange) = .empty;
+    defer contours.deinit(testing.allocator);
+
+    try testing.expectError(error.InvalidFont, appendSimple(
+        testing.allocator,
+        simple,
+        .{ .xx = std.math.floatMax(f32), .yy = 1 },
+        .zero,
+        &points,
+        &contours,
+    ));
+    try testing.expectEqual(@as(usize, 0), points.items.len);
+    try testing.expectEqual(@as(usize, 0), contours.items.len);
+}
+
+test "statistical extrema ignore non-finite producer values" {
+    var bins = [_]ZoneBin{.{}} ** statistical_zone_bin_count;
+    addExtremumCandidate(&bins, &.{.{
+        .pos = std.math.nan(f32),
+        .min = 0,
+        .max = 0,
+        .dir = 1,
+    }}, 0, 1, 1000);
+    for (bins) |bin| try testing.expectEqual(@as(u32, 0), bin.count);
+}
+
 test "glyph analysis contains features but no fitted targets" {
     const test_font = assets.dejavu_sans_mono;
     var analyzer = try AutohintAnalyzer.init(testing.allocator, test_font);
     defer analyzer.deinit();
     const glyph_h = try analyzer.font.glyphIndex('H');
-    var xb: [warp.max_knots]FeatureEdge = undefined;
-    var yb: [warp.max_knots]FeatureEdge = undefined;
+    var xb: [max_features_per_axis]FeatureEdge = undefined;
+    var yb: [max_features_per_axis]FeatureEdge = undefined;
     const a = try analyzer.analyzeGlyph(testing.allocator, glyph_h, &xb, &yb);
     try testing.expect(a.x.len > 0);
     try testing.expect(a.y.len > 0);
@@ -744,10 +815,10 @@ test "CFF2 autohint analyzes the selected variable instance" {
     defer heavy.deinit();
 
     const glyph_id = try light_font.glyphIndex('m');
-    var light_x: [warp.max_knots]FeatureEdge = undefined;
-    var light_y: [warp.max_knots]FeatureEdge = undefined;
-    var heavy_x: [warp.max_knots]FeatureEdge = undefined;
-    var heavy_y: [warp.max_knots]FeatureEdge = undefined;
+    var light_x: [max_features_per_axis]FeatureEdge = undefined;
+    var light_y: [max_features_per_axis]FeatureEdge = undefined;
+    var heavy_x: [max_features_per_axis]FeatureEdge = undefined;
+    var heavy_y: [max_features_per_axis]FeatureEdge = undefined;
     const light_glyph = try light.analyzeGlyph(testing.allocator, glyph_id, &light_x, &light_y);
     const heavy_glyph = try heavy.analyzeGlyph(testing.allocator, glyph_id, &heavy_x, &heavy_y);
     try testing.expect(light_glyph.x.len > 0);
@@ -760,143 +831,23 @@ test "repeated analysis has one result independent of size" {
     var analyzer = try AutohintAnalyzer.init(testing.allocator, test_font);
     defer analyzer.deinit();
     const glyph_h = try analyzer.font.glyphIndex('H');
-    var xb: [warp.max_knots]FeatureEdge = undefined;
-    var yb: [warp.max_knots]FeatureEdge = undefined;
-    var xb2: [warp.max_knots]FeatureEdge = undefined;
-    var yb2: [warp.max_knots]FeatureEdge = undefined;
+    var xb: [max_features_per_axis]FeatureEdge = undefined;
+    var yb: [max_features_per_axis]FeatureEdge = undefined;
+    var xb2: [max_features_per_axis]FeatureEdge = undefined;
+    var yb2: [max_features_per_axis]FeatureEdge = undefined;
     const a = try analyzer.analyzeGlyph(testing.allocator, glyph_h, &xb, &yb);
     const b = try analyzer.analyzeGlyph(testing.allocator, glyph_h, &xb2, &yb2);
     try testing.expectEqualSlices(FeatureEdge, a.x, b.x);
     try testing.expectEqualSlices(FeatureEdge, a.y, b.y);
 }
 
-test "strong fitting preserves real round-bottom glyph snapshots across sizes" {
-    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
-    defer analyzer.deinit();
-    const glyph_o = try analyzer.font.glyphIndex('o');
-    var feature_x: [warp.max_knots]FeatureEdge = undefined;
-    var feature_y: [warp.max_knots]FeatureEdge = undefined;
-    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_o, &feature_x, &feature_y);
-    const font = analyzer.fontFeatures();
-
-    var saw_round_bottom = false;
-    for (glyph.y) |feature| {
-        if (feature.flags.round and feature.blue >= 0 and
-            font.blues[@intCast(feature.blue)].shoot < font.blues[@intCast(feature.blue)].ref)
-        {
-            saw_round_bottom = true;
-        }
-    }
-    try testing.expect(saw_round_bottom);
-
-    const Snapshot = struct {
-        ppem: u32,
-        y: []const warp.Knot,
-    };
-    const snapshots = [_]Snapshot{
-        .{ .ppem = 9, .y = &.{
-            .{ .base = -0.010673185, .target = 0 },
-            .{ .base = 0.06296369, .target = 0.11111111 },
-            .{ .base = 0.48293912, .target = 0.44444448 },
-            .{ .base = 0.55655926, .target = 0.5555556 },
-        } },
-        .{ .ppem = 12, .y = &.{
-            .{ .base = -0.010673185, .target = 0 },
-            .{ .base = 0.06296369, .target = 0.083333336 },
-            .{ .base = 0.48293912, .target = 0.49999997 },
-            .{ .base = 0.55655926, .target = 0.5833333 },
-        } },
-        .{ .ppem = 16, .y = &.{
-            .{ .base = -0.010673185, .target = 0 },
-            .{ .base = 0.06296369, .target = 0.0625 },
-            .{ .base = 0.48293912, .target = 0.5 },
-            .{ .base = 0.55655926, .target = 0.5625 },
-        } },
-        // At 28px (>= fade_full_px) the warp fades to identity — autohinting is a
-        // small-size tool, and AA renders large round glyphs cleanly on its own,
-        // so every knot's target equals its base (no displacement).
-        .{ .ppem = 28, .y = &.{
-            .{ .base = -0.010673185, .target = -0.010673185 },
-            .{ .base = 0.55655926, .target = 0.55655926 },
-        } },
-    };
-    const strong_policy: @import("policy.zig").AutohintPolicy = .{
-        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
-        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
-        // Fades to identity by 26px, so the ppem-28 snapshot below is base==target.
-        .fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 26 } },
-    };
-    for (snapshots) |snapshot| {
-        var x_out: [warp.max_knots]warp.Knot = undefined;
-        var y_out: [warp.max_knots]warp.Knot = undefined;
-        const scale: f32 = @floatFromInt(snapshot.ppem);
-        const fitted = warp.fitGlyph(glyph, font, strong_policy, .{ .x = scale, .y = scale }, &x_out, &y_out);
-        try testing.expectEqual(@as(usize, 0), fitted.x.len);
-        try testing.expectEqual(snapshot.y.len, fitted.y.len);
-        for (snapshot.y, fitted.y) |expected, actual| {
-            try testing.expectApproxEqAbs(expected.base, actual.base, 0.000001);
-            try testing.expectApproxEqAbs(expected.target, actual.target, 0.000001);
-        }
-    }
-}
-
-test "relative x fitting keeps DejaVu m inside its 12 PPEM cell" {
-    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
-    defer analyzer.deinit();
-    const glyph_id = try analyzer.font.glyphIndex('m');
-    var feature_x: [warp.max_knots]FeatureEdge = undefined;
-    var feature_y: [warp.max_knots]FeatureEdge = undefined;
-    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_id, &feature_x, &feature_y);
-    const policy: @import("policy.zig").AutohintPolicy = .{
-        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
-        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
-    };
-    var x_out: [warp.max_knots]warp.Knot = undefined;
-    var y_out: [warp.max_knots]warp.Knot = undefined;
-    const fitted = warp.fitGlyph(glyph, analyzer.fontFeatures(), policy, .{ .x = 12, .y = 12 }, &x_out, &y_out);
-
-    try testing.expectEqual(@as(usize, 6), fitted.x.len);
-    const first_pitch = fitted.x[2].target - fitted.x[0].target;
-    const second_pitch = fitted.x[4].target - fitted.x[2].target;
-    try testing.expectApproxEqAbs(first_pitch, second_pitch, 0.000001);
-    try testing.expectApproxEqAbs(@as(f32, 7.0 / 12.0), fitted.x[5].target, 0.000001);
-}
-
-test "fitGlyph consumes normalized analysis without retaining targets" {
-    var analyzer = try AutohintAnalyzer.init(testing.allocator, assets.dejavu_sans_mono);
-    defer analyzer.deinit();
-    const glyph_h = try analyzer.font.glyphIndex('H');
-
-    var feature_x: [warp.max_knots]FeatureEdge = undefined;
-    var feature_y: [warp.max_knots]FeatureEdge = undefined;
-    const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_h, &feature_x, &feature_y);
-    const font = analyzer.fontFeatures();
-    var x_out: [warp.max_knots]warp.Knot = undefined;
-    var y_out: [warp.max_knots]warp.Knot = undefined;
-    const fitted = warp.fitGlyph(glyph, font, .{
-        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.4 } }, .positioning = .relative, .registration = .left_round_outline },
-        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.4, .max_px = 1.6 } }, .overshoot = .{ .suppress_below_px = 0.5 } },
-    }, .{ .x = 13, .y = 13 }, &x_out, &y_out);
-    try testing.expect(fitted.x.len > 0);
-    try testing.expect(fitted.y.len > 0);
-    try testing.expect(!@hasField(FeatureEdge, "target"));
-}
-
-test "statistical zones retain and safely fit non-Latin reference edges" {
+test "statistical zones retain non-Latin reference edges" {
     const Case = struct { data: []const u8, codepoint: u21 };
     const cases = [_]Case{
         .{ .data = assets.noto_sans_arabic, .codepoint = 0x0645 }, // Arabic meem
         .{ .data = assets.noto_sans_devanagari, .codepoint = 0x0915 }, // Devanagari ka
         .{ .data = assets.noto_sans_mongolian, .codepoint = 0x1820 }, // Mongolian a
     };
-    const policy: @import("policy.zig").AutohintPolicy = .{
-        .y = .{
-            .@"align" = .blue_zones,
-            .stem_width = .natural,
-            .overshoot = .preserve,
-        },
-    };
-
     for (cases) |case| {
         var analyzer = try AutohintAnalyzer.init(testing.allocator, case.data);
         defer analyzer.deinit();
@@ -904,8 +855,8 @@ test "statistical zones retain and safely fit non-Latin reference edges" {
         try testing.expect(analyzer.blues.zones.len <= max_statistical_zones);
 
         const glyph_id = try analyzer.font.glyphIndex(case.codepoint);
-        var feature_x: [warp.max_knots]FeatureEdge = undefined;
-        var feature_y: [warp.max_knots]FeatureEdge = undefined;
+        var feature_x: [max_features_per_axis]FeatureEdge = undefined;
+        var feature_y: [max_features_per_axis]FeatureEdge = undefined;
         const glyph = try analyzer.analyzeGlyph(testing.allocator, glyph_id, &feature_x, &feature_y);
         try testing.expect(glyph.y.len > 0 and glyph.y.len <= 16);
         var has_reference = false;
@@ -913,21 +864,5 @@ test "statistical zones retain and safely fit non-Latin reference edges" {
             has_reference = true;
         };
         try testing.expect(has_reference);
-
-        for ([_]f32{ 9, 12, 16 }) |ppem| {
-            var x_out: [warp.max_knots]warp.Knot = undefined;
-            var y_out: [warp.max_knots]warp.Knot = undefined;
-            const fitted = warp.fitGlyph(glyph, analyzer.fontFeatures(), policy, .{ .x = ppem, .y = ppem }, &x_out, &y_out);
-            try testing.expect(fitted.y.len > 0 and fitted.y.len <= 16);
-            for (fitted.y, 0..) |knot, i| {
-                // Zone assignment is limited to 1/24 em and grid rounding to
-                // half a pixel. Leave margin for monotonic collision repair.
-                try testing.expect(@abs(knot.target - knot.base) * ppem <= 1.5);
-                if (i > 0) {
-                    try testing.expect(fitted.y[i - 1].base < knot.base);
-                    try testing.expect(fitted.y[i - 1].target < knot.target);
-                }
-            }
-        }
     }
 }

@@ -35,9 +35,10 @@ pub const Instance = struct {
     draw_funcs: *hb.hb_draw_funcs_t,
 
     pub fn init(data: []const u8, face_index: u32, units_per_em: u16, variations: []const types.Variation) !Instance {
+        const data_len = std.math.cast(c_uint, data.len) orelse return error.FontTooLarge;
         const blob = hb.hb_blob_create(
             data.ptr,
-            @intCast(data.len),
+            data_len,
             hb.HB_MEMORY_MODE_READONLY,
             null,
             null,
@@ -196,7 +197,8 @@ pub fn variationAxes(
     data: []const u8,
     face_index: u32,
 ) ![]types.VariationAxis {
-    const blob = hb.hb_blob_create(data.ptr, @intCast(data.len), hb.HB_MEMORY_MODE_READONLY, null, null) orelse
+    const data_len = std.math.cast(c_uint, data.len) orelse return error.FontTooLarge;
+    const blob = hb.hb_blob_create(data.ptr, data_len, hb.HB_MEMORY_MODE_READONLY, null, null) orelse
         return error.HarfBuzzInitFailed;
     defer hb.hb_blob_destroy(blob);
     const face = hb.hb_face_create(blob, face_index) orelse return error.HarfBuzzInitFailed;

@@ -17,7 +17,6 @@
 const std = @import("std");
 
 const analysis = @import("analysis.zig");
-const warp = @import("warp.zig");
 const vm = @import("../truetype/vm.zig");
 const ttf = @import("../ttf.zig");
 
@@ -93,13 +92,6 @@ pub const Blues = struct {
             feature.* = .{ .ref = zone.pos / upm, .shoot = zone.shoot / upm };
         }
         return result;
-    }
-
-    /// The zone list the warp consumes (reference + overshoot). Borrows `self`.
-    pub fn warpZones(self: Blues, out: []warp.BlueZone) []warp.BlueZone {
-        const n = @min(self.zones.len, out.len);
-        for (0..n) |i| out[i] = .{ .ref = self.zones[i].pos, .shoot = self.zones[i].shoot };
-        return out[0..n];
     }
 
     /// Latch each edge onto the nearest zone within `tol_em` (em fraction).

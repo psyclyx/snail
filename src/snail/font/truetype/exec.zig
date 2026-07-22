@@ -130,16 +130,22 @@ pub const SkipCache = struct {
         self.map.clearRetainingCapacity();
     }
 
-    fn keyFor(code: []const u8, pc: usize, stop_at_else: bool) Key {
-        return .{ .code_ptr = @intFromPtr(code.ptr), .pc = @intCast(pc), .stop_at_else = stop_at_else };
+    fn keyFor(code: []const u8, pc: usize, stop_at_else: bool) ?Key {
+        return .{
+            .code_ptr = @intFromPtr(code.ptr),
+            .pc = std.math.cast(u32, pc) orelse return null,
+            .stop_at_else = stop_at_else,
+        };
     }
 
     fn get(self: *const SkipCache, code: []const u8, pc: usize, stop_at_else: bool) ?u32 {
-        return self.map.get(keyFor(code, pc, stop_at_else));
+        return self.map.get(keyFor(code, pc, stop_at_else) orelse return null);
     }
 
-    fn put(self: *SkipCache, code: []const u8, pc: usize, stop_at_else: bool, target: u32) !void {
-        try self.map.put(keyFor(code, pc, stop_at_else), target);
+    fn put(self: *SkipCache, code: []const u8, pc: usize, stop_at_else: bool, target: usize) !void {
+        const key = keyFor(code, pc, stop_at_else) orelse return;
+        const target_u32 = std.math.cast(u32, target) orelse return;
+        try self.map.put(key, target_u32);
     }
 };
 
@@ -618,7 +624,7 @@ pub const Context = struct {
             if (cache.get(code, pc, stop_at_else)) |target| return @intCast(target);
             const target = try skipStructured(code, pc, stop_at_else);
             // Best-effort cache: an OOM here just means we'll re-scan next time.
-            cache.put(code, pc, stop_at_else, @intCast(target)) catch {};
+            cache.put(code, pc, stop_at_else, target) catch {};
             return target;
         }
         return skipStructured(code, pc, stop_at_else);
@@ -1691,6 +1697,16 @@ fn jumpTarget(code_len: usize, op_pc: usize, offset: i32) Error!usize {
 const OP_OPERAND_NPUSHB: i16 = -1; // 0x40: next u8 = count, then `count` bytes
 const OP_OPERAND_NPUSHW: i16 = -2; // 0x41: next u8 = count, then `count*2` bytes
 const OP_OPERAND_FDEF: i16 = -3; // 0x2C: scan to ENDF (0x2D)
+
+test "skip cache bypasses offsets outside its compact key" {
+    if (@bitSizeOf(usize) <= 32) return;
+    var cache = SkipCache.init(std.testing.allocator);
+    defer cache.deinit();
+    const too_large = @as(usize, std.math.maxInt(u32)) + 1;
+    try cache.put(&.{}, too_large, false, too_large);
+    try std.testing.expectEqual(@as(usize, 0), cache.map.count());
+    try std.testing.expectEqual(@as(?u32, null), cache.get(&.{}, too_large, false));
+}
 
 const skip_operand_table: [256]i16 = blk: {
     var t: [256]i16 = @splat(0);

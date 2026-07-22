@@ -87,6 +87,10 @@ pub const GlyphTopologyCache = struct {
     pub fn get(self: *GlyphTopologyCache, glyph_id: u16) !*tt_vm.GlyphTopology {
         const gop = try self.map.getOrPut(glyph_id);
         if (!gop.found_existing) {
+            // `getOrPut` publishes a slot before the fallible parse. Remove
+            // that uninitialized slot on failure so retries do not read it and
+            // `deinit` never switches on undefined union storage.
+            errdefer _ = self.map.remove(glyph_id);
             gop.value_ptr.* = try self.program.loadGlyphTopology(self.allocator, glyph_id);
         }
         return gop.value_ptr;

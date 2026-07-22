@@ -11,9 +11,16 @@ pub const PACKED_POINT_DELTA_LIMIT: f32 = 256.0;
 pub const PACKED_BAND_DILATION: f32 = 1.0;
 pub const DIRECT_ENCODING_KIND_BIAS: f32 = 4.0;
 const PACKED_CURVE_MAX_SPLIT_DEPTH: u8 = 24;
+// Leave one integer of headroom for rounding before the f32 -> i32 anchor
+// conversion. Finite values outside this range are not representable by the
+// packed texture format and must be rejected before `@intFromFloat`.
+const PACKED_ANCHOR_COORDINATE_LIMIT: f32 =
+    @as(f32, @floatFromInt(std.math.maxInt(i32) - 1024)) * PACKED_ANCHOR_CHUNK_EXTENT;
 
 fn pointIsFinite(point: Vec2) bool {
-    return std.math.isFinite(point.x) and std.math.isFinite(point.y);
+    return std.math.isFinite(point.x) and std.math.isFinite(point.y) and
+        @abs(point.x) <= PACKED_ANCHOR_COORDINATE_LIMIT and
+        @abs(point.y) <= PACKED_ANCHOR_COORDINATE_LIMIT;
 }
 
 fn curveIsFinite(curve: CurveSegment) bool {
@@ -327,12 +334,17 @@ pub fn encodeDirectSingleGlyphCurves(
     prepared: []const CurveSegment,
 ) ![]u16 {
     try validateCurveData(prepared, .zero);
-    const total_words = prepared.len * SEGMENT_TEXELS * 4;
+    for (prepared) |curve| {
+        if (!curveFitsDirectF16(curve)) return error.InvalidCurveData;
+    }
+    const words_per_segment: usize = SEGMENT_TEXELS * 4;
+    const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
+        return error.ShapeTooComplex;
     const buf = try allocator.alloc(u16, total_words);
     var cursor: usize = 0;
     for (prepared) |curve| {
-        writeDirectCurveTexels(buf[cursor..][0 .. SEGMENT_TEXELS * 4], curve);
-        cursor += SEGMENT_TEXELS * 4;
+        writeDirectCurveTexels(buf[cursor..][0..words_per_segment], curve);
+        cursor += words_per_segment;
     }
     return buf;
 }
@@ -385,6 +397,7 @@ pub fn buildCurveTexture(
             defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |quantized_curve| {
+                if (!curveFitsDirectF16(quantized_curve)) return error.InvalidCurveData;
                 const base = texel_idx * 4;
                 data[base + 0] = f32ToF16(quantized_curve.p0.x);
                 data[base + 1] = f32ToF16(quantized_curve.p0.y);
@@ -412,6 +425,7 @@ pub fn buildCurveTexture(
             defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |curve| {
+                if (!curveFitsPackedF16(curve)) return error.InvalidCurveData;
                 const base = texel_idx * 4;
                 const p0 = curve.p0;
                 const p1 = curve.p1;
@@ -468,6 +482,39 @@ fn f16BitsToF32(val: u16) f32 {
 
 fn quantizeF16(val: f32) f32 {
     return f16BitsToF32(f32ToF16(val));
+}
+
+fn fitsF16(value: f32) bool {
+    return std.math.isFinite(value) and @abs(value) <= @as(f32, std.math.floatMax(f16));
+}
+
+fn curveFitsDirectF16(curve: CurveSegment) bool {
+    const points = [_]Vec2{ curve.p0, curve.p1, curve.p2, curve.p3 };
+    for (points) |point| {
+        if (!fitsF16(point.x) or !fitsF16(point.y)) return false;
+    }
+    for (curve.weights) |weight| {
+        if (!fitsF16(weight)) return false;
+    }
+    return true;
+}
+
+fn curveFitsPackedF16(curve: CurveSegment) bool {
+    const anchor = encodePackedAnchor(curve.p0);
+    const vectors = [_]Vec2{
+        anchor.chunk,
+        anchor.frac,
+        Vec2.sub(curve.p1, curve.p0),
+        Vec2.sub(curve.p2, curve.p0),
+        if (curve.kind == .cubic) Vec2.sub(curve.p3, curve.p0) else .zero,
+    };
+    for (vectors) |vector| {
+        if (!fitsF16(vector.x) or !fitsF16(vector.y)) return false;
+    }
+    for (curve.weights) |weight| {
+        if (!fitsF16(weight)) return false;
+    }
+    return true;
 }
 
 fn quantizeVec2F16(v: Vec2) Vec2 {
@@ -628,11 +675,17 @@ fn prepareGlyphCurves(
         var prev_quantized_end: ?Vec2 = null;
         for (curves[contour_start..contour_end], out[contour_start..contour_end]) |curve, *dst| {
             const local_curve = localizedCurve(curve, delta);
+            const representable = switch (mode) {
+                .packing => curveFitsPackedF16(local_curve),
+                .direct => curveFitsDirectF16(local_curve),
+            };
+            if (!representable) return error.InvalidCurveData;
             const start_override = if (prev_original_end) |prev_end|
                 if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
             else
                 null;
             dst.* = quantizePreparedCurve(local_curve, start_override, mode);
+            if (!curveIsFinite(dst.*)) return error.InvalidCurveData;
             prev_original_end = local_curve.endPoint();
             prev_quantized_end = dst.endPoint();
         }
@@ -797,6 +850,22 @@ test "curve preparation rejects non-finite producer data before packing" {
     try std.testing.expectError(
         error.InvalidOutputBufferSize,
         prepareGlyphCurvesForDirectEncodingWithBBoxes(std.testing.allocator, &.{valid}, .zero, &wrong_size),
+    );
+
+    const outside_f16 = CurveSegment.fromLine(.{ .x = 70_000, .y = 0 }, .{ .x = 70_001, .y = 1 });
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &.{outside_f16}, .zero),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        encodeDirectSingleGlyphCurves(std.testing.allocator, &.{outside_f16}),
+    );
+
+    const outside_anchor = CurveSegment.fromLine(.{ .x = 1.0e12, .y = 0 }, .{ .x = 1.0e12, .y = 1 });
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForPacking(std.testing.allocator, &.{outside_anchor}, .zero),
     );
 }
 
