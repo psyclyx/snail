@@ -20,12 +20,13 @@ pub const Image = struct {
     /// constructing a new Image so content stamps remain meaningful.
     texels: []const u8,
 
+    pub const ValidationError = error{InvalidImageData};
+
     /// Copies `texels`. Fails unless the length is a nonzero whole number
     /// of bytes per texel times `width * height`.
     pub fn init(allocator: std.mem.Allocator, width: u32, height: u32, texels: []const u8) !Image {
-        if (width == 0 or height == 0) return error.InvalidImageData;
-        const px_count = std.math.mul(usize, width, height) catch return error.InvalidImageData;
-        if (texels.len == 0 or texels.len % px_count != 0) return error.InvalidImageData;
+        const candidate = Image{ .allocator = allocator, .width = width, .height = height, .texels = texels };
+        try candidate.validate();
         const owned = try allocator.dupe(u8, texels);
         return .{
             .allocator = allocator,
@@ -40,7 +41,17 @@ pub const Image = struct {
         self.* = undefined;
     }
 
-    pub fn bytesPerTexel(self: *const Image) usize {
+    /// Validate an image value, including caller-authored struct literals.
+    pub fn validate(self: *const Image) ValidationError!void {
+        if (self.width == 0 or self.height == 0) return error.InvalidImageData;
+        const pixel_count = std.math.mul(usize, self.width, self.height) catch return error.InvalidImageData;
+        if (self.texels.len == 0 or self.texels.len % pixel_count != 0) return error.InvalidImageData;
+    }
+
+    /// Bytes in one tightly packed texel, or null for a malformed image.
+    /// This query is total even for a caller-authored struct literal.
+    pub fn bytesPerTexel(self: *const Image) ?usize {
+        self.validate() catch return null;
         return self.texels.len / (@as(usize, self.width) * @as(usize, self.height));
     }
 };
@@ -53,4 +64,8 @@ test "Image validates texel payload length" {
     try std.testing.expectError(error.InvalidImageData, Image.init(a, 2, 2, &[_]u8{0} ** 15));
     try std.testing.expectError(error.InvalidImageData, Image.init(a, 0, 2, &[_]u8{0} ** 8));
     try std.testing.expectError(error.InvalidImageData, Image.init(a, 2, 2, &.{}));
+
+    var malformed = img;
+    malformed.width = 0;
+    try std.testing.expectEqual(@as(?usize, null), malformed.bytesPerTexel());
 }

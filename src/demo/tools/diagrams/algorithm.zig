@@ -217,7 +217,7 @@ const Ctx = struct {
         defer prepared.deinit();
         const curves = try prepared.fillCurves(self.allocator, self.scratch.allocator());
         _ = self.scratch.reset(.retain_capacity);
-        try self.addPrepared(curves, prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
+        try self.addPrepared(curves, try prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
     }
 
     /// Stroke `path` placed by `outer`; `width` is in the path's frame.
@@ -227,7 +227,7 @@ const Ctx = struct {
         const style = snail.StrokeStyle{ .paint = .{ .solid = color }, .width = width };
         const curves = try prepared.strokeCurves(self.allocator, self.scratch.allocator(), style);
         _ = self.scratch.reset(.retain_capacity);
-        try self.addPrepared(curves, prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
+        try self.addPrepared(curves, try prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
     }
 
     fn fillRect(self: *Ctx, rect: Rect, color: [4]f32) !void {
@@ -420,7 +420,7 @@ fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[0], scene.paths_atlas, scene.paths_picture.shapes, world, white);
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[1], scene.text_atlas, scene.text_picture.shapes, world, white);
 
-    var renderer = try raster.Renderer.init(pixels, W, H, stride);
+    var renderer = try raster.Renderer.init(pixels, W, H, stride, .rgba8_unorm);
     try raster.draw(
         &renderer,
         harness.drawState(W, H),
@@ -896,8 +896,8 @@ pub fn main() !void {
     var font_regular = try snail.Font.init(assets_data.noto_sans_regular);
     var font_bold = try snail.Font.init(assets_data.noto_sans_bold);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font_regular },
-        .{ .font = &font_bold, .weight = .bold },
+        .{ .font = &font_regular, .font_id = 0 },
+        .{ .font = &font_bold, .font_id = 1, .weight = .bold },
     });
     defer faces.deinit();
 

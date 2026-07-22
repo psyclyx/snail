@@ -150,6 +150,21 @@ fn mergeBBoxes(base: BBox, bboxes: []const BBox) BBox {
 
 const testing = std.testing;
 
+fn exercisePathPackingAllocationFailures(allocator: std.mem.Allocator) !void {
+    var path = Path.init(allocator);
+    defer path.deinit();
+    try path.addRoundedRect(.{ .x = -10, .y = 4, .w = 80, .h = 40 }, 7);
+    var prepared = try path.prepare(allocator);
+    defer prepared.deinit();
+    var curves = try prepared.fillCurves(allocator, allocator);
+    defer curves.deinit();
+    try testing.expect(curves.curve_count > 0);
+}
+
+test "path preparation and packing clean up every allocation failure" {
+    try testing.checkAllAllocationFailures(testing.allocator, exercisePathPackingAllocationFailures, .{});
+}
+
 test "curve count overflow is a typed error" {
     try testing.expectEqual(@as(u16, std.math.maxInt(u16)), try checkedCurveCount(std.math.maxInt(u16)));
     try testing.expectError(error.ShapeTooComplex, checkedCurveCount(@as(usize, std.math.maxInt(u16)) + 1));

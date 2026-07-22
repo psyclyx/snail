@@ -10,13 +10,9 @@
 //! once at the boundary. Font-sourced palette colors (CPAL, spec-defined
 //! as sRGB) are already converted at extraction.
 //!
-//! Internally, per-instance colors travel as sRGB-encoded u8 — a transport
-//! codec chosen because 8-bit sRGB is perceptually uniform (raw linear u8
-//! bands near black). The round-trip is an implementation detail, with one
-//! visible consequence: per-instance `local_color`/tint channels are
-//! clamped to [0, 1] and quantized to 8 bits, so HDR (>1) instance colors
-//! are not representable. Paint colors (solids, gradients) are stored as
-//! f32 and carry any linear value.
+//! Internally, per-instance colors travel as linear-light binary16. RGB may
+//! be negative or HDR; alpha remains straight and must be in [0, 1]. Paint
+//! colors (solids, gradients) use f32.
 
 const std = @import("std");
 

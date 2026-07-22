@@ -433,11 +433,10 @@ pub fn appendOffsetCurveApprox(
     }
 }
 
-/// Allocator-backed mutable path. Geometry construction is incremental: a
-/// successful `moveTo` starts a contour, and line/quad/cubic/segment appends
-/// require one. Individual segment appends update curve accounting only after
-/// allocation succeeds. Multi-segment convenience operations can retain an
-/// already appended prefix if a later allocation fails.
+/// Allocator-backed mutable path. A successful `moveTo` starts a contour, and
+/// line/quad/cubic/segment appends require one. Individual segment appends
+/// update curve accounting only after allocation succeeds; fixed-size compound
+/// commands reserve their complete contour/curve capacity before mutation.
 pub const Path = struct {
     allocator: std.mem.Allocator,
     curves: std.ArrayList(CurveSegment) = .empty,
@@ -478,6 +477,17 @@ pub const Path = struct {
         return self.curves.items.len == 0;
     }
 
+    fn ensureCompoundCapacity(self: *Path, curve_count: usize) !void {
+        if (curve_count > std.math.maxInt(usize) - self.band_curve_count)
+            return error.ShapeTooComplex;
+        try self.curves.ensureUnusedCapacity(self.allocator, curve_count);
+        const reuses_empty_contour = self.contours.items.len > 0 and blk: {
+            const last = self.contours.items[self.contours.items.len - 1];
+            break :blk !last.closed and last.curve_start == last.curve_end;
+        };
+        if (!reuses_empty_contour) try self.contours.ensureUnusedCapacity(self.allocator, 1);
+    }
+
     fn clone(self: *const Path, allocator: std.mem.Allocator) !Path {
         var copy = Path.init(allocator);
         errdefer copy.deinit();
@@ -488,10 +498,11 @@ pub const Path = struct {
         return copy;
     }
 
-    /// Normalize source-space geometry whose maximum bbox extent is greater
-    /// than 1/65536 into a small design space near the origin before it is
-    /// quantized into the f16 curve format. Empty and sub-threshold paths use
-    /// identity transforms and have no prepared fill geometry.
+    /// Normalize non-empty source-space geometry into a small design space
+    /// near the origin before it is quantized into the f16 curve format. A
+    /// uniform scale preserves authored aspect ratios and keeps native radial
+    /// and conic paints exact. Geometry too small to produce a finite f32
+    /// placement reports `InvalidGeometry` instead of silently disappearing.
     /// `PreparedPath.design_to_source` carries the inverse placement, and its
     /// paint/stroke helpers keep the whole shape in the same coordinate frame.
     pub fn prepare(self: *const Path, allocator: std.mem.Allocator) !PreparedPath {
@@ -500,6 +511,12 @@ pub const Path = struct {
         var design = Path.init(allocator);
         errdefer design.deinit();
 
+        if (self.isEmpty()) return .{
+            .source = source,
+            .design = design,
+            .design_to_source = .identity,
+            .source_to_design = .identity,
+        };
         const bb = self.bounds() orelse return .{
             .source = source,
             .design = design,
@@ -512,48 +529,37 @@ pub const Path = struct {
         const width = @as(f64, bb.max.x) - @as(f64, bb.min.x);
         const height = @as(f64, bb.max.y) - @as(f64, bb.min.y);
         const extent = @max(width, height);
-        if (!std.math.isFinite(extent) or extent <= 1.0 / 65536.0) return .{
-            .source = source,
-            .design = design,
-            .design_to_source = .identity,
-            .source_to_design = .identity,
-        };
+        if (!std.math.isFinite(extent) or extent <= 0) return error.InvalidGeometry;
 
-        const min_axis_extent = extent * std.math.floatEps(f32);
-        const scale_x_64 = (2.0 * PREPARED_PATH_RADIUS) / (if (width > min_axis_extent) width else extent);
-        const scale_y_64 = (2.0 * PREPARED_PATH_RADIUS) / (if (height > min_axis_extent) height else extent);
+        const scale_64 = (2.0 * PREPARED_PATH_RADIUS) / extent;
         const center_x_64 = @as(f64, bb.min.x) + width * 0.5;
         const center_y_64 = @as(f64, bb.min.y) + height * 0.5;
-        const inv_scale_x_64 = 1.0 / scale_x_64;
-        const inv_scale_y_64 = 1.0 / scale_y_64;
-        const tx_64 = -center_x_64 * scale_x_64;
-        const ty_64 = -center_y_64 * scale_y_64;
+        const inv_scale_64 = 1.0 / scale_64;
+        const tx_64 = -center_x_64 * scale_64;
+        const ty_64 = -center_y_64 * scale_64;
         const transform_values = [_]f64{
-            scale_x_64,
-            scale_y_64,
+            scale_64,
             center_x_64,
             center_y_64,
-            inv_scale_x_64,
-            inv_scale_y_64,
+            inv_scale_64,
             tx_64,
             ty_64,
         };
         for (transform_values) |value| {
             if (!std.math.isFinite(value) or @abs(value) > std.math.floatMax(f32)) return error.InvalidGeometry;
         }
-        const scale_x: f32 = @floatCast(scale_x_64);
-        const scale_y: f32 = @floatCast(scale_y_64);
+        const scale: f32 = @floatCast(scale_64);
         const center_x: f32 = @floatCast(center_x_64);
         const center_y: f32 = @floatCast(center_y_64);
         const source_to_design = Transform2D{
-            .xx = scale_x,
-            .yy = scale_y,
+            .xx = scale,
+            .yy = scale,
             .tx = @floatCast(tx_64),
             .ty = @floatCast(ty_64),
         };
         const design_to_source = Transform2D{
-            .xx = @floatCast(inv_scale_x_64),
-            .yy = @floatCast(inv_scale_y_64),
+            .xx = @floatCast(inv_scale_64),
+            .yy = @floatCast(inv_scale_64),
             .tx = center_x,
             .ty = center_y,
         };
@@ -584,7 +590,7 @@ pub const Path = struct {
             if (contour.curve_end == contour.curve_start and !contour.closed) {
                 contour.start_point = point;
                 contour.current_point = point;
-                self.expandPointBBox(point);
+                self.recomputeBBox();
                 return;
             }
         }
@@ -649,6 +655,7 @@ pub const Path = struct {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
+        try self.ensureCompoundCapacity(4);
         try self.moveTo(origin);
         try self.lineTo(origin.add(Vec2.new(size.x, 0.0)));
         try self.lineTo(origin.add(size));
@@ -663,6 +670,7 @@ pub const Path = struct {
         const origin = Vec2.new(rect.x, rect.y);
         const size = Vec2.new(@max(rect.w, 0.0), @max(rect.h, 0.0));
         if (size.x <= 0.0 or size.y <= 0.0) return;
+        try self.ensureCompoundCapacity(4);
         try self.moveTo(origin);
         try self.lineTo(origin.add(Vec2.new(0.0, size.y)));
         try self.lineTo(origin.add(size));
@@ -681,6 +689,7 @@ pub const Path = struct {
         const max_radius = @min(size.x, size.y) * 0.5;
         const radius = std.math.clamp(corner_radius, 0.0, max_radius);
         if (radius <= 1.0 / 65536.0) return self.addRect(rect);
+        try self.ensureCompoundCapacity(8);
 
         const arc = Vec2.new(radius, radius);
         const top_left = origin.add(Vec2.new(radius, radius));
@@ -711,6 +720,7 @@ pub const Path = struct {
         const max_radius = @min(size.x, size.y) * 0.5;
         const radius = std.math.clamp(corner_radius, 0.0, max_radius);
         if (radius <= 1.0 / 65536.0) return self.addRectReversed(rect);
+        try self.ensureCompoundCapacity(8);
 
         const arc = Vec2.new(radius, radius);
         const top_left = origin.add(Vec2.new(radius, radius));
@@ -738,6 +748,7 @@ pub const Path = struct {
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
+        try self.ensureCompoundCapacity(4);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
         try appendAdaptiveArcConic(self, center, radii, -std.math.pi / 2.0, 0.0);
         try appendAdaptiveArcConic(self, center, radii, 0.0, std.math.pi / 2.0);
@@ -754,6 +765,7 @@ pub const Path = struct {
         if (size.x <= 0.0 or size.y <= 0.0) return;
         const center = Vec2.new(rect.x + size.x * 0.5, rect.y + size.y * 0.5);
         const radii = size.scale(0.5);
+        try self.ensureCompoundCapacity(4);
         try self.moveTo(center.add(Vec2.new(0.0, -radii.y)));
         try appendAdaptiveArcConic(self, center, radii, -std.math.pi / 2.0, -std.math.pi);
         try appendAdaptiveArcConic(self, center, radii, -std.math.pi, -std.math.pi * 1.5);
@@ -805,6 +817,20 @@ pub const Path = struct {
             };
         } else {
             self.bbox = .{ .min = point, .max = point };
+        }
+    }
+
+    /// Rebuild bounds after replacing a move-only contour point. Segment
+    /// bounds already contain the start/end points of non-empty contours;
+    /// empty contours contribute their authored move point explicitly.
+    fn recomputeBBox(self: *Path) void {
+        self.bbox = null;
+        for (self.curves.items) |curve| {
+            const curve_bbox = curve.boundingBox();
+            self.bbox = if (self.bbox) |bbox| bbox.merge(curve_bbox) else curve_bbox;
+        }
+        for (self.contours.items) |contour| {
+            if (contour.curve_start == contour.curve_end) self.expandPointBBox(contour.start_point);
         }
     }
 
@@ -870,6 +896,8 @@ pub const Path = struct {
         stroke: StrokeStyle,
         tolerance: f32,
     ) !?StrokedCurves {
+        try stroke.validate();
+        if (!std.math.isFinite(tolerance) or tolerance <= 0) return error.InvalidGeometry;
         if (stroke.width <= 1e-4 or self.contours.items.len == 0) return null;
 
         var outline = Path.init(allocator);
@@ -909,11 +937,10 @@ fn transformCurve(curve: CurveSegment, transform: Transform2D) CurveSegment {
 }
 
 /// A path expressed in Snail's precision-safe design space. Each numerically
-/// significant bbox axis spans `[-1,1]`; `design_to_source` restores the
-/// original aspect ratio when the shape is drawn. Empty and sub-threshold paths
-/// use identity transforms and an empty prepared fill. Strokes are outlined in
-/// source space before normalization, so independent axis scales cannot distort
-/// them.
+/// maximum bbox axis spans `[-1,1]`; the other axis retains the source aspect
+/// ratio. `design_to_source` restores authored coordinates when the shape is
+/// drawn. Empty paths use identity transforms and an empty prepared fill.
+/// Strokes are outlined in source space before normalization.
 pub const PreparedPath = struct {
     source: Path,
     design: Path,
@@ -957,8 +984,8 @@ pub const PreparedPath = struct {
     }
 
     /// Re-express source-space paint parameters in the prepared design space.
-    pub fn paintForDesign(self: *const PreparedPath, source_paint: paint_mod.Paint) paint_mod.Paint {
-        return paint_mod.mapToLocal(source_paint, self.design_to_source) orelse source_paint;
+    pub fn paintForDesign(self: *const PreparedPath, source_paint: paint_mod.Paint) paint_mod.PaintMapError!paint_mod.Paint {
+        return paint_mod.mapToLocal(source_paint, self.design_to_source);
     }
 
     /// Compose an existing source/world transform with the placement needed to
@@ -989,6 +1016,26 @@ test "path curve accounting changes only after a successful append" {
     try std.testing.expectEqual(@as(usize, 1), path.curves.items.len);
 }
 
+test "compound path commands fail before publishing a prefix" {
+    var path = Path.init(std.testing.allocator);
+    defer {
+        path.allocator = std.testing.allocator;
+        path.deinit();
+    }
+
+    var no_memory: [0]u8 = .{};
+    var fixed = std.heap.FixedBufferAllocator.init(&no_memory);
+    path.allocator = fixed.allocator();
+    try std.testing.expectError(error.OutOfMemory, path.addRoundedRect(
+        .{ .x = 0, .y = 0, .w = 20, .h = 10 },
+        2,
+    ));
+    try std.testing.expectEqual(@as(usize, 0), path.contours.items.len);
+    try std.testing.expectEqual(@as(usize, 0), path.curves.items.len);
+    try std.testing.expectEqual(@as(usize, 0), path.band_curve_count);
+    try std.testing.expectEqual(@as(?BBox, null), path.bbox);
+}
+
 test "path rejects non-finite public geometry without mutation" {
     var path = Path.init(std.testing.allocator);
     defer path.deinit();
@@ -1006,6 +1053,19 @@ test "path rejects non-finite public geometry without mutation" {
     try std.testing.expectEqual(@as(usize, 0), path.contours.items.len);
     try std.testing.expectEqual(@as(usize, 0), path.curves.items.len);
     try std.testing.expectEqual(@as(usize, 0), path.band_curve_count);
+}
+
+test "replacing the current move-only contour removes its stale bound" {
+    var path = Path.init(std.testing.allocator);
+    defer path.deinit();
+
+    try path.moveTo(.{ .x = -100, .y = -200 });
+    try path.moveTo(.{ .x = 10, .y = 20 });
+    try path.lineTo(.{ .x = 12, .y = 24 });
+
+    const bbox = path.bounds().?;
+    try std.testing.expectEqual(Vec2.new(10, 20), bbox.min);
+    try std.testing.expectEqual(Vec2.new(12, 24), bbox.max);
 }
 
 test "adaptive arcs reject explosive subdivision counts before mutation" {
@@ -1050,9 +1110,9 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
 
     const design_bounds = prepared.design.bounds().?;
     try std.testing.expectApproxEqAbs(-PREPARED_PATH_RADIUS, design_bounds.min.x, 1e-6);
-    try std.testing.expectApproxEqAbs(-PREPARED_PATH_RADIUS, design_bounds.min.y, 1e-6);
+    try std.testing.expectApproxEqAbs(-PREPARED_PATH_RADIUS * 0.5, design_bounds.min.y, 1e-6);
     try std.testing.expectApproxEqAbs(PREPARED_PATH_RADIUS, design_bounds.max.x, 1e-6);
-    try std.testing.expectApproxEqAbs(PREPARED_PATH_RADIUS, design_bounds.max.y, 1e-6);
+    try std.testing.expectApproxEqAbs(PREPARED_PATH_RADIUS * 0.5, design_bounds.max.y, 1e-6);
 
     const restored_min = prepared.design_to_source.applyPoint(design_bounds.min);
     const restored_max = prepared.design_to_source.applyPoint(design_bounds.max);
@@ -1067,9 +1127,40 @@ test "prepare normalizes arbitrary coordinates and preserves placement" {
     });
     defer stroke_curves.deinit();
     try std.testing.expectApproxEqAbs(@as(f32, -1.05), stroke_curves.bbox.min.x, 0.002);
-    try std.testing.expectApproxEqAbs(@as(f32, -1.1), stroke_curves.bbox.min.y, 0.002);
+    try std.testing.expectApproxEqAbs(@as(f32, -0.55), stroke_curves.bbox.min.y, 0.002);
     try std.testing.expectApproxEqAbs(@as(f32, 1.05), stroke_curves.bbox.max.x, 0.002);
-    try std.testing.expectApproxEqAbs(@as(f32, 1.1), stroke_curves.bbox.max.y, 0.002);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.55), stroke_curves.bbox.max.y, 0.002);
+}
+
+test "prepare preserves finite paths smaller than the old cutoff" {
+    var source = Path.init(std.testing.allocator);
+    defer source.deinit();
+    try source.addRect(.{ .x = 1e-5, .y = -2e-5, .w = 1e-7, .h = 5e-8 });
+
+    var prepared = try source.prepare(std.testing.allocator);
+    defer prepared.deinit();
+    try std.testing.expect(!prepared.design.isEmpty());
+    const design_bounds = prepared.design.bounds().?;
+    try std.testing.expectApproxEqAbs(@as(f32, 2), design_bounds.width(), 2e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), design_bounds.height(), 2e-5);
+}
+
+test "prepared radial paint mapping stays exact on a non-square path" {
+    var source = Path.init(std.testing.allocator);
+    defer source.deinit();
+    try source.addRect(.{ .x = 100, .y = 200, .w = 80, .h = 20 });
+    var prepared = try source.prepare(std.testing.allocator);
+    defer prepared.deinit();
+
+    const mapped = (try prepared.paintForDesign(.{ .radial_gradient = .{
+        .center = .{ .x = 140, .y = 210 },
+        .radius = 10,
+        .inner_color = .{ 0, 0, 0, 1 },
+        .outer_color = .{ 1, 1, 1, 1 },
+    } })).radial_gradient;
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mapped.center.x, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), mapped.center.y, 1e-5);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.25), mapped.radius, 1e-5);
 }
 
 test "cubic stroke outline keeps adaptive span joins tangent-continuous" {

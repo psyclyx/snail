@@ -66,12 +66,12 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
     var fonts = [_]*snail.Font{ &font_regular, &font_bold, &font_arabic, &font_devanagari, &font_thai, &font_emoji };
 
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font_regular },
-        .{ .font = &font_bold, .weight = .bold },
-        .{ .font = &font_arabic, .fallback = true },
-        .{ .font = &font_devanagari, .fallback = true },
-        .{ .font = &font_thai, .fallback = true },
-        .{ .font = &font_emoji, .fallback = true },
+        .{ .font = &font_regular, .font_id = 0 },
+        .{ .font = &font_bold, .font_id = 1, .weight = .bold },
+        .{ .font = &font_arabic, .font_id = 2, .fallback = true },
+        .{ .font = &font_devanagari, .font_id = 3, .fallback = true },
+        .{ .font = &font_thai, .font_id = 4, .fallback = true },
+        .{ .font = &font_emoji, .font_id = 5, .fallback = true },
     });
     defer faces.deinit();
 
@@ -218,7 +218,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         try path_entries.append(allocator, .{
             .key = key,
             .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
-            .paint = prepared.paintForDesign(paint),
+            .paint = try prepared.paintForDesign(paint),
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(demo_support.placeRect(rect)), .local_color = .{ 1, 1, 1, 1 } });
     }
@@ -270,7 +270,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
             .yy = -wordmark_em,
             .ty = pen_y,
         };
-        const local_paint = snail.mapPaintToLocal(.{ .linear_gradient = wordmark_world_gradient }, transform) orelse continue;
+        const local_paint = try snail.mapPaintToLocal(.{ .linear_gradient = wordmark_world_gradient }, transform);
         const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
         _ = scratch_arena.reset(.retain_capacity);
         try path_curves_owned.append(allocator, curves);

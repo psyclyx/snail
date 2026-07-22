@@ -27,22 +27,26 @@ pub const Vec2 = struct {
     }
 
     pub fn length(v: Vec2) f32 {
-        return @sqrt(v.x * v.x + v.y * v.y);
+        return std.math.hypot(v.x, v.y);
     }
 
     pub fn normalize(v: Vec2) Vec2 {
-        const len = v.length();
-        if (len == 0) return .{};
-        return v.scale(1.0 / len);
+        if (!std.math.isFinite(v.x) or !std.math.isFinite(v.y)) return .{};
+        const magnitude = @max(@abs(v.x), @abs(v.y));
+        if (magnitude == 0) return .{};
+        const scaled = Vec2{ .x = v.x / magnitude, .y = v.y / magnitude };
+        const scaled_len = @sqrt(scaled.x * scaled.x + scaled.y * scaled.y);
+        return .{ .x = scaled.x / scaled_len, .y = scaled.y / scaled_len };
     }
 
     pub fn lerp(a: Vec2, b: Vec2, t: f32) Vec2 {
-        const one_minus_t = 1.0 - t;
+        const wide_t: f64 = t;
+        const one_minus_t = 1.0 - wide_t;
         return .{
             // Weighted form avoids overflowing `b - a` for opposite-sign,
             // individually-finite endpoints near the f32 limits.
-            .x = a.x * one_minus_t + b.x * t,
-            .y = a.y * one_minus_t + b.y * t,
+            .x = @floatCast(@as(f64, a.x) * one_minus_t + @as(f64, b.x) * wide_t),
+            .y = @floatCast(@as(f64, a.y) * one_minus_t + @as(f64, b.y) * wide_t),
         };
     }
 };
@@ -101,24 +105,38 @@ pub const Transform2D = struct {
     pub fn inverse(self: Transform2D) ?Transform2D {
         const values = [_]f32{ self.xx, self.xy, self.tx, self.yx, self.yy, self.ty };
         for (values) |value| if (!std.math.isFinite(value)) return null;
-        const det = self.xx * self.yy - self.xy * self.yx;
-        if (!std.math.isFinite(det) or @abs(det) <= 1e-12) return null;
+        // A determinant formed in f32 can underflow for small, perfectly
+        // invertible transforms or overflow for large ones. Compute the
+        // inverse in f64 and reject only singular matrices or results that
+        // genuinely cannot be represented by Transform2D's f32 fields.
+        const xx: f64 = self.xx;
+        const xy: f64 = self.xy;
+        const tx: f64 = self.tx;
+        const yx: f64 = self.yx;
+        const yy: f64 = self.yy;
+        const ty: f64 = self.ty;
+        const det = xx * yy - xy * yx;
+        if (!std.math.isFinite(det) or det == 0) return null;
         const inv_det = 1.0 / det;
-        const xx = self.yy * inv_det;
-        const xy = -self.xy * inv_det;
-        const yx = -self.yx * inv_det;
-        const yy = self.xx * inv_det;
-        const result = Transform2D{
-            .xx = xx,
-            .xy = xy,
-            .tx = -(xx * self.tx + xy * self.ty),
-            .yx = yx,
-            .yy = yy,
-            .ty = -(yx * self.tx + yy * self.ty),
+        const result_values = [_]f64{
+            yy * inv_det,
+            -xy * inv_det,
+            -(yy * inv_det * tx - xy * inv_det * ty),
+            -yx * inv_det,
+            xx * inv_det,
+            -(-yx * inv_det * tx + xx * inv_det * ty),
         };
-        const result_values = [_]f32{ result.xx, result.xy, result.tx, result.yx, result.yy, result.ty };
-        for (result_values) |value| if (!std.math.isFinite(value)) return null;
-        return result;
+        for (result_values) |value| {
+            if (!std.math.isFinite(value) or @abs(value) > std.math.floatMax(f32)) return null;
+        }
+        return .{
+            .xx = @floatCast(result_values[0]),
+            .xy = @floatCast(result_values[1]),
+            .tx = @floatCast(result_values[2]),
+            .yx = @floatCast(result_values[3]),
+            .yy = @floatCast(result_values[4]),
+            .ty = @floatCast(result_values[5]),
+        };
     }
 
     pub fn applyPoint(self: Transform2D, p: Vec2) Vec2 {
@@ -223,13 +241,36 @@ test "Vec2 lerp keeps the midpoint of extreme finite endpoints finite" {
     try std.testing.expectEqual(@as(f32, 0), midpoint.y);
 }
 
-test "Transform2D inverse rejects non-finite input and output" {
+test "Vec2 length and normalization avoid intermediate overflow" {
+    const huge = Vec2{ .x = std.math.floatMax(f32), .y = 1 };
+    try std.testing.expectEqual(std.math.floatMax(f32), huge.length());
+    const unit = huge.normalize();
+    try std.testing.expectApproxEqAbs(@as(f32, 1), unit.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), unit.y, 1e-6);
+
+    const diagonal = (Vec2{ .x = std.math.floatMax(f32), .y = std.math.floatMax(f32) }).normalize();
+    try std.testing.expectApproxEqAbs(@as(f32, 1), diagonal.length(), 1e-6);
+}
+
+test "Transform2D inverse rejects non-finite input and unrepresentable output" {
     var invalid = Transform2D.identity;
     invalid.tx = std.math.nan(f32);
     try std.testing.expectEqual(@as(?Transform2D, null), invalid.inverse());
 
-    const overflowing = Transform2D{ .xx = std.math.floatMin(f32), .yy = std.math.floatMin(f32) };
+    const overflowing = Transform2D{ .xx = std.math.floatTrueMin(f32), .yy = std.math.floatTrueMin(f32) };
     try std.testing.expectEqual(@as(?Transform2D, null), overflowing.inverse());
+}
+
+test "Transform2D inverse handles finite determinant underflow and overflow" {
+    const tiny = Transform2D.scale(1e-20, 2e-20);
+    const tiny_inverse = tiny.inverse().?;
+    try std.testing.expectApproxEqRel(@as(f32, 1e20), tiny_inverse.xx, 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 5e19), tiny_inverse.yy, 1e-6);
+
+    const huge = Transform2D.scale(1e20, 2e20);
+    const huge_inverse = huge.inverse().?;
+    try std.testing.expectApproxEqRel(@as(f32, 1e-20), huge_inverse.xx, 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 5e-21), huge_inverse.yy, 1e-6);
 }
 
 test "Mat4 identity multiply" {

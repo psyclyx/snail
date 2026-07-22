@@ -165,7 +165,7 @@ pub const Content = struct {
 pub const Assets = struct {
     allocator: Allocator,
     faces: snail.Faces,
-    /// Heap-allocated so `Faces.face(i).?.font` (which holds a raw
+    /// Heap-allocated so `Faces.fontForFace(i)` (which returns a raw
     /// `*const Font` pointer) survives `Assets` getting moved during
     /// `init`'s return-by-value. The unwrap is valid only after checking
     /// `i < faceCount()`. An in-struct `[N]Font` would dangle the moment
@@ -204,7 +204,6 @@ pub const Assets = struct {
     /// symbols/thai/emoji); the underlying `Font` set deduplicates back to
     /// 6 (regular, bold, arabic, devanagari, symbols, thai, emoji+symbols)
     /// by reusing regular for italic and bold for bold-italic, since the
-    /// italic faces are synthetic-skew-only.
     pub const face_to_font_id = [face_count]u32{ 0, 1, 0, 1, 0, 2, 3, 4, 5, 6 };
 
     pub fn init(allocator: Allocator) !Assets {
@@ -224,16 +223,16 @@ pub const Assets = struct {
         }
 
         var faces = try snail.Faces.build(allocator, &.{
-            .{ .font = &fonts[0] },
-            .{ .font = &fonts[1], .weight = .bold },
-            .{ .font = &fonts[0], .italic = true, .synthetic = .{ .skew_x = 0.2 } },
-            .{ .font = &fonts[1], .weight = .bold, .italic = true, .synthetic = .{ .skew_x = 0.2 } },
-            .{ .font = &fonts[0], .weight = .semi_bold, .synthetic = .{ .embolden = 0.5 } },
-            .{ .font = &fonts[2], .fallback = true },
-            .{ .font = &fonts[3], .fallback = true },
-            .{ .font = &fonts[4], .fallback = true },
-            .{ .font = &fonts[5], .fallback = true },
-            .{ .font = &fonts[6], .fallback = true },
+            .{ .font = &fonts[0], .font_id = 0 },
+            .{ .font = &fonts[1], .font_id = 1, .weight = .bold },
+            .{ .font = &fonts[0], .font_id = 0, .italic = true },
+            .{ .font = &fonts[1], .font_id = 1, .weight = .bold, .italic = true },
+            .{ .font = &fonts[0], .font_id = 0, .weight = .semi_bold },
+            .{ .font = &fonts[2], .font_id = 2, .fallback = true },
+            .{ .font = &fonts[3], .font_id = 3, .fallback = true },
+            .{ .font = &fonts[4], .font_id = 4, .fallback = true },
+            .{ .font = &fonts[5], .font_id = 5, .fallback = true },
+            .{ .font = &fonts[6], .font_id = 6, .fallback = true },
         });
         errdefer faces.deinit();
 
@@ -1263,7 +1262,7 @@ const BannerBuilder = struct {
                 .yy = -placement.size,
                 .ty = pen_y,
             };
-            const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
+            const local_paint = try snail.mapPaintToLocal(paint, transform);
 
             const curves = try font_ref.extractCurves(self.allocator, self.scratch_arena.allocator(), g.glyph_id);
             _ = self.scratch_arena.reset(.retain_capacity);

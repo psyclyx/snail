@@ -46,7 +46,7 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = prepared.paintForDesign(paint),
+            .paint = try prepared.paintForDesign(paint),
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
@@ -76,7 +76,7 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = prepared.paintForDesign(stroke.paint),
+            .paint = try prepared.paintForDesign(stroke.paint),
         });
         try self.shapes.append(self.allocator, .{
             .key = key,
@@ -85,22 +85,20 @@ pub const Builder = struct {
         });
     }
 
-    // Ellipses are authored as a unit circle placed via
-    // `transform ∘ placeRect(rect)`, so their outlines stay f16-precise
-    // regardless of design-space offset (crucial for the small, high-offset
-    // eyes). Paints are re-expressed into the unit sample space with
-    // `mapPaintToLocal` — solid passes through; gradients/images are remapped.
+    // PreparedPath normalizes authored coordinates before f16 packing, so
+    // ellipses can stay in their paint coordinate space even at large offsets.
+    // This also keeps radial/conic paints exact instead of attempting to bake
+    // a non-uniform rectangle placement into a native circular gradient.
     pub fn addFilledEllipse(
         self: Builder,
         rect: snail.Rect,
         paint: snail.Paint,
         transform: snail.Transform2D,
     ) !void {
-        var path = try demo_support.unitEllipsePath(self.allocator);
+        var path = snail.Path.init(self.allocator);
         defer path.deinit();
-        const to_paint = demo_support.placeRect(rect);
-        const local_paint = snail.mapPaintToLocal(paint, to_paint) orelse paint;
-        try self.addFilledPath(&path, local_paint, snail.Transform2D.multiply(transform, to_paint));
+        try path.addEllipse(rect);
+        try self.addFilledPath(&path, paint, transform);
     }
 
     pub fn addEllipse(
@@ -110,15 +108,11 @@ pub const Builder = struct {
         stroke: snail.StrokeStyle,
         transform: snail.Transform2D,
     ) !void {
-        var path = try demo_support.unitEllipsePath(self.allocator);
+        var path = snail.Path.init(self.allocator);
         defer path.deinit();
-        const to_paint = demo_support.placeRect(rect);
-        const place = snail.Transform2D.multiply(transform, to_paint);
-        try self.addFilledPath(&path, snail.mapPaintToLocal(fill, to_paint) orelse fill, place);
-        var unit_stroke = stroke;
-        unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
-        unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
-        try self.addStrokedPath(&path, unit_stroke, place);
+        try path.addEllipse(rect);
+        try self.addFilledPath(&path, fill, transform);
+        try self.addStrokedPath(&path, stroke, transform);
     }
 
     /// Fill + stroke compound. When `stroke.placement == .inside`, this
@@ -159,7 +153,7 @@ pub const Builder = struct {
             try self.entries.append(self.allocator, .{
                 .key = key,
                 .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-                .paint = prepared.paintForDesign(fill),
+                .paint = try prepared.paintForDesign(fill),
             });
             try self.shapes.append(self.allocator, .{
                 .key = key,
@@ -177,7 +171,7 @@ pub const Builder = struct {
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
             .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-            .paint = prepared.paintForDesign(stroke.paint),
+            .paint = try prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
@@ -186,7 +180,7 @@ pub const Builder = struct {
         try self.entries.append(self.allocator, .{
             .key = key,
             .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
-            .paint = prepared.paintForDesign(fill),
+            .paint = try prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,
         });
