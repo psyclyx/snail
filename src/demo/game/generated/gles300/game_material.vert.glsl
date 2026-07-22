@@ -1,11 +1,5 @@
 #version 300 es
 
-struct Varyings
-{
-    vec4 position;
-    vec2 uv;
-};
-
 layout(std140) uniform GameMaterialParams_std140
 {
     layout(row_major) mat4 view_proj;
@@ -28,10 +22,7 @@ mediump mat4 spvWorkaroundRowMajorMP(mediump mat4 wrap) { return wrap; }
 
 void main()
 {
-    Varyings o;
-    o.uv = input_uv;
-    o.position = vec4(input_pos, 1.0) * (spvWorkaroundRowMajor(pc.model) * spvWorkaroundRowMajor(pc.view_proj));
-    gl_Position = o.position;
-    snail_io0 = o.uv;
+    gl_Position = vec4(input_pos, 1.0) * (spvWorkaroundRowMajor(pc.model) * spvWorkaroundRowMajor(pc.view_proj));
+    snail_io0 = input_uv;
 }
 

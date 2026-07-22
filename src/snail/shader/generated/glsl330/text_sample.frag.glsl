@@ -1,27 +1,5 @@
 #version 330
 
-struct SnailTextSampleRecord
-{
-    vec4 rect;
-    vec4 xform;
-    vec2 origin;
-    uvec2 glyph;
-    vec4 banding;
-    vec4 color;
-    vec4 tint;
-};
-
-struct CoverageBandSpan
-{
-    int first;
-    int last;
-};
-
-uvec4 _634;
-uvec4 _652;
-uvec4 _1029;
-uvec4 _1047;
-
 layout(std140) uniform SnailTextSampleParams_std140
 {
     int glyph_count;
@@ -37,647 +15,766 @@ uniform sampler2DArray SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler;
 in vec2 snail_io0;
 layout(location = 0) out vec4 entryPointParam_fragmentMain;
 
-vec2 ddx(vec2 p)
-{
-    return dFdx(p);
-}
-
-vec2 ddy(vec2 p)
-{
-    return dFdy(p);
-}
-
-uint Records_word(int linear_index)
-{
-    return texelFetch(u_snail_text_records, int(uint(linear_index))).x;
-}
-
-uint snailTextSampleWord(int words_per_glyph, int glyph_index, int word_offset)
-{
-    return Records_word((glyph_index * words_per_glyph) + word_offset);
-}
-
-float snailDecodeFloat16(uint bits)
-{
-    uint exponent = (bits >> 10u) & 31u;
-    uint fraction = bits & 1023u;
-    float _sign;
-    if ((bits >> 15u) == 0u)
-    {
-        _sign = 1.0;
-    }
-    else
-    {
-        _sign = -1.0;
-    }
-    if (exponent == 0u)
-    {
-        if (fraction == 0u)
-        {
-            return _sign * 0.0;
-        }
-        return (_sign * exp2(-14.0)) * (float(fraction) / 1024.0);
-    }
-    if (exponent == 31u)
-    {
-        return _sign * 65504.0;
-    }
-    return (_sign * exp2(float(exponent) - 15.0)) * (1.0 + (float(fraction) / 1024.0));
-}
-
-vec2 snailUnpackHalf2(uint word)
-{
-    return vec2(snailDecodeFloat16(word & 65535u), snailDecodeFloat16(word >> 16u));
-}
-
-vec4 snailUnpackHalf4(uint lo, uint hi)
-{
-    return vec4(snailUnpackHalf2(lo), snailUnpackHalf2(hi));
-}
-
-vec4 snailUnpackUnorm4x8(uint word)
-{
-    return vec4(float(word & 255u), float((word >> 8u) & 255u), float((word >> 16u) & 255u), float((word >> 24u) & 255u)) / vec4(255.0);
-}
-
-SnailTextSampleRecord snailTextSampleRecord(int words_per_glyph, int glyph_index)
-{
-    SnailTextSampleRecord record;
-    record.rect = snailUnpackHalf4(snailTextSampleWord(words_per_glyph, glyph_index, 0), snailTextSampleWord(words_per_glyph, glyph_index, 1));
-    record.xform = vec4(uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 2)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 3)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 4)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 5)));
-    record.origin = vec2(uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 6)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 7)));
-    record.glyph = uvec2(snailTextSampleWord(words_per_glyph, glyph_index, 8), snailTextSampleWord(words_per_glyph, glyph_index, 9));
-    record.banding = vec4(uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 10)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 11)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 12)), uintBitsToFloat(snailTextSampleWord(words_per_glyph, glyph_index, 13)));
-    record.color = snailUnpackUnorm4x8(snailTextSampleWord(words_per_glyph, glyph_index, 14));
-    record.tint = snailUnpackUnorm4x8(snailTextSampleWord(words_per_glyph, glyph_index, 15));
-    return record;
-}
-
-vec2 snailTextSampleLocalCoord(vec2 scene_pos, vec4 xform, vec2 origin)
-{
-    float det = (xform.x * xform.w) - (xform.y * xform.z);
-    vec2 delta = scene_pos - origin;
-    float _343 = delta.x;
-    float _345 = delta.y;
-    return vec2(((xform.w * _343) - (xform.y * _345)) / det, (((-xform.z) * _343) + (xform.x * _345)) / det);
-}
-
-vec2 snailTextSampleLocalVector(vec2 scene_vector, vec4 xform)
-{
-    float det = (xform.x * xform.w) - (xform.y * xform.z);
-    return vec2(((xform.w * scene_vector.x) - (xform.y * scene_vector.y)) / det, (((-xform.z) * scene_vector.x) + (xform.x * scene_vector.y)) / det);
-}
-
-CoverageBandSpan CoverageBandSpan_init(int first, int last)
-{
-    CoverageBandSpan _573;
-    _573.first = first;
-    _573.last = last;
-    return _573;
-}
-
-CoverageBandSpan computeCoverageBandSpan(float coord, float eppAxis, float bandScale, float bandOffset, int bandMax)
-{
-    float center = (coord * bandScale) + bandOffset;
-    float _557 = max(abs(eppAxis * bandScale) * 0.5, 9.9999997473787516355514526367188e-06);
-    int _561 = clamp(int(center - _557), 0, bandMax);
-    return CoverageBandSpan_init(_561, max(_561, clamp(int(center + _557), 0, bandMax)));
-}
-
-ivec2 calcBandLoc(ivec2 glyphLoc, uint offset)
-{
-    int _608 = glyphLoc.x + int(offset);
-    ivec2 loc = ivec2(_608, glyphLoc.y);
-    loc.y += (_608 >> 12);
-    loc.x &= 4095;
-    return loc;
-}
-
-int decodeBandCurveFirstMemberCommon(uvec2 ref)
-{
-    return int(ref.x >> 12u);
-}
-
-bool isCoverageBandSpanOwner(uvec2 ref, int band, int spanFirst)
-{
-    return band == max(decodeBandCurveFirstMemberCommon(ref), spanFirst);
-}
-
-ivec2 decodeBandCurveLocCommon(uvec2 ref)
-{
-    return ivec2(int(ref.x & 4095u), int(ref.y & 16383u));
-}
-
-ivec2 decodeBandCurveLoc(uvec2 ref)
-{
-    return decodeBandCurveLocCommon(ref);
-}
-
-ivec2 offsetCurveLoc(ivec2 base, int offset)
-{
-    int _739 = base.x + offset;
-    ivec2 loc = ivec2(_739, base.y);
-    loc.y += (_739 >> 12);
-    loc.x &= 4095;
-    return loc;
-}
-
-float rootCodeCoord(float v)
-{
-    float _792;
-    if (abs(v) <= 1.52587890625e-05)
-    {
-        _792 = 0.0;
-    }
-    else
-    {
-        _792 = v;
-    }
-    return _792;
-}
-
-uint calcRootCode(float y1, float y2, float y3)
-{
-    return (11892u >> (((floatBitsToUint(rootCodeCoord(y3)) >> 29u) & 4u) | ((((floatBitsToUint(rootCodeCoord(y2)) >> 30u) & 2u) | ((floatBitsToUint(rootCodeCoord(y1)) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
-}
-
-float snapNearTangentSqrt(float disc, float b, float ac)
-{
-    float _891;
-    if (disc <= (max(b * b, abs(ac)) * 3.0000001061125658452510833740234e-06))
-    {
-        _891 = 0.0;
-    }
-    else
-    {
-        _891 = sqrt(disc);
-    }
-    return _891;
-}
-
-vec2 solveHorizPoly(vec4 p12, vec2 p3)
-{
-    vec2 a = (p12.xy - (p12.zw * 2.0)) + p3;
-    vec2 b = p12.xy - p12.zw;
-    float _861 = a.y;
-    float t1;
-    float t2;
-    if (abs(_861) < 1.52587890625e-05)
-    {
-        float _865 = b.y;
-        if (abs(_865) < 1.52587890625e-05)
-        {
-            t1 = 0.0;
-        }
-        else
-        {
-            t1 = (p12.y * 0.5) / _865;
-        }
-        t2 = t1;
-    }
-    else
-    {
-        float _879 = b.y;
-        float _882 = _861 * p12.y;
-        float sq = snapNearTangentSqrt((_879 * _879) - _882, _879, _882);
-        if (_879 >= 0.0)
-        {
-            float q = _879 + sq;
-            if (abs(q) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.y / q;
-            }
-            t2 = q / _861;
-        }
-        else
-        {
-            float q_1 = _879 - sq;
-            if (abs(q_1) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.y / q_1;
-            }
-            float _933 = t1;
-            t1 = q_1 / _861;
-            t2 = _933;
-        }
-    }
-    float _938 = a.x;
-    float _942 = b.x * 2.0;
-    return vec2((((_938 * t1) - _942) * t1) + p12.x, (((_938 * t2) - _942) * t2) + p12.x);
-}
-
-bool accumulateHorizContribution(inout float _708, inout float _709, vec2 _710, vec2 _711, ivec2 _712, int _713)
-{
-    vec4 _730 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_712, _713, 0).xyz, 0);
-    vec4 _758 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(offsetCurveLoc(_712, 1), _713, 0).xyz, 0);
-    vec4 p12 = vec4(_730.xy, _730.zw) - vec4(_710, _710);
-    vec2 p3 = _758.xy - _710;
-    if ((max(max(p12.x, p12.z), p3.x) * _711.x) < (-0.5))
-    {
-        return false;
-    }
-    uint code = calcRootCode(p12.y, p12.w, p3.y);
-    if (code != 0u)
-    {
-        vec2 r = solveHorizPoly(p12, p3) * _711.x;
-        if ((code & 1u) != 0u)
-        {
-            float _961 = r.x;
-            _708 += clamp(_961 + 0.5, 0.0, 1.0);
-            _709 = max(_709, clamp(1.0 - (abs(_961) * 2.0), 0.0, 1.0));
-        }
-        if (code > 1u)
-        {
-            float _977 = r.y;
-            _708 -= clamp(_977 + 0.5, 0.0, 1.0);
-            _709 = max(_709, clamp(1.0 - (abs(_977) * 2.0), 0.0, 1.0));
-        }
-    }
-    return true;
-}
-
-vec2 solveVertPoly(vec4 p12, vec2 p3)
-{
-    vec2 a = (p12.xy - (p12.zw * 2.0)) + p3;
-    vec2 b = p12.xy - p12.zw;
-    float _1140 = a.x;
-    float t1;
-    float t2;
-    if (abs(_1140) < 1.52587890625e-05)
-    {
-        float _1144 = b.x;
-        if (abs(_1144) < 1.52587890625e-05)
-        {
-            t1 = 0.0;
-        }
-        else
-        {
-            t1 = (p12.x * 0.5) / _1144;
-        }
-        t2 = t1;
-    }
-    else
-    {
-        float _1158 = b.x;
-        float _1161 = _1140 * p12.x;
-        float sq = snapNearTangentSqrt((_1158 * _1158) - _1161, _1158, _1161);
-        if (_1158 >= 0.0)
-        {
-            float q = _1158 + sq;
-            if (abs(q) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.x / q;
-            }
-            t2 = q / _1140;
-        }
-        else
-        {
-            float q_1 = _1158 - sq;
-            if (abs(q_1) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.x / q_1;
-            }
-            float _1188 = t1;
-            t1 = q_1 / _1140;
-            t2 = _1188;
-        }
-    }
-    float _1193 = a.y;
-    float _1197 = b.y * 2.0;
-    return vec2((((_1193 * t1) - _1197) * t1) + p12.y, (((_1193 * t2) - _1197) * t2) + p12.y);
-}
-
-bool accumulateVertContribution(inout float _1063, inout float _1064, vec2 _1065, vec2 _1066, ivec2 _1067, int _1068)
-{
-    vec4 _1082 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_1067, _1068, 0).xyz, 0);
-    vec4 _1088 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(offsetCurveLoc(_1067, 1), _1068, 0).xyz, 0);
-    vec4 p12 = vec4(_1082.xy, _1082.zw) - vec4(_1065, _1065);
-    vec2 p3 = _1088.xy - _1065;
-    if ((max(max(p12.y, p12.w), p3.y) * _1066.y) < (-0.5))
-    {
-        return false;
-    }
-    uint code = calcRootCode(p12.x, p12.z, p3.x);
-    if (code != 0u)
-    {
-        vec2 r = solveVertPoly(p12, p3) * _1066.y;
-        if ((code & 1u) != 0u)
-        {
-            float _1215 = r.x;
-            _1063 -= clamp(_1215 + 0.5, 0.0, 1.0);
-            _1064 = max(_1064, clamp(1.0 - (abs(_1215) * 2.0), 0.0, 1.0));
-        }
-        if (code > 1u)
-        {
-            float _1231 = r.y;
-            _1063 += clamp(_1231 + 0.5, 0.0, 1.0);
-            _1064 = max(_1064, clamp(1.0 - (abs(_1231) * 2.0), 0.0, 1.0));
-        }
-    }
-    return true;
-}
-
-float applyFillRule(float winding, int fill_rule_mode)
-{
-    if (fill_rule_mode == 1)
-    {
-        return 1.0 - abs((fract(winding * 0.5) * 2.0) - 1.0);
-    }
-    return abs(winding);
-}
-
-float applyCoverageTransfer(float cov, float coverage_exponent)
-{
-    float _1311 = clamp(cov, 0.0, 1.0);
-    float _1312 = max(coverage_exponent, 1.52587890625e-05);
-    float _1307;
-    if (abs(_1312 - 1.0) <= 9.9999999747524270787835121154785e-07)
-    {
-        _1307 = _1311;
-    }
-    else
-    {
-        _1307 = pow(_1311, _1312);
-    }
-    return _1307;
-}
-
-float evalGlyphCoverage(vec2 _466, vec2 _467, vec2 _468, ivec2 _469, ivec2 _470, vec4 _471, int _472, float _473)
-{
-    CoverageBandSpan hSpan = computeCoverageBandSpan(_466.y, _467.y, _471.y, _471.w, _470.y);
-    CoverageBandSpan vSpan = computeCoverageBandSpan(_466.x, _467.x, _471.x, _471.z, _470.x);
-    float xcov = 0.0;
-    float xwgt = 0.0;
-    int _589 = hSpan.first;
-    int _590 = hSpan.last;
-    bool _591 = _589 != _590;
-    int band = _589;
-    int i;
-    bool _479;
-    for (;;)
-    {
-        bool _484_ladder_break = false;
-        do
-        {
-            if (!(band <= _590))
-            {
-                _484_ladder_break = true;
-                break;
-            }
-            uvec2 hbd = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_469, uint(band)), _472, 0).xyz, 0).xy.xy;
-            ivec2 _637 = calcBandLoc(_469, hbd.y);
-            int _639 = int(hbd.x);
-            i = 0;
-            for (;;)
-            {
-                bool _489_ladder_break = false;
-                do
-                {
-                    if (!(i < _639))
-                    {
-                        _489_ladder_break = true;
-                        break;
-                    }
-                    uvec2 ref = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_637, uint(i)), _472, 0).xyz, 0).xy.xy;
-                    if (_591)
-                    {
-                        _479 = !isCoverageBandSpanOwner(ref, band, _589);
-                    }
-                    else
-                    {
-                        _479 = false;
-                    }
-                    if (_479)
-                    {
-                        break;
-                    }
-                    bool _705 = accumulateHorizContribution(xcov, xwgt, _466, _468, decodeBandCurveLoc(ref), _472);
-                    if (!_705)
-                    {
-                        _489_ladder_break = true;
-                        break;
-                    }
-                    break;
-                } while(false);
-                if (_489_ladder_break)
-                {
-                    break;
-                }
-                i++;
-                continue;
-            }
-            break;
-        } while(false);
-        if (_484_ladder_break)
-        {
-            break;
-        }
-        band++;
-        continue;
-    }
-    float ycov = 0.0;
-    float ywgt = 0.0;
-    int _1012 = vSpan.first;
-    int _1013 = vSpan.last;
-    bool _1014 = _1012 != _1013;
-    band = _1012;
-    for (;;)
-    {
-        bool _511_ladder_break = false;
-        do
-        {
-            if (!(band <= _1013))
-            {
-                _511_ladder_break = true;
-                break;
-            }
-            uvec2 vbd = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_469, uint((_470.y + 1) + band)), _472, 0).xyz, 0).xy.xy;
-            ivec2 _1032 = calcBandLoc(_469, vbd.y);
-            int _1034 = int(vbd.x);
-            i = 0;
-            for (;;)
-            {
-                bool _516_ladder_break = false;
-                do
-                {
-                    if (!(i < _1034))
-                    {
-                        _516_ladder_break = true;
-                        break;
-                    }
-                    uvec2 ref_1 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_1032, uint(i)), _472, 0).xyz, 0).xy.xy;
-                    if (_1014)
-                    {
-                        _479 = !isCoverageBandSpanOwner(ref_1, band, _1012);
-                    }
-                    else
-                    {
-                        _479 = false;
-                    }
-                    if (_479)
-                    {
-                        break;
-                    }
-                    bool _1061 = accumulateVertContribution(ycov, ywgt, _466, _468, decodeBandCurveLoc(ref_1), _472);
-                    if (!_1061)
-                    {
-                        _516_ladder_break = true;
-                        break;
-                    }
-                    break;
-                } while(false);
-                if (_516_ladder_break)
-                {
-                    break;
-                }
-                i++;
-                continue;
-            }
-            break;
-        } while(false);
-        if (_511_ladder_break)
-        {
-            break;
-        }
-        band++;
-        continue;
-    }
-    return applyCoverageTransfer(max(applyFillRule(((xcov * xwgt) + (ycov * ywgt)) / max(xwgt + ywgt, 1.52587890625e-05), 0), min(applyFillRule(xcov, 0), applyFillRule(ycov, 0))), _473);
-}
-
-float srgbDecode(float c)
-{
-    float _1349;
-    if (c <= 0.040449999272823333740234375)
-    {
-        _1349 = c / 12.9200000762939453125;
-    }
-    else
-    {
-        _1349 = pow((c + 0.054999999701976776123046875) / 1.05499994754791259765625, 2.400000095367431640625);
-    }
-    return _1349;
-}
-
-vec3 srgbToLinear(vec3 color)
-{
-    return vec3(srgbDecode(color.x), srgbDecode(color.y), srgbDecode(color.z));
-}
-
-vec4 snailTextSamplePremulLinearWithFootprint(int _54, int _55, int _56, float _57, vec2 _58, vec2 _59, vec2 _60)
-{
-    vec4 paint = vec4(0.0);
-    int i = 0;
-    bool _68;
-    bool _69;
-    bool _70;
-    for (;;)
-    {
-        bool _73_ladder_break = false;
-        do
-        {
-            if (!(i < _55))
-            {
-                _73_ladder_break = true;
-                break;
-            }
-            SnailTextSampleRecord _109 = snailTextSampleRecord(_54, i);
-            vec4 _314 = _109.xform;
-            if (abs((_314.x * _314.w) - (_314.y * _314.z)) < 1.0000000133514319600180897396058e-10)
-            {
-                break;
-            }
-            vec2 rc = snailTextSampleLocalCoord(_58, _314, _109.origin);
-            vec2 epp = abs(snailTextSampleLocalVector(_59, _314)) + abs(snailTextSampleLocalVector(_60, _314));
-            vec2 _388 = max(epp * 2.0, vec2(0.001000000047497451305389404296875));
-            float _391 = rc.x;
-            vec4 _392 = _109.rect;
-            float _394 = _388.x;
-            if (_391 < (_392.x - _394))
-            {
-                _68 = true;
-            }
-            else
-            {
-                _68 = _391 > (_392.z + _394);
-            }
-            if (_68)
-            {
-                _69 = true;
-            }
-            else
-            {
-                _69 = rc.y < (_392.y - _388.y);
-            }
-            if (_69)
-            {
-                _70 = true;
-            }
-            else
-            {
-                _70 = rc.y > (_392.w + _388.y);
-            }
-            if (_70)
-            {
-                break;
-            }
-            uvec2 _431 = _109.glyph;
-            uint gz = _431.x;
-            uint gw = _431.y;
-            int layer_byte = int((gw >> 24u) & 255u);
-            if (layer_byte == 255)
-            {
-                break;
-            }
-            vec4 _1326 = _109.color;
-            vec4 _1329 = _109.tint;
-            float _1332 = clamp((evalGlyphCoverage(rc, epp, vec2(1.0 / max(epp.x, 1.52587890625e-05), 1.0 / max(epp.y, 1.52587890625e-05)), ivec2(int(gz & 65535u), int(gz >> 16u)), ivec2(int((gw >> 16u) & 255u), int(gw & 65535u)), _109.banding, _56 + layer_byte, _57) * _1326.w) * _1329.w, 0.0, 1.0);
-            if (_1332 <= 0.0039215688593685626983642578125)
-            {
-                break;
-            }
-            vec4 _1380 = paint;
-            float _1382 = 1.0 - _1332;
-            vec3 _1384 = ((srgbToLinear(_1326.xyz) * srgbToLinear(_1329.xyz)) * _1332) + (_1380.xyz * _1382);
-            paint.x = _1384.x;
-            paint.y = _1384.y;
-            paint.z = _1384.z;
-            paint.w = _1332 + (paint.w * _1382);
-            break;
-        } while(false);
-        if (_73_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    return paint;
-}
-
-vec4 snailTextSamplePremulLinear(int _32, int _33, int _34, float _35, vec2 _36)
-{
-    return snailTextSamplePremulLinearWithFootprint(_32, _33, _34, _35, _36, ddx(_36), ddy(_36));
-}
-
 void main()
 {
-    entryPointParam_fragmentMain = snailTextSamplePremulLinear(pc.words_per_glyph, pc.glyph_count, pc.layer_base, pc.coverage_exponent, snail_io0);
+    vec2 _1439 = dFdx(snail_io0);
+    vec2 _1442 = dFdy(snail_io0);
+    vec4 _1443 = vec4(0.0);
+    int _1444 = 0;
+    bool _1445;
+    bool _1446;
+    bool _1447;
+    float _1665;
+    float _1666;
+    float _1709;
+    float _1710;
+    float _1760;
+    float _1761;
+    float _1804;
+    float _1805;
+    int _2114;
+    bool _2115;
+    bool _2407;
+    float _2513;
+    float _2522;
+    float _2531;
+    float _2540;
+    float _2541;
+    float _2610;
+    bool _2694;
+    float _2800;
+    float _2809;
+    float _2818;
+    float _2827;
+    float _2828;
+    float _2897;
+    float _2911;
+    float _2928;
+    float _2945;
+    float _2961;
+    float _2984;
+    float _2996;
+    float _3008;
+    float _3029;
+    float _3041;
+    float _3053;
+    for (;;)
+    {
+        bool _1452_ladder_break = false;
+        do
+        {
+            if (!(_1444 < pc.glyph_count))
+            {
+                _1452_ladder_break = true;
+                break;
+            }
+            uvec4 _1638 = texelFetch(u_snail_text_records, _1444 * pc.words_per_glyph);
+            uint _1639 = _1638.x;
+            uvec4 _1650 = texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 1);
+            uint _1651 = _1650.x;
+            uint _1659 = _1639 & 65535u;
+            do
+            {
+                uint _1672 = (_1659 >> 10u) & 31u;
+                uint _1673 = _1639 & 1023u;
+                if ((_1659 >> 15u) == 0u)
+                {
+                    _1666 = 1.0;
+                }
+                else
+                {
+                    _1666 = -1.0;
+                }
+                if (_1672 == 0u)
+                {
+                    if (_1673 == 0u)
+                    {
+                        _1665 = 0.0;
+                        break;
+                    }
+                    _1665 = (_1666 * 6.103515625e-05) * (float(_1673) * 0.0009765625);
+                    break;
+                }
+                if (_1672 == 31u)
+                {
+                    _1665 = _1666 * 65504.0;
+                    break;
+                }
+                _1665 = (_1666 * exp2(float(_1672) - 15.0)) * (1.0 + (float(_1673) * 0.0009765625));
+                break;
+            } while(false);
+            uint _1661 = _1639 >> 16u;
+            do
+            {
+                uint _1716 = (_1661 >> 10u) & 31u;
+                uint _1717 = _1661 & 1023u;
+                if ((_1661 >> 15u) == 0u)
+                {
+                    _1710 = 1.0;
+                }
+                else
+                {
+                    _1710 = -1.0;
+                }
+                if (_1716 == 0u)
+                {
+                    if (_1717 == 0u)
+                    {
+                        _1709 = 0.0;
+                        break;
+                    }
+                    _1709 = (_1710 * 6.103515625e-05) * (float(_1717) * 0.0009765625);
+                    break;
+                }
+                if (_1716 == 31u)
+                {
+                    _1709 = _1710 * 65504.0;
+                    break;
+                }
+                _1709 = (_1710 * exp2(float(_1716) - 15.0)) * (1.0 + (float(_1717) * 0.0009765625));
+                break;
+            } while(false);
+            uint _1754 = _1651 & 65535u;
+            do
+            {
+                uint _1767 = (_1754 >> 10u) & 31u;
+                uint _1768 = _1651 & 1023u;
+                if ((_1754 >> 15u) == 0u)
+                {
+                    _1761 = 1.0;
+                }
+                else
+                {
+                    _1761 = -1.0;
+                }
+                if (_1767 == 0u)
+                {
+                    if (_1768 == 0u)
+                    {
+                        _1760 = 0.0;
+                        break;
+                    }
+                    _1760 = (_1761 * 6.103515625e-05) * (float(_1768) * 0.0009765625);
+                    break;
+                }
+                if (_1767 == 31u)
+                {
+                    _1760 = _1761 * 65504.0;
+                    break;
+                }
+                _1760 = (_1761 * exp2(float(_1767) - 15.0)) * (1.0 + (float(_1768) * 0.0009765625));
+                break;
+            } while(false);
+            uint _1756 = _1651 >> 16u;
+            do
+            {
+                uint _1811 = (_1756 >> 10u) & 31u;
+                uint _1812 = _1756 & 1023u;
+                if ((_1756 >> 15u) == 0u)
+                {
+                    _1805 = 1.0;
+                }
+                else
+                {
+                    _1805 = -1.0;
+                }
+                if (_1811 == 0u)
+                {
+                    if (_1812 == 0u)
+                    {
+                        _1804 = 0.0;
+                        break;
+                    }
+                    _1804 = (_1805 * 6.103515625e-05) * (float(_1812) * 0.0009765625);
+                    break;
+                }
+                if (_1811 == 31u)
+                {
+                    _1804 = _1805 * 65504.0;
+                    break;
+                }
+                _1804 = (_1805 * exp2(float(_1811) - 15.0)) * (1.0 + (float(_1812) * 0.0009765625));
+                break;
+            } while(false);
+            vec4 _1656 = vec4(vec2(_1665, _1709), vec2(_1760, _1804));
+            vec4 _1599 = vec4(uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 2).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 3).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 4).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 5).x));
+            uvec2 _1609 = uvec2(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 8).x, texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 9).x);
+            vec4 _1619 = vec4(uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 10).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 11).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 12).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 13).x));
+            uvec4 _2001 = texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 14);
+            uint _2002 = _2001.x;
+            vec4 _2018 = vec4(float(_2002 & 255u), float((_2002 >> 8u) & 255u), float((_2002 >> 16u) & 255u), float((_2002 >> 24u) & 255u)) * vec4(0.0039215688593685626983642578125);
+            uvec4 _2029 = texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 15);
+            uint _2030 = _2029.x;
+            vec4 _2046 = vec4(float(_2030 & 255u), float((_2030 >> 8u) & 255u), float((_2030 >> 16u) & 255u), float((_2030 >> 24u) & 255u)) * vec4(0.0039215688593685626983642578125);
+            if (abs((_1599.x * _1599.w) - (_1599.y * _1599.z)) < 1.0000000133514319600180897396058e-10)
+            {
+                break;
+            }
+            float _2049 = _1599.x;
+            float _2050 = _1599.w;
+            float _2052 = _1599.y;
+            float _2053 = _1599.z;
+            float _2055 = (_2049 * _2050) - (_2052 * _2053);
+            vec2 _2056 = snail_io0 - vec2(uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 6).x), uintBitsToFloat(texelFetch(u_snail_text_records, (_1444 * pc.words_per_glyph) + 7).x));
+            float _2057 = _2056.x;
+            float _2059 = _2056.y;
+            vec2 _2068 = vec2(((_2050 * _2057) - (_2052 * _2059)) / _2055, (((-_2053) * _2057) + (_2049 * _2059)) / _2055);
+            float _2071 = _1599.x;
+            float _2072 = _1599.w;
+            float _2074 = _1599.y;
+            float _2075 = _1599.z;
+            float _2077 = (_2071 * _2072) - (_2074 * _2075);
+            float _2078 = _1439.x;
+            float _2080 = _1439.y;
+            float _2092 = _1599.x;
+            float _2093 = _1599.w;
+            float _2095 = _1599.y;
+            float _2096 = _1599.z;
+            float _2098 = (_2092 * _2093) - (_2095 * _2096);
+            float _2099 = _1442.x;
+            float _2101 = _1442.y;
+            vec2 _1478 = abs(vec2(((_2072 * _2078) - (_2074 * _2080)) / _2077, (((-_2075) * _2078) + (_2071 * _2080)) / _2077)) + abs(vec2(((_2093 * _2099) - (_2095 * _2101)) / _2098, (((-_2096) * _2099) + (_2092 * _2101)) / _2098));
+            vec2 _1480 = max(_1478 * 2.0, vec2(0.001000000047497451305389404296875));
+            float _1481 = _2068.x;
+            float _1484 = _1480.x;
+            if (_1481 < (_1656.x - _1484))
+            {
+                _1445 = true;
+            }
+            else
+            {
+                _1445 = _1481 > (_1656.z + _1484);
+            }
+            if (_1445)
+            {
+                _1446 = true;
+            }
+            else
+            {
+                _1446 = _2068.y < (_1656.y - _1480.y);
+            }
+            if (_1446)
+            {
+                _1447 = true;
+            }
+            else
+            {
+                _1447 = _2068.y > (_1656.w + _1480.y);
+            }
+            if (_1447)
+            {
+                break;
+            }
+            uint _1515 = _1609.x;
+            uint _1516 = _1609.y;
+            int _1519 = int((_1516 >> 24u) & 255u);
+            if (_1519 == 255)
+            {
+                break;
+            }
+            int _1523 = pc.layer_base + _1519;
+            int _1525 = int(_1515 & 65535u);
+            int _1527 = int(_1515 >> 16u);
+            int _1531 = int((_1516 >> 16u) & 255u);
+            int _1533 = int(_1516 & 65535u);
+            float _1537 = 1.0 / max(_1478.x, 1.52587890625e-05);
+            float _1540 = 1.0 / max(_1478.y, 1.52587890625e-05);
+            float _2122 = _1619.y;
+            float _2295 = (_2068.y * _2122) + _1619.w;
+            float _2299 = max(abs(_1478.y * _2122) * 0.5, 9.9999997473787516355514526367188e-06);
+            int _2302 = clamp(int(_2295 - _2299), 0, _1533);
+            int _2306 = max(_2302, clamp(int(_2295 + _2299), 0, _1533));
+            float _2128 = _1619.x;
+            float _2317 = (_2068.x * _2128) + _1619.z;
+            float _2321 = max(abs(_1478.x * _2128) * 0.5, 9.9999997473787516355514526367188e-06);
+            int _2324 = clamp(int(_2317 - _2321), 0, _1531);
+            int _2328 = max(_2324, clamp(int(_2317 + _2321), 0, _1531));
+            float _2111 = 0.0;
+            float _2112 = 0.0;
+            bool _2134 = _2302 != _2306;
+            int _2113 = _2302;
+            for (;;)
+            {
+                if (!(_2113 <= _2306))
+                {
+                    break;
+                }
+                int _2341 = _1525 + _2113;
+                ivec2 _2343 = ivec2(_2341, _1527);
+                _2343.y = _2343.y + (_2341 >> 12);
+                _2343.x = _2343.x & 4095;
+                uvec4 _2149 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_2343, _1523, 0).xyz, 0);
+                int _2357 = _1525 + int(_2149.y);
+                ivec2 _2359 = ivec2(_2357, _1527);
+                _2359.y = _2359.y + (_2357 >> 12);
+                _2359.x = _2359.x & 4095;
+                int _2156 = int(_2149.x);
+                _2114 = 0;
+                for (;;)
+                {
+                    bool _2159_ladder_break = false;
+                    do
+                    {
+                        if (!(_2114 < _2156))
+                        {
+                            _2159_ladder_break = true;
+                            break;
+                        }
+                        int _2373 = _2359.x + _2114;
+                        ivec2 _2375 = ivec2(_2373, _2359.y);
+                        _2375.y = _2375.y + (_2373 >> 12);
+                        _2375.x = _2375.x & 4095;
+                        uvec4 _2171 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_2375, _1523, 0).xyz, 0);
+                        if (_2134)
+                        {
+                            _2115 = !(_2113 == max(int(_2171.x >> 12u), _2302));
+                        }
+                        else
+                        {
+                            _2115 = false;
+                        }
+                        if (_2115)
+                        {
+                            break;
+                        }
+                        ivec2 _2405 = ivec2(int(_2171.x & 4095u), int(_2171.y & 16383u));
+                        do
+                        {
+                            vec4 _2414 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_2405, _1523, 0).xyz, 0);
+                            int _2483 = _2405.x + 1;
+                            ivec2 _2485 = ivec2(_2483, _2405.y);
+                            _2485.y = _2485.y + (_2483 >> 12);
+                            _2485.x = _2485.x & 4095;
+                            vec4 _2426 = vec4(_2414.xy, _2414.zw) - vec4(_2068, _2068);
+                            vec2 _2428 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_2485, _1523, 0).xyz, 0).xy - _2068;
+                            if ((max(max(_2426.x, _2426.z), _2428.x) * _1537) < (-0.5))
+                            {
+                                _2407 = false;
+                                break;
+                            }
+                            if (abs(_2426.y) <= 1.52587890625e-05)
+                            {
+                                _2513 = 0.0;
+                            }
+                            else
+                            {
+                                _2513 = _2426.y;
+                            }
+                            if (abs(_2426.w) <= 1.52587890625e-05)
+                            {
+                                _2522 = 0.0;
+                            }
+                            else
+                            {
+                                _2522 = _2426.w;
+                            }
+                            if (abs(_2428.y) <= 1.52587890625e-05)
+                            {
+                                _2531 = 0.0;
+                            }
+                            else
+                            {
+                                _2531 = _2428.y;
+                            }
+                            uint _2512 = (11892u >> (((floatBitsToUint(_2531) >> 29u) & 4u) | ((((floatBitsToUint(_2522) >> 30u) & 2u) | ((floatBitsToUint(_2513) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
+                            if (_2512 != 0u)
+                            {
+                                vec2 _2548 = (_2426.xy - (_2426.zw * 2.0)) + _2428;
+                                vec2 _2549 = _2426.xy - _2426.zw;
+                                float _2550 = _2548.y;
+                                if (abs(_2550) < 1.52587890625e-05)
+                                {
+                                    float _2582 = _2549.y;
+                                    if (abs(_2582) < 1.52587890625e-05)
+                                    {
+                                        _2540 = 0.0;
+                                    }
+                                    else
+                                    {
+                                        _2540 = (_2426.y * 0.5) / _2582;
+                                    }
+                                    _2541 = _2540;
+                                }
+                                else
+                                {
+                                    float _2554 = _2549.y;
+                                    float _2557 = _2550 * _2426.y;
+                                    float _2558 = (_2554 * _2554) - _2557;
+                                    if (_2558 <= (max(_2554 * _2554, abs(_2557)) * 3.0000001061125658452510833740234e-06))
+                                    {
+                                        _2610 = 0.0;
+                                    }
+                                    else
+                                    {
+                                        _2610 = sqrt(_2558);
+                                    }
+                                    if (_2554 >= 0.0)
+                                    {
+                                        float _2572 = _2554 + _2610;
+                                        if (abs(_2572) < 1.52587890625e-05)
+                                        {
+                                            _2540 = 0.0;
+                                        }
+                                        else
+                                        {
+                                            _2540 = _2426.y / _2572;
+                                        }
+                                        _2541 = _2572 / _2550;
+                                    }
+                                    else
+                                    {
+                                        float _2562 = _2554 - _2610;
+                                        if (abs(_2562) < 1.52587890625e-05)
+                                        {
+                                            _2540 = 0.0;
+                                        }
+                                        else
+                                        {
+                                            _2540 = _2426.y / _2562;
+                                        }
+                                        float _2570 = _2540;
+                                        _2540 = _2562 / _2550;
+                                        _2541 = _2570;
+                                    }
+                                }
+                                float _2593 = _2548.x;
+                                float _2597 = _2549.x * 2.0;
+                                vec2 _2446 = vec2((((_2593 * _2540) - _2597) * _2540) + _2426.x, (((_2593 * _2541) - _2597) * _2541) + _2426.x) * _1537;
+                                if ((_2512 & 1u) != 0u)
+                                {
+                                    float _2450 = _2446.x;
+                                    _2111 += clamp(_2450 + 0.5, 0.0, 1.0);
+                                    _2112 = max(_2112, clamp(1.0 - (abs(_2450) * 2.0), 0.0, 1.0));
+                                }
+                                if (_2512 > 1u)
+                                {
+                                    float _2464 = _2446.y;
+                                    _2111 -= clamp(_2464 + 0.5, 0.0, 1.0);
+                                    _2112 = max(_2112, clamp(1.0 - (abs(_2464) * 2.0), 0.0, 1.0));
+                                }
+                            }
+                            _2407 = true;
+                            break;
+                        } while(false);
+                        if (!_2407)
+                        {
+                            _2159_ladder_break = true;
+                            break;
+                        }
+                        break;
+                    } while(false);
+                    if (_2159_ladder_break)
+                    {
+                        break;
+                    }
+                    _2114++;
+                    continue;
+                }
+                _2113++;
+                continue;
+            }
+            float _2116 = 0.0;
+            float _2117 = 0.0;
+            bool _2203 = _2324 != _2328;
+            _2113 = _2324;
+            for (;;)
+            {
+                if (!(_2113 <= _2328))
+                {
+                    break;
+                }
+                int _2628 = _1525 + ((_1533 + 1) + _2113);
+                ivec2 _2630 = ivec2(_2628, _1527);
+                _2630.y = _2630.y + (_2628 >> 12);
+                _2630.x = _2630.x & 4095;
+                uvec4 _2220 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_2630, _1523, 0).xyz, 0);
+                int _2644 = _1525 + int(_2220.y);
+                ivec2 _2646 = ivec2(_2644, _1527);
+                _2646.y = _2646.y + (_2644 >> 12);
+                _2646.x = _2646.x & 4095;
+                int _2227 = int(_2220.x);
+                _2114 = 0;
+                for (;;)
+                {
+                    bool _2230_ladder_break = false;
+                    do
+                    {
+                        if (!(_2114 < _2227))
+                        {
+                            _2230_ladder_break = true;
+                            break;
+                        }
+                        int _2660 = _2646.x + _2114;
+                        ivec2 _2662 = ivec2(_2660, _2646.y);
+                        _2662.y = _2662.y + (_2660 >> 12);
+                        _2662.x = _2662.x & 4095;
+                        uvec4 _2242 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_2662, _1523, 0).xyz, 0);
+                        if (_2203)
+                        {
+                            _2115 = !(_2113 == max(int(_2242.x >> 12u), _2324));
+                        }
+                        else
+                        {
+                            _2115 = false;
+                        }
+                        if (_2115)
+                        {
+                            break;
+                        }
+                        ivec2 _2692 = ivec2(int(_2242.x & 4095u), int(_2242.y & 16383u));
+                        do
+                        {
+                            vec4 _2701 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_2692, _1523, 0).xyz, 0);
+                            int _2770 = _2692.x + 1;
+                            ivec2 _2772 = ivec2(_2770, _2692.y);
+                            _2772.y = _2772.y + (_2770 >> 12);
+                            _2772.x = _2772.x & 4095;
+                            vec4 _2713 = vec4(_2701.xy, _2701.zw) - vec4(_2068, _2068);
+                            vec2 _2715 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_2772, _1523, 0).xyz, 0).xy - _2068;
+                            if ((max(max(_2713.y, _2713.w), _2715.y) * _1540) < (-0.5))
+                            {
+                                _2694 = false;
+                                break;
+                            }
+                            if (abs(_2713.x) <= 1.52587890625e-05)
+                            {
+                                _2800 = 0.0;
+                            }
+                            else
+                            {
+                                _2800 = _2713.x;
+                            }
+                            if (abs(_2713.z) <= 1.52587890625e-05)
+                            {
+                                _2809 = 0.0;
+                            }
+                            else
+                            {
+                                _2809 = _2713.z;
+                            }
+                            if (abs(_2715.x) <= 1.52587890625e-05)
+                            {
+                                _2818 = 0.0;
+                            }
+                            else
+                            {
+                                _2818 = _2715.x;
+                            }
+                            uint _2799 = (11892u >> (((floatBitsToUint(_2818) >> 29u) & 4u) | ((((floatBitsToUint(_2809) >> 30u) & 2u) | ((floatBitsToUint(_2800) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
+                            if (_2799 != 0u)
+                            {
+                                vec2 _2835 = (_2713.xy - (_2713.zw * 2.0)) + _2715;
+                                vec2 _2836 = _2713.xy - _2713.zw;
+                                float _2837 = _2835.x;
+                                if (abs(_2837) < 1.52587890625e-05)
+                                {
+                                    float _2869 = _2836.x;
+                                    if (abs(_2869) < 1.52587890625e-05)
+                                    {
+                                        _2827 = 0.0;
+                                    }
+                                    else
+                                    {
+                                        _2827 = (_2713.x * 0.5) / _2869;
+                                    }
+                                    _2828 = _2827;
+                                }
+                                else
+                                {
+                                    float _2841 = _2836.x;
+                                    float _2844 = _2837 * _2713.x;
+                                    float _2845 = (_2841 * _2841) - _2844;
+                                    if (_2845 <= (max(_2841 * _2841, abs(_2844)) * 3.0000001061125658452510833740234e-06))
+                                    {
+                                        _2897 = 0.0;
+                                    }
+                                    else
+                                    {
+                                        _2897 = sqrt(_2845);
+                                    }
+                                    if (_2841 >= 0.0)
+                                    {
+                                        float _2859 = _2841 + _2897;
+                                        if (abs(_2859) < 1.52587890625e-05)
+                                        {
+                                            _2827 = 0.0;
+                                        }
+                                        else
+                                        {
+                                            _2827 = _2713.x / _2859;
+                                        }
+                                        _2828 = _2859 / _2837;
+                                    }
+                                    else
+                                    {
+                                        float _2849 = _2841 - _2897;
+                                        if (abs(_2849) < 1.52587890625e-05)
+                                        {
+                                            _2827 = 0.0;
+                                        }
+                                        else
+                                        {
+                                            _2827 = _2713.x / _2849;
+                                        }
+                                        float _2857 = _2827;
+                                        _2827 = _2849 / _2837;
+                                        _2828 = _2857;
+                                    }
+                                }
+                                float _2880 = _2835.y;
+                                float _2884 = _2836.y * 2.0;
+                                vec2 _2733 = vec2((((_2880 * _2827) - _2884) * _2827) + _2713.y, (((_2880 * _2828) - _2884) * _2828) + _2713.y) * _1540;
+                                if ((_2799 & 1u) != 0u)
+                                {
+                                    float _2737 = _2733.x;
+                                    _2116 -= clamp(_2737 + 0.5, 0.0, 1.0);
+                                    _2117 = max(_2117, clamp(1.0 - (abs(_2737) * 2.0), 0.0, 1.0));
+                                }
+                                if (_2799 > 1u)
+                                {
+                                    float _2751 = _2733.y;
+                                    _2116 += clamp(_2751 + 0.5, 0.0, 1.0);
+                                    _2117 = max(_2117, clamp(1.0 - (abs(_2751) * 2.0), 0.0, 1.0));
+                                }
+                            }
+                            _2694 = true;
+                            break;
+                        } while(false);
+                        if (!_2694)
+                        {
+                            _2230_ladder_break = true;
+                            break;
+                        }
+                        break;
+                    } while(false);
+                    if (_2230_ladder_break)
+                    {
+                        break;
+                    }
+                    _2114++;
+                    continue;
+                }
+                _2113++;
+                continue;
+            }
+            float _2283 = ((_2111 * _2112) + (_2116 * _2117)) / max(_2112 + _2117, 1.52587890625e-05);
+            do
+            {
+                if (false)
+                {
+                    _2911 = 1.0 - abs((fract(_2283 * 0.5) * 2.0) - 1.0);
+                    break;
+                }
+                _2911 = abs(_2283);
+                break;
+            } while(false);
+            do
+            {
+                if (false)
+                {
+                    _2928 = 1.0 - abs((fract(_2111 * 0.5) * 2.0) - 1.0);
+                    break;
+                }
+                _2928 = abs(_2111);
+                break;
+            } while(false);
+            do
+            {
+                if (false)
+                {
+                    _2945 = 1.0 - abs((fract(_2116 * 0.5) * 2.0) - 1.0);
+                    break;
+                }
+                _2945 = abs(_2116);
+                break;
+            } while(false);
+            float _2964 = clamp(max(_2911, min(_2928, _2945)), 0.0, 1.0);
+            float _2965 = max(pc.coverage_exponent, 1.52587890625e-05);
+            if (abs(_2965 - 1.0) <= 9.9999999747524270787835121154785e-07)
+            {
+                _2961 = _2964;
+            }
+            else
+            {
+                _2961 = pow(_2964, _2965);
+            }
+            float _1550 = clamp((_2961 * _2018.w) * _2046.w, 0.0, 1.0);
+            if (_1550 <= 0.0039215688593685626983642578125)
+            {
+                break;
+            }
+            float _2977 = _2018.x;
+            if (_2977 <= 0.040449999272823333740234375)
+            {
+                _2984 = _2977 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _2984 = pow((_2977 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            float _2979 = _2018.y;
+            if (_2979 <= 0.040449999272823333740234375)
+            {
+                _2996 = _2979 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _2996 = pow((_2979 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            float _2981 = _2018.z;
+            if (_2981 <= 0.040449999272823333740234375)
+            {
+                _3008 = _2981 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _3008 = pow((_2981 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            float _3022 = _2046.x;
+            if (_3022 <= 0.040449999272823333740234375)
+            {
+                _3029 = _3022 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _3029 = pow((_3022 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            float _3024 = _2046.y;
+            if (_3024 <= 0.040449999272823333740234375)
+            {
+                _3041 = _3024 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _3041 = pow((_3024 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            float _3026 = _2046.z;
+            if (_3026 <= 0.040449999272823333740234375)
+            {
+                _3053 = _3026 * 0.077399380505084991455078125;
+            }
+            else
+            {
+                _3053 = pow((_3026 + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
+            }
+            vec4 _1560 = _1443;
+            float _1562 = 1.0 - _1550;
+            vec3 _1564 = ((vec3(_2984, _2996, _3008) * vec3(_3029, _3041, _3053)) * _1550) + (_1560.xyz * _1562);
+            vec4 _3196 = _1560;
+            _3196.x = _1564.x;
+            _3196.y = _1564.y;
+            _3196.z = _1564.z;
+            _3196.w = _1550 + (_3196.w * _1562);
+            _1443 = _3196;
+            break;
+        } while(false);
+        if (_1452_ladder_break)
+        {
+            break;
+        }
+        _1444++;
+        continue;
+    }
+    entryPointParam_fragmentMain = _1443;
 }
 

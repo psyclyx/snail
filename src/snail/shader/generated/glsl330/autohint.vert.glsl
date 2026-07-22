@@ -1,92 +1,5 @@
 #version 330
 
-struct VsInput
-{
-    vec4 rect;
-    vec4 xform;
-    vec2 origin;
-    uvec2 glyph;
-    vec4 bnd;
-    vec4 col;
-    vec4 tint;
-    uvec4 policy0;
-    uvec3 policy1;
-};
-
-struct VsOutput
-{
-    vec4 position;
-    vec4 paint;
-    vec3 texcoord_layer;
-    ivec2 info;
-    uvec4 policy0;
-    uvec3 policy1;
-    vec4 x_targets0;
-    vec4 x_targets1;
-    vec4 x_targets2;
-    vec4 x_targets3;
-    vec4 y_targets0;
-    vec4 y_targets1;
-    vec4 y_targets2;
-    vec4 y_targets3;
-    uvec4 x_sources;
-    uvec4 y_sources;
-};
-
-struct TextVertexIn
-{
-    vec4 rect;
-    vec4 xform;
-    vec2 origin;
-    uvec2 glyph;
-    vec4 bnd;
-    vec4 col;
-    vec4 tint;
-};
-
-struct AutohintVertexResult
-{
-    vec4 position;
-    vec4 paint;
-    vec3 texcoord_layer;
-    ivec2 info;
-    uvec4 policy0;
-    uvec3 policy1;
-    vec4 x_targets[4];
-    vec4 y_targets[4];
-    uvec4 x_sources;
-    uvec4 y_sources;
-};
-
-struct SnailAutohintPolicy
-{
-    int xAlign;
-    int xStem;
-    int xPositioning;
-    int xRegistration;
-    int yAlign;
-    int yStem;
-    int yOvershoot;
-    int fadeEnabled;
-    float fadeStart;
-    float fadeFull;
-    float xRatio;
-    float xMaxPx;
-    float yRatio;
-    float yMaxPx;
-    float overshootMinPx;
-};
-
-struct TextVertexResult
-{
-    vec4 position;
-    vec4 color;
-    vec4 tint;
-    vec2 texcoord;
-    vec4 banding;
-    ivec4 glyph;
-};
-
 const vec2 _247[4] = vec2[](vec2(0.0), vec2(1.0, 0.0), vec2(1.0), vec2(0.0, 1.0));
 
 layout(std140) uniform SnailPushConstants_std140
@@ -130,2128 +43,4426 @@ flat out uvec4 snail_io14;
 
 mat4 spvWorkaroundRowMajor(mat4 wrap) { return wrap; }
 
-float srgbDecode(float c)
+void main()
 {
-    float _347;
-    if (c <= 0.040449999272823333740234375)
+    bool _7130 = false;
+    bool _5258 = false;
+    uint _19 = uint(gl_VertexID);
+    vec4 _9497 = input_rect;
+    vec4 _9498 = input_xform;
+    vec2 _9499 = input_origin;
+    uvec2 _9500 = input_glyph;
+    vec4 _9501 = input_bnd;
+    vec4 _9502 = input_col;
+    vec4 _9503 = input_tint;
+    vec4 _9214;
+    vec4 _9215;
+    vec3 _9216;
+    ivec2 _9217;
+    uvec4 _9218;
+    uvec3 _9219;
+    uvec4 _9222;
+    uvec4 _9223;
+    vec4 _9611;
+    vec4 _9612;
+    vec4 _9613;
+    vec4 _9614;
+    vec4 _9636;
+    vec4 _9637;
+    vec4 _9638;
+    vec4 _9639;
+    do
     {
-        _347 = c / 12.9200000762939453125;
-    }
-    else
-    {
-        _347 = pow((c + 0.054999999701976776123046875) / 1.05499994754791259765625, 2.400000095367431640625);
-    }
-    return _347;
-}
-
-vec3 srgbToLinear(vec3 color)
-{
-    return vec3(srgbDecode(color.x), srgbDecode(color.y), srgbDecode(color.z));
-}
-
-float snailVertexDilationScale(int subpixel_order)
-{
-    float _439;
-    if (subpixel_order == 0)
-    {
-        _439 = 1.0;
-    }
-    else
-    {
-        _439 = 2.3333332538604736328125;
-    }
-    return 1.41421353816986083984375 * _439;
-}
-
-TextVertexResult snailTextVertex(TextVertexIn _input, uint vertex_index, mat4 mvp, vec2 viewport, int subpixel_order)
-{
-    vec2 _261 = mix(_input.rect.xy, _input.rect.zw, _247[vertex_index]);
-    vec2 nd = (_247[vertex_index] * 2.0) - vec2(1.0);
-    float _274 = _261.x;
-    float _277 = _261.y;
-    vec2 pos = vec2(((_input.xform.x * _274) + (_input.xform.y * _277)) + _input.origin.x, ((_input.xform.z * _274) + (_input.xform.w * _277)) + _input.origin.y);
-    float _290 = nd.x;
-    float _292 = nd.y;
-    float inv_det = 1.0 / ((_input.xform.x * _input.xform.w) - (_input.xform.y * _input.xform.z));
-    TextVertexResult r;
-    r.glyph = ivec4(int(_input.glyph.x & 65535u), int(_input.glyph.x >> 16u), int(_input.glyph.y & 65535u), int(_input.glyph.y >> 16u));
-    r.banding = _input.bnd;
-    r.color = vec4(srgbToLinear(_input.col.xyz), _input.col.w);
-    r.tint = vec4(srgbToLinear(_input.tint.xyz), _input.tint.w);
-    vec2 _386 = normalize(vec2((_input.xform.x * _290) + (_input.xform.y * _292), (_input.xform.z * _290) + (_input.xform.w * _292)));
-    float s = dot(mvp[3].xy, pos) + mvp[3].w;
-    float _391 = dot(mvp[3].xy, _386);
-    float u_val = ((s * dot(mvp[0].xy, _386)) - (_391 * (dot(mvp[0].xy, pos) + mvp[0].w))) * viewport.x;
-    float v_val = ((s * dot(mvp[1].xy, _386)) - (_391 * (dot(mvp[1].xy, pos) + mvp[1].w))) * viewport.y;
-    float st = s * _391;
-    float uv = (u_val * u_val) + (v_val * v_val);
-    float denom = uv - (st * st);
-    vec2 d;
-    if (abs(denom) > 1.0000000133514319600180897396058e-10)
-    {
-        d = _386 * (((s * s) * (st + sqrt(uv))) / denom);
-    }
-    else
-    {
-        d = (_386 * 2.0) / viewport;
-    }
-    vec2 d_1 = d * snailVertexDilationScale(subpixel_order);
-    r.texcoord = vec2(_274 + dot(d_1, vec2(_input.xform.w * inv_det, (-_input.xform.y) * inv_det)), _277 + dot(d_1, vec2((-_input.xform.z) * inv_det, _input.xform.x * inv_det)));
-    r.position = vec4(pos + d_1, 0.0, 1.0) * mvp;
-    return r;
-}
-
-bool snailAhFinite(float v)
-{
-    bool _600;
-    if (!isnan(v))
-    {
-        _600 = !isinf(v);
-    }
-    else
-    {
-        _600 = false;
-    }
-    return _600;
-}
-
-bool snailAhAffineScale(mat4 mvp, vec2 viewport, vec4 xform, inout vec2 scale)
-{
-    scale = vec2(0.0);
-    bool _546;
-    if (abs(mvp[3].x) > 1.0000000116860974230803549289703e-07)
-    {
-        _546 = true;
-    }
-    else
-    {
-        _546 = abs(mvp[3].y) > 1.0000000116860974230803549289703e-07;
-    }
-    if (_546)
-    {
-        _546 = true;
-    }
-    else
-    {
-        _546 = !snailAhFinite(mvp[3].w);
-    }
-    if (_546)
-    {
-        _546 = true;
-    }
-    else
-    {
-        _546 = abs(mvp[3].w) < 1.0000000133514319600180897396058e-10;
-    }
-    if (_546)
-    {
-        return false;
-    }
-    vec2 localX = vec2(xform.xz);
-    vec2 localY = vec2(xform.yw);
-    vec2 _637 = viewport * 0.5;
-    vec2 screenX = (_637 * vec2(dot(mvp[0].xy, localX), dot(mvp[1].xy, localX))) / vec2(mvp[3].w);
-    vec2 screenY = (_637 * vec2(dot(mvp[0].xy, localY), dot(mvp[1].xy, localY))) / vec2(mvp[3].w);
-    float _654 = screenX.x;
-    float _655 = screenY.y;
-    float _657 = screenY.x;
-    float _658 = screenX.y;
-    float det = (_654 * _655) - (_657 * _658);
-    if (!snailAhFinite(det))
-    {
-        _546 = true;
-    }
-    else
-    {
-        _546 = abs(det) < 1.0000000133514319600180897396058e-10;
-    }
-    if (_546)
-    {
-        return false;
-    }
-    float _676 = abs(det);
-    vec2 _684 = vec2(1.0) / vec2((abs(_655) + abs(_657)) / _676, (abs(_658) + abs(_654)) / _676);
-    scale = _684;
-    if (snailAhFinite(_684.x))
-    {
-        _546 = snailAhFinite(scale.y);
-    }
-    else
-    {
-        _546 = false;
-    }
-    if (_546)
-    {
-        _546 = scale.x > 0.0;
-    }
-    else
-    {
-        _546 = false;
-    }
-    if (_546)
-    {
-        _546 = scale.y > 0.0;
-    }
-    else
-    {
-        _546 = false;
-    }
-    return _546;
-}
-
-void snailAhMarkFallback(inout vec4 packedTargets[4], inout uvec4 packedSources)
-{
-    int i = 0;
-    for (;;)
-    {
-        bool _733_ladder_break = false;
-        do
+        vec2 _4077 = mix(_9497.xy, _9497.zw, _247[_19]);
+        vec2 _4080 = (_247[_19] * 2.0) - vec2(1.0);
+        float _4088 = _4077.x;
+        float _4091 = _4077.y;
+        vec2 _4103 = vec2(((_9498.x * _4088) + (_9498.y * _4091)) + _9499.x, ((_9498.z * _4088) + (_9498.w * _4091)) + _9499.y);
+        float _4104 = _4080.x;
+        float _4106 = _4080.y;
+        float _4116 = 1.0 / ((_9498.x * _9498.w) - (_9498.y * _9498.z));
+        float _4225;
+        if (_9502.x <= 0.040449999272823333740234375)
         {
-            if (!(i < 4))
-            {
-                _733_ladder_break = true;
-                break;
-            }
-            packedTargets[i] = vec4(0.0);
-            break;
-        } while(false);
-        if (_733_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    packedSources = uvec4(4294967295u);
-    packedSources.x = (4294967295u & 4294967040u) | 254u;
-}
-
-ivec2 snailAhLayerLoc(ivec2 _809, int _810)
-{
-    uvec2 vecSize = uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0));
-    uint uw = vecSize.x;
-    uint uh = vecSize.y;
-    int width = int(uw);
-    int texel = ((_809.y * width) + _809.x) + _810;
-    return ivec2(texel - width * (texel / width), texel / width);
-}
-
-float snailWarpF(ivec2 _790, int _791, int _792)
-{
-    int f = _791 + _792;
-    vec4 _838 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(snailAhLayerLoc(_790, f >> 2), 0).xy, 0);
-    int c = f & 3;
-    float _794;
-    if (c == 0)
-    {
-        _794 = _838.x;
-    }
-    else
-    {
-        if (c == 1)
-        {
-            _794 = _838.y;
+            _4225 = _9502.x * 0.077399380505084991455078125;
         }
         else
         {
-            if (c == 2)
-            {
-                _794 = _838.z;
-            }
-            else
-            {
-                _794 = _838.w;
-            }
+            _4225 = pow((_9502.x + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    return _794;
-}
-
-bool snailDecodeAutohintPolicy(uvec4 p0, uvec3 p1, inout SnailAutohintPolicy p)
-{
-    p = SnailAutohintPolicy(0, 0, 0, 0, 0, 0, 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0);
-    bool _870;
-    if ((p0.x & 4286578688u) != 0u)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = (p0.y & 4294967232u) != 0u;
-    }
-    if (_870)
-    {
-        return false;
-    }
-    int _973 = int(p0.x & 3u);
-    p.xAlign = _973;
-    p.xStem = int((p0.x >> 2u) & 3u);
-    p.xPositioning = int((p0.x >> 4u) & 3u);
-    p.xRegistration = int((p0.x >> 6u) & 3u);
-    p.fadeEnabled = int((p0.x >> 8u) & 1u);
-    p.fadeStart = float((p0.x >> 9u) & 127u);
-    p.fadeFull = float((p0.x >> 16u) & 127u);
-    p.yAlign = int(p0.y & 3u);
-    p.yStem = int((p0.y >> 2u) & 3u);
-    p.yOvershoot = int((p0.y >> 4u) & 3u);
-    if (_973 > 1)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.xStem > 2;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.xPositioning > 1;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.xRegistration > 1;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.yAlign > 2;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.yStem > 2;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        _870 = p.yOvershoot > 1;
-    }
-    if (_870)
-    {
-        return false;
-    }
-    p.xRatio = uintBitsToFloat(p0.z);
-    p.xMaxPx = uintBitsToFloat(p0.w);
-    p.yRatio = uintBitsToFloat(p1.x);
-    p.yMaxPx = uintBitsToFloat(p1.y);
-    p.overshootMinPx = uintBitsToFloat(p1.z);
-    if (p.xStem != 0)
-    {
-        if (!snailAhFinite(p.xRatio))
+        float _4237;
+        if (_9502.y <= 0.040449999272823333740234375)
         {
-            _870 = true;
+            _4237 = _9502.y * 0.077399380505084991455078125;
         }
         else
         {
-            _870 = p.xRatio < 0.0;
+            _4237 = pow((_9502.y + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    else
-    {
-        _870 = false;
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.xStem == 1)
+        float _4249;
+        if (_9502.z <= 0.040449999272823333740234375)
         {
-            if (!snailAhFinite(p.xMaxPx))
-            {
-                _870 = true;
-            }
-            else
-            {
-                _870 = p.xMaxPx < 0.0;
-            }
+            _4249 = _9502.z * 0.077399380505084991455078125;
         }
         else
         {
-            _870 = false;
+            _4249 = pow((_9502.z + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.yStem != 0)
+        vec4 _9187 = vec4(vec3(_4225, _4237, _4249), _9502.w);
+        float _4270;
+        if (_9503.x <= 0.040449999272823333740234375)
         {
-            if (!snailAhFinite(p.yRatio))
-            {
-                _870 = true;
-            }
-            else
-            {
-                _870 = p.yRatio < 0.0;
-            }
+            _4270 = _9503.x * 0.077399380505084991455078125;
         }
         else
         {
-            _870 = false;
+            _4270 = pow((_9503.x + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.yStem == 1)
+        float _4282;
+        if (_9503.y <= 0.040449999272823333740234375)
         {
-            if (!snailAhFinite(p.yMaxPx))
-            {
-                _870 = true;
-            }
-            else
-            {
-                _870 = p.yMaxPx < 0.0;
-            }
+            _4282 = _9503.y * 0.077399380505084991455078125;
         }
         else
         {
-            _870 = false;
+            _4282 = pow((_9503.y + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.yOvershoot == 1)
+        float _4294;
+        if (_9503.z <= 0.040449999272823333740234375)
         {
-            if (!snailAhFinite(p.overshootMinPx))
-            {
-                _870 = true;
-            }
-            else
-            {
-                _870 = p.overshootMinPx < 0.0;
-            }
+            _4294 = _9503.z * 0.077399380505084991455078125;
         }
         else
         {
-            _870 = false;
+            _4294 = pow((_9503.z + 0.054999999701976776123046875) * 0.947867333889007568359375, 2.400000095367431640625);
         }
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.xPositioning == 1)
+        vec4 _9188 = vec4(vec3(_4270, _4282, _4294), _9503.w);
+        vec2 _4155 = normalize(vec2((_9498.x * _4104) + (_9498.y * _4106), (_9498.z * _4104) + (_9498.w * _4106)));
+        float _4159 = dot(spvWorkaroundRowMajor(pc.mvp)[3].xy, _4103) + spvWorkaroundRowMajor(pc.mvp)[3].w;
+        float _4160 = dot(spvWorkaroundRowMajor(pc.mvp)[3].xy, _4155);
+        float _4170 = ((_4159 * dot(spvWorkaroundRowMajor(pc.mvp)[0].xy, _4155)) - (_4160 * (dot(spvWorkaroundRowMajor(pc.mvp)[0].xy, _4103) + spvWorkaroundRowMajor(pc.mvp)[0].w))) * pc.viewport.x;
+        float _4180 = ((_4159 * dot(spvWorkaroundRowMajor(pc.mvp)[1].xy, _4155)) - (_4160 * (dot(spvWorkaroundRowMajor(pc.mvp)[1].xy, _4103) + spvWorkaroundRowMajor(pc.mvp)[1].w))) * pc.viewport.y;
+        float _4182 = _4159 * _4160;
+        float _4185 = (_4170 * _4170) + (_4180 * _4180);
+        float _4187 = _4185 - (_4182 * _4182);
+        vec2 _4068;
+        if (abs(_4187) > 1.0000000133514319600180897396058e-10)
         {
-            _870 = p.xAlign == 0;
-        }
-        else
-        {
-            _870 = false;
-        }
-    }
-    if (_870)
-    {
-        _870 = true;
-    }
-    else
-    {
-        if (p.yOvershoot == 1)
-        {
-            _870 = p.yAlign != 2;
+            _4068 = _4155 * (((_4159 * _4159) * (_4182 + sqrt(_4185))) / _4187);
         }
         else
         {
-            _870 = false;
+            _4068 = (_4155 * 2.0) / pc.viewport;
         }
-    }
-    if (_870)
-    {
-        return false;
-    }
-    return true;
-}
-
-bool snailAhCount(int max_knots, float encoded, out int count)
-{
-    bool _1271;
-    if (!snailAhFinite(encoded))
-    {
-        _1271 = true;
-    }
-    else
-    {
-        _1271 = encoded < 0.0;
-    }
-    if (_1271)
-    {
-        _1271 = true;
-    }
-    else
-    {
-        _1271 = encoded > float(max_knots);
-    }
-    if (_1271)
-    {
-        _1271 = true;
-    }
-    else
-    {
-        _1271 = floor(encoded) != encoded;
-    }
-    if (_1271)
-    {
-        count = 0;
-        return false;
-    }
-    count = int(encoded);
-    return true;
-}
-
-float snailAhSnap(float v, float scale)
-{
-    return round(v * scale) / scale;
-}
-
-float snailAhStandardWidth(float raw, float standard, float ratio)
-{
-    bool _2544;
-    if (standard > 0.0)
-    {
-        _2544 = abs(raw - standard) <= (ratio * standard);
-    }
-    else
-    {
-        _2544 = false;
-    }
-    float _2545;
-    if (_2544)
-    {
-        _2545 = standard;
-    }
-    else
-    {
-        _2545 = raw;
-    }
-    return _2545;
-}
-
-bool snailFitAutohintAxis(ivec2 _1379, int _1380, int _1381, int _1382, float _1383, float _1384, float _1385, SnailAutohintPolicy _1386, inout int _1387, inout float _1388[16], inout float _1389[16], inout int _1390[16])
-{
-    _1387 = 0;
-    int i = 0;
-    for (;;)
-    {
-        bool _1438_ladder_break = false;
-        do
+        float _4306;
+        if (pc.subpixel_order == 0)
         {
-            if (!(i < 16))
-            {
-                _1438_ladder_break = true;
-                break;
-            }
-            _1388[i] = 0.0;
-            _1389[i] = 0.0;
-            _1390[i] = 0;
-            break;
-        } while(false);
-        if (_1438_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    bool _1393;
-    if (!snailAhFinite(_1385))
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = _1385 <= 0.0;
-    }
-    if (_1393)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = _1382 < 0;
-    }
-    if (_1393)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = _1382 > 16;
-    }
-    if (_1393)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = !snailAhFinite(_1383);
-    }
-    if (_1393)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = _1383 < 0.0;
-    }
-    if (_1393)
-    {
-        return false;
-    }
-    bool _1989 = _1380 == 0;
-    if (_1989)
-    {
-        _1393 = _1386.xAlign == 0;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1386.xStem == 0;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1386.xPositioning == 0;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1386.xRegistration == 0;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        if (_1380 == 1)
-        {
-            _1393 = _1386.yAlign == 0;
+            _4306 = 1.0;
         }
         else
         {
-            _1393 = false;
+            _4306 = 2.3333332538604736328125;
         }
-        if (_1393)
+        vec2 _4202 = _4068 * (1.41421353816986083984375 * _4306);
+        vec4 _9275 = vec4(_4103 + _4202, 0.0, 1.0) * spvWorkaroundRowMajor(pc.mvp);
+        vec4 _9276 = _9187 * _9188;
+        vec3 _9277 = vec3(vec2(_4088 + dot(_4202, vec2(_9498.w * _4116, (-_9498.y) * _4116)), _4091 + dot(_4202, vec2((-_9498.z) * _4116, _9498.x * _4116))), _9501.w);
+        ivec2 _9278 = ivec2(int(_9500.x & 65535u), int(_9500.x >> 16u));
+        uvec4 _9279 = input_policy0;
+        uvec3 _9280 = input_policy1;
+        vec4 _9281[4];
+        vec4 _9282[4];
+        uvec4 _9283;
+        uvec4 _9284;
+        if (_19 != 0u)
         {
-            _1393 = _1386.yStem == 0;
-        }
-        else
-        {
-            _1393 = false;
-        }
-        if (_1393)
-        {
-            _1393 = _1386.yOvershoot == 0;
-        }
-        else
-        {
-            _1393 = false;
-        }
-    }
-    if (_1393)
-    {
-        return true;
-    }
-    int n = int(snailWarpF(_1379, _1381, 0));
-    if (n <= 0)
-    {
-        _1393 = true;
-    }
-    else
-    {
-        _1393 = n > 16;
-    }
-    if (_1393)
-    {
-        return n == 0;
-    }
-    bool _2073 = _1380 == 1;
-    if (_2073)
-    {
-        _1393 = _1386.yAlign == 2;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    bool partnerAbove;
-    if (_1989)
-    {
-        partnerAbove = _1386.xRegistration == 1;
-    }
-    else
-    {
-        partnerAbove = false;
-    }
-    if (partnerAbove)
-    {
-        partnerAbove = !snailAhFinite(_1384);
-    }
-    else
-    {
-        partnerAbove = false;
-    }
-    if (partnerAbove)
-    {
-        return false;
-    }
-    i = 0;
-    float pos[16];
-    float width[16];
-    int stem[16];
-    int blue[16];
-    bool rounded[16];
-    bool syntheticApex[16];
-    int companion[16];
-    int dir[16];
-    bool hinted[16];
-    int stemMode;
-    int clusterRight;
-    bool validBlue;
-    bool _1412;
-    bool _1413;
-    bool axisAligned;
-    bool lowerBlue;
-    bool upperBlue;
-    bool _1417;
-    uint _1418;
-    for (;;)
-    {
-        bool _1507_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
+            int _3834 = 0;
+            for (;;)
             {
-                _1507_ladder_break = true;
-                break;
-            }
-            if (i >= n)
-            {
-                _1507_ladder_break = true;
-                break;
-            }
-            int f = (_1381 + 1) + (4 * i);
-            pos[i] = snailWarpF(_1379, f, 0);
-            width[i] = snailWarpF(_1379, f, 1);
-            uint _2122 = floatBitsToUint(snailWarpF(_1379, f, 2));
-            stem[i] = int(_2122 << 16u) >> 16;
-            blue[i] = int(_2122) >> 16;
-            uint _2135 = floatBitsToUint(snailWarpF(_1379, f, 3));
-            rounded[i] = (_2135 & 1u) != 0u;
-            syntheticApex[i] = (_2135 & 2u) != 0u;
-            if ((_2135 & 4u) == 0u)
-            {
-                return false;
-            }
-            if ((_2135 & 8u) != 0u)
-            {
-                stemMode = -1;
-            }
-            else
-            {
-                stemMode = 1;
-            }
-            dir[i] = stemMode;
-            if (_1393)
-            {
-                _1418 = 10u;
-            }
-            else
-            {
-                _1418 = 4u;
-            }
-            int encodedCompanion = int((_2135 >> _1418) & 63u);
-            if (encodedCompanion >= 62)
-            {
-                clusterRight = -1;
-            }
-            else
-            {
-                clusterRight = encodedCompanion;
-            }
-            companion[i] = clusterRight;
-            if (encodedCompanion >= 63)
-            {
-                partnerAbove = rounded[i];
-            }
-            else
-            {
-                partnerAbove = false;
-            }
-            if (partnerAbove)
-            {
-                validBlue = blue[i] >= 0;
-            }
-            else
-            {
-                validBlue = false;
-            }
-            if (validBlue)
-            {
-                return false;
-            }
-            hinted[i] = false;
-            if (!snailAhFinite(pos[i]))
-            {
-                _1412 = true;
-            }
-            else
-            {
-                _1412 = !snailAhFinite(width[i]);
-            }
-            if (_1412)
-            {
-                _1413 = true;
-            }
-            else
-            {
-                _1413 = width[i] < 0.0;
-            }
-            if (_1413)
-            {
-                axisAligned = true;
-            }
-            else
-            {
-                axisAligned = stem[i] < (-1);
-            }
-            if (axisAligned)
-            {
-                lowerBlue = true;
-            }
-            else
-            {
-                lowerBlue = stem[i] >= n;
-            }
-            if (lowerBlue)
-            {
-                upperBlue = true;
-            }
-            else
-            {
-                upperBlue = blue[i] < (-1);
-            }
-            if (upperBlue)
-            {
-                _1417 = true;
-            }
-            else
-            {
-                _1417 = blue[i] >= _1382;
-            }
-            if (_1417)
-            {
-                return false;
-            }
-            break;
-        } while(false);
-        if (_1507_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    i = 0;
-    for (;;)
-    {
-        bool _1560_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
-            {
-                _1560_ladder_break = true;
-                break;
-            }
-            if (i >= _1382)
-            {
-                _1560_ladder_break = true;
-                break;
-            }
-            int _2279 = 2 * i;
-            if (!snailAhFinite(snailWarpF(_1379, 12, _2279)))
-            {
-                partnerAbove = true;
-            }
-            else
-            {
-                partnerAbove = !snailAhFinite(snailWarpF(_1379, 12, _2279 + 1));
-            }
-            if (partnerAbove)
-            {
-                return false;
-            }
-            break;
-        } while(false);
-        if (_1560_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    if (_2073)
-    {
-        partnerAbove = _1386.yOvershoot == 1;
-    }
-    else
-    {
-        partnerAbove = false;
-    }
-    float spacing;
-    if (partnerAbove)
-    {
-        spacing = _1386.overshootMinPx;
-    }
-    else
-    {
-        spacing = 0.0;
-    }
-    i = 0;
-    float targets[16];
-    for (;;)
-    {
-        bool _1584_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
-            {
-                _1584_ladder_break = true;
-                break;
-            }
-            if (i >= n)
-            {
-                _1584_ladder_break = true;
-                break;
-            }
-            if (stem[i] >= 0)
-            {
-                partnerAbove = pos[stem[i]] > pos[i];
-            }
-            else
-            {
-                partnerAbove = false;
-            }
-            if (_1393)
-            {
-                validBlue = blue[i] >= 0;
-            }
-            else
-            {
-                validBlue = false;
-            }
-            if (!_1393)
-            {
-                if (partnerAbove)
+                if (!(_3834 < 4))
                 {
-                    stemMode = -1;
+                    break;
+                }
+                _9281[_3834] = vec4(0.0);
+                _9282[_3834] = vec4(0.0);
+                _3834++;
+                continue;
+            }
+            _9283 = uvec4(4294967295u);
+            _9284 = uvec4(4294967295u);
+            _9214 = _9275;
+            _9215 = _9276;
+            _9216 = _9277;
+            _9217 = _9278;
+            _9218 = _9279;
+            _9219 = _9280;
+            _9611 = _9281[0];
+            _9612 = _9281[1];
+            _9613 = _9281[2];
+            _9614 = _9281[3];
+            _9636 = _9282[0];
+            _9637 = _9282[1];
+            _9638 = _9282[2];
+            _9639 = _9282[3];
+            _9222 = uvec4(4294967295u);
+            _9223 = uvec4(4294967295u);
+            break;
+        }
+        vec2 _3835;
+        bool _4316;
+        do
+        {
+            _3835 = vec2(0.0);
+            bool _4317;
+            if (abs(spvWorkaroundRowMajor(pc.mvp)[3].x) > 1.0000000116860974230803549289703e-07)
+            {
+                _4317 = true;
+            }
+            else
+            {
+                _4317 = abs(spvWorkaroundRowMajor(pc.mvp)[3].y) > 1.0000000116860974230803549289703e-07;
+            }
+            if (_4317)
+            {
+                _4317 = true;
+            }
+            else
+            {
+                bool _4426;
+                if (!isnan(spvWorkaroundRowMajor(pc.mvp)[3].w))
+                {
+                    _4426 = !isinf(spvWorkaroundRowMajor(pc.mvp)[3].w);
                 }
                 else
                 {
-                    stemMode = 1;
+                    _4426 = false;
                 }
-                dir[i] = stemMode;
+                _4317 = !_4426;
             }
-            if (validBlue)
+            if (_4317)
             {
-                float _2375 = snailWarpF(_1379, 12, 2 * blue[i]);
-                float _2379 = snailWarpF(_1379, 12, (2 * blue[i]) + 1);
-                if (rounded[i])
+                _4317 = true;
+            }
+            else
+            {
+                _4317 = abs(spvWorkaroundRowMajor(pc.mvp)[3].w) < 1.0000000133514319600180897396058e-10;
+            }
+            if (_4317)
+            {
+                _4316 = false;
+                break;
+            }
+            vec2 _4352 = vec2(_9498.xz);
+            vec2 _4355 = vec2(_9498.yw);
+            vec2 _4356 = pc.viewport * 0.5;
+            vec2 _4365 = (_4356 * vec2(dot(spvWorkaroundRowMajor(pc.mvp)[0].xy, _4352), dot(spvWorkaroundRowMajor(pc.mvp)[1].xy, _4352))) / vec2(spvWorkaroundRowMajor(pc.mvp)[3].w);
+            vec2 _4371 = (_4356 * vec2(dot(spvWorkaroundRowMajor(pc.mvp)[0].xy, _4355), dot(spvWorkaroundRowMajor(pc.mvp)[1].xy, _4355))) / vec2(spvWorkaroundRowMajor(pc.mvp)[3].w);
+            float _4372 = _4365.x;
+            float _4373 = _4371.y;
+            float _4375 = _4371.x;
+            float _4376 = _4365.y;
+            float _4378 = (_4372 * _4373) - (_4375 * _4376);
+            bool _4437;
+            if (!isnan(_4378))
+            {
+                _4437 = !isinf(_4378);
+            }
+            else
+            {
+                _4437 = false;
+            }
+            if (!_4437)
+            {
+                _4317 = true;
+            }
+            else
+            {
+                _4317 = abs(_4378) < 1.0000000133514319600180897396058e-10;
+            }
+            if (_4317)
+            {
+                _4316 = false;
+                break;
+            }
+            float _4392 = abs(_4378);
+            vec2 _4400 = vec2(1.0) / vec2((abs(_4373) + abs(_4375)) / _4392, (abs(_4376) + abs(_4372)) / _4392);
+            _3835 = _4400;
+            float _4401 = _4400.x;
+            bool _4448;
+            if (!isnan(_4401))
+            {
+                _4448 = !isinf(_4401);
+            }
+            else
+            {
+                _4448 = false;
+            }
+            if (_4448)
+            {
+                bool _4459;
+                if (!isnan(_3835.y))
                 {
-                    _1412 = _2073;
+                    _4459 = !isinf(_3835.y);
                 }
                 else
                 {
-                    _1412 = false;
+                    _4459 = false;
                 }
-                if (_1412)
+                _4317 = _4459;
+            }
+            else
+            {
+                _4317 = false;
+            }
+            if (_4317)
+            {
+                _4317 = _3835.x > 0.0;
+            }
+            else
+            {
+                _4317 = false;
+            }
+            if (_4317)
+            {
+                _4317 = _3835.y > 0.0;
+            }
+            else
+            {
+                _4317 = false;
+            }
+            _4316 = _4317;
+            break;
+        } while(false);
+        if (!_4316)
+        {
+            vec4 _3836[4] = _9281;
+            int _4470 = 0;
+            for (;;)
+            {
+                if (!(_4470 < 4))
                 {
-                    _1413 = _1386.yOvershoot == 0;
+                    break;
+                }
+                _3836[_4470] = vec4(0.0);
+                _4470++;
+                continue;
+            }
+            uvec4 _9692 = uvec4(4294967295u);
+            _9692.x = 4294967294u;
+            _9281 = _3836;
+            _9283 = _9692;
+            vec4 _3838[4] = _9282;
+            int _4492 = 0;
+            for (;;)
+            {
+                if (!(_4492 < 4))
+                {
+                    break;
+                }
+                _3838[_4492] = vec4(0.0);
+                _4492++;
+                continue;
+            }
+            uvec4 _9694 = uvec4(4294967295u);
+            _9694.x = 4294967294u;
+            _9282 = _3838;
+            _9284 = _9694;
+            _9214 = _9275;
+            _9215 = _9276;
+            _9216 = _9277;
+            _9217 = _9278;
+            _9218 = _9279;
+            _9219 = _9280;
+            _9611 = _9281[0];
+            _9612 = _9281[1];
+            _9613 = _9281[2];
+            _9614 = _9281[3];
+            _9636 = _3838[0];
+            _9637 = _3838[1];
+            _9638 = _3838[2];
+            _9639 = _3838[3];
+            _9222 = _9283;
+            _9223 = _9694;
+            break;
+        }
+        int _3841 = 0;
+        int _3842 = 0;
+        int _4552 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+        int _4557 = ((_9278.y * _4552) + _9278.x) + 2;
+        vec4 _4523 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_4557 - _4552 * (_4557 / _4552), _4557 / _4552), 0).xy, 0);
+        float _4514;
+        if (true)
+        {
+            _4514 = _4523.x;
+        }
+        else
+        {
+            if (false)
+            {
+                _4514 = _4523.y;
+            }
+            else
+            {
+                if (false)
+                {
+                    _4514 = _4523.z;
                 }
                 else
                 {
-                    _1413 = false;
+                    _4514 = _4523.w;
                 }
-                if (_1413)
+            }
+        }
+        int _4599 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+        int _4604 = ((_9278.y * _4599) + _9278.x) + 2;
+        vec4 _4570 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_4604 - _4599 * (_4604 / _4599), _4604 / _4599), 0).xy, 0);
+        float _4561;
+        if (false)
+        {
+            _4561 = _4570.x;
+        }
+        else
+        {
+            if (true)
+            {
+                _4561 = _4570.y;
+            }
+            else
+            {
+                if (false)
                 {
-                    targets[i] = pos[i];
+                    _4561 = _4570.z;
                 }
                 else
                 {
-                    targets[i] = snailAhSnap(_2375, _1385);
-                    if (rounded[i])
+                    _4561 = _4570.w;
+                }
+            }
+        }
+        bool _4609;
+        int _9329;
+        int _9330;
+        int _9331;
+        int _9332;
+        int _9333;
+        int _9334;
+        int _9335;
+        int _9336;
+        float _9337;
+        float _9338;
+        float _9339;
+        float _9340;
+        float _9341;
+        float _9342;
+        float _9343;
+        do
+        {
+            _9329 = 0;
+            _9330 = 0;
+            _9331 = 0;
+            _9332 = 0;
+            _9333 = 0;
+            _9334 = 0;
+            _9335 = 0;
+            _9336 = 0;
+            _9337 = 0.0;
+            _9338 = 0.0;
+            _9339 = 0.0;
+            _9340 = 0.0;
+            _9341 = 0.0;
+            _9342 = 0.0;
+            _9343 = 0.0;
+            bool _4610;
+            if ((input_policy0.x & 4286578688u) != 0u)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = (input_policy0.y & 4294967232u) != 0u;
+            }
+            if (_4610)
+            {
+                _4609 = false;
+                break;
+            }
+            int _4628 = int(input_policy0.x & 3u);
+            _9329 = _4628;
+            _9330 = int((input_policy0.x >> 2u) & 3u);
+            _9331 = int((input_policy0.x >> 4u) & 3u);
+            _9332 = int((input_policy0.x >> 6u) & 3u);
+            _9336 = int((input_policy0.x >> 8u) & 1u);
+            _9337 = float((input_policy0.x >> 9u) & 127u);
+            _9338 = float((input_policy0.x >> 16u) & 127u);
+            _9333 = int(input_policy0.y & 3u);
+            _9334 = int((input_policy0.y >> 2u) & 3u);
+            _9335 = int((input_policy0.y >> 4u) & 3u);
+            if (_4628 > 1)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9330 > 2;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9331 > 1;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9332 > 1;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9333 > 2;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9334 > 2;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                _4610 = _9335 > 1;
+            }
+            if (_4610)
+            {
+                _4609 = false;
+                break;
+            }
+            _9339 = uintBitsToFloat(input_policy0.z);
+            _9340 = uintBitsToFloat(input_policy0.w);
+            _9341 = uintBitsToFloat(input_policy1.x);
+            _9342 = uintBitsToFloat(input_policy1.y);
+            _9343 = uintBitsToFloat(input_policy1.z);
+            if (_9330 != 0)
+            {
+                bool _4826;
+                if (!isnan(_9339))
+                {
+                    _4826 = !isinf(_9339);
+                }
+                else
+                {
+                    _4826 = false;
+                }
+                if (!_4826)
+                {
+                    _4610 = true;
+                }
+                else
+                {
+                    _4610 = _9339 < 0.0;
+                }
+            }
+            else
+            {
+                _4610 = false;
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9330 == 1)
+                {
+                    bool _4837;
+                    if (!isnan(_9340))
                     {
-                        axisAligned = abs((_2379 - _2375) * _1385) >= spacing;
+                        _4837 = !isinf(_9340);
                     }
                     else
                     {
-                        axisAligned = false;
+                        _4837 = false;
                     }
-                    if (axisAligned)
+                    if (!_4837)
                     {
-                        targets[i] += (_2379 - _2375);
+                        _4610 = true;
+                    }
+                    else
+                    {
+                        _4610 = _9340 < 0.0;
+                    }
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9334 != 0)
+                {
+                    bool _4848;
+                    if (!isnan(_9341))
+                    {
+                        _4848 = !isinf(_9341);
+                    }
+                    else
+                    {
+                        _4848 = false;
+                    }
+                    if (!_4848)
+                    {
+                        _4610 = true;
+                    }
+                    else
+                    {
+                        _4610 = _9341 < 0.0;
+                    }
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9334 == 1)
+                {
+                    bool _4859;
+                    if (!isnan(_9342))
+                    {
+                        _4859 = !isinf(_9342);
+                    }
+                    else
+                    {
+                        _4859 = false;
+                    }
+                    if (!_4859)
+                    {
+                        _4610 = true;
+                    }
+                    else
+                    {
+                        _4610 = _9342 < 0.0;
+                    }
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9335 == 1)
+                {
+                    bool _4870;
+                    if (!isnan(_9343))
+                    {
+                        _4870 = !isinf(_9343);
+                    }
+                    else
+                    {
+                        _4870 = false;
+                    }
+                    if (!_4870)
+                    {
+                        _4610 = true;
+                    }
+                    else
+                    {
+                        _4610 = _9343 < 0.0;
+                    }
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9331 == 1)
+                {
+                    _4610 = _9329 == 0;
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4610 = true;
+            }
+            else
+            {
+                if (_9335 == 1)
+                {
+                    _4610 = _9333 != 2;
+                }
+                else
+                {
+                    _4610 = false;
+                }
+            }
+            if (_4610)
+            {
+                _4609 = false;
+                break;
+            }
+            _4609 = true;
+            break;
+        } while(false);
+        bool _3844;
+        if (_4609)
+        {
+            bool _4881;
+            if (!isnan(_4514))
+            {
+                _4881 = !isinf(_4514);
+            }
+            else
+            {
+                _4881 = false;
+            }
+            _3844 = _4881;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        if (_3844)
+        {
+            _3844 = _4514 >= 0.0;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        if (_3844)
+        {
+            bool _4892;
+            if (!isnan(_4561))
+            {
+                _4892 = !isinf(_4561);
+            }
+            else
+            {
+                _4892 = false;
+            }
+            _3844 = _4892;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        if (_3844)
+        {
+            _3844 = _4561 >= 0.0;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        if (_3844)
+        {
+            int _4941 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+            int _4946 = ((_9278.y * _4941) + _9278.x) + 2;
+            vec4 _4912 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_4946 - _4941 * (_4946 / _4941), _4946 / _4941), 0).xy, 0);
+            float _4903;
+            if (false)
+            {
+                _4903 = _4912.x;
+            }
+            else
+            {
+                if (false)
+                {
+                    _4903 = _4912.y;
+                }
+                else
+                {
+                    if (true)
+                    {
+                        _4903 = _4912.z;
+                    }
+                    else
+                    {
+                        _4903 = _4912.w;
                     }
                 }
             }
-            else
-            {
-                targets[i] = snailAhSnap(pos[i], _1385);
-            }
-            break;
-        } while(false);
-        if (_1584_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    float grid = 1.0 / _1385;
-    if (_1989)
-    {
-        stemMode = _1386.xStem;
-    }
-    else
-    {
-        stemMode = _1386.yStem;
-    }
-    if (_1989)
-    {
-        spacing = _1386.xRatio;
-    }
-    else
-    {
-        spacing = _1386.yRatio;
-    }
-    float maxPx;
-    if (_1989)
-    {
-        maxPx = _1386.xMaxPx;
-    }
-    else
-    {
-        maxPx = _1386.yMaxPx;
-    }
-    if (_1989)
-    {
-        _1393 = _1386.xAlign == 1;
-    }
-    else
-    {
-        _1393 = _1386.yAlign != 0;
-    }
-    if (_1989)
-    {
-        partnerAbove = _1386.xPositioning == 1;
-    }
-    else
-    {
-        partnerAbove = false;
-    }
-    validBlue = false;
-    float anchorTarget = 0.0;
-    float anchorBase = 0.0;
-    float clusterTarget = 0.0;
-    float clusterBase = 0.0;
-    float clusterDesiredRight = 0.0;
-    clusterRight = 0;
-    i = 0;
-    int clusterStems = 0;
-    int clusterRight_1;
-    int clusterStems_1;
-    float widthUnits;
-    float clusterTarget_1;
-    float clusterBase_1;
-    float clusterTarget_2;
-    float clusterBase_2;
-    float clusterDesiredRight_1;
-    bool _1435;
-    for (;;)
-    {
-        bool _1641_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
-            {
-                _1641_ladder_break = true;
-                break;
-            }
-            if (i >= n)
-            {
-                _1641_ladder_break = true;
-                break;
-            }
-            if (stem[i] < 0)
-            {
-                _1412 = true;
-            }
-            else
-            {
-                _1412 = stem[i] <= i;
-            }
-            if (_1412)
-            {
-                axisAligned = validBlue;
-                break;
-            }
-            float nominal = snailAhStandardWidth(width[i], _1383, spacing);
-            if (stemMode == 2)
-            {
-                _1413 = true;
-            }
-            else
-            {
-                if (stemMode == 1)
-                {
-                    _1413 = (nominal * _1385) < maxPx;
-                }
-                else
-                {
-                    _1413 = false;
-                }
-            }
-            if (_1413)
-            {
-                widthUnits = max(round(nominal * _1385), 1.0) * grid;
-            }
-            else
-            {
-                widthUnits = width[i];
-            }
-            if (partnerAbove)
-            {
-                if (validBlue)
-                {
-                    targets[i] = anchorTarget + (round((pos[i] - anchorBase) * _1385) * grid);
-                    clusterTarget_1 = clusterTarget;
-                    clusterBase_1 = clusterBase;
-                    axisAligned = validBlue;
-                }
-                else
-                {
-                    float _2626 = snailAhSnap(pos[i], _1385);
-                    targets[i] = _2626;
-                    clusterTarget_1 = _2626;
-                    clusterBase_1 = pos[i];
-                    axisAligned = true;
-                }
-                targets[stem[i]] = targets[i] + widthUnits;
-                float _2645 = clusterBase_1;
-                float _2650 = clusterTarget_1;
-                float _2656 = clusterTarget_1;
-                float _2657 = clusterBase_1;
-                clusterTarget_1 = targets[i];
-                clusterBase_1 = pos[i];
-                clusterTarget_2 = _2656;
-                clusterBase_2 = _2657;
-                clusterDesiredRight_1 = (_2650 + (round((pos[i] - _2645) * _1385) * grid)) + widthUnits;
-                clusterRight_1 = stem[i];
-                clusterStems_1 = clusterStems + 1;
-            }
-            else
-            {
-                if (_1989)
-                {
-                    axisAligned = _1386.xAlign != 0;
-                }
-                else
-                {
-                    axisAligned = _1386.yAlign != 0;
-                }
-                if (axisAligned)
-                {
-                    lowerBlue = blue[i] >= 0;
-                }
-                else
-                {
-                    lowerBlue = false;
-                }
-                if (axisAligned)
-                {
-                    upperBlue = blue[stem[i]] >= 0;
-                }
-                else
-                {
-                    upperBlue = false;
-                }
-                if (!_1393)
-                {
-                    targets[i] = pos[i];
-                }
-                if (upperBlue)
-                {
-                    _1417 = !lowerBlue;
-                }
-                else
-                {
-                    _1417 = false;
-                }
-                if (_1417)
-                {
-                    _1435 = _1393;
-                }
-                else
-                {
-                    _1435 = false;
-                }
-                if (_1435)
-                {
-                    targets[i] = targets[stem[i]] - widthUnits;
-                }
-                else
-                {
-                    targets[stem[i]] = targets[i] + widthUnits;
-                }
-                axisAligned = validBlue;
-                clusterTarget_1 = anchorTarget;
-                clusterBase_1 = anchorBase;
-                clusterTarget_2 = clusterTarget;
-                clusterBase_2 = clusterBase;
-                clusterDesiredRight_1 = clusterDesiredRight;
-                clusterRight_1 = clusterRight;
-                clusterStems_1 = clusterStems;
-            }
-            hinted[i] = true;
-            hinted[stem[i]] = true;
-            anchorTarget = clusterTarget_1;
-            anchorBase = clusterBase_1;
-            clusterTarget = clusterTarget_2;
-            clusterBase = clusterBase_2;
-            clusterDesiredRight = clusterDesiredRight_1;
-            clusterRight = clusterRight_1;
-            clusterStems = clusterStems_1;
-            break;
-        } while(false);
-        if (_1641_ladder_break)
-        {
-            break;
-        }
-        validBlue = axisAligned;
-        i++;
-        continue;
-    }
-    if (partnerAbove)
-    {
-        _1393 = clusterStems > 1;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        float _2798 = clusterDesiredRight - targets[clusterRight];
-        i = 0;
-        for (;;)
-        {
-            bool _1697_ladder_break = false;
+            bool _4951;
             do
             {
-                if (!(i < 16))
+                bool _4980;
+                if (!isnan(_4903))
                 {
-                    _1697_ladder_break = true;
-                    break;
-                }
-                if (i >= n)
-                {
-                    _1697_ladder_break = true;
-                    break;
-                }
-                if (hinted[i])
-                {
-                    targets[i] += _2798;
-                }
-                break;
-            } while(false);
-            if (_1697_ladder_break)
-            {
-                break;
-            }
-            i++;
-            continue;
-        }
-    }
-    if (stemMode == 1)
-    {
-        spacing = maxPx;
-    }
-    else
-    {
-        spacing = 1.60000002384185791015625;
-    }
-    i = 0;
-    for (;;)
-    {
-        bool _1715_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
-            {
-                _1715_ladder_break = true;
-                break;
-            }
-            if (i >= n)
-            {
-                _1715_ladder_break = true;
-                break;
-            }
-            if (_1989)
-            {
-                axisAligned = _1386.xAlign != 0;
-            }
-            else
-            {
-                axisAligned = _1386.yAlign != 0;
-            }
-            if (!axisAligned)
-            {
-                _1393 = true;
-            }
-            else
-            {
-                _1393 = blue[i] < 0;
-            }
-            if (_1393)
-            {
-                partnerAbove = true;
-            }
-            else
-            {
-                partnerAbove = !rounded[i];
-            }
-            if (partnerAbove)
-            {
-                validBlue = true;
-            }
-            else
-            {
-                validBlue = hinted[i];
-            }
-            if (validBlue)
-            {
-                break;
-            }
-            bool top = dir[i] > 0;
-            if (companion[i] >= 0)
-            {
-                if (top)
-                {
-                    maxPx = pos[i] - pos[companion[i]];
+                    _4980 = !isinf(_4903);
                 }
                 else
                 {
-                    maxPx = pos[companion[i]] - pos[i];
+                    _4980 = false;
                 }
-                clusterRight_1 = companion[i];
-                widthUnits = maxPx;
+                bool _4952;
+                if (!_4980)
+                {
+                    _4952 = true;
+                }
+                else
+                {
+                    _4952 = _4903 < 0.0;
+                }
+                if (_4952)
+                {
+                    _4952 = true;
+                }
+                else
+                {
+                    _4952 = _4903 > 16.0;
+                }
+                if (_4952)
+                {
+                    _4952 = true;
+                }
+                else
+                {
+                    _4952 = floor(_4903) != _4903;
+                }
+                if (_4952)
+                {
+                    _3841 = 0;
+                    _4951 = false;
+                    break;
+                }
+                _3841 = int(_4903);
+                _4951 = true;
+                break;
+            } while(false);
+            _3844 = _4951;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        int _3975 = 2 * _3841;
+        int _3976 = 12 + _3975;
+        if (_3844)
+        {
+            int _5029 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+            int _5034 = ((_9278.y * _5029) + _9278.x) + (_3976 >> 2);
+            vec4 _5000 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_5034 - _5029 * (_5034 / _5029), _5034 / _5029), 0).xy, 0);
+            int _5002 = _3975 & 3;
+            float _4991;
+            if (_5002 == 0)
+            {
+                _4991 = _5000.x;
             }
             else
             {
-                if (companion[i] == (-2))
+                if (_5002 == 1)
                 {
-                    widthUnits = 3.4028234663852885981170418348452e+38;
-                    clusterRight_1 = companion[i];
-                    clusterStems_1 = 0;
+                    _4991 = _5000.y;
+                }
+                else
+                {
+                    if (_5002 == 2)
+                    {
+                        _4991 = _5000.z;
+                    }
+                    else
+                    {
+                        _4991 = _5000.w;
+                    }
+                }
+            }
+            bool _5039;
+            do
+            {
+                bool _5068;
+                if (!isnan(_4991))
+                {
+                    _5068 = !isinf(_4991);
+                }
+                else
+                {
+                    _5068 = false;
+                }
+                bool _5040;
+                if (!_5068)
+                {
+                    _5040 = true;
+                }
+                else
+                {
+                    _5040 = _4991 < 0.0;
+                }
+                if (_5040)
+                {
+                    _5040 = true;
+                }
+                else
+                {
+                    _5040 = _4991 > 16.0;
+                }
+                if (_5040)
+                {
+                    _5040 = true;
+                }
+                else
+                {
+                    _5040 = floor(_4991) != _4991;
+                }
+                if (_5040)
+                {
+                    _3842 = 0;
+                    _5039 = false;
+                    break;
+                }
+                _3842 = int(_4991);
+                _5039 = true;
+                break;
+            } while(false);
+            _3844 = _5039;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        int _3986 = (_3975 + 13) + (4 * _3842);
+        if (_3844)
+        {
+            int _5117 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+            int _5122 = ((_9278.y * _5117) + _9278.x) + (_3986 >> 2);
+            vec4 _5088 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_5122 - _5117 * (_5122 / _5117), _5122 / _5117), 0).xy, 0);
+            int _5090 = _3986 & 3;
+            float _5079;
+            if (_5090 == 0)
+            {
+                _5079 = _5088.x;
+            }
+            else
+            {
+                if (_5090 == 1)
+                {
+                    _5079 = _5088.y;
+                }
+                else
+                {
+                    if (_5090 == 2)
+                    {
+                        _5079 = _5088.z;
+                    }
+                    else
+                    {
+                        _5079 = _5088.w;
+                    }
+                }
+            }
+            bool _5127;
+            do
+            {
+                bool _5156;
+                if (!isnan(_5079))
+                {
+                    _5156 = !isinf(_5079);
+                }
+                else
+                {
+                    _5156 = false;
+                }
+                bool _5128;
+                if (!_5156)
+                {
+                    _5128 = true;
+                }
+                else
+                {
+                    _5128 = _5079 < 0.0;
+                }
+                if (_5128)
+                {
+                    _5128 = true;
+                }
+                else
+                {
+                    _5128 = _5079 > 16.0;
+                }
+                if (_5128)
+                {
+                    _5128 = true;
+                }
+                else
+                {
+                    _5128 = floor(_5079) != _5079;
+                }
+                if (_5128)
+                {
+                    _5127 = false;
+                    break;
+                }
+                _5127 = true;
+                break;
+            } while(false);
+            _3844 = _5127;
+        }
+        else
+        {
+            _3844 = false;
+        }
+        if (!_3844)
+        {
+            vec4 _3845[4] = _9281;
+            int _5167 = 0;
+            for (;;)
+            {
+                if (!(_5167 < 4))
+                {
+                    break;
+                }
+                _3845[_5167] = vec4(0.0);
+                _5167++;
+                continue;
+            }
+            uvec4 _9696 = uvec4(4294967295u);
+            _9696.x = 4294967294u;
+            _9281 = _3845;
+            _9283 = _9696;
+            vec4 _3847[4] = _9282;
+            int _5189 = 0;
+            for (;;)
+            {
+                if (!(_5189 < 4))
+                {
+                    break;
+                }
+                _3847[_5189] = vec4(0.0);
+                _5189++;
+                continue;
+            }
+            uvec4 _9698 = uvec4(4294967295u);
+            _9698.x = 4294967294u;
+            _9282 = _3847;
+            _9284 = _9698;
+            _9214 = _9275;
+            _9215 = _9276;
+            _9216 = _9277;
+            _9217 = _9278;
+            _9218 = _9279;
+            _9219 = _9280;
+            _9611 = _9281[0];
+            _9612 = _9281[1];
+            _9613 = _9281[2];
+            _9614 = _9281[3];
+            _9636 = _3847[0];
+            _9637 = _3847[1];
+            _9638 = _3847[2];
+            _9639 = _3847[3];
+            _9222 = _9283;
+            _9223 = _9698;
+            break;
+        }
+        int _3849 = 0;
+        int _3850 = 0;
+        int _5249 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+        int _5254 = ((_9278.y * _5249) + _9278.x) + 2;
+        vec4 _5220 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_5254 - _5249 * (_5254 / _5249), _5254 / _5249), 0).xy, 0);
+        float _5211;
+        if (false)
+        {
+            _5211 = _5220.x;
+        }
+        else
+        {
+            if (false)
+            {
+                _5211 = _5220.y;
+            }
+            else
+            {
+                if (false)
+                {
+                    _5211 = _5220.z;
+                }
+                else
+                {
+                    _5211 = _5220.w;
+                }
+            }
+        }
+        int _9391 = _9329;
+        int _9392 = _9330;
+        int _9393 = _9331;
+        int _9394 = _9332;
+        int _9395 = _9333;
+        int _9396 = _9334;
+        int _9397 = _9335;
+        int _9398 = _9336;
+        float _9399 = _9337;
+        float _9400 = _9338;
+        float _9401 = _9339;
+        float _9402 = _9340;
+        float _9403 = _9341;
+        float _9404 = _9342;
+        float _9405 = _9343;
+        _5258 = false;
+        float _3852[16];
+        int _3855[16];
+        bool _5259;
+        do
+        {
+            _3849 = 0;
+            int _5260 = 0;
+            float _3851[16];
+            for (;;)
+            {
+                if (!(_5260 < 16))
+                {
+                    break;
+                }
+                _3851[_5260] = 0.0;
+                _3852[_5260] = 0.0;
+                _3855[_5260] = 0;
+                _5260++;
+                continue;
+            }
+            bool _6571;
+            if (!isnan(_3835.x))
+            {
+                _6571 = !isinf(_3835.x);
+            }
+            else
+            {
+                _6571 = false;
+            }
+            bool _5261;
+            if (!_6571)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                _5261 = _3835.x <= 0.0;
+            }
+            if (_5261)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                _5261 = _3841 < 0;
+            }
+            if (_5261)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                _5261 = _3841 > 16;
+            }
+            if (_5261)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                bool _6582;
+                if (!isnan(_4514))
+                {
+                    _6582 = !isinf(_4514);
+                }
+                else
+                {
+                    _6582 = false;
+                }
+                _5261 = !_6582;
+            }
+            if (_5261)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                _5261 = _4514 < 0.0;
+            }
+            if (_5261)
+            {
+                _5258 = true;
+                _5259 = false;
+                break;
+            }
+            if (true)
+            {
+                _5261 = _9391 == 0;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _9392 == 0;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _9393 == 0;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _9394 == 0;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                if (false)
+                {
+                    _5261 = _9395 == 0;
+                }
+                else
+                {
+                    _5261 = false;
+                }
+                if (_5261)
+                {
+                    _5261 = _9396 == 0;
+                }
+                else
+                {
+                    _5261 = false;
+                }
+                if (_5261)
+                {
+                    _5261 = _9397 == 0;
+                }
+                else
+                {
+                    _5261 = false;
+                }
+            }
+            if (_5261)
+            {
+                _5258 = true;
+                _5259 = true;
+                break;
+            }
+            int _6631 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+            int _6636 = ((_9278.y * _6631) + _9278.x) + (_3976 >> 2);
+            vec4 _6602 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6636 - _6631 * (_6636 / _6631), _6636 / _6631), 0).xy, 0);
+            int _6604 = _3975 & 3;
+            float _6593;
+            if (_6604 == 0)
+            {
+                _6593 = _6602.x;
+            }
+            else
+            {
+                if (_6604 == 1)
+                {
+                    _6593 = _6602.y;
+                }
+                else
+                {
+                    if (_6604 == 2)
+                    {
+                        _6593 = _6602.z;
+                    }
+                    else
+                    {
+                        _6593 = _6602.w;
+                    }
+                }
+            }
+            int _5412 = int(_6593);
+            if (_5412 <= 0)
+            {
+                _5261 = true;
+            }
+            else
+            {
+                _5261 = _5412 > 16;
+            }
+            if (_5261)
+            {
+                _5258 = true;
+                _5259 = _5412 == 0;
+                break;
+            }
+            if (false)
+            {
+                _5261 = _9395 == 2;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            bool _5262;
+            if (true)
+            {
+                _5262 = _9394 == 1;
+            }
+            else
+            {
+                _5262 = false;
+            }
+            if (_5262)
+            {
+                bool _6640;
+                if (!isnan(_5211))
+                {
+                    _6640 = !isinf(_5211);
+                }
+                else
+                {
+                    _6640 = false;
+                }
+                _5262 = !_6640;
+            }
+            else
+            {
+                _5262 = false;
+            }
+            if (_5262)
+            {
+                _5258 = true;
+                _5259 = false;
+                break;
+            }
+            _5260 = 0;
+            float _5263[16];
+            float _5264[16];
+            int _5265[16];
+            int _5266[16];
+            bool _5267[16];
+            bool _5268[16];
+            int _5269[16];
+            int _5270[16];
+            bool _5272[16];
+            int _5275;
+            int _5276;
+            bool _5277;
+            bool _5278;
+            bool _5279;
+            bool _5280;
+            bool _5281;
+            bool _5282;
+            bool _5283;
+            uint _5284;
+            float _6651;
+            float _6698;
+            float _6745;
+            float _6792;
+            bool _6839;
+            bool _6850;
+            for (;;)
+            {
+                if (!(_5260 < 16))
+                {
+                    break;
+                }
+                if (_5260 >= _5412)
+                {
+                    break;
+                }
+                int _5459 = (_3975 + 13) + (4 * _5260);
+                int _6689 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6694 = ((_9278.y * _6689) + _9278.x) + (_5459 >> 2);
+                vec4 _6660 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6694 - _6689 * (_6694 / _6689), _6694 / _6689), 0).xy, 0);
+                int _6662 = _5459 & 3;
+                if (_6662 == 0)
+                {
+                    _6651 = _6660.x;
+                }
+                else
+                {
+                    if (_6662 == 1)
+                    {
+                        _6651 = _6660.y;
+                    }
+                    else
+                    {
+                        if (_6662 == 2)
+                        {
+                            _6651 = _6660.z;
+                        }
+                        else
+                        {
+                            _6651 = _6660.w;
+                        }
+                    }
+                }
+                _5263[_5260] = _6651;
+                int _6701 = _5459 + 1;
+                int _6736 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6741 = ((_9278.y * _6736) + _9278.x) + (_6701 >> 2);
+                vec4 _6707 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6741 - _6736 * (_6741 / _6736), _6741 / _6736), 0).xy, 0);
+                int _6709 = _6701 & 3;
+                if (_6709 == 0)
+                {
+                    _6698 = _6707.x;
+                }
+                else
+                {
+                    if (_6709 == 1)
+                    {
+                        _6698 = _6707.y;
+                    }
+                    else
+                    {
+                        if (_6709 == 2)
+                        {
+                            _6698 = _6707.z;
+                        }
+                        else
+                        {
+                            _6698 = _6707.w;
+                        }
+                    }
+                }
+                _5264[_5260] = _6698;
+                int _6748 = _5459 + 2;
+                int _6783 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6788 = ((_9278.y * _6783) + _9278.x) + (_6748 >> 2);
+                vec4 _6754 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6788 - _6783 * (_6788 / _6783), _6788 / _6783), 0).xy, 0);
+                int _6756 = _6748 & 3;
+                if (_6756 == 0)
+                {
+                    _6745 = _6754.x;
+                }
+                else
+                {
+                    if (_6756 == 1)
+                    {
+                        _6745 = _6754.y;
+                    }
+                    else
+                    {
+                        if (_6756 == 2)
+                        {
+                            _6745 = _6754.z;
+                        }
+                        else
+                        {
+                            _6745 = _6754.w;
+                        }
+                    }
+                }
+                _5265[_5260] = int(floatBitsToUint(_6745) << 16u) >> 16;
+                _5266[_5260] = floatBitsToInt(_6745) >> 16;
+                int _6795 = _5459 + 3;
+                int _6830 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6835 = ((_9278.y * _6830) + _9278.x) + (_6795 >> 2);
+                vec4 _6801 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6835 - _6830 * (_6835 / _6830), _6835 / _6830), 0).xy, 0);
+                int _6803 = _6795 & 3;
+                if (_6803 == 0)
+                {
+                    _6792 = _6801.x;
+                }
+                else
+                {
+                    if (_6803 == 1)
+                    {
+                        _6792 = _6801.y;
+                    }
+                    else
+                    {
+                        if (_6803 == 2)
+                        {
+                            _6792 = _6801.z;
+                        }
+                        else
+                        {
+                            _6792 = _6801.w;
+                        }
+                    }
+                }
+                uint _5478 = floatBitsToUint(_6792);
+                _5267[_5260] = (_5478 & 1u) != 0u;
+                _5268[_5260] = (_5478 & 2u) != 0u;
+                if ((_5478 & 4u) == 0u)
+                {
+                    _5258 = true;
+                    _5259 = false;
+                    break;
+                }
+                if ((_5478 & 8u) != 0u)
+                {
+                    _5275 = -1;
+                }
+                else
+                {
+                    _5275 = 1;
+                }
+                _5270[_5260] = _5275;
+                if (_5261)
+                {
+                    _5284 = 10u;
+                }
+                else
+                {
+                    _5284 = 4u;
+                }
+                int _5507 = int((_5478 >> _5284) & 63u);
+                if (_5507 >= 62)
+                {
+                    _5276 = -1;
+                }
+                else
+                {
+                    _5276 = _5507;
+                }
+                _5269[_5260] = _5276;
+                if (_5507 >= 63)
+                {
+                    _5262 = _5267[_5260];
+                }
+                else
+                {
+                    _5262 = false;
+                }
+                if (_5262)
+                {
+                    _5277 = _5266[_5260] >= 0;
+                }
+                else
+                {
+                    _5277 = false;
+                }
+                if (_5277)
+                {
+                    _5258 = true;
+                    _5259 = false;
+                    break;
+                }
+                _5272[_5260] = false;
+                if (!isnan(_5263[_5260]))
+                {
+                    _6839 = !isinf(_5263[_5260]);
+                }
+                else
+                {
+                    _6839 = false;
+                }
+                if (!_6839)
+                {
+                    _5278 = true;
+                }
+                else
+                {
+                    if (!isnan(_5264[_5260]))
+                    {
+                        _6850 = !isinf(_5264[_5260]);
+                    }
+                    else
+                    {
+                        _6850 = false;
+                    }
+                    _5278 = !_6850;
+                }
+                if (_5278)
+                {
+                    _5279 = true;
+                }
+                else
+                {
+                    _5279 = _5264[_5260] < 0.0;
+                }
+                if (_5279)
+                {
+                    _5280 = true;
+                }
+                else
+                {
+                    _5280 = _5265[_5260] < (-1);
+                }
+                if (_5280)
+                {
+                    _5281 = true;
+                }
+                else
+                {
+                    _5281 = _5265[_5260] >= _5412;
+                }
+                if (_5281)
+                {
+                    _5282 = true;
+                }
+                else
+                {
+                    _5282 = _5266[_5260] < (-1);
+                }
+                if (_5282)
+                {
+                    _5283 = true;
+                }
+                else
+                {
+                    _5283 = _5266[_5260] >= _3841;
+                }
+                if (_5283)
+                {
+                    _5258 = true;
+                    _5259 = false;
+                    break;
+                }
+                _5260++;
+                continue;
+            }
+            if (_5258)
+            {
+                break;
+            }
+            _5260 = 0;
+            float _6861;
+            float _6908;
+            bool _6955;
+            bool _6966;
+            for (;;)
+            {
+                if (!(_5260 < 16))
+                {
+                    break;
+                }
+                if (_5260 >= _3841)
+                {
+                    break;
+                }
+                int _5595 = 2 * _5260;
+                int _6899 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6904 = ((_9278.y * _6899) + _9278.x) + ((12 + _5595) >> 2);
+                vec4 _6870 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6904 - _6899 * (_6904 / _6899), _6904 / _6899), 0).xy, 0);
+                int _6872 = _5595 & 3;
+                if (_6872 == 0)
+                {
+                    _6861 = _6870.x;
+                }
+                else
+                {
+                    if (_6872 == 1)
+                    {
+                        _6861 = _6870.y;
+                    }
+                    else
+                    {
+                        if (_6872 == 2)
+                        {
+                            _6861 = _6870.z;
+                        }
+                        else
+                        {
+                            _6861 = _6870.w;
+                        }
+                    }
+                }
+                int _6911 = _5595 + 13;
+                int _6946 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _6951 = ((_9278.y * _6946) + _9278.x) + (_6911 >> 2);
+                vec4 _6917 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_6951 - _6946 * (_6951 / _6946), _6951 / _6946), 0).xy, 0);
+                int _6919 = _6911 & 3;
+                if (_6919 == 0)
+                {
+                    _6908 = _6917.x;
+                }
+                else
+                {
+                    if (_6919 == 1)
+                    {
+                        _6908 = _6917.y;
+                    }
+                    else
+                    {
+                        if (_6919 == 2)
+                        {
+                            _6908 = _6917.z;
+                        }
+                        else
+                        {
+                            _6908 = _6917.w;
+                        }
+                    }
+                }
+                if (!isnan(_6861))
+                {
+                    _6955 = !isinf(_6861);
+                }
+                else
+                {
+                    _6955 = false;
+                }
+                if (!_6955)
+                {
+                    _5262 = true;
+                }
+                else
+                {
+                    if (!isnan(_6908))
+                    {
+                        _6966 = !isinf(_6908);
+                    }
+                    else
+                    {
+                        _6966 = false;
+                    }
+                    _5262 = !_6966;
+                }
+                if (_5262)
+                {
+                    _5258 = true;
+                    _5259 = false;
+                    break;
+                }
+                _5260++;
+                continue;
+            }
+            if (_5258)
+            {
+                break;
+            }
+            if (false)
+            {
+                _5262 = _9397 == 1;
+            }
+            else
+            {
+                _5262 = false;
+            }
+            float _5285;
+            if (_5262)
+            {
+                _5285 = _9405;
+            }
+            else
+            {
+                _5285 = 0.0;
+            }
+            _5260 = 0;
+            float _5271[16];
+            float _6982;
+            float _7029;
+            for (;;)
+            {
+                if (!(_5260 < 16))
+                {
+                    break;
+                }
+                if (_5260 >= _5412)
+                {
+                    break;
+                }
+                if (_5265[_5260] >= 0)
+                {
+                    _5262 = _5263[_5265[_5260]] > _5263[_5260];
+                }
+                else
+                {
+                    _5262 = false;
+                }
+                if (_5261)
+                {
+                    _5277 = _5266[_5260] >= 0;
+                }
+                else
+                {
+                    _5277 = false;
+                }
+                if (!_5261)
+                {
+                    if (_5262)
+                    {
+                        _5275 = -1;
+                    }
+                    else
+                    {
+                        _5275 = 1;
+                    }
+                    _5270[_5260] = _5275;
+                }
+                if (_5277)
+                {
+                    int _5689 = 2 * _5266[_5260];
+                    int _7020 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                    int _7025 = ((_9278.y * _7020) + _9278.x) + ((12 + _5689) >> 2);
+                    vec4 _6991 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_7025 - _7020 * (_7025 / _7020), _7025 / _7020), 0).xy, 0);
+                    int _6993 = _5689 & 3;
+                    if (_6993 == 0)
+                    {
+                        _6982 = _6991.x;
+                    }
+                    else
+                    {
+                        if (_6993 == 1)
+                        {
+                            _6982 = _6991.y;
+                        }
+                        else
+                        {
+                            if (_6993 == 2)
+                            {
+                                _6982 = _6991.z;
+                            }
+                            else
+                            {
+                                _6982 = _6991.w;
+                            }
+                        }
+                    }
+                    int _7032 = (2 * _5266[_5260]) + 13;
+                    int _7067 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                    int _7072 = ((_9278.y * _7067) + _9278.x) + (_7032 >> 2);
+                    vec4 _7038 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_7072 - _7067 * (_7072 / _7067), _7072 / _7067), 0).xy, 0);
+                    int _7040 = _7032 & 3;
+                    if (_7040 == 0)
+                    {
+                        _7029 = _7038.x;
+                    }
+                    else
+                    {
+                        if (_7040 == 1)
+                        {
+                            _7029 = _7038.y;
+                        }
+                        else
+                        {
+                            if (_7040 == 2)
+                            {
+                                _7029 = _7038.z;
+                            }
+                            else
+                            {
+                                _7029 = _7038.w;
+                            }
+                        }
+                    }
+                    if (_5267[_5260])
+                    {
+                        _5278 = false;
+                    }
+                    else
+                    {
+                        _5278 = false;
+                    }
+                    if (_5278)
+                    {
+                        _5279 = _9397 == 0;
+                    }
+                    else
+                    {
+                        _5279 = false;
+                    }
+                    if (_5279)
+                    {
+                        _5271[_5260] = _5263[_5260];
+                    }
+                    else
+                    {
+                        _5271[_5260] = round(_6982 * _3835.x) / _3835.x;
+                        if (_5267[_5260])
+                        {
+                            _5280 = abs((_7029 - _6982) * _3835.x) >= _5285;
+                        }
+                        else
+                        {
+                            _5280 = false;
+                        }
+                        if (_5280)
+                        {
+                            _5271[_5260] += (_7029 - _6982);
+                        }
+                    }
+                }
+                else
+                {
+                    _5271[_5260] = round(_5263[_5260] * _3835.x) / _3835.x;
+                }
+                _5260++;
+                continue;
+            }
+            float _5742 = 1.0 / _3835.x;
+            if (true)
+            {
+                _5275 = _9392;
+            }
+            else
+            {
+                _5275 = _9396;
+            }
+            if (true)
+            {
+                _5285 = _9401;
+            }
+            else
+            {
+                _5285 = _9403;
+            }
+            float _5286;
+            if (true)
+            {
+                _5286 = _9402;
+            }
+            else
+            {
+                _5286 = _9404;
+            }
+            if (true)
+            {
+                _5261 = _9391 == 1;
+            }
+            else
+            {
+                _5261 = _9395 != 0;
+            }
+            if (true)
+            {
+                _5262 = _9393 == 1;
+            }
+            else
+            {
+                _5262 = false;
+            }
+            _5277 = false;
+            float _5288 = 0.0;
+            float _5289 = 0.0;
+            float _5290 = 0.0;
+            float _5291 = 0.0;
+            float _5292 = 0.0;
+            _5276 = 0;
+            _5260 = 0;
+            int _5287 = 0;
+            int _5293;
+            int _5294;
+            float _5295;
+            float _5296;
+            float _5297;
+            float _5298;
+            float _5299;
+            float _5300;
+            bool _5301;
+            bool _7081;
+            float _7082;
+            for (;;)
+            {
+                bool _5781_ladder_break = false;
+                do
+                {
+                    if (!(_5260 < 16))
+                    {
+                        _5781_ladder_break = true;
+                        break;
+                    }
+                    if (_5260 >= _5412)
+                    {
+                        _5781_ladder_break = true;
+                        break;
+                    }
+                    if (_5265[_5260] < 0)
+                    {
+                        _5278 = true;
+                    }
+                    else
+                    {
+                        _5278 = _5265[_5260] <= _5260;
+                    }
+                    if (_5278)
+                    {
+                        _5280 = _5277;
+                        break;
+                    }
+                    if (_4514 > 0.0)
+                    {
+                        _7081 = abs(_5264[_5260] - _4514) <= (_5285 * _4514);
+                    }
+                    else
+                    {
+                        _7081 = false;
+                    }
+                    if (_7081)
+                    {
+                        _7082 = _4514;
+                    }
+                    else
+                    {
+                        _7082 = _5264[_5260];
+                    }
+                    if (_5275 == 2)
+                    {
+                        _5279 = true;
+                    }
+                    else
+                    {
+                        if (_5275 == 1)
+                        {
+                            _5279 = (_7082 * _3835.x) < _5286;
+                        }
+                        else
+                        {
+                            _5279 = false;
+                        }
+                    }
+                    if (_5279)
+                    {
+                        _5295 = max(round(_7082 * _3835.x), 1.0) * _5742;
+                    }
+                    else
+                    {
+                        _5295 = _5264[_5260];
+                    }
+                    if (_5262)
+                    {
+                        if (_5277)
+                        {
+                            _5271[_5260] = _5288 + (round((_5263[_5260] - _5289) * _3835.x) * _5742);
+                            _5296 = _5290;
+                            _5297 = _5291;
+                            _5280 = _5277;
+                        }
+                        else
+                        {
+                            float _7102 = round(_5263[_5260] * _3835.x) / _3835.x;
+                            _5271[_5260] = _7102;
+                            _5296 = _7102;
+                            _5297 = _5263[_5260];
+                            _5280 = true;
+                        }
+                        _5271[_5265[_5260]] = _5271[_5260] + _5295;
+                        float _5939 = _5297;
+                        float _5944 = _5296;
+                        _5296 = _5271[_5260];
+                        _5297 = _5263[_5260];
+                        _5298 = _5944;
+                        _5299 = _5939;
+                        _5300 = (_5944 + (round((_5263[_5260] - _5939) * _3835.x) * _5742)) + _5295;
+                        _5293 = _5265[_5260];
+                        _5294 = _5287 + 1;
+                    }
+                    else
+                    {
+                        if (true)
+                        {
+                            _5280 = _9391 != 0;
+                        }
+                        else
+                        {
+                            _5280 = _9395 != 0;
+                        }
+                        if (_5280)
+                        {
+                            _5281 = _5266[_5260] >= 0;
+                        }
+                        else
+                        {
+                            _5281 = false;
+                        }
+                        if (_5280)
+                        {
+                            _5282 = _5266[_5265[_5260]] >= 0;
+                        }
+                        else
+                        {
+                            _5282 = false;
+                        }
+                        if (!_5261)
+                        {
+                            _5271[_5260] = _5263[_5260];
+                        }
+                        if (_5282)
+                        {
+                            _5283 = !_5281;
+                        }
+                        else
+                        {
+                            _5283 = false;
+                        }
+                        if (_5283)
+                        {
+                            _5301 = _5261;
+                        }
+                        else
+                        {
+                            _5301 = false;
+                        }
+                        if (_5301)
+                        {
+                            _5271[_5260] = _5271[_5265[_5260]] - _5295;
+                        }
+                        else
+                        {
+                            _5271[_5265[_5260]] = _5271[_5260] + _5295;
+                        }
+                        _5280 = _5277;
+                        _5296 = _5288;
+                        _5297 = _5289;
+                        _5298 = _5290;
+                        _5299 = _5291;
+                        _5300 = _5292;
+                        _5293 = _5276;
+                        _5294 = _5287;
+                    }
+                    _5272[_5260] = true;
+                    _5272[_5265[_5260]] = true;
+                    _5288 = _5296;
+                    _5289 = _5297;
+                    _5290 = _5298;
+                    _5291 = _5299;
+                    _5292 = _5300;
+                    _5276 = _5293;
+                    _5287 = _5294;
+                    break;
+                } while(false);
+                if (_5781_ladder_break)
+                {
+                    break;
+                }
+                _5277 = _5280;
+                _5260++;
+                continue;
+            }
+            if (_5262)
+            {
+                _5261 = _5287 > 1;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                float _5982 = _5292 - _5271[_5276];
+                _5260 = 0;
+                for (;;)
+                {
+                    if (!(_5260 < 16))
+                    {
+                        break;
+                    }
+                    if (_5260 >= _5412)
+                    {
+                        break;
+                    }
+                    if (_5272[_5260])
+                    {
+                        _5271[_5260] += _5982;
+                    }
+                    _5260++;
+                    continue;
+                }
+            }
+            if (_5275 == 1)
+            {
+                _5285 = _5286;
+            }
+            else
+            {
+                _5285 = 1.60000002384185791015625;
+            }
+            _5260 = 0;
+            for (;;)
+            {
+                bool _6019_ladder_break = false;
+                do
+                {
+                    if (!(_5260 < 16))
+                    {
+                        _6019_ladder_break = true;
+                        break;
+                    }
+                    if (_5260 >= _5412)
+                    {
+                        _6019_ladder_break = true;
+                        break;
+                    }
+                    if (true)
+                    {
+                        _5280 = _9391 != 0;
+                    }
+                    else
+                    {
+                        _5280 = _9395 != 0;
+                    }
+                    if (!_5280)
+                    {
+                        _5261 = true;
+                    }
+                    else
+                    {
+                        _5261 = _5266[_5260] < 0;
+                    }
+                    if (_5261)
+                    {
+                        _5262 = true;
+                    }
+                    else
+                    {
+                        _5262 = !_5267[_5260];
+                    }
+                    if (_5262)
+                    {
+                        _5277 = true;
+                    }
+                    else
+                    {
+                        _5277 = _5272[_5260];
+                    }
+                    if (_5277)
+                    {
+                        break;
+                    }
+                    bool _6068 = _5270[_5260] > 0;
+                    if (_5269[_5260] >= 0)
+                    {
+                        if (_6068)
+                        {
+                            _5286 = _5263[_5260] - _5263[_5269[_5260]];
+                        }
+                        else
+                        {
+                            _5286 = _5263[_5269[_5260]] - _5263[_5260];
+                        }
+                        _5293 = _5269[_5260];
+                        _5295 = _5286;
+                    }
+                    else
+                    {
+                        if (_5269[_5260] == (-2))
+                        {
+                            _5295 = 3.4028234663852885981170418348452e+38;
+                            _5293 = _5269[_5260];
+                            _5294 = 0;
+                            for (;;)
+                            {
+                                bool _6079_ladder_break = false;
+                                do
+                                {
+                                    if (!(_5294 < 16))
+                                    {
+                                        _6079_ladder_break = true;
+                                        break;
+                                    }
+                                    if (_5294 >= _5412)
+                                    {
+                                        _6079_ladder_break = true;
+                                        break;
+                                    }
+                                    if (_5294 == _5260)
+                                    {
+                                        _5278 = true;
+                                    }
+                                    else
+                                    {
+                                        _5278 = _5270[_5294] == _5270[_5260];
+                                    }
+                                    if (_5278)
+                                    {
+                                        break;
+                                    }
+                                    if (_6068)
+                                    {
+                                        _5296 = _5263[_5260] - _5263[_5294];
+                                    }
+                                    else
+                                    {
+                                        _5296 = _5263[_5294] - _5263[_5260];
+                                    }
+                                    if (_5296 <= 0.0)
+                                    {
+                                        _5279 = true;
+                                    }
+                                    else
+                                    {
+                                        _5279 = _5296 >= _5295;
+                                    }
+                                    if (_5279)
+                                    {
+                                        break;
+                                    }
+                                    _5295 = _5296;
+                                    _5293 = _5294;
+                                    break;
+                                } while(false);
+                                if (_6079_ladder_break)
+                                {
+                                    break;
+                                }
+                                _5294++;
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            _5293 = _5269[_5260];
+                            _5295 = 3.4028234663852885981170418348452e+38;
+                        }
+                    }
+                    if (_5293 < 0)
+                    {
+                        _5278 = true;
+                    }
+                    else
+                    {
+                        _5278 = _5272[_5293];
+                    }
+                    if (_5278)
+                    {
+                        _5279 = true;
+                    }
+                    else
+                    {
+                        _5279 = _5266[_5293] >= 0;
+                    }
+                    if (_5279)
+                    {
+                        _5281 = true;
+                    }
+                    else
+                    {
+                        _5281 = (_5295 * _3835.x) >= _5285;
+                    }
+                    if (_5281)
+                    {
+                        break;
+                    }
+                    if (_5268[_5293])
+                    {
+                        _5296 = _5295;
+                    }
+                    else
+                    {
+                        _5296 = max(round(_5295 * _3835.x), 1.0) * _5742;
+                    }
+                    if (_6068)
+                    {
+                        _5286 = _5271[_5260] - _5296;
+                    }
+                    else
+                    {
+                        _5286 = _5271[_5260] + _5296;
+                    }
+                    _5271[_5293] = _5286;
+                    _5272[_5293] = true;
+                    break;
+                } while(false);
+                if (_6019_ladder_break)
+                {
+                    break;
+                }
+                _5260++;
+                continue;
+            }
+            _5260 = 0;
+            bool _5273[16];
+            bool _5274[16];
+            for (;;)
+            {
+                bool _6223_ladder_break = false;
+                do
+                {
+                    if (!(_5260 < 16))
+                    {
+                        _6223_ladder_break = true;
+                        break;
+                    }
+                    if (_5260 >= _5412)
+                    {
+                        _6223_ladder_break = true;
+                        break;
+                    }
+                    if (true)
+                    {
+                        _5280 = _9391 != 0;
+                    }
+                    else
+                    {
+                        _5280 = _9395 != 0;
+                    }
+                    if (!_5272[_5260])
+                    {
+                        if (_5280)
+                        {
+                            _5261 = _5266[_5260] >= 0;
+                        }
+                        else
+                        {
+                            _5261 = false;
+                        }
+                        _5261 = !_5261;
+                    }
+                    else
+                    {
+                        _5261 = false;
+                    }
+                    if (_5261)
+                    {
+                        break;
+                    }
+                    _3851[_3849] = _5263[_5260];
+                    _3852[_3849] = _5271[_5260];
+                    if (_5280)
+                    {
+                        _5262 = _5266[_5260] >= 0;
+                    }
+                    else
+                    {
+                        _5262 = false;
+                    }
+                    _5273[_3849] = _5262;
+                    _5274[_3849] = _5268[_5260];
+                    _3855[_3849] = _5260;
+                    _3849++;
+                    break;
+                } while(false);
+                if (_6223_ladder_break)
+                {
+                    break;
+                }
+                _5260++;
+                continue;
+            }
+            if (true)
+            {
+                _5261 = _9394 == 1;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _3849 > 0;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _3849 < 16;
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5261 = _5211 < (_3851[0] - (0.25 / _3835.x));
+            }
+            else
+            {
+                _5261 = false;
+            }
+            if (_5261)
+            {
+                _5260 = 15;
+                for (;;)
+                {
+                    if (!(_5260 > 0))
+                    {
+                        break;
+                    }
+                    if (_5260 <= _3849)
+                    {
+                        int _6343 = _5260 - 1;
+                        _3851[_5260] = _3851[_6343];
+                        _3852[_5260] = _3852[_6343];
+                        _5273[_5260] = _5273[_6343];
+                        _5274[_5260] = _5274[_6343];
+                        _3855[_5260] = _3855[_6343];
+                    }
+                    _5260--;
+                    continue;
+                }
+                _3851[0] = _5211;
+                _3852[0] = round(_5211 * _3835.x) / _3835.x;
+                _5273[0] = false;
+                _5274[0] = false;
+                _3855[0] = 32;
+                _3849++;
+            }
+            _5293 = 15;
+            for (;;)
+            {
+                bool _6380_ladder_break = false;
+                do
+                {
+                    if (!(_5293 > 0))
+                    {
+                        _6380_ladder_break = true;
+                        break;
+                    }
+                    if (_5293 >= _3849)
+                    {
+                        _5261 = true;
+                    }
+                    else
+                    {
+                        _5261 = !_5273[_5293];
+                    }
+                    if (_5261)
+                    {
+                        break;
+                    }
+                    _5294 = 15;
                     for (;;)
                     {
-                        bool _1742_ladder_break = false;
+                        bool _6401_ladder_break = false;
                         do
                         {
-                            if (!(clusterStems_1 < 16))
+                            if (!(_5294 > 0))
                             {
-                                _1742_ladder_break = true;
+                                _6401_ladder_break = true;
                                 break;
                             }
-                            if (clusterStems_1 >= n)
+                            if (_5294 > _5293)
                             {
-                                _1742_ladder_break = true;
                                 break;
                             }
-                            if (clusterStems_1 == i)
+                            int _6413 = _5294 - 1;
+                            if (_5273[_6413])
                             {
-                                _1412 = true;
+                                _6401_ladder_break = true;
+                                break;
+                            }
+                            if (_5274[_6413])
+                            {
+                                _5285 = 9.9999999747524270787835121154785e-07;
                             }
                             else
                             {
-                                _1412 = dir[clusterStems_1] == dir[i];
+                                _5285 = _5742;
                             }
-                            if (_1412)
-                            {
-                                break;
-                            }
-                            if (top)
-                            {
-                                clusterTarget_1 = pos[i] - pos[clusterStems_1];
-                            }
-                            else
-                            {
-                                clusterTarget_1 = pos[clusterStems_1] - pos[i];
-                            }
-                            if (clusterTarget_1 <= 0.0)
-                            {
-                                _1413 = true;
-                            }
-                            else
-                            {
-                                _1413 = clusterTarget_1 >= widthUnits;
-                            }
-                            if (_1413)
-                            {
-                                break;
-                            }
-                            widthUnits = clusterTarget_1;
-                            clusterRight_1 = clusterStems_1;
+                            _3852[_6413] = min(_3852[_6413], _3852[_5294] - _5285);
                             break;
                         } while(false);
-                        if (_1742_ladder_break)
+                        if (_6401_ladder_break)
                         {
                             break;
                         }
-                        clusterStems_1++;
+                        _5294--;
                         continue;
                     }
-                }
-                else
+                    break;
+                } while(false);
+                if (_6380_ladder_break)
                 {
-                    clusterRight_1 = companion[i];
-                    widthUnits = 3.4028234663852885981170418348452e+38;
-                }
-            }
-            if (clusterRight_1 < 0)
-            {
-                _1412 = true;
-            }
-            else
-            {
-                _1412 = hinted[clusterRight_1];
-            }
-            if (_1412)
-            {
-                _1413 = true;
-            }
-            else
-            {
-                _1413 = blue[clusterRight_1] >= 0;
-            }
-            if (_1413)
-            {
-                lowerBlue = true;
-            }
-            else
-            {
-                lowerBlue = (widthUnits * _1385) >= spacing;
-            }
-            if (lowerBlue)
-            {
-                break;
-            }
-            if (syntheticApex[clusterRight_1])
-            {
-                clusterTarget_1 = widthUnits;
-            }
-            else
-            {
-                clusterTarget_1 = max(round(widthUnits * _1385), 1.0) * grid;
-            }
-            if (top)
-            {
-                maxPx = targets[i] - clusterTarget_1;
-            }
-            else
-            {
-                maxPx = targets[i] + clusterTarget_1;
-            }
-            targets[clusterRight_1] = maxPx;
-            hinted[clusterRight_1] = true;
-            break;
-        } while(false);
-        if (_1715_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    i = 0;
-    bool knotBlueFixed[16];
-    bool knotNaturalSpacing[16];
-    for (;;)
-    {
-        bool _1792_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
-            {
-                _1792_ladder_break = true;
-                break;
-            }
-            if (i >= n)
-            {
-                _1792_ladder_break = true;
-                break;
-            }
-            if (_1989)
-            {
-                axisAligned = _1386.xAlign != 0;
-            }
-            else
-            {
-                axisAligned = _1386.yAlign != 0;
-            }
-            if (!hinted[i])
-            {
-                if (axisAligned)
-                {
-                    _1393 = blue[i] >= 0;
-                }
-                else
-                {
-                    _1393 = false;
-                }
-                _1393 = !_1393;
-            }
-            else
-            {
-                _1393 = false;
-            }
-            if (_1393)
-            {
-                break;
-            }
-            _1388[_1387] = pos[i];
-            _1389[_1387] = targets[i];
-            if (axisAligned)
-            {
-                partnerAbove = blue[i] >= 0;
-            }
-            else
-            {
-                partnerAbove = false;
-            }
-            knotBlueFixed[_1387] = partnerAbove;
-            knotNaturalSpacing[_1387] = syntheticApex[i];
-            _1390[_1387] = i;
-            _1387++;
-            break;
-        } while(false);
-        if (_1792_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    if (_1989)
-    {
-        _1393 = _1386.xRegistration == 1;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1387 > 0;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1387 < 16;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        _1393 = _1384 < (_1388[0] - (0.25 * grid));
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        i = 15;
-        for (;;)
-        {
-            bool _1831_ladder_break = false;
-            do
-            {
-                if (!(i > 0))
-                {
-                    _1831_ladder_break = true;
                     break;
                 }
-                if (i <= _1387)
+                _5293--;
+                continue;
+            }
+            _5260 = 1;
+            for (;;)
+            {
+                if (!(_5260 < 16))
                 {
-                    int _3209 = i - 1;
-                    _1388[i] = _1388[_3209];
-                    _1389[i] = _1389[_3209];
-                    knotBlueFixed[i] = knotBlueFixed[_3209];
-                    knotNaturalSpacing[i] = knotNaturalSpacing[_3209];
-                    _1390[i] = _1390[_3209];
+                    break;
                 }
-                break;
-            } while(false);
-            if (_1831_ladder_break)
-            {
-                break;
+                if (_5260 >= _3849)
+                {
+                    break;
+                }
+                int _6460 = _5260 - 1;
+                if (_3852[_5260] <= _3852[_6460])
+                {
+                    _3852[_5260] = _3852[_6460] + _5742;
+                }
+                _5260++;
+                continue;
             }
-            i--;
-            continue;
-        }
-        _1388[0] = _1384;
-        _1389[0] = snailAhSnap(_1384, _1385);
-        knotBlueFixed[0] = false;
-        knotNaturalSpacing[0] = false;
-        _1390[0] = 32;
-        _1387++;
-    }
-    clusterRight_1 = 15;
-    for (;;)
-    {
-        bool _1844_ladder_break = false;
-        do
-        {
-            if (!(clusterRight_1 > 0))
+            if (_9398 != 0)
             {
-                _1844_ladder_break = true;
-                break;
-            }
-            if (clusterRight_1 >= _1387)
-            {
-                _1393 = true;
+                _5261 = _3835.x > _9399;
             }
             else
             {
-                _1393 = !knotBlueFixed[clusterRight_1];
+                _5261 = false;
             }
-            if (_1393)
+            if (_5261)
             {
-                break;
+                float _6489 = _9400 - _9399;
+                if (_6489 <= 0.0)
+                {
+                    _5261 = true;
+                }
+                else
+                {
+                    _5261 = _3835.x >= _9400;
+                }
+                if (_5261)
+                {
+                    _5285 = 1.0;
+                }
+                else
+                {
+                    _5285 = (_3835.x - _9399) / _6489;
+                }
+                _5260 = 0;
+                for (;;)
+                {
+                    if (!(_5260 < 16))
+                    {
+                        break;
+                    }
+                    if (_5260 >= _3849)
+                    {
+                        break;
+                    }
+                    _3852[_5260] += ((_3851[_5260] - _3852[_5260]) * _5285);
+                    _5260++;
+                    continue;
+                }
             }
-            clusterStems_1 = 15;
+            _5260 = 0;
+            bool _7108;
+            bool _7119;
             for (;;)
             {
-                bool _1854_ladder_break = false;
-                do
+                if (!(_5260 < 16))
                 {
-                    if (!(clusterStems_1 > 0))
+                    break;
+                }
+                if (_5260 >= _3849)
+                {
+                    break;
+                }
+                if (!isnan(_3851[_5260]))
+                {
+                    _7108 = !isinf(_3851[_5260]);
+                }
+                else
+                {
+                    _7108 = false;
+                }
+                if (!_7108)
+                {
+                    _5261 = true;
+                }
+                else
+                {
+                    if (!isnan(_3852[_5260]))
                     {
-                        _1854_ladder_break = true;
-                        break;
-                    }
-                    if (clusterStems_1 > clusterRight_1)
-                    {
-                        break;
-                    }
-                    int _3286 = clusterStems_1 - 1;
-                    if (knotBlueFixed[_3286])
-                    {
-                        _1854_ladder_break = true;
-                        break;
-                    }
-                    if (knotNaturalSpacing[_3286])
-                    {
-                        spacing = 9.9999999747524270787835121154785e-07;
+                        _7119 = !isinf(_3852[_5260]);
                     }
                     else
                     {
-                        spacing = grid;
+                        _7119 = false;
                     }
-                    _1389[_3286] = min(_1389[_3286], _1389[clusterStems_1] - spacing);
-                    break;
-                } while(false);
-                if (_1854_ladder_break)
+                    _5261 = !_7119;
+                }
+                if (_5261)
                 {
+                    _3849 = 0;
+                    _5258 = true;
+                    _5259 = false;
                     break;
                 }
-                clusterStems_1--;
+                _5260++;
                 continue;
             }
+            if (_5258)
+            {
+                break;
+            }
+            _5258 = true;
+            _5259 = true;
             break;
         } while(false);
-        if (_1844_ladder_break)
-        {
-            break;
-        }
-        clusterRight_1--;
-        continue;
-    }
-    i = 1;
-    for (;;)
-    {
-        bool _1876_ladder_break = false;
+        int _9421 = _9329;
+        int _9422 = _9330;
+        int _9423 = _9331;
+        int _9424 = _9332;
+        int _9425 = _9333;
+        int _9426 = _9334;
+        int _9427 = _9335;
+        int _9428 = _9336;
+        float _9429 = _9337;
+        float _9430 = _9338;
+        float _9431 = _9339;
+        float _9432 = _9340;
+        float _9433 = _9341;
+        float _9434 = _9342;
+        float _9435 = _9343;
+        _7130 = false;
+        float _3854[16];
+        int _3856[16];
+        bool _7131;
         do
         {
-            if (!(i < 16))
+            _3850 = 0;
+            int _7132 = 0;
+            float _3853[16];
+            for (;;)
             {
-                _1876_ladder_break = true;
-                break;
-            }
-            if (i >= _1387)
-            {
-                _1876_ladder_break = true;
-                break;
-            }
-            int _3335 = i - 1;
-            if (_1389[i] <= _1389[_3335])
-            {
-                _1389[i] = _1389[_3335] + grid;
-            }
-            break;
-        } while(false);
-        if (_1876_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    if (_1386.fadeEnabled != 0)
-    {
-        _1393 = _1385 > _1386.fadeStart;
-    }
-    else
-    {
-        _1393 = false;
-    }
-    if (_1393)
-    {
-        float span = _1386.fadeFull - _1386.fadeStart;
-        if (span <= 0.0)
-        {
-            _1393 = true;
-        }
-        else
-        {
-            _1393 = _1385 >= _1386.fadeFull;
-        }
-        if (_1393)
-        {
-            spacing = 1.0;
-        }
-        else
-        {
-            spacing = (_1385 - _1386.fadeStart) / span;
-        }
-        i = 0;
-        for (;;)
-        {
-            bool _1900_ladder_break = false;
-            do
-            {
-                if (!(i < 16))
+                if (!(_7132 < 16))
                 {
-                    _1900_ladder_break = true;
                     break;
                 }
-                if (i >= _1387)
-                {
-                    _1900_ladder_break = true;
-                    break;
-                }
-                _1389[i] += ((_1388[i] - _1389[i]) * spacing);
-                break;
-            } while(false);
-            if (_1900_ladder_break)
-            {
-                break;
+                _3853[_7132] = 0.0;
+                _3854[_7132] = 0.0;
+                _3856[_7132] = 0;
+                _7132++;
+                continue;
             }
-            i++;
-            continue;
-        }
-    }
-    i = 0;
-    for (;;)
-    {
-        bool _1913_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
+            bool _8443;
+            if (!isnan(_3835.y))
             {
-                _1913_ladder_break = true;
-                break;
-            }
-            if (i >= _1387)
-            {
-                _1913_ladder_break = true;
-                break;
-            }
-            if (!snailAhFinite(_1388[i]))
-            {
-                _1393 = true;
+                _8443 = !isinf(_3835.y);
             }
             else
             {
-                _1393 = !snailAhFinite(_1389[i]);
+                _8443 = false;
             }
-            if (_1393)
+            bool _7133;
+            if (!_8443)
             {
-                _1387 = 0;
-                return false;
+                _7133 = true;
             }
-            break;
-        } while(false);
-        if (_1913_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    return true;
-}
-
-void snailAhPackAxis(int count, float targets[16], int sources[16], inout vec4 packedTargets[4], inout uvec4 packedSources)
-{
-    int i = 0;
-    for (;;)
-    {
-        bool _3479_ladder_break = false;
-        do
-        {
-            if (!(i < 4))
+            else
             {
-                _3479_ladder_break = true;
-                break;
+                _7133 = _3835.y <= 0.0;
             }
-            packedTargets[i] = vec4(0.0);
-            break;
-        } while(false);
-        if (_3479_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-    packedSources = uvec4(4294967295u);
-    if (count > 16)
-    {
-        packedSources.x = (packedSources.x & 4294967040u) | 254u;
-        return;
-    }
-    i = 0;
-    for (;;)
-    {
-        bool _3491_ladder_break = false;
-        do
-        {
-            if (!(i < 16))
+            if (_7133)
             {
-                _3491_ladder_break = true;
-                break;
+                _7133 = true;
             }
-            if (i >= count)
+            else
             {
-                _3491_ladder_break = true;
-                break;
+                _7133 = _3841 < 0;
             }
-            int _3536 = i >> 2;
-            int _3539 = i & 3;
-            packedTargets[_3536][_3539] = targets[i];
-            uint _3548 = uint(_3539 * 8);
-            packedSources[_3536] = (packedSources[_3536] & (~(255u << _3548))) | ((uint(sources[i]) & 255u) << _3548);
-            break;
-        } while(false);
-        if (_3491_ladder_break)
-        {
-            break;
-        }
-        i++;
-        continue;
-    }
-}
-
-AutohintVertexResult snailAutohintVertex(TextVertexIn _126, uint _127, mat4 _128, vec2 _129, int _130, uvec4 _131, uvec3 _132)
-{
-    TextVertexResult _229 = snailTextVertex(_126, _127, _128, _129, _130);
-    AutohintVertexResult r;
-    r.position = _229.position;
-    r.paint = _229.color * _229.tint;
-    r.texcoord_layer = vec3(_229.texcoord, _126.bnd.w);
-    r.info = ivec2(int(_126.glyph.x & 65535u), int(_126.glyph.x >> 16u));
-    r.policy0 = _131;
-    r.policy1 = _132;
-    if (_127 != 0u)
-    {
-        int i = 0;
-        for (;;)
-        {
-            bool _187_ladder_break = false;
-            do
+            if (_7133)
             {
-                if (!(i < 4))
+                _7133 = true;
+            }
+            else
+            {
+                _7133 = _3841 > 16;
+            }
+            if (_7133)
+            {
+                _7133 = true;
+            }
+            else
+            {
+                bool _8454;
+                if (!isnan(_4561))
                 {
-                    _187_ladder_break = true;
+                    _8454 = !isinf(_4561);
+                }
+                else
+                {
+                    _8454 = false;
+                }
+                _7133 = !_8454;
+            }
+            if (_7133)
+            {
+                _7133 = true;
+            }
+            else
+            {
+                _7133 = _4561 < 0.0;
+            }
+            if (_7133)
+            {
+                _7130 = true;
+                _7131 = false;
+                break;
+            }
+            if (false)
+            {
+                _7133 = _9421 == 0;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = _9422 == 0;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = _9423 == 0;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = _9424 == 0;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = true;
+            }
+            else
+            {
+                if (true)
+                {
+                    _7133 = _9425 == 0;
+                }
+                else
+                {
+                    _7133 = false;
+                }
+                if (_7133)
+                {
+                    _7133 = _9426 == 0;
+                }
+                else
+                {
+                    _7133 = false;
+                }
+                if (_7133)
+                {
+                    _7133 = _9427 == 0;
+                }
+                else
+                {
+                    _7133 = false;
+                }
+            }
+            if (_7133)
+            {
+                _7130 = true;
+                _7131 = true;
+                break;
+            }
+            int _8503 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+            int _8508 = ((_9278.y * _8503) + _9278.x) + (_3986 >> 2);
+            vec4 _8474 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8508 - _8503 * (_8508 / _8503), _8508 / _8503), 0).xy, 0);
+            int _8476 = _3986 & 3;
+            float _8465;
+            if (_8476 == 0)
+            {
+                _8465 = _8474.x;
+            }
+            else
+            {
+                if (_8476 == 1)
+                {
+                    _8465 = _8474.y;
+                }
+                else
+                {
+                    if (_8476 == 2)
+                    {
+                        _8465 = _8474.z;
+                    }
+                    else
+                    {
+                        _8465 = _8474.w;
+                    }
+                }
+            }
+            int _7284 = int(_8465);
+            if (_7284 <= 0)
+            {
+                _7133 = true;
+            }
+            else
+            {
+                _7133 = _7284 > 16;
+            }
+            if (_7133)
+            {
+                _7130 = true;
+                _7131 = _7284 == 0;
+                break;
+            }
+            if (true)
+            {
+                _7133 = _9425 == 2;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            bool _7134;
+            if (false)
+            {
+                _7134 = _9424 == 1;
+            }
+            else
+            {
+                _7134 = false;
+            }
+            if (_7134)
+            {
+                bool _8512;
+                if (!isnan(0.0))
+                {
+                    _8512 = !isinf(0.0);
+                }
+                else
+                {
+                    _8512 = false;
+                }
+                _7134 = !_8512;
+            }
+            else
+            {
+                _7134 = false;
+            }
+            if (_7134)
+            {
+                _7130 = true;
+                _7131 = false;
+                break;
+            }
+            _7132 = 0;
+            float _7135[16];
+            float _7136[16];
+            int _7137[16];
+            int _7138[16];
+            bool _7139[16];
+            bool _7140[16];
+            int _7141[16];
+            int _7142[16];
+            bool _7144[16];
+            int _7147;
+            int _7148;
+            bool _7149;
+            bool _7150;
+            bool _7151;
+            bool _7152;
+            bool _7153;
+            bool _7154;
+            bool _7155;
+            uint _7156;
+            float _8523;
+            float _8570;
+            float _8617;
+            float _8664;
+            bool _8711;
+            bool _8722;
+            for (;;)
+            {
+                if (!(_7132 < 16))
+                {
                     break;
                 }
-                r.x_targets[i] = vec4(0.0);
-                r.y_targets[i] = vec4(0.0);
-                break;
-            } while(false);
-            if (_187_ladder_break)
+                if (_7132 >= _7284)
+                {
+                    break;
+                }
+                int _7331 = (_3986 + 1) + (4 * _7132);
+                int _8561 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8566 = ((_9278.y * _8561) + _9278.x) + (_7331 >> 2);
+                vec4 _8532 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8566 - _8561 * (_8566 / _8561), _8566 / _8561), 0).xy, 0);
+                int _8534 = _7331 & 3;
+                if (_8534 == 0)
+                {
+                    _8523 = _8532.x;
+                }
+                else
+                {
+                    if (_8534 == 1)
+                    {
+                        _8523 = _8532.y;
+                    }
+                    else
+                    {
+                        if (_8534 == 2)
+                        {
+                            _8523 = _8532.z;
+                        }
+                        else
+                        {
+                            _8523 = _8532.w;
+                        }
+                    }
+                }
+                _7135[_7132] = _8523;
+                int _8573 = _7331 + 1;
+                int _8608 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8613 = ((_9278.y * _8608) + _9278.x) + (_8573 >> 2);
+                vec4 _8579 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8613 - _8608 * (_8613 / _8608), _8613 / _8608), 0).xy, 0);
+                int _8581 = _8573 & 3;
+                if (_8581 == 0)
+                {
+                    _8570 = _8579.x;
+                }
+                else
+                {
+                    if (_8581 == 1)
+                    {
+                        _8570 = _8579.y;
+                    }
+                    else
+                    {
+                        if (_8581 == 2)
+                        {
+                            _8570 = _8579.z;
+                        }
+                        else
+                        {
+                            _8570 = _8579.w;
+                        }
+                    }
+                }
+                _7136[_7132] = _8570;
+                int _8620 = _7331 + 2;
+                int _8655 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8660 = ((_9278.y * _8655) + _9278.x) + (_8620 >> 2);
+                vec4 _8626 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8660 - _8655 * (_8660 / _8655), _8660 / _8655), 0).xy, 0);
+                int _8628 = _8620 & 3;
+                if (_8628 == 0)
+                {
+                    _8617 = _8626.x;
+                }
+                else
+                {
+                    if (_8628 == 1)
+                    {
+                        _8617 = _8626.y;
+                    }
+                    else
+                    {
+                        if (_8628 == 2)
+                        {
+                            _8617 = _8626.z;
+                        }
+                        else
+                        {
+                            _8617 = _8626.w;
+                        }
+                    }
+                }
+                _7137[_7132] = int(floatBitsToUint(_8617) << 16u) >> 16;
+                _7138[_7132] = floatBitsToInt(_8617) >> 16;
+                int _8667 = _7331 + 3;
+                int _8702 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8707 = ((_9278.y * _8702) + _9278.x) + (_8667 >> 2);
+                vec4 _8673 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8707 - _8702 * (_8707 / _8702), _8707 / _8702), 0).xy, 0);
+                int _8675 = _8667 & 3;
+                if (_8675 == 0)
+                {
+                    _8664 = _8673.x;
+                }
+                else
+                {
+                    if (_8675 == 1)
+                    {
+                        _8664 = _8673.y;
+                    }
+                    else
+                    {
+                        if (_8675 == 2)
+                        {
+                            _8664 = _8673.z;
+                        }
+                        else
+                        {
+                            _8664 = _8673.w;
+                        }
+                    }
+                }
+                uint _7350 = floatBitsToUint(_8664);
+                _7139[_7132] = (_7350 & 1u) != 0u;
+                _7140[_7132] = (_7350 & 2u) != 0u;
+                if ((_7350 & 4u) == 0u)
+                {
+                    _7130 = true;
+                    _7131 = false;
+                    break;
+                }
+                if ((_7350 & 8u) != 0u)
+                {
+                    _7147 = -1;
+                }
+                else
+                {
+                    _7147 = 1;
+                }
+                _7142[_7132] = _7147;
+                if (_7133)
+                {
+                    _7156 = 10u;
+                }
+                else
+                {
+                    _7156 = 4u;
+                }
+                int _7379 = int((_7350 >> _7156) & 63u);
+                if (_7379 >= 62)
+                {
+                    _7148 = -1;
+                }
+                else
+                {
+                    _7148 = _7379;
+                }
+                _7141[_7132] = _7148;
+                if (_7379 >= 63)
+                {
+                    _7134 = _7139[_7132];
+                }
+                else
+                {
+                    _7134 = false;
+                }
+                if (_7134)
+                {
+                    _7149 = _7138[_7132] >= 0;
+                }
+                else
+                {
+                    _7149 = false;
+                }
+                if (_7149)
+                {
+                    _7130 = true;
+                    _7131 = false;
+                    break;
+                }
+                _7144[_7132] = false;
+                if (!isnan(_7135[_7132]))
+                {
+                    _8711 = !isinf(_7135[_7132]);
+                }
+                else
+                {
+                    _8711 = false;
+                }
+                if (!_8711)
+                {
+                    _7150 = true;
+                }
+                else
+                {
+                    if (!isnan(_7136[_7132]))
+                    {
+                        _8722 = !isinf(_7136[_7132]);
+                    }
+                    else
+                    {
+                        _8722 = false;
+                    }
+                    _7150 = !_8722;
+                }
+                if (_7150)
+                {
+                    _7151 = true;
+                }
+                else
+                {
+                    _7151 = _7136[_7132] < 0.0;
+                }
+                if (_7151)
+                {
+                    _7152 = true;
+                }
+                else
+                {
+                    _7152 = _7137[_7132] < (-1);
+                }
+                if (_7152)
+                {
+                    _7153 = true;
+                }
+                else
+                {
+                    _7153 = _7137[_7132] >= _7284;
+                }
+                if (_7153)
+                {
+                    _7154 = true;
+                }
+                else
+                {
+                    _7154 = _7138[_7132] < (-1);
+                }
+                if (_7154)
+                {
+                    _7155 = true;
+                }
+                else
+                {
+                    _7155 = _7138[_7132] >= _3841;
+                }
+                if (_7155)
+                {
+                    _7130 = true;
+                    _7131 = false;
+                    break;
+                }
+                _7132++;
+                continue;
+            }
+            if (_7130)
             {
                 break;
             }
-            i++;
-            continue;
+            _7132 = 0;
+            float _8733;
+            float _8780;
+            bool _8827;
+            bool _8838;
+            for (;;)
+            {
+                if (!(_7132 < 16))
+                {
+                    break;
+                }
+                if (_7132 >= _3841)
+                {
+                    break;
+                }
+                int _7467 = 2 * _7132;
+                int _8771 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8776 = ((_9278.y * _8771) + _9278.x) + ((12 + _7467) >> 2);
+                vec4 _8742 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8776 - _8771 * (_8776 / _8771), _8776 / _8771), 0).xy, 0);
+                int _8744 = _7467 & 3;
+                if (_8744 == 0)
+                {
+                    _8733 = _8742.x;
+                }
+                else
+                {
+                    if (_8744 == 1)
+                    {
+                        _8733 = _8742.y;
+                    }
+                    else
+                    {
+                        if (_8744 == 2)
+                        {
+                            _8733 = _8742.z;
+                        }
+                        else
+                        {
+                            _8733 = _8742.w;
+                        }
+                    }
+                }
+                int _8783 = _7467 + 13;
+                int _8818 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                int _8823 = ((_9278.y * _8818) + _9278.x) + (_8783 >> 2);
+                vec4 _8789 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8823 - _8818 * (_8823 / _8818), _8823 / _8818), 0).xy, 0);
+                int _8791 = _8783 & 3;
+                if (_8791 == 0)
+                {
+                    _8780 = _8789.x;
+                }
+                else
+                {
+                    if (_8791 == 1)
+                    {
+                        _8780 = _8789.y;
+                    }
+                    else
+                    {
+                        if (_8791 == 2)
+                        {
+                            _8780 = _8789.z;
+                        }
+                        else
+                        {
+                            _8780 = _8789.w;
+                        }
+                    }
+                }
+                if (!isnan(_8733))
+                {
+                    _8827 = !isinf(_8733);
+                }
+                else
+                {
+                    _8827 = false;
+                }
+                if (!_8827)
+                {
+                    _7134 = true;
+                }
+                else
+                {
+                    if (!isnan(_8780))
+                    {
+                        _8838 = !isinf(_8780);
+                    }
+                    else
+                    {
+                        _8838 = false;
+                    }
+                    _7134 = !_8838;
+                }
+                if (_7134)
+                {
+                    _7130 = true;
+                    _7131 = false;
+                    break;
+                }
+                _7132++;
+                continue;
+            }
+            if (_7130)
+            {
+                break;
+            }
+            if (true)
+            {
+                _7134 = _9427 == 1;
+            }
+            else
+            {
+                _7134 = false;
+            }
+            float _7157;
+            if (_7134)
+            {
+                _7157 = _9435;
+            }
+            else
+            {
+                _7157 = 0.0;
+            }
+            _7132 = 0;
+            float _7143[16];
+            float _8854;
+            float _8901;
+            for (;;)
+            {
+                if (!(_7132 < 16))
+                {
+                    break;
+                }
+                if (_7132 >= _7284)
+                {
+                    break;
+                }
+                if (_7137[_7132] >= 0)
+                {
+                    _7134 = _7135[_7137[_7132]] > _7135[_7132];
+                }
+                else
+                {
+                    _7134 = false;
+                }
+                if (_7133)
+                {
+                    _7149 = _7138[_7132] >= 0;
+                }
+                else
+                {
+                    _7149 = false;
+                }
+                if (!_7133)
+                {
+                    if (_7134)
+                    {
+                        _7147 = -1;
+                    }
+                    else
+                    {
+                        _7147 = 1;
+                    }
+                    _7142[_7132] = _7147;
+                }
+                if (_7149)
+                {
+                    int _7561 = 2 * _7138[_7132];
+                    int _8892 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                    int _8897 = ((_9278.y * _8892) + _9278.x) + ((12 + _7561) >> 2);
+                    vec4 _8863 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8897 - _8892 * (_8897 / _8892), _8897 / _8892), 0).xy, 0);
+                    int _8865 = _7561 & 3;
+                    if (_8865 == 0)
+                    {
+                        _8854 = _8863.x;
+                    }
+                    else
+                    {
+                        if (_8865 == 1)
+                        {
+                            _8854 = _8863.y;
+                        }
+                        else
+                        {
+                            if (_8865 == 2)
+                            {
+                                _8854 = _8863.z;
+                            }
+                            else
+                            {
+                                _8854 = _8863.w;
+                            }
+                        }
+                    }
+                    int _8904 = (2 * _7138[_7132]) + 13;
+                    int _8939 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+                    int _8944 = ((_9278.y * _8939) + _9278.x) + (_8904 >> 2);
+                    vec4 _8910 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_8944 - _8939 * (_8944 / _8939), _8944 / _8939), 0).xy, 0);
+                    int _8912 = _8904 & 3;
+                    if (_8912 == 0)
+                    {
+                        _8901 = _8910.x;
+                    }
+                    else
+                    {
+                        if (_8912 == 1)
+                        {
+                            _8901 = _8910.y;
+                        }
+                        else
+                        {
+                            if (_8912 == 2)
+                            {
+                                _8901 = _8910.z;
+                            }
+                            else
+                            {
+                                _8901 = _8910.w;
+                            }
+                        }
+                    }
+                    if (_7139[_7132])
+                    {
+                        _7150 = true;
+                    }
+                    else
+                    {
+                        _7150 = false;
+                    }
+                    if (_7150)
+                    {
+                        _7151 = _9427 == 0;
+                    }
+                    else
+                    {
+                        _7151 = false;
+                    }
+                    if (_7151)
+                    {
+                        _7143[_7132] = _7135[_7132];
+                    }
+                    else
+                    {
+                        _7143[_7132] = round(_8854 * _3835.y) / _3835.y;
+                        if (_7139[_7132])
+                        {
+                            _7152 = abs((_8901 - _8854) * _3835.y) >= _7157;
+                        }
+                        else
+                        {
+                            _7152 = false;
+                        }
+                        if (_7152)
+                        {
+                            _7143[_7132] += (_8901 - _8854);
+                        }
+                    }
+                }
+                else
+                {
+                    _7143[_7132] = round(_7135[_7132] * _3835.y) / _3835.y;
+                }
+                _7132++;
+                continue;
+            }
+            float _7614 = 1.0 / _3835.y;
+            if (false)
+            {
+                _7147 = _9422;
+            }
+            else
+            {
+                _7147 = _9426;
+            }
+            if (false)
+            {
+                _7157 = _9431;
+            }
+            else
+            {
+                _7157 = _9433;
+            }
+            float _7158;
+            if (false)
+            {
+                _7158 = _9432;
+            }
+            else
+            {
+                _7158 = _9434;
+            }
+            if (false)
+            {
+                _7133 = _9421 == 1;
+            }
+            else
+            {
+                _7133 = _9425 != 0;
+            }
+            if (false)
+            {
+                _7134 = _9423 == 1;
+            }
+            else
+            {
+                _7134 = false;
+            }
+            _7149 = false;
+            float _7160 = 0.0;
+            float _7161 = 0.0;
+            float _7162 = 0.0;
+            float _7163 = 0.0;
+            float _7164 = 0.0;
+            _7148 = 0;
+            _7132 = 0;
+            int _7159 = 0;
+            int _7165;
+            int _7166;
+            float _7167;
+            float _7168;
+            float _7169;
+            float _7170;
+            float _7171;
+            float _7172;
+            bool _7173;
+            bool _8953;
+            float _8954;
+            for (;;)
+            {
+                bool _7653_ladder_break = false;
+                do
+                {
+                    if (!(_7132 < 16))
+                    {
+                        _7653_ladder_break = true;
+                        break;
+                    }
+                    if (_7132 >= _7284)
+                    {
+                        _7653_ladder_break = true;
+                        break;
+                    }
+                    if (_7137[_7132] < 0)
+                    {
+                        _7150 = true;
+                    }
+                    else
+                    {
+                        _7150 = _7137[_7132] <= _7132;
+                    }
+                    if (_7150)
+                    {
+                        _7152 = _7149;
+                        break;
+                    }
+                    if (_4561 > 0.0)
+                    {
+                        _8953 = abs(_7136[_7132] - _4561) <= (_7157 * _4561);
+                    }
+                    else
+                    {
+                        _8953 = false;
+                    }
+                    if (_8953)
+                    {
+                        _8954 = _4561;
+                    }
+                    else
+                    {
+                        _8954 = _7136[_7132];
+                    }
+                    if (_7147 == 2)
+                    {
+                        _7151 = true;
+                    }
+                    else
+                    {
+                        if (_7147 == 1)
+                        {
+                            _7151 = (_8954 * _3835.y) < _7158;
+                        }
+                        else
+                        {
+                            _7151 = false;
+                        }
+                    }
+                    if (_7151)
+                    {
+                        _7167 = max(round(_8954 * _3835.y), 1.0) * _7614;
+                    }
+                    else
+                    {
+                        _7167 = _7136[_7132];
+                    }
+                    if (_7134)
+                    {
+                        if (_7149)
+                        {
+                            _7143[_7132] = _7160 + (round((_7135[_7132] - _7161) * _3835.y) * _7614);
+                            _7168 = _7162;
+                            _7169 = _7163;
+                            _7152 = _7149;
+                        }
+                        else
+                        {
+                            float _8974 = round(_7135[_7132] * _3835.y) / _3835.y;
+                            _7143[_7132] = _8974;
+                            _7168 = _8974;
+                            _7169 = _7135[_7132];
+                            _7152 = true;
+                        }
+                        _7143[_7137[_7132]] = _7143[_7132] + _7167;
+                        float _7811 = _7169;
+                        float _7816 = _7168;
+                        _7168 = _7143[_7132];
+                        _7169 = _7135[_7132];
+                        _7170 = _7816;
+                        _7171 = _7811;
+                        _7172 = (_7816 + (round((_7135[_7132] - _7811) * _3835.y) * _7614)) + _7167;
+                        _7165 = _7137[_7132];
+                        _7166 = _7159 + 1;
+                    }
+                    else
+                    {
+                        if (false)
+                        {
+                            _7152 = _9421 != 0;
+                        }
+                        else
+                        {
+                            _7152 = _9425 != 0;
+                        }
+                        if (_7152)
+                        {
+                            _7153 = _7138[_7132] >= 0;
+                        }
+                        else
+                        {
+                            _7153 = false;
+                        }
+                        if (_7152)
+                        {
+                            _7154 = _7138[_7137[_7132]] >= 0;
+                        }
+                        else
+                        {
+                            _7154 = false;
+                        }
+                        if (!_7133)
+                        {
+                            _7143[_7132] = _7135[_7132];
+                        }
+                        if (_7154)
+                        {
+                            _7155 = !_7153;
+                        }
+                        else
+                        {
+                            _7155 = false;
+                        }
+                        if (_7155)
+                        {
+                            _7173 = _7133;
+                        }
+                        else
+                        {
+                            _7173 = false;
+                        }
+                        if (_7173)
+                        {
+                            _7143[_7132] = _7143[_7137[_7132]] - _7167;
+                        }
+                        else
+                        {
+                            _7143[_7137[_7132]] = _7143[_7132] + _7167;
+                        }
+                        _7152 = _7149;
+                        _7168 = _7160;
+                        _7169 = _7161;
+                        _7170 = _7162;
+                        _7171 = _7163;
+                        _7172 = _7164;
+                        _7165 = _7148;
+                        _7166 = _7159;
+                    }
+                    _7144[_7132] = true;
+                    _7144[_7137[_7132]] = true;
+                    _7160 = _7168;
+                    _7161 = _7169;
+                    _7162 = _7170;
+                    _7163 = _7171;
+                    _7164 = _7172;
+                    _7148 = _7165;
+                    _7159 = _7166;
+                    break;
+                } while(false);
+                if (_7653_ladder_break)
+                {
+                    break;
+                }
+                _7149 = _7152;
+                _7132++;
+                continue;
+            }
+            if (_7134)
+            {
+                _7133 = _7159 > 1;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                float _7854 = _7164 - _7143[_7148];
+                _7132 = 0;
+                for (;;)
+                {
+                    if (!(_7132 < 16))
+                    {
+                        break;
+                    }
+                    if (_7132 >= _7284)
+                    {
+                        break;
+                    }
+                    if (_7144[_7132])
+                    {
+                        _7143[_7132] += _7854;
+                    }
+                    _7132++;
+                    continue;
+                }
+            }
+            if (_7147 == 1)
+            {
+                _7157 = _7158;
+            }
+            else
+            {
+                _7157 = 1.60000002384185791015625;
+            }
+            _7132 = 0;
+            for (;;)
+            {
+                bool _7891_ladder_break = false;
+                do
+                {
+                    if (!(_7132 < 16))
+                    {
+                        _7891_ladder_break = true;
+                        break;
+                    }
+                    if (_7132 >= _7284)
+                    {
+                        _7891_ladder_break = true;
+                        break;
+                    }
+                    if (false)
+                    {
+                        _7152 = _9421 != 0;
+                    }
+                    else
+                    {
+                        _7152 = _9425 != 0;
+                    }
+                    if (!_7152)
+                    {
+                        _7133 = true;
+                    }
+                    else
+                    {
+                        _7133 = _7138[_7132] < 0;
+                    }
+                    if (_7133)
+                    {
+                        _7134 = true;
+                    }
+                    else
+                    {
+                        _7134 = !_7139[_7132];
+                    }
+                    if (_7134)
+                    {
+                        _7149 = true;
+                    }
+                    else
+                    {
+                        _7149 = _7144[_7132];
+                    }
+                    if (_7149)
+                    {
+                        break;
+                    }
+                    bool _7940 = _7142[_7132] > 0;
+                    if (_7141[_7132] >= 0)
+                    {
+                        if (_7940)
+                        {
+                            _7158 = _7135[_7132] - _7135[_7141[_7132]];
+                        }
+                        else
+                        {
+                            _7158 = _7135[_7141[_7132]] - _7135[_7132];
+                        }
+                        _7165 = _7141[_7132];
+                        _7167 = _7158;
+                    }
+                    else
+                    {
+                        if (_7141[_7132] == (-2))
+                        {
+                            _7167 = 3.4028234663852885981170418348452e+38;
+                            _7165 = _7141[_7132];
+                            _7166 = 0;
+                            for (;;)
+                            {
+                                bool _7951_ladder_break = false;
+                                do
+                                {
+                                    if (!(_7166 < 16))
+                                    {
+                                        _7951_ladder_break = true;
+                                        break;
+                                    }
+                                    if (_7166 >= _7284)
+                                    {
+                                        _7951_ladder_break = true;
+                                        break;
+                                    }
+                                    if (_7166 == _7132)
+                                    {
+                                        _7150 = true;
+                                    }
+                                    else
+                                    {
+                                        _7150 = _7142[_7166] == _7142[_7132];
+                                    }
+                                    if (_7150)
+                                    {
+                                        break;
+                                    }
+                                    if (_7940)
+                                    {
+                                        _7168 = _7135[_7132] - _7135[_7166];
+                                    }
+                                    else
+                                    {
+                                        _7168 = _7135[_7166] - _7135[_7132];
+                                    }
+                                    if (_7168 <= 0.0)
+                                    {
+                                        _7151 = true;
+                                    }
+                                    else
+                                    {
+                                        _7151 = _7168 >= _7167;
+                                    }
+                                    if (_7151)
+                                    {
+                                        break;
+                                    }
+                                    _7167 = _7168;
+                                    _7165 = _7166;
+                                    break;
+                                } while(false);
+                                if (_7951_ladder_break)
+                                {
+                                    break;
+                                }
+                                _7166++;
+                                continue;
+                            }
+                        }
+                        else
+                        {
+                            _7165 = _7141[_7132];
+                            _7167 = 3.4028234663852885981170418348452e+38;
+                        }
+                    }
+                    if (_7165 < 0)
+                    {
+                        _7150 = true;
+                    }
+                    else
+                    {
+                        _7150 = _7144[_7165];
+                    }
+                    if (_7150)
+                    {
+                        _7151 = true;
+                    }
+                    else
+                    {
+                        _7151 = _7138[_7165] >= 0;
+                    }
+                    if (_7151)
+                    {
+                        _7153 = true;
+                    }
+                    else
+                    {
+                        _7153 = (_7167 * _3835.y) >= _7157;
+                    }
+                    if (_7153)
+                    {
+                        break;
+                    }
+                    if (_7140[_7165])
+                    {
+                        _7168 = _7167;
+                    }
+                    else
+                    {
+                        _7168 = max(round(_7167 * _3835.y), 1.0) * _7614;
+                    }
+                    if (_7940)
+                    {
+                        _7158 = _7143[_7132] - _7168;
+                    }
+                    else
+                    {
+                        _7158 = _7143[_7132] + _7168;
+                    }
+                    _7143[_7165] = _7158;
+                    _7144[_7165] = true;
+                    break;
+                } while(false);
+                if (_7891_ladder_break)
+                {
+                    break;
+                }
+                _7132++;
+                continue;
+            }
+            _7132 = 0;
+            bool _7145[16];
+            bool _7146[16];
+            for (;;)
+            {
+                bool _8095_ladder_break = false;
+                do
+                {
+                    if (!(_7132 < 16))
+                    {
+                        _8095_ladder_break = true;
+                        break;
+                    }
+                    if (_7132 >= _7284)
+                    {
+                        _8095_ladder_break = true;
+                        break;
+                    }
+                    if (false)
+                    {
+                        _7152 = _9421 != 0;
+                    }
+                    else
+                    {
+                        _7152 = _9425 != 0;
+                    }
+                    if (!_7144[_7132])
+                    {
+                        if (_7152)
+                        {
+                            _7133 = _7138[_7132] >= 0;
+                        }
+                        else
+                        {
+                            _7133 = false;
+                        }
+                        _7133 = !_7133;
+                    }
+                    else
+                    {
+                        _7133 = false;
+                    }
+                    if (_7133)
+                    {
+                        break;
+                    }
+                    _3853[_3850] = _7135[_7132];
+                    _3854[_3850] = _7143[_7132];
+                    if (_7152)
+                    {
+                        _7134 = _7138[_7132] >= 0;
+                    }
+                    else
+                    {
+                        _7134 = false;
+                    }
+                    _7145[_3850] = _7134;
+                    _7146[_3850] = _7140[_7132];
+                    _3856[_3850] = _7132;
+                    _3850++;
+                    break;
+                } while(false);
+                if (_8095_ladder_break)
+                {
+                    break;
+                }
+                _7132++;
+                continue;
+            }
+            if (false)
+            {
+                _7133 = _9424 == 1;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = _3850 > 0;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = _3850 < 16;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7133 = 0.0 < (_3853[0] - (0.25 / _3835.y));
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                _7132 = 15;
+                for (;;)
+                {
+                    if (!(_7132 > 0))
+                    {
+                        break;
+                    }
+                    if (_7132 <= _3850)
+                    {
+                        int _8215 = _7132 - 1;
+                        _3853[_7132] = _3853[_8215];
+                        _3854[_7132] = _3854[_8215];
+                        _7145[_7132] = _7145[_8215];
+                        _7146[_7132] = _7146[_8215];
+                        _3856[_7132] = _3856[_8215];
+                    }
+                    _7132--;
+                    continue;
+                }
+                _3853[0] = 0.0;
+                _3854[0] = round(0.0) / _3835.y;
+                _7145[0] = false;
+                _7146[0] = false;
+                _3856[0] = 32;
+                _3850++;
+            }
+            _7165 = 15;
+            for (;;)
+            {
+                bool _8252_ladder_break = false;
+                do
+                {
+                    if (!(_7165 > 0))
+                    {
+                        _8252_ladder_break = true;
+                        break;
+                    }
+                    if (_7165 >= _3850)
+                    {
+                        _7133 = true;
+                    }
+                    else
+                    {
+                        _7133 = !_7145[_7165];
+                    }
+                    if (_7133)
+                    {
+                        break;
+                    }
+                    _7166 = 15;
+                    for (;;)
+                    {
+                        bool _8273_ladder_break = false;
+                        do
+                        {
+                            if (!(_7166 > 0))
+                            {
+                                _8273_ladder_break = true;
+                                break;
+                            }
+                            if (_7166 > _7165)
+                            {
+                                break;
+                            }
+                            int _8285 = _7166 - 1;
+                            if (_7145[_8285])
+                            {
+                                _8273_ladder_break = true;
+                                break;
+                            }
+                            if (_7146[_8285])
+                            {
+                                _7157 = 9.9999999747524270787835121154785e-07;
+                            }
+                            else
+                            {
+                                _7157 = _7614;
+                            }
+                            _3854[_8285] = min(_3854[_8285], _3854[_7166] - _7157);
+                            break;
+                        } while(false);
+                        if (_8273_ladder_break)
+                        {
+                            break;
+                        }
+                        _7166--;
+                        continue;
+                    }
+                    break;
+                } while(false);
+                if (_8252_ladder_break)
+                {
+                    break;
+                }
+                _7165--;
+                continue;
+            }
+            _7132 = 1;
+            for (;;)
+            {
+                if (!(_7132 < 16))
+                {
+                    break;
+                }
+                if (_7132 >= _3850)
+                {
+                    break;
+                }
+                int _8332 = _7132 - 1;
+                if (_3854[_7132] <= _3854[_8332])
+                {
+                    _3854[_7132] = _3854[_8332] + _7614;
+                }
+                _7132++;
+                continue;
+            }
+            if (_9428 != 0)
+            {
+                _7133 = _3835.y > _9429;
+            }
+            else
+            {
+                _7133 = false;
+            }
+            if (_7133)
+            {
+                float _8361 = _9430 - _9429;
+                if (_8361 <= 0.0)
+                {
+                    _7133 = true;
+                }
+                else
+                {
+                    _7133 = _3835.y >= _9430;
+                }
+                if (_7133)
+                {
+                    _7157 = 1.0;
+                }
+                else
+                {
+                    _7157 = (_3835.y - _9429) / _8361;
+                }
+                _7132 = 0;
+                for (;;)
+                {
+                    if (!(_7132 < 16))
+                    {
+                        break;
+                    }
+                    if (_7132 >= _3850)
+                    {
+                        break;
+                    }
+                    _3854[_7132] += ((_3853[_7132] - _3854[_7132]) * _7157);
+                    _7132++;
+                    continue;
+                }
+            }
+            _7132 = 0;
+            bool _8980;
+            bool _8991;
+            for (;;)
+            {
+                if (!(_7132 < 16))
+                {
+                    break;
+                }
+                if (_7132 >= _3850)
+                {
+                    break;
+                }
+                if (!isnan(_3853[_7132]))
+                {
+                    _8980 = !isinf(_3853[_7132]);
+                }
+                else
+                {
+                    _8980 = false;
+                }
+                if (!_8980)
+                {
+                    _7133 = true;
+                }
+                else
+                {
+                    if (!isnan(_3854[_7132]))
+                    {
+                        _8991 = !isinf(_3854[_7132]);
+                    }
+                    else
+                    {
+                        _8991 = false;
+                    }
+                    _7133 = !_8991;
+                }
+                if (_7133)
+                {
+                    _3850 = 0;
+                    _7130 = true;
+                    _7131 = false;
+                    break;
+                }
+                _7132++;
+                continue;
+            }
+            if (_7130)
+            {
+                break;
+            }
+            _7130 = true;
+            _7131 = true;
+            break;
+        } while(false);
+        if (_5259)
+        {
+            float _3859[16] = _3852;
+            int _3860[16] = _3855;
+            vec4 _3861[4] = _9281;
+            uvec4 _3862 = _9283;
+            do
+            {
+                int _9025 = 0;
+                for (;;)
+                {
+                    if (!(_9025 < 4))
+                    {
+                        break;
+                    }
+                    _3861[_9025] = vec4(0.0);
+                    _9025++;
+                    continue;
+                }
+                _3862 = uvec4(4294967295u);
+                if (_3849 > 16)
+                {
+                    _3862.x = (_3862.x & 4294967040u) | 254u;
+                    break;
+                }
+                _9025 = 0;
+                for (;;)
+                {
+                    if (!(_9025 < 16))
+                    {
+                        break;
+                    }
+                    if (_9025 >= _3849)
+                    {
+                        break;
+                    }
+                    int _9065 = _9025 >> 2;
+                    int _9068 = _9025 & 3;
+                    _3861[_9065][_9068] = _3859[_9025];
+                    uint _9076 = uint(_9068 * 8);
+                    _3862[_9065] = (_3862[_9065] & (~(255u << _9076))) | ((uint(_3860[_9025]) & 255u) << _9076);
+                    _9025++;
+                    continue;
+                }
+                break;
+            } while(false);
+            _9281 = _3861;
+            _9283 = _3862;
         }
-        r.x_sources = uvec4(4294967295u);
-        r.y_sources = uvec4(4294967295u);
-        return r;
-    }
-    ivec2 info_base = r.info;
-    vec2 scale;
-    bool _538 = snailAhAffineScale(_128, _129, _126.xform, scale);
-    if (!_538)
-    {
-        vec4 _140[4] = r.x_targets;
-        uvec4 _141 = r.x_sources;
-        snailAhMarkFallback(_140, _141);
-        r.x_targets = _140;
-        r.x_sources = _141;
-        vec4 _142[4] = r.y_targets;
-        uvec4 _143 = r.y_sources;
-        snailAhMarkFallback(_142, _143);
-        r.y_targets = _142;
-        r.y_sources = _143;
-        return r;
-    }
-    int blueCount = 0;
-    int featureXCount = 0;
-    int featureYCount = 0;
-    float _787 = snailWarpF(info_base, 0, 8);
-    float _862 = snailWarpF(info_base, 0, 9);
-    SnailAutohintPolicy policy;
-    bool _863 = snailDecodeAutohintPolicy(_131, _132, policy);
-    bool valid;
-    if (_863)
-    {
-        valid = snailAhFinite(_787);
-    }
-    else
-    {
-        valid = false;
-    }
-    if (valid)
-    {
-        valid = _787 >= 0.0;
-    }
-    else
-    {
-        valid = false;
-    }
-    if (valid)
-    {
-        valid = snailAhFinite(_862);
-    }
-    else
-    {
-        valid = false;
-    }
-    if (valid)
-    {
-        valid = _862 >= 0.0;
-    }
-    else
-    {
-        valid = false;
-    }
-    if (valid)
-    {
-        bool _1264 = snailAhCount(16, snailWarpF(info_base, 0, 10), blueCount);
-        valid = _1264;
-    }
-    else
-    {
-        valid = false;
-    }
-    int xRun = 12 + (2 * blueCount);
-    if (valid)
-    {
-        bool _1324 = snailAhCount(16, snailWarpF(info_base, xRun, 0), featureXCount);
-        valid = _1324;
-    }
-    else
-    {
-        valid = false;
-    }
-    int yRun = (xRun + 1) + (4 * featureXCount);
-    if (valid)
-    {
-        bool _1336 = snailAhCount(16, snailWarpF(info_base, yRun, 0), featureYCount);
-        valid = _1336;
-    }
-    else
-    {
-        valid = false;
-    }
-    if (!valid)
-    {
-        vec4 _153[4] = r.x_targets;
-        uvec4 _154 = r.x_sources;
-        snailAhMarkFallback(_153, _154);
-        r.x_targets = _153;
-        r.x_sources = _154;
-        vec4 _155[4] = r.y_targets;
-        uvec4 _156 = r.y_sources;
-        snailAhMarkFallback(_155, _156);
-        r.y_targets = _155;
-        r.y_sources = _156;
-        return r;
-    }
-    int xCount = 0;
-    int yCount = 0;
-    SnailAutohintPolicy _170 = policy;
-    float xBase[16];
-    float xTarget[16];
-    int xSource[16];
-    bool _1376 = snailFitAutohintAxis(info_base, 0, xRun, blueCount, _787, snailWarpF(info_base, 0, 11), scale.x, _170, xCount, xBase, xTarget, xSource);
-    SnailAutohintPolicy _171 = policy;
-    float yBase[16];
-    float yTarget[16];
-    int ySource[16];
-    bool _3454 = snailFitAutohintAxis(info_base, 1, yRun, blueCount, _862, 0.0, scale.y, _171, yCount, yBase, yTarget, ySource);
-    if (_1376)
-    {
-        float _172[16] = xTarget;
-        int _173[16] = xSource;
-        vec4 _174[4] = r.x_targets;
-        uvec4 _175 = r.x_sources;
-        snailAhPackAxis(xCount, _172, _173, _174, _175);
-        r.x_targets = _174;
-        r.x_sources = _175;
-    }
-    else
-    {
-        vec4 _176[4] = r.x_targets;
-        uvec4 _177 = r.x_sources;
-        snailAhMarkFallback(_176, _177);
-        r.x_targets = _176;
-        r.x_sources = _177;
-    }
-    if (_3454)
-    {
-        float _178[16] = yTarget;
-        int _179[16] = ySource;
-        vec4 _180[4] = r.y_targets;
-        uvec4 _181 = r.y_sources;
-        snailAhPackAxis(yCount, _178, _179, _180, _181);
-        r.y_targets = _180;
-        r.y_sources = _181;
-    }
-    else
-    {
-        vec4 _182[4] = r.y_targets;
-        uvec4 _183 = r.y_sources;
-        snailAhMarkFallback(_182, _183);
-        r.y_targets = _182;
-        r.y_sources = _183;
-    }
-    return r;
-}
-
-VsOutput vertexBody(VsInput _input, uint vertex_index)
-{
-    TextVertexIn v;
-    v.rect = _input.rect;
-    v.xform = _input.xform;
-    v.origin = _input.origin;
-    v.glyph = _input.glyph;
-    v.bnd = _input.bnd;
-    v.col = _input.col;
-    v.tint = _input.tint;
-    TextVertexIn _57 = v;
-    AutohintVertexResult _123 = snailAutohintVertex(_57, vertex_index, spvWorkaroundRowMajor(pc.mvp), pc.viewport, pc.subpixel_order, _input.policy0, _input.policy1);
-    VsOutput o;
-    o.position = _123.position;
-    o.paint = _123.paint;
-    o.texcoord_layer = _123.texcoord_layer;
-    o.info = _123.info;
-    o.policy0 = _123.policy0;
-    o.policy1 = _123.policy1;
-    vec4 _3637[4] = _123.x_targets;
-    o.x_targets0 = _3637[0];
-    o.x_targets1 = _3637[1];
-    o.x_targets2 = _3637[2];
-    o.x_targets3 = _3637[3];
-    vec4 _3650[4] = _123.y_targets;
-    o.y_targets0 = _3650[0];
-    o.y_targets1 = _3650[1];
-    o.y_targets2 = _3650[2];
-    o.y_targets3 = _3650[3];
-    o.x_sources = _123.x_sources;
-    o.y_sources = _123.y_sources;
-    return o;
-}
-
-void main()
-{
-    VsInput _14 = VsInput(input_rect, input_xform, input_origin, input_glyph, input_bnd, input_col, input_tint, input_policy0, input_policy1);
-    VsOutput _48 = vertexBody(_14, uint(gl_VertexID));
-    gl_Position = _48.position;
-    snail_io0 = _48.paint;
-    snail_io1 = _48.texcoord_layer;
-    snail_io2 = _48.info;
-    snail_io3 = _48.policy0;
-    snail_io4 = _48.policy1;
-    snail_io5 = _48.x_targets0;
-    snail_io6 = _48.x_targets1;
-    snail_io7 = _48.x_targets2;
-    snail_io8 = _48.x_targets3;
-    snail_io9 = _48.y_targets0;
-    snail_io10 = _48.y_targets1;
-    snail_io11 = _48.y_targets2;
-    snail_io12 = _48.y_targets3;
-    snail_io13 = _48.x_sources;
-    snail_io14 = _48.y_sources;
+        else
+        {
+            vec4 _3863[4] = _9281;
+            int _9002 = 0;
+            for (;;)
+            {
+                if (!(_9002 < 4))
+                {
+                    break;
+                }
+                _3863[_9002] = vec4(0.0);
+                _9002++;
+                continue;
+            }
+            uvec4 _9700 = uvec4(4294967295u);
+            _9700.x = 4294967294u;
+            _9281 = _3863;
+            _9283 = _9700;
+        }
+        if (_7131)
+        {
+            float _3865[16] = _3854;
+            int _3866[16] = _3856;
+            vec4 _3867[4] = _9282;
+            uvec4 _3868 = _9284;
+            do
+            {
+                int _9117 = 0;
+                for (;;)
+                {
+                    if (!(_9117 < 4))
+                    {
+                        break;
+                    }
+                    _3867[_9117] = vec4(0.0);
+                    _9117++;
+                    continue;
+                }
+                _3868 = uvec4(4294967295u);
+                if (_3850 > 16)
+                {
+                    _3868.x = (_3868.x & 4294967040u) | 254u;
+                    break;
+                }
+                _9117 = 0;
+                for (;;)
+                {
+                    if (!(_9117 < 16))
+                    {
+                        break;
+                    }
+                    if (_9117 >= _3850)
+                    {
+                        break;
+                    }
+                    int _9157 = _9117 >> 2;
+                    int _9160 = _9117 & 3;
+                    _3867[_9157][_9160] = _3865[_9117];
+                    uint _9168 = uint(_9160 * 8);
+                    _3868[_9157] = (_3868[_9157] & (~(255u << _9168))) | ((uint(_3866[_9117]) & 255u) << _9168);
+                    _9117++;
+                    continue;
+                }
+                break;
+            } while(false);
+            _9282 = _3867;
+            _9284 = _3868;
+        }
+        else
+        {
+            vec4 _3869[4] = _9282;
+            int _9094 = 0;
+            for (;;)
+            {
+                if (!(_9094 < 4))
+                {
+                    break;
+                }
+                _3869[_9094] = vec4(0.0);
+                _9094++;
+                continue;
+            }
+            uvec4 _9702 = uvec4(4294967295u);
+            _9702.x = 4294967294u;
+            _9282 = _3869;
+            _9284 = _9702;
+        }
+        _9214 = _9275;
+        _9215 = _9276;
+        _9216 = _9277;
+        _9217 = _9278;
+        _9218 = _9279;
+        _9219 = _9280;
+        _9611 = _9281[0];
+        _9612 = _9281[1];
+        _9613 = _9281[2];
+        _9614 = _9281[3];
+        _9636 = _9282[0];
+        _9637 = _9282[1];
+        _9638 = _9282[2];
+        _9639 = _9282[3];
+        _9222 = _9283;
+        _9223 = _9284;
+        break;
+    } while(false);
+    gl_Position = _9214;
+    snail_io0 = _9215;
+    snail_io1 = _9216;
+    snail_io2 = _9217;
+    snail_io3 = _9218;
+    snail_io4 = _9219;
+    snail_io5 = _9611;
+    snail_io6 = _9612;
+    snail_io7 = _9613;
+    snail_io8 = _9614;
+    snail_io9 = _9636;
+    snail_io10 = _9637;
+    snail_io11 = _9638;
+    snail_io12 = _9639;
+    snail_io13 = _9222;
+    snail_io14 = _9223;
 }
 

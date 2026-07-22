@@ -12,12 +12,12 @@ pkgs.mkShell {
     vulkan-loader
     vulkan-headers
     vulkan-validation-layers
+    # Shader artifact regeneration (`zig build gen-shaders`): slangc for
+    # every target, spirv-cross for the GL dialects.
     shader-slang
-    # WGSL catalog regeneration (`zig build gen-wgsl`):
-    # spirv-opt + glslang + naga.
-    spirv-tools
     spirv-cross
-    glslang
+    # naga CLI (`naga <file>.wgsl`): validation tripwire for the generated
+    # WGSL artifacts (the subpixel module's prelude entry in particular).
     wgpu-utils
     # Headless WebGPU reference example (`zig build run-minimal-wgpu`).
     wgpu-native

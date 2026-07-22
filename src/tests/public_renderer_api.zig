@@ -28,10 +28,15 @@ test "external renderers need only the public snail api" {
         _ = snail.render.records.ShapeKind;
         _ = snail.OwnedAtlasUploadPlanner;
         _ = snail.shader.glsl.source(.coverage_common);
-        _ = snail.shader.glsl.fileName(.text_sample_interface_vulkan);
-        _ = snail.shader.glsl.dependencies.text_sample;
+        _ = snail.shader.glsl.fileName(.coverage_common);
+        _ = snail.shader.glsl.dependencies.regular_text;
+        _ = snail.shader.generated.textSpv(.fragment);
+        _ = snail.shader.generated.textWgsl(.fragment);
+        _ = snail.shader.generated.textSampleFragGlsl330();
         if (@hasDecl(snail.shader.glsl, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
         if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
+        if (@hasDecl(snail.shader, "wgsl")) @compileError("the generated per-target catalog replaced shader.wgsl");
+        if (@hasDecl(snail.shader, "slang_generated")) @compileError("the generated catalog is snail.shader.generated");
 
         _ = raster.Renderer;
         _ = raster.DeviceAtlas;

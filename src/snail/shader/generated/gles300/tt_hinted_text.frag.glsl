@@ -2,26 +2,6 @@
 precision highp float;
 precision highp int;
 
-struct TtHintedVaryings
-{
-    highp vec4 color;
-    highp vec4 tint;
-    highp vec2 texcoord;
-    highp vec4 banding;
-    ivec4 glyph;
-};
-
-struct CoverageBandSpan
-{
-    int first;
-    int last;
-};
-
-uvec4 _355;
-uvec4 _373;
-uvec4 _753;
-uvec4 _771;
-
 layout(std140) uniform SnailPushConstants_std140
 {
     layout(row_major) highp mat4 mvp;
@@ -45,537 +25,553 @@ flat in highp vec4 snail_io2;
 flat in ivec4 snail_io3;
 layout(location = 0) out highp vec4 entryPointParam_fragmentMain;
 
-highp vec2 _fwidth(highp vec2 x)
-{
-    return fwidth(x);
-}
-
-ivec2 offsetTtHintedInfoLoc(ivec2 _133, int _134)
-{
-    uvec2 vecSize = uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0));
-    uint uw = vecSize.x;
-    uint uh = vecSize.y;
-    int width = int(uw);
-    int texel = ((_133.y * width) + _133.x) + _134;
-    return ivec2(texel - width * (texel / width), texel / width);
-}
-
-CoverageBandSpan CoverageBandSpan_init(int first, int last)
-{
-    CoverageBandSpan _293;
-    _293.first = first;
-    _293.last = last;
-    return _293;
-}
-
-CoverageBandSpan computeCoverageBandSpan(highp float coord, highp float eppAxis, highp float bandScale, highp float bandOffset, int bandMax)
-{
-    highp float center = (coord * bandScale) + bandOffset;
-    highp float _277 = max(abs(eppAxis * bandScale) * 0.5, 9.9999997473787516355514526367188e-06);
-    int _281 = clamp(int(center - _277), 0, bandMax);
-    return CoverageBandSpan_init(_281, max(_281, clamp(int(center + _277), 0, bandMax)));
-}
-
-ivec2 calcBandLoc(ivec2 glyphLoc, uint offset)
-{
-    int _329 = glyphLoc.x + int(offset);
-    ivec2 loc = ivec2(_329, glyphLoc.y);
-    loc.y += (_329 >> 12);
-    loc.x &= 4095;
-    return loc;
-}
-
-int decodeBandCurveFirstMemberCommon(uvec2 ref)
-{
-    return int(ref.x >> 12u);
-}
-
-bool isCoverageBandSpanOwner(uvec2 ref, int band, int spanFirst)
-{
-    return band == max(decodeBandCurveFirstMemberCommon(ref), spanFirst);
-}
-
-ivec2 decodeBandCurveLocCommon(uvec2 ref)
-{
-    return ivec2(int(ref.x & 4095u), int(ref.y & 16383u));
-}
-
-ivec2 decodeBandCurveLoc(uvec2 ref)
-{
-    return decodeBandCurveLocCommon(ref);
-}
-
-ivec2 offsetCurveLoc(ivec2 base, int offset)
-{
-    int _459 = base.x + offset;
-    ivec2 loc = ivec2(_459, base.y);
-    loc.y += (_459 >> 12);
-    loc.x &= 4095;
-    return loc;
-}
-
-highp float rootCodeCoord(highp float v)
-{
-    highp float _512;
-    if (abs(v) <= 1.52587890625e-05)
-    {
-        _512 = 0.0;
-    }
-    else
-    {
-        _512 = v;
-    }
-    return _512;
-}
-
-uint calcRootCode(highp float y1, highp float y2, highp float y3)
-{
-    return (11892u >> (((floatBitsToUint(rootCodeCoord(y3)) >> 29u) & 4u) | ((((floatBitsToUint(rootCodeCoord(y2)) >> 30u) & 2u) | ((floatBitsToUint(rootCodeCoord(y1)) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
-}
-
-highp float snapNearTangentSqrt(highp float disc, highp float b, highp float ac)
-{
-    highp float _614;
-    if (disc <= (max(b * b, abs(ac)) * 3.0000001061125658452510833740234e-06))
-    {
-        _614 = 0.0;
-    }
-    else
-    {
-        _614 = sqrt(disc);
-    }
-    return _614;
-}
-
-highp vec2 solveHorizPoly(highp vec4 p12, highp vec2 p3)
-{
-    highp vec2 a = (p12.xy - (p12.zw * 2.0)) + p3;
-    highp vec2 b = p12.xy - p12.zw;
-    highp float _584 = a.y;
-    highp float t1;
-    highp float t2;
-    if (abs(_584) < 1.52587890625e-05)
-    {
-        highp float _588 = b.y;
-        if (abs(_588) < 1.52587890625e-05)
-        {
-            t1 = 0.0;
-        }
-        else
-        {
-            t1 = (p12.y * 0.5) / _588;
-        }
-        t2 = t1;
-    }
-    else
-    {
-        highp float _602 = b.y;
-        highp float _605 = _584 * p12.y;
-        highp float sq = snapNearTangentSqrt((_602 * _602) - _605, _602, _605);
-        if (_602 >= 0.0)
-        {
-            highp float q = _602 + sq;
-            if (abs(q) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.y / q;
-            }
-            t2 = q / _584;
-        }
-        else
-        {
-            highp float q_1 = _602 - sq;
-            if (abs(q_1) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.y / q_1;
-            }
-            highp float _656 = t1;
-            t1 = q_1 / _584;
-            t2 = _656;
-        }
-    }
-    highp float _661 = a.x;
-    highp float _665 = b.x * 2.0;
-    return vec2((((_661 * t1) - _665) * t1) + p12.x, (((_661 * t2) - _665) * t2) + p12.x);
-}
-
-bool accumulateHorizContribution(inout highp float _429, inout highp float _430, highp vec2 _431, highp vec2 _432, ivec2 _433, int _434)
-{
-    highp vec4 _451 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_433, _434, 0).xyz, 0);
-    highp vec4 _478 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(offsetCurveLoc(_433, 1), _434, 0).xyz, 0);
-    highp vec4 p12 = vec4(_451.xy, _451.zw) - vec4(_431, _431);
-    highp vec2 p3 = _478.xy - _431;
-    if ((max(max(p12.x, p12.z), p3.x) * _432.x) < (-0.5))
-    {
-        return false;
-    }
-    uint code = calcRootCode(p12.y, p12.w, p3.y);
-    if (code != 0u)
-    {
-        highp vec2 r = solveHorizPoly(p12, p3) * _432.x;
-        if ((code & 1u) != 0u)
-        {
-            highp float _684 = r.x;
-            _429 += clamp(_684 + 0.5, 0.0, 1.0);
-            _430 = max(_430, clamp(1.0 - (abs(_684) * 2.0), 0.0, 1.0));
-        }
-        if (code > 1u)
-        {
-            highp float _700 = r.y;
-            _429 -= clamp(_700 + 0.5, 0.0, 1.0);
-            _430 = max(_430, clamp(1.0 - (abs(_700) * 2.0), 0.0, 1.0));
-        }
-    }
-    return true;
-}
-
-highp vec2 solveVertPoly(highp vec4 p12, highp vec2 p3)
-{
-    highp vec2 a = (p12.xy - (p12.zw * 2.0)) + p3;
-    highp vec2 b = p12.xy - p12.zw;
-    highp float _864 = a.x;
-    highp float t1;
-    highp float t2;
-    if (abs(_864) < 1.52587890625e-05)
-    {
-        highp float _868 = b.x;
-        if (abs(_868) < 1.52587890625e-05)
-        {
-            t1 = 0.0;
-        }
-        else
-        {
-            t1 = (p12.x * 0.5) / _868;
-        }
-        t2 = t1;
-    }
-    else
-    {
-        highp float _882 = b.x;
-        highp float _885 = _864 * p12.x;
-        highp float sq = snapNearTangentSqrt((_882 * _882) - _885, _882, _885);
-        if (_882 >= 0.0)
-        {
-            highp float q = _882 + sq;
-            if (abs(q) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.x / q;
-            }
-            t2 = q / _864;
-        }
-        else
-        {
-            highp float q_1 = _882 - sq;
-            if (abs(q_1) < 1.52587890625e-05)
-            {
-                t1 = 0.0;
-            }
-            else
-            {
-                t1 = p12.x / q_1;
-            }
-            highp float _912 = t1;
-            t1 = q_1 / _864;
-            t2 = _912;
-        }
-    }
-    highp float _917 = a.y;
-    highp float _921 = b.y * 2.0;
-    return vec2((((_917 * t1) - _921) * t1) + p12.y, (((_917 * t2) - _921) * t2) + p12.y);
-}
-
-bool accumulateVertContribution(inout highp float _787, inout highp float _788, highp vec2 _789, highp vec2 _790, ivec2 _791, int _792)
-{
-    highp vec4 _806 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_791, _792, 0).xyz, 0);
-    highp vec4 _812 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(offsetCurveLoc(_791, 1), _792, 0).xyz, 0);
-    highp vec4 p12 = vec4(_806.xy, _806.zw) - vec4(_789, _789);
-    highp vec2 p3 = _812.xy - _789;
-    if ((max(max(p12.y, p12.w), p3.y) * _790.y) < (-0.5))
-    {
-        return false;
-    }
-    uint code = calcRootCode(p12.x, p12.z, p3.x);
-    if (code != 0u)
-    {
-        highp vec2 r = solveVertPoly(p12, p3) * _790.y;
-        if ((code & 1u) != 0u)
-        {
-            highp float _939 = r.x;
-            _787 -= clamp(_939 + 0.5, 0.0, 1.0);
-            _788 = max(_788, clamp(1.0 - (abs(_939) * 2.0), 0.0, 1.0));
-        }
-        if (code > 1u)
-        {
-            highp float _955 = r.y;
-            _787 += clamp(_955 + 0.5, 0.0, 1.0);
-            _788 = max(_788, clamp(1.0 - (abs(_955) * 2.0), 0.0, 1.0));
-        }
-    }
-    return true;
-}
-
-highp float applyFillRule(highp float winding, int fill_rule_mode)
-{
-    if (fill_rule_mode == 1)
-    {
-        return 1.0 - abs((fract(winding * 0.5) * 2.0) - 1.0);
-    }
-    return abs(winding);
-}
-
-highp float applyCoverageTransfer(highp float cov, highp float coverage_exponent)
-{
-    highp float _1035 = clamp(cov, 0.0, 1.0);
-    highp float _1036 = max(coverage_exponent, 1.52587890625e-05);
-    highp float _1031;
-    if (abs(_1036 - 1.0) <= 9.9999999747524270787835121154785e-07)
-    {
-        _1031 = _1035;
-    }
-    else
-    {
-        _1031 = pow(_1035, _1036);
-    }
-    return _1031;
-}
-
-highp float evalGlyphCoverage(highp vec2 _183, highp vec2 _184, highp vec2 _185, ivec2 _186, ivec2 _187, highp vec4 _188, int _189, highp float _190)
-{
-    CoverageBandSpan hSpan = computeCoverageBandSpan(_183.y, _184.y, _188.y, _188.w, _187.y);
-    CoverageBandSpan vSpan = computeCoverageBandSpan(_183.x, _184.x, _188.x, _188.z, _187.x);
-    highp float xcov = 0.0;
-    highp float xwgt = 0.0;
-    int _310 = hSpan.first;
-    int _311 = hSpan.last;
-    bool _312 = _310 != _311;
-    int band = _310;
-    int i;
-    bool _199;
-    for (;;)
-    {
-        bool _204_ladder_break = false;
-        do
-        {
-            if (!(band <= _311))
-            {
-                _204_ladder_break = true;
-                break;
-            }
-            uvec2 hbd = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_186, uint(band)), _189, 0).xyz, 0).xy.xy;
-            ivec2 _358 = calcBandLoc(_186, hbd.y);
-            int _360 = int(hbd.x);
-            i = 0;
-            for (;;)
-            {
-                bool _209_ladder_break = false;
-                do
-                {
-                    if (!(i < _360))
-                    {
-                        _209_ladder_break = true;
-                        break;
-                    }
-                    uvec2 ref = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_358, uint(i)), _189, 0).xyz, 0).xy.xy;
-                    if (_312)
-                    {
-                        _199 = !isCoverageBandSpanOwner(ref, band, _310);
-                    }
-                    else
-                    {
-                        _199 = false;
-                    }
-                    if (_199)
-                    {
-                        break;
-                    }
-                    bool _426 = accumulateHorizContribution(xcov, xwgt, _183, _185, decodeBandCurveLoc(ref), _189);
-                    if (!_426)
-                    {
-                        _209_ladder_break = true;
-                        break;
-                    }
-                    break;
-                } while(false);
-                if (_209_ladder_break)
-                {
-                    break;
-                }
-                i++;
-                continue;
-            }
-            break;
-        } while(false);
-        if (_204_ladder_break)
-        {
-            break;
-        }
-        band++;
-        continue;
-    }
-    highp float ycov = 0.0;
-    highp float ywgt = 0.0;
-    int _736 = vSpan.first;
-    int _737 = vSpan.last;
-    bool _738 = _736 != _737;
-    band = _736;
-    for (;;)
-    {
-        bool _231_ladder_break = false;
-        do
-        {
-            if (!(band <= _737))
-            {
-                _231_ladder_break = true;
-                break;
-            }
-            uvec2 vbd = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_186, uint((_187.y + 1) + band)), _189, 0).xyz, 0).xy.xy;
-            ivec2 _756 = calcBandLoc(_186, vbd.y);
-            int _758 = int(vbd.x);
-            i = 0;
-            for (;;)
-            {
-                bool _236_ladder_break = false;
-                do
-                {
-                    if (!(i < _758))
-                    {
-                        _236_ladder_break = true;
-                        break;
-                    }
-                    uvec2 ref_1 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(calcBandLoc(_756, uint(i)), _189, 0).xyz, 0).xy.xy;
-                    if (_738)
-                    {
-                        _199 = !isCoverageBandSpanOwner(ref_1, band, _736);
-                    }
-                    else
-                    {
-                        _199 = false;
-                    }
-                    if (_199)
-                    {
-                        break;
-                    }
-                    bool _785 = accumulateVertContribution(ycov, ywgt, _183, _185, decodeBandCurveLoc(ref_1), _189);
-                    if (!_785)
-                    {
-                        _236_ladder_break = true;
-                        break;
-                    }
-                    break;
-                } while(false);
-                if (_236_ladder_break)
-                {
-                    break;
-                }
-                i++;
-                continue;
-            }
-            break;
-        } while(false);
-        if (_231_ladder_break)
-        {
-            break;
-        }
-        band++;
-        continue;
-    }
-    return applyCoverageTransfer(max(applyFillRule(((xcov * xwgt) + (ycov * ywgt)) / max(xwgt + ywgt, 1.52587890625e-05), 0), min(applyFillRule(xcov, 0), applyFillRule(ycov, 0))), _190);
-}
-
-highp vec4 premultiplyColor(highp vec4 color, highp float cov)
-{
-    highp float alpha = color.w * cov;
-    return vec4(color.xyz * alpha, alpha);
-}
-
-highp float srgbEncode(highp float c)
-{
-    highp float _1106;
-    if (c <= 0.003130800090730190277099609375)
-    {
-        _1106 = c * 12.9200000762939453125;
-    }
-    else
-    {
-        _1106 = (1.05499994754791259765625 * pow(c, 0.4166666567325592041015625)) - 0.054999999701976776123046875;
-    }
-    return _1106;
-}
-
-highp vec3 linearToSrgb(highp vec3 color)
-{
-    return vec3(srgbEncode(max(color.x, 0.0)), srgbEncode(max(color.y, 0.0)), srgbEncode(max(color.z, 0.0)));
-}
-
-highp vec4 srgbEncodePremultiplied(highp vec4 premul)
-{
-    if (premul.w <= 0.0)
-    {
-        return vec4(0.0);
-    }
-    return vec4(linearToSrgb(premul.xyz * (1.0 / premul.w)) * premul.w, premul.w);
-}
-
-highp vec4 snailTtHintedTextFragment(TtHintedVaryings _66, int _67, int _68, highp float _69, int _70)
-{
-    if (((_66.glyph.w >> 8) & 255) != 255)
-    {
-        discard;
-    }
-    if ((_66.glyph.w & 255) != 2)
-    {
-        discard;
-    }
-    highp vec2 epp = _fwidth(_66.texcoord);
-    highp vec4 _129 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(_66.glyph.xy, 0).xy, 0);
-    highp vec4 _161 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(offsetTtHintedInfoLoc(_66.glyph.xy, 1), 0).xy, 0);
-    int _163 = floatBitsToInt(_129.z);
-    highp float _180 = evalGlyphCoverage(_66.texcoord, epp, vec2(1.0 / max(epp.x, 1.52587890625e-05), 1.0 / max(epp.y, 1.52587890625e-05)), ivec2(int(_129.x), int(_129.y)), ivec2((_163 >> 16) & 65535, _163 & 65535), _161, _67 + int(_66.banding.w), _69);
-    if (_180 < 0.0039215688593685626983642578125)
-    {
-        discard;
-    }
-    highp vec4 premul = premultiplyColor(_66.color * _66.tint, _180);
-    highp vec4 _72;
-    if (_70 != 0)
-    {
-        _72 = vec4(premul.w);
-    }
-    else
-    {
-        if (_68 != 0)
-        {
-            _72 = srgbEncodePremultiplied(premul);
-        }
-        else
-        {
-            _72 = premul;
-        }
-    }
-    return _72;
-}
-
 void main()
 {
-    TtHintedVaryings v;
-    v.color = snail_io0;
-    v.tint = snail_io4;
-    v.texcoord = snail_io1;
-    v.banding = snail_io2;
-    v.glyph = snail_io3;
-    TtHintedVaryings _13 = v;
-    highp vec4 _63 = snailTtHintedTextFragment(_13, pc.layer_base, pc.output_srgb, pc.coverage_exponent, pc.mask_output);
-    entryPointParam_fragmentMain = _63;
+    highp vec4 _2251 = snail_io0;
+    highp vec4 _2252 = snail_io4;
+    highp vec2 _2253 = snail_io1;
+    highp vec4 _2254 = snail_io2;
+    if (((snail_io3.w >> 8) & 255) != 255)
+    {
+        discard;
+    }
+    if ((snail_io3.w & 255) != 2)
+    {
+        discard;
+    }
+    highp vec2 _1247 = fwidth(_2253);
+    highp float _1189 = 1.0 / max(_1247.x, 1.52587890625e-05);
+    highp float _1192 = 1.0 / max(_1247.y, 1.52587890625e-05);
+    highp vec4 _1198 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(snail_io3.xy, 0).xy, 0);
+    int _1257 = int(uvec2(textureSize(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, 0)).x);
+    int _1262 = ((snail_io3.y * _1257) + snail_io3.x) + 1;
+    highp vec4 _1204 = texelFetch(SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler, ivec3(ivec2(_1262 - _1257 * (_1262 / _1257), _1262 / _1257), 0).xy, 0);
+    int _1207 = floatBitsToInt(_1198.z);
+    int _1208 = _1207 & 65535;
+    int _1210 = (_1207 >> 16) & 65535;
+    int _1215 = pc.layer_base + int(_2254.w);
+    int _1217 = int(_1198.x);
+    int _1219 = int(_1198.y);
+    highp float _1277 = _1204.y;
+    highp float _1450 = (_2253.y * _1277) + _1204.w;
+    highp float _1454 = max(abs(_1247.y * _1277) * 0.5, 9.9999997473787516355514526367188e-06);
+    int _1457 = clamp(int(_1450 - _1454), 0, _1208);
+    int _1461 = max(_1457, clamp(int(_1450 + _1454), 0, _1208));
+    highp float _1283 = _1204.x;
+    highp float _1472 = (_2253.x * _1283) + _1204.z;
+    highp float _1476 = max(abs(_1247.x * _1283) * 0.5, 9.9999997473787516355514526367188e-06);
+    int _1479 = clamp(int(_1472 - _1476), 0, _1210);
+    int _1483 = max(_1479, clamp(int(_1472 + _1476), 0, _1210));
+    highp float _1266 = 0.0;
+    highp float _1267 = 0.0;
+    bool _1289 = _1457 != _1461;
+    int _1268 = _1457;
+    int _1269;
+    bool _1270;
+    bool _1562;
+    highp float _1668;
+    highp float _1677;
+    highp float _1686;
+    highp float _1695;
+    highp float _1696;
+    highp float _1765;
+    for (;;)
+    {
+        if (!(_1268 <= _1461))
+        {
+            break;
+        }
+        int _1496 = _1217 + _1268;
+        ivec2 _1498 = ivec2(_1496, _1219);
+        _1498.y = _1498.y + (_1496 >> 12);
+        _1498.x = _1498.x & 4095;
+        uvec4 _1304 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_1498, _1215, 0).xyz, 0);
+        int _1512 = _1217 + int(_1304.y);
+        ivec2 _1514 = ivec2(_1512, _1219);
+        _1514.y = _1514.y + (_1512 >> 12);
+        _1514.x = _1514.x & 4095;
+        int _1311 = int(_1304.x);
+        _1269 = 0;
+        for (;;)
+        {
+            bool _1314_ladder_break = false;
+            do
+            {
+                if (!(_1269 < _1311))
+                {
+                    _1314_ladder_break = true;
+                    break;
+                }
+                int _1528 = _1514.x + _1269;
+                ivec2 _1530 = ivec2(_1528, _1514.y);
+                _1530.y = _1530.y + (_1528 >> 12);
+                _1530.x = _1530.x & 4095;
+                uvec4 _1326 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_1530, _1215, 0).xyz, 0);
+                if (_1289)
+                {
+                    _1270 = !(_1268 == max(int(_1326.x >> 12u), _1457));
+                }
+                else
+                {
+                    _1270 = false;
+                }
+                if (_1270)
+                {
+                    break;
+                }
+                ivec2 _1560 = ivec2(int(_1326.x & 4095u), int(_1326.y & 16383u));
+                do
+                {
+                    highp vec4 _1569 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_1560, _1215, 0).xyz, 0);
+                    int _1638 = _1560.x + 1;
+                    ivec2 _1640 = ivec2(_1638, _1560.y);
+                    _1640.y = _1640.y + (_1638 >> 12);
+                    _1640.x = _1640.x & 4095;
+                    highp vec4 _1581 = vec4(_1569.xy, _1569.zw) - vec4(_2253, _2253);
+                    highp vec2 _1583 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_1640, _1215, 0).xyz, 0).xy - _2253;
+                    if ((max(max(_1581.x, _1581.z), _1583.x) * _1189) < (-0.5))
+                    {
+                        _1562 = false;
+                        break;
+                    }
+                    highp float _1594 = _1581.y;
+                    highp float _1595 = _1581.w;
+                    highp float _1596 = _1583.y;
+                    if (abs(_1594) <= 1.52587890625e-05)
+                    {
+                        _1668 = 0.0;
+                    }
+                    else
+                    {
+                        _1668 = _1594;
+                    }
+                    if (abs(_1595) <= 1.52587890625e-05)
+                    {
+                        _1677 = 0.0;
+                    }
+                    else
+                    {
+                        _1677 = _1595;
+                    }
+                    if (abs(_1596) <= 1.52587890625e-05)
+                    {
+                        _1686 = 0.0;
+                    }
+                    else
+                    {
+                        _1686 = _1596;
+                    }
+                    uint _1667 = (11892u >> (((floatBitsToUint(_1686) >> 29u) & 4u) | ((((floatBitsToUint(_1677) >> 30u) & 2u) | ((floatBitsToUint(_1668) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
+                    if (_1667 != 0u)
+                    {
+                        highp vec2 _1699 = _1581.xy;
+                        highp vec2 _1700 = _1581.zw;
+                        highp vec2 _1703 = (_1699 - (_1700 * 2.0)) + _1583;
+                        highp vec2 _1704 = _1699 - _1700;
+                        highp float _1705 = _1703.y;
+                        if (abs(_1705) < 1.52587890625e-05)
+                        {
+                            highp float _1737 = _1704.y;
+                            if (abs(_1737) < 1.52587890625e-05)
+                            {
+                                _1695 = 0.0;
+                            }
+                            else
+                            {
+                                _1695 = (_1581.y * 0.5) / _1737;
+                            }
+                            _1696 = _1695;
+                        }
+                        else
+                        {
+                            highp float _1709 = _1704.y;
+                            highp float _1711 = _1581.y;
+                            highp float _1712 = _1705 * _1711;
+                            highp float _1713 = (_1709 * _1709) - _1712;
+                            if (_1713 <= (max(_1709 * _1709, abs(_1712)) * 3.0000001061125658452510833740234e-06))
+                            {
+                                _1765 = 0.0;
+                            }
+                            else
+                            {
+                                _1765 = sqrt(_1713);
+                            }
+                            if (_1709 >= 0.0)
+                            {
+                                highp float _1727 = _1709 + _1765;
+                                if (abs(_1727) < 1.52587890625e-05)
+                                {
+                                    _1695 = 0.0;
+                                }
+                                else
+                                {
+                                    _1695 = _1711 / _1727;
+                                }
+                                _1696 = _1727 / _1705;
+                            }
+                            else
+                            {
+                                highp float _1717 = _1709 - _1765;
+                                if (abs(_1717) < 1.52587890625e-05)
+                                {
+                                    _1695 = 0.0;
+                                }
+                                else
+                                {
+                                    _1695 = _1711 / _1717;
+                                }
+                                highp float _1725 = _1695;
+                                _1695 = _1717 / _1705;
+                                _1696 = _1725;
+                            }
+                        }
+                        highp float _1748 = _1703.x;
+                        highp float _1752 = _1704.x * 2.0;
+                        highp float _1756 = _1581.x;
+                        highp vec2 _1601 = vec2((((_1748 * _1695) - _1752) * _1695) + _1756, (((_1748 * _1696) - _1752) * _1696) + _1756) * _1189;
+                        if ((_1667 & 1u) != 0u)
+                        {
+                            highp float _1605 = _1601.x;
+                            _1266 += clamp(_1605 + 0.5, 0.0, 1.0);
+                            _1267 = max(_1267, clamp(1.0 - (abs(_1605) * 2.0), 0.0, 1.0));
+                        }
+                        if (_1667 > 1u)
+                        {
+                            highp float _1619 = _1601.y;
+                            _1266 -= clamp(_1619 + 0.5, 0.0, 1.0);
+                            _1267 = max(_1267, clamp(1.0 - (abs(_1619) * 2.0), 0.0, 1.0));
+                        }
+                    }
+                    _1562 = true;
+                    break;
+                } while(false);
+                if (!_1562)
+                {
+                    _1314_ladder_break = true;
+                    break;
+                }
+                break;
+            } while(false);
+            if (_1314_ladder_break)
+            {
+                break;
+            }
+            _1269++;
+            continue;
+        }
+        _1268++;
+        continue;
+    }
+    highp float _1271 = 0.0;
+    highp float _1272 = 0.0;
+    bool _1358 = _1479 != _1483;
+    _1268 = _1479;
+    bool _1849;
+    highp float _1955;
+    highp float _1964;
+    highp float _1973;
+    highp float _1982;
+    highp float _1983;
+    highp float _2052;
+    for (;;)
+    {
+        if (!(_1268 <= _1483))
+        {
+            break;
+        }
+        int _1783 = _1217 + ((_1208 + 1) + _1268);
+        ivec2 _1785 = ivec2(_1783, _1219);
+        _1785.y = _1785.y + (_1783 >> 12);
+        _1785.x = _1785.x & 4095;
+        uvec4 _1375 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_1785, _1215, 0).xyz, 0);
+        int _1799 = _1217 + int(_1375.y);
+        ivec2 _1801 = ivec2(_1799, _1219);
+        _1801.y = _1801.y + (_1799 >> 12);
+        _1801.x = _1801.x & 4095;
+        int _1382 = int(_1375.x);
+        _1269 = 0;
+        for (;;)
+        {
+            bool _1385_ladder_break = false;
+            do
+            {
+                if (!(_1269 < _1382))
+                {
+                    _1385_ladder_break = true;
+                    break;
+                }
+                int _1815 = _1801.x + _1269;
+                ivec2 _1817 = ivec2(_1815, _1801.y);
+                _1817.y = _1817.y + (_1815 >> 12);
+                _1817.x = _1817.x & 4095;
+                uvec4 _1397 = texelFetch(SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler, ivec4(_1817, _1215, 0).xyz, 0);
+                if (_1358)
+                {
+                    _1270 = !(_1268 == max(int(_1397.x >> 12u), _1479));
+                }
+                else
+                {
+                    _1270 = false;
+                }
+                if (_1270)
+                {
+                    break;
+                }
+                ivec2 _1847 = ivec2(int(_1397.x & 4095u), int(_1397.y & 16383u));
+                do
+                {
+                    highp vec4 _1856 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_1847, _1215, 0).xyz, 0);
+                    int _1925 = _1847.x + 1;
+                    ivec2 _1927 = ivec2(_1925, _1847.y);
+                    _1927.y = _1927.y + (_1925 >> 12);
+                    _1927.x = _1927.x & 4095;
+                    highp vec4 _1868 = vec4(_1856.xy, _1856.zw) - vec4(_2253, _2253);
+                    highp vec2 _1870 = texelFetch(SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler, ivec4(_1927, _1215, 0).xyz, 0).xy - _2253;
+                    if ((max(max(_1868.y, _1868.w), _1870.y) * _1192) < (-0.5))
+                    {
+                        _1849 = false;
+                        break;
+                    }
+                    highp float _1881 = _1868.x;
+                    highp float _1882 = _1868.z;
+                    highp float _1883 = _1870.x;
+                    if (abs(_1881) <= 1.52587890625e-05)
+                    {
+                        _1955 = 0.0;
+                    }
+                    else
+                    {
+                        _1955 = _1881;
+                    }
+                    if (abs(_1882) <= 1.52587890625e-05)
+                    {
+                        _1964 = 0.0;
+                    }
+                    else
+                    {
+                        _1964 = _1882;
+                    }
+                    if (abs(_1883) <= 1.52587890625e-05)
+                    {
+                        _1973 = 0.0;
+                    }
+                    else
+                    {
+                        _1973 = _1883;
+                    }
+                    uint _1954 = (11892u >> (((floatBitsToUint(_1973) >> 29u) & 4u) | ((((floatBitsToUint(_1964) >> 30u) & 2u) | ((floatBitsToUint(_1955) >> 31u) & 4294967293u)) & 4294967291u))) & 257u;
+                    if (_1954 != 0u)
+                    {
+                        highp vec2 _1986 = _1868.xy;
+                        highp vec2 _1987 = _1868.zw;
+                        highp vec2 _1990 = (_1986 - (_1987 * 2.0)) + _1870;
+                        highp vec2 _1991 = _1986 - _1987;
+                        highp float _1992 = _1990.x;
+                        if (abs(_1992) < 1.52587890625e-05)
+                        {
+                            highp float _2024 = _1991.x;
+                            if (abs(_2024) < 1.52587890625e-05)
+                            {
+                                _1982 = 0.0;
+                            }
+                            else
+                            {
+                                _1982 = (_1868.x * 0.5) / _2024;
+                            }
+                            _1983 = _1982;
+                        }
+                        else
+                        {
+                            highp float _1996 = _1991.x;
+                            highp float _1998 = _1868.x;
+                            highp float _1999 = _1992 * _1998;
+                            highp float _2000 = (_1996 * _1996) - _1999;
+                            if (_2000 <= (max(_1996 * _1996, abs(_1999)) * 3.0000001061125658452510833740234e-06))
+                            {
+                                _2052 = 0.0;
+                            }
+                            else
+                            {
+                                _2052 = sqrt(_2000);
+                            }
+                            if (_1996 >= 0.0)
+                            {
+                                highp float _2014 = _1996 + _2052;
+                                if (abs(_2014) < 1.52587890625e-05)
+                                {
+                                    _1982 = 0.0;
+                                }
+                                else
+                                {
+                                    _1982 = _1998 / _2014;
+                                }
+                                _1983 = _2014 / _1992;
+                            }
+                            else
+                            {
+                                highp float _2004 = _1996 - _2052;
+                                if (abs(_2004) < 1.52587890625e-05)
+                                {
+                                    _1982 = 0.0;
+                                }
+                                else
+                                {
+                                    _1982 = _1998 / _2004;
+                                }
+                                highp float _2012 = _1982;
+                                _1982 = _2004 / _1992;
+                                _1983 = _2012;
+                            }
+                        }
+                        highp float _2035 = _1990.y;
+                        highp float _2039 = _1991.y * 2.0;
+                        highp float _2043 = _1868.y;
+                        highp vec2 _1888 = vec2((((_2035 * _1982) - _2039) * _1982) + _2043, (((_2035 * _1983) - _2039) * _1983) + _2043) * _1192;
+                        if ((_1954 & 1u) != 0u)
+                        {
+                            highp float _1892 = _1888.x;
+                            _1271 -= clamp(_1892 + 0.5, 0.0, 1.0);
+                            _1272 = max(_1272, clamp(1.0 - (abs(_1892) * 2.0), 0.0, 1.0));
+                        }
+                        if (_1954 > 1u)
+                        {
+                            highp float _1906 = _1888.y;
+                            _1271 += clamp(_1906 + 0.5, 0.0, 1.0);
+                            _1272 = max(_1272, clamp(1.0 - (abs(_1906) * 2.0), 0.0, 1.0));
+                        }
+                    }
+                    _1849 = true;
+                    break;
+                } while(false);
+                if (!_1849)
+                {
+                    _1385_ladder_break = true;
+                    break;
+                }
+                break;
+            } while(false);
+            if (_1385_ladder_break)
+            {
+                break;
+            }
+            _1269++;
+            continue;
+        }
+        _1268++;
+        continue;
+    }
+    highp float _1438 = ((_1266 * _1267) + (_1271 * _1272)) / max(_1267 + _1272, 1.52587890625e-05);
+    highp float _2066;
+    do
+    {
+        if (false)
+        {
+            _2066 = 1.0 - abs((fract(_1438 * 0.5) * 2.0) - 1.0);
+            break;
+        }
+        _2066 = abs(_1438);
+        break;
+    } while(false);
+    highp float _2083;
+    do
+    {
+        if (false)
+        {
+            _2083 = 1.0 - abs((fract(_1266 * 0.5) * 2.0) - 1.0);
+            break;
+        }
+        _2083 = abs(_1266);
+        break;
+    } while(false);
+    highp float _2100;
+    do
+    {
+        if (false)
+        {
+            _2100 = 1.0 - abs((fract(_1271 * 0.5) * 2.0) - 1.0);
+            break;
+        }
+        _2100 = abs(_1271);
+        break;
+    } while(false);
+    highp float _2119 = clamp(max(_2066, min(_2083, _2100)), 0.0, 1.0);
+    highp float _2120 = max(pc.coverage_exponent, 1.52587890625e-05);
+    highp float _2116;
+    if (abs(_2120 - 1.0) <= 9.9999999747524270787835121154785e-07)
+    {
+        _2116 = _2119;
+    }
+    else
+    {
+        _2116 = pow(_2119, _2120);
+    }
+    if (_2116 < 0.0039215688593685626983642578125)
+    {
+        discard;
+    }
+    highp vec4 _1230 = _2251 * _2252;
+    highp float _2132 = _1230.w * _2116;
+    highp vec4 _2135 = vec4(_1230.xyz * _2132, _2132);
+    highp vec4 _1169;
+    if (pc.mask_output != 0)
+    {
+        _1169 = vec4(_2135.w);
+    }
+    else
+    {
+        if (pc.output_srgb != 0)
+        {
+            highp vec4 _2137;
+            do
+            {
+                highp float _2141 = _2135.w;
+                if (_2141 <= 0.0)
+                {
+                    _2137 = vec4(0.0);
+                    break;
+                }
+                highp vec3 _2147 = _2135.xyz * (1.0 / _2141);
+                highp float _2157 = max(_2147.x, 0.0);
+                highp float _2166;
+                if (_2157 <= 0.003130800090730190277099609375)
+                {
+                    _2166 = _2157 * 12.9200000762939453125;
+                }
+                else
+                {
+                    _2166 = (1.05499994754791259765625 * pow(_2157, 0.4166666567325592041015625)) - 0.054999999701976776123046875;
+                }
+                highp float _2160 = max(_2147.y, 0.0);
+                highp float _2178;
+                if (_2160 <= 0.003130800090730190277099609375)
+                {
+                    _2178 = _2160 * 12.9200000762939453125;
+                }
+                else
+                {
+                    _2178 = (1.05499994754791259765625 * pow(_2160, 0.4166666567325592041015625)) - 0.054999999701976776123046875;
+                }
+                highp float _2163 = max(_2147.z, 0.0);
+                highp float _2190;
+                if (_2163 <= 0.003130800090730190277099609375)
+                {
+                    _2190 = _2163 * 12.9200000762939453125;
+                }
+                else
+                {
+                    _2190 = (1.05499994754791259765625 * pow(_2163, 0.4166666567325592041015625)) - 0.054999999701976776123046875;
+                }
+                _2137 = vec4(vec3(_2166, _2178, _2190) * _2141, _2141);
+                break;
+            } while(false);
+            _1169 = _2137;
+        }
+        else
+        {
+            _1169 = _2135;
+        }
+    }
+    highp vec4 _1170 = _1169;
+    entryPointParam_fragmentMain = _1170;
 }
 

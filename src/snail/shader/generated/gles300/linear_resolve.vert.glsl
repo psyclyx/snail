@@ -1,11 +1,5 @@
 #version 300 es
 
-struct VsOutput
-{
-    vec4 position;
-    vec2 uv;
-};
-
 out vec2 snail_io0;
 
 void main()
@@ -29,10 +23,7 @@ void main()
         _8 = -1.0;
     }
     vec2 pos = vec2(_7, _8);
-    VsOutput o;
-    o.uv = (pos * 0.5) + vec2(0.5);
-    o.position = vec4(pos, 0.0, 1.0);
-    gl_Position = o.position;
-    snail_io0 = o.uv;
+    gl_Position = vec4(pos, 0.0, 1.0);
+    snail_io0 = (pos * 0.5) + vec2(0.5);
 }
 

@@ -1,7 +1,8 @@
 //! Generated, complete per-target shaders from the native-Slang source
-//! (`src/snail/shader/slang/`). Stage A covers the regular-text family only;
-//! the GLSL fragment catalog (`shader.glsl`) remains the source for the
-//! other families.
+//! (`src/snail/shader/slang/`) — every family, four targets: Vulkan SPIR-V
+//! (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), and GLES 300 (`gles300`).
+//! The hand-written GLSL fragment catalog (`shader.glsl`) remains available
+//! as the behavioral spec and the composition surface for GL hosts.
 //!
 //! These are checked-in artifacts; regenerate with
 //!
@@ -88,23 +89,12 @@ pub fn textWgsl(comptime stage: Stage) [:0]const u8 {
     };
 }
 
-// ── Fragment-only families (stage B) ──
+// ── Fragment-only families ──
 //
 // colr/path (and the other quad families) share the text family's vertex
-// stage — identical source, identical stage IO. On Vulkan/WGSL hosts pair
-// their fragments with `textSpv(.vertex)` / `textWgsl(.vertex)`. The GL
-// dialects instead pair them with `paintedVertGlsl330/Gles300` — the same
-// vertex compiled at -O0 so the sRGB-decode divisions survive verbatim
-// (the GL baseline is the raw-GLSL catalog; see build/slang_shaders.zig
-// `gl_o0`).
-
-pub fn paintedVertGlsl330() [:0]const u8 {
-    return @embedFile("generated/glsl330/painted.vert.glsl");
-}
-
-pub fn paintedVertGles300() [:0]const u8 {
-    return @embedFile("generated/gles300/painted.vert.glsl");
-}
+// stage — identical source, identical stage IO. Pair their fragments with
+// `textSpv(.vertex)` / `textWgsl(.vertex)` / `textGlsl330(.vertex)` /
+// `textGles300(.vertex)`.
 
 pub fn colrFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/colr.frag.glsl");
@@ -144,9 +134,12 @@ pub fn ttHintedFragWgsl() [:0]const u8 {
 
 // ── LCD subpixel (dual-source; desktop GL + Vulkan only) ──
 //
-// No WGSL artifact: slangc's WGSL backend drops [[vk::index(1)]] (no
-// @blend_src), so the wgpu path keeps the old catalog. No GLES artifact:
-// ES 3.0 has no dual-source blending.
+// No GLES artifact: ES 3.0 has no dual-source blending. A WGSL artifact
+// is generated (generated/wgsl/text_subpixel.frag.wgsl; its dual-source
+// entry is `fragmentDualMain`, injected via the __requirePrelude interop
+// in the family source) but not exposed here: it depends on slang's name
+// mangling, so it stays a regeneration-time artifact until slang lowers
+// [[vk::index(1)]] to @blend_src natively. See slang/README-notes.
 
 pub fn subpixelFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/text_subpixel.frag.glsl");
@@ -287,15 +280,9 @@ pub fn textSampleFragSpv() []align(4) const u8 {
 
 test "generated artifacts carry the documented interface names" {
     const std = @import("std");
-    inline for (.{ textGlsl330(.vertex), textGles300(.vertex), paintedVertGlsl330(), paintedVertGles300() }) |src| {
+    inline for (.{ textGlsl330(.vertex), textGles300(.vertex) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_vertex_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "void main") != null);
-    }
-    // The painted vertex exists for exact division semantics on GL; the
-    // strength-reduced reciprocal constants must not reappear.
-    inline for (.{ paintedVertGlsl330(), paintedVertGles300() }) |src| {
-        try std.testing.expect(std.mem.indexOf(u8, src, "0.94786") == null);
-        try std.testing.expect(std.mem.indexOf(u8, src, "0.077399") == null);
     }
     inline for (.{ textGlsl330(.fragment), textGles300(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);

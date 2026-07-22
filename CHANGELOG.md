@@ -54,13 +54,19 @@ Treat this as a from-scratch migration.
 - `snail-raster`: optional software renderer consuming only the public API
   (`Renderer`, `DeviceAtlas`, `draw`), with explicit target encodings and
   linear-light blending.
-- `shader.wgsl`: generated complete per-family WGSL shaders for WebGPU
-  hosts (all eight families, including dual-source subpixel), compiled
-  from the GLSL catalog through Slang → SPIR-V → naga and checked in as
-  artifacts — consumers never need the Slang toolchain. Validated by the
-  headless `run-minimal-wgpu` wgpu-native example against the GL
-  reference. The build's Vulkan SPIR-V also compiles through `slangc`
-  now (replacing `glslc`; GLSL sources unchanged).
+- `shader.generated`: complete per-target shaders for every family —
+  Vulkan SPIR-V, WGSL (dual-source subpixel included), GLSL 330, and
+  GLES 300 — generated from the native Slang modules in
+  `src/snail/shader/slang/` (the shader source of truth) and checked in
+  as artifacts with their binding-name contracts; consumers never need
+  the Slang toolchain (`zig build gen-shaders`, slangc + SPIRV-Cross, is
+  a maintainer step). Callers can also compose at the Slang level:
+  `import text_sample` from a caller-authored family samples glyph
+  coverage inside an engine-owned material shader (the game demo's
+  `game_material.slang` is the worked example). The GLSL fragment
+  catalog (`shader.glsl`) stays as the behavioral spec and the GL
+  source-injection surface. Validated by the headless GL, GLES, Vulkan,
+  and wgpu-native (`run-minimal-wgpu`) examples and gates.
 
 ### Changed
 

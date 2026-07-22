@@ -1,12 +1,13 @@
-// Native-Slang port of snail_text_sample_body.glsl — the text-as-material
-// coverage sampler (evaluate glyph coverage at an arbitrary scene position
-// inside a caller's material shader). The GLSL fragment is the behavioral
-// spec: every epsilon, literal, and operation order is preserved.
+// Text-as-material coverage sampler (evaluate glyph coverage at an
+// arbitrary scene position inside a caller's material shader). Ported 1:1
+// from the composed catalog's snail_text_sample_body.glsl (retired in
+// stage D — this module is now the sole source): every epsilon, literal,
+// and operation order was preserved.
 //
 // Structural differences from GLSL (plumbing only, math unchanged):
 //  - The per-backend record storage (texel buffer / R32UI texture / SSBO)
 //    becomes the `ISnailTextRecords` interface; the consumer supplies a
-//    conforming struct wrapping its storage (see families/text_sample.slang
+//    conforming struct wrapping its storage (see families/text_sample_family.slang
 //    for the canonical SSBO/texel-buffer flavors).
 //  - The record word stride (`SNAIL_TEXT_RECORD_WORDS_PER_GLYPH` macro) and
 //    the glyph count / layer base / coverage exponent uniforms are explicit

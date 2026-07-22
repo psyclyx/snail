@@ -1,6 +1,6 @@
 //! Minimal Snail + WebGPU (wgpu-native) example — the headless analog of
 //! `minimal_gl.zig`, rendering the identical scene with the generated WGSL
-//! catalog (`snail.shader.wgsl`).
+//! modules (`snail.shader.generated`).
 //!
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules. It owns the WebGPU instance/adapter/device
@@ -9,8 +9,8 @@
 //! and the screenshot writer. Its one frame covers unhinted, autohinted,
 //! TT-hinted, and COLR text plus filled and stroked paths.
 //!
-//! Binding contract (see `snail.shader.wgsl`): group 0 = atlas textures at
-//! the Vulkan binding numbers, group 1 = the split samplers, group 2 =
+//! Binding contract (see `snail.shader.generated`): group 0 = atlas textures
+//! at the Vulkan binding numbers, group 1 = the split samplers, group 2 =
 //! the Vulkan push-constant block as a 96-byte uniform buffer.
 //!
 //! Environment knobs (both optional): `SNAIL_WGPU_BACKEND=vulkan|gl` pins the
@@ -39,8 +39,7 @@ const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const wgsl = snail.shader.wgsl;
-const slang_gen = snail.shader.slang_generated;
+const slang_gen = snail.shader.generated;
 
 /// The Vulkan push-constant block reshaped as a uniform buffer (std140; the
 /// scalar fields land on the same offsets as the C struct's). Must stay in
@@ -223,7 +222,7 @@ const Layouts = struct {
             .entries = &tex_entries,
         }) orelse return error.LayoutFailed;
 
-        // Group 1: the samplers naga split out of the combined image samplers.
+        // Group 1: the samplers split out of the Vulkan combined image samplers.
         // Only the image-array sampler (3) filters; the rest are never used.
         var sampler_entries = [4]c.WGPUBindGroupLayoutEntry{
             samplerEntry(0, both, c.WGPUSamplerBindingType_NonFiltering),
@@ -319,11 +318,8 @@ const Pipelines = struct {
     colr: c.WGPURenderPipeline,
 
     fn init(device: c.WGPUDevice, layout: c.WGPUPipelineLayout) !Pipelines {
-        const text_vert = try createShaderModule(device, wgsl.source(.text, .vertex), "snail-text-vert");
-        defer c.wgpuShaderModuleRelease(text_vert);
-        // Stage A of the Slang cutover: the regular-text pipeline uses the
-        // native-Slang generated WGSL (same @group/@binding contract; entry
-        // points keep their Slang names). Other families keep the catalog.
+        // Entry points keep their Slang names (`vertexMain`/`fragmentMain`);
+        // fragment-only families pair with the text vertex module.
         const native_text_vert = try createShaderModule(device, slang_gen.textWgsl(.vertex), "snail-text-native-vert");
         defer c.wgpuShaderModuleRelease(native_text_vert);
         const native_text_frag = try createShaderModule(device, slang_gen.textWgsl(.fragment), "snail-text-native-frag");
@@ -364,16 +360,6 @@ const Pipelines = struct {
             .path => self.path,
             .colr => self.colr,
         };
-    }
-
-    fn createPipeline(
-        device: c.WGPUDevice,
-        layout: c.WGPUPipelineLayout,
-        vert: c.WGPUShaderModule,
-        frag: c.WGPUShaderModule,
-        label: []const u8,
-    ) !c.WGPURenderPipeline {
-        return createPipelineEntries(device, layout, vert, "main", frag, "main", label);
     }
 
     fn createPipelineEntries(
@@ -744,9 +730,9 @@ pub fn main() !void {
     })) orelse return error.BufferFailed;
     defer c.wgpuBufferRelease(uniform_buffer);
     // Vulkan-style projection (y flipped relative to the GL example's
-    // `ortho(0, w, h, 0)`): the WGSL catalog is generated from the Vulkan
-    // shaders and naga keeps their clip-space convention, so scene y-down
-    // maps through `bottom = 0, top = height`.
+    // `ortho(0, w, h, 0)`): the generated WGSL keeps the Vulkan clip-space
+    // convention (the entry negates position.y for WGSL's y-up clip space),
+    // so scene y-down maps through `bottom = 0, top = height`.
     const push_constants = PushConstants{
         .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
         .viewport = .{ width, height },

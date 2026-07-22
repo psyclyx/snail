@@ -17,7 +17,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const embed_gl = @import("embed_gl");
-const slang_gen = snail.shader.slang_generated;
+const slang_gen = snail.shader.generated;
 const common = @import("common.zig");
 const desktop_gl = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");

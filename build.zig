@@ -1,6 +1,5 @@
 const std = @import("std");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
-const wgsl_shaders = @import("build/wgsl_shaders.zig");
 const slang_shaders = @import("build/slang_shaders.zig");
 
 const version = "0.12.1";
@@ -1018,7 +1017,6 @@ pub fn build(b: *std.Build) void {
     addMinimalGlStep(b, config, modules);
     addMinimalWgpuStep(b, config, modules);
     addPerfSteps(b, config, modules);
-    wgsl_shaders.addGenWgslStep(b);
     slang_shaders.addGenShadersStep(b);
 }
 

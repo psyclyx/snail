@@ -178,19 +178,26 @@ sRGB texture format for sRGB bytes, or a UNORM/float format for
 pre-linearized data. `snail-raster` documents its own device format: 4
 bytes/texel RGBA, sRGB-encoded, straight alpha.
 
-**Shader targets.** The hand-written GLSL fragment catalog (`shader.glsl`)
-is the source of truth and the composition surface for GL/GLES/Vulkan
-hosts. Everything else is compiled from it through Slang: the build's
-Vulkan SPIR-V, and a checked-in generated WGSL catalog (`shader.wgsl` —
-complete per-family shaders, entry points included) for WebGPU hosts,
-validated by the `run-minimal-wgpu` example against the GL reference.
-Regeneration is a maintainer step (`gen-wgsl`); consumers never need the
-Slang toolchain.
+**Shader targets.** The native Slang modules in `src/snail/shader/slang/`
+are the source of truth. From them, `shader.generated` ships complete,
+checked-in shaders for every family and target — Vulkan SPIR-V, WGSL,
+GLSL 330, GLES 300 — plus the binding-name contracts loaders bind by.
+Regeneration is a maintainer step (`zig build gen-shaders`, needs `slangc`
+and SPIRV-Cross); consumers never need the Slang toolchain. Composition is
+Slang-level too: a caller-authored family can `import text_sample` and
+sample glyph coverage inside its own material shader — the game demo's
+[`game_material.slang`](src/demo/game/slang/game_material.slang) is the
+worked example. The hand-written GLSL fragment catalog (`shader.glsl`)
+remains as the behavioral spec and the source-injection surface for GL
+hosts that compose snail's fragments into their own programs
+(`run-minimal-gl` does exactly this). WebGPU is validated by the
+`run-minimal-wgpu` example against the GL reference.
 
 **Texture ABI.** Curves RGBA16F, bands RG16UI, layer-info RGBA32F, plus the
 host-formatted image array. Layouts are stable and documented in
-`snail.render` (byte-layout contract for caller-owned renderers) and
-`snail.shader.glsl` (fragments + binding contracts per GL/GLES/Vulkan).
+`snail.render` (byte-layout contract for caller-owned renderers),
+`snail.shader.generated` (per-target binding/name contracts of the
+generated shaders), and `snail.shader.glsl` (composable fragments).
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
 allocator; there is no global or threadlocal state. `Atlas` is value-typed
@@ -260,7 +267,7 @@ zig build run                     # interactive Wayland banner demo (C cycles ba
 zig build run-game                # interactive 3D scene: world-space text, custom material shader
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
 zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
-zig build gen-wgsl                # regenerate the checked-in WGSL catalog (maintainers; needs slang+naga)
+zig build gen-shaders             # regenerate the checked-in shader artifacts (maintainers; needs slang+spirv-cross)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate

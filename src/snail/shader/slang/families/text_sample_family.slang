@@ -1,11 +1,9 @@
 // Text-as-material sampler family: canonical native-Slang artifacts for the
-// `text_sample` module. The real consumer is a CALLER-authored material
-// shader (the game composes the GLSL body into its own fragment program
-// with its own record storage and uniforms — see
-// src/snail/shader/glsl/snail_text_sample.interface.*.glsl). Migrating that
-// consumer is stage C; this family exists so gen-shaders continuously
-// compiles the module for every target and records the canonical binding
-// flavors:
+// `text_sample` module. The real consumer is a CALLER-authored Slang
+// family that imports the module into its own material shader (the game's
+// src/demo/game/slang/game_material.slang is the worked example); this
+// family exists so gen-shaders continuously compiles the module for every
+// target and records the canonical binding flavors:
 //
 //  - Vulkan/WGSL: the emit words in a read-only SSBO (StructuredBuffer) —
 //    set 0 binding 4 here (beyond the four atlas textures; a real caller

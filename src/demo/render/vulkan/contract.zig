@@ -10,7 +10,7 @@
 //!      (`coverage.VulkanBackend.descriptorSetLayout()`) + a push-constant
 //!      range of `PUSH_CONSTANT_SIZE` bytes at offset 0, stages
 //!      `PUSH_CONSTANT_STAGE_FLAGS`.
-//!   2. Builds a `VkGraphicsPipeline` with `vert_spv` + `frag_text_spv`,
+//!   2. Builds a `VkGraphicsPipeline` with `recipe(.text)`'s modules,
 //!      the vertex input from `vertexInputBinding()` / `vertexInputAttributes()`,
 //!      premultiplied-over blend, against their own render pass.
 //!   3. Per draw: binds snail's descriptor set + pipeline, pushes a
@@ -117,22 +117,13 @@ pub const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 
 // ── Shader modules ──
 
-/// Compiled SPIR-V. Autohint uses its fitting vertex stage; the other families
-/// share `vert_spv`. Callers hand these to `vkCreateShaderModule`.
-pub const vert_spv = vk_shaders.vert_spv;
-pub const vert_autohint_spv = vk_shaders.vert_autohint_spv;
-pub const frag_text_spv = vk_shaders.frag_text_spv;
-pub const frag_tt_hinted_text_spv = vk_shaders.frag_tt_hinted_text_spv;
-pub const frag_autohint_spv = vk_shaders.frag_autohint_spv;
-pub const frag_colr_spv = vk_shaders.frag_colr_spv;
-pub const frag_path_spv = vk_shaders.frag_path_spv;
-pub const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
-/// Native-Slang families (Slang cutover). Same push constants, vertex
-/// input, and descriptor-set layout: the shaders declare the atlas textures
-/// as sampled images (and, for the image paint, a sampler aliasing the same
-/// binding), which Vulkan permits to be backed by the existing
-/// COMBINED_IMAGE_SAMPLER descriptors. Fragment-only families pair with
-/// `vert_text_native_spv`.
+/// Compiled SPIR-V (native Slang, from
+/// `src/snail/shader/slang/families/*.slang`). The shaders declare the
+/// atlas textures as sampled images (and, for the image paint, a sampler
+/// aliasing the same binding), which Vulkan permits to be backed by the
+/// existing COMBINED_IMAGE_SAMPLER descriptors. Autohint uses its fitting
+/// vertex stage; the other families pair with `vert_text_native_spv`.
+/// Callers hand these to `vkCreateShaderModule`.
 pub const vert_text_native_spv = vk_shaders.vert_text_native_spv;
 pub const frag_text_native_spv = vk_shaders.frag_text_native_spv;
 pub const frag_colr_native_spv = vk_shaders.frag_colr_native_spv;
@@ -186,8 +177,6 @@ pub const PipelineRecipe = struct {
 
 pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
-        // Slang cutover: families already ported draw with the native-Slang
-        // compiled modules; the rest keep the GLSL-catalog modules.
         .text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_text_native_spv, .blend = .premultiplied },
         .colr => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_colr_native_spv, .blend = .premultiplied },
         .path => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_path_native_spv, .blend = .premultiplied },

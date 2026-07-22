@@ -147,14 +147,15 @@ pub const snap = @import("snap.zig");
 /// Stable byte-layout contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
-/// Entry-point-free shader fragments and resource contracts (`glsl`), plus
-/// the generated complete per-family WGSL catalog (`wgsl`). Callers compose
-/// the GLSL fragments into shaders owned by their rendering engine; the WGSL
-/// modules are finished shaders for WebGPU pipelines.
+/// Shader surface. `generated` is the complete per-target catalog produced
+/// from the native-Slang sources (`shader/slang/`): Vulkan SPIR-V, WGSL,
+/// GLSL 330, and GLES 300 modules for every family, plus their binding-name
+/// contracts. `glsl` is the hand-written, entry-point-free GLSL fragment
+/// catalog — the behavioral spec and the composition surface for GL hosts
+/// that inject snail's coverage math into their own shaders.
 pub const shader = struct {
     pub const glsl = @import("shader/glsl.zig");
-    pub const wgsl = @import("shader/wgsl.zig");
-    pub const slang_generated = @import("shader/slang_generated.zig");
+    pub const generated = @import("shader/generated.zig");
 };
 
 test {
@@ -192,6 +193,5 @@ test {
     _ = render;
     _ = shader;
     _ = shader.glsl;
-    _ = shader.wgsl;
-    _ = shader.slang_generated;
+    _ = shader.generated;
 }

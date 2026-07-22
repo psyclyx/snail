@@ -17,7 +17,7 @@ const std = @import("std");
 const snail_mod = @import("snail");
 const render_state = @import("render-state");
 const gl_common = @import("common.zig");
-const slang_gen = snail_mod.shader.slang_generated;
+const slang_gen = snail_mod.shader.generated;
 
 const LinearResolve = render_state.LinearResolve;
 const IntermediateFormat = LinearResolve.Format;
@@ -63,7 +63,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             self.program = try linkProgram("linear-resolve", vertex_shader, fragment_shader, false);
             // Native-Slang generated program: the mode lives in a one-int
             // std140 block, samplers carry the generated names (see
-            // snail.shader.slang_generated). Pin the samplers to units 0/1
+            // snail.shader.generated). Pin the samplers to units 0/1
             // at link time; bind the block to binding point 0 (rebound with
             // its buffer on every drawTriangle).
             const linear_loc = gl.glGetUniformLocation(self.program, slang_gen.glsl_linear_resolve_linear_tex_name);

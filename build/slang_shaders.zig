@@ -50,7 +50,7 @@
 //!  - `--no-420pack-extension` (desktop leg): SPIRV-Cross otherwise emits
 //!    `layout(binding = N)` under GL_ARB_shading_language_420pack; the
 //!    loaders bind samplers by name (`SPIRV_Cross_Combined*`, see
-//!    src/snail/shader/slang_generated.zig) exactly like the composed
+//!    src/snail/shader/generated.zig) exactly like the composed
 //!    catalog's loose `u_*` samplers.
 //!  - GLES default precision: SPIRV-Cross fragments open with `precision
 //!    mediump float;` and only qualify globals explicitly — locals inherit
@@ -115,42 +115,19 @@ pub const Family = struct {
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
-    /// GL legs only: compile -O0. At the default -O, slangc strength-reduces
-    /// constant divisions (c/1.055 → c*0.94786733), which shifted the
-    /// painted family's dither re-linearization by 1 ULP and flipped
-    /// scattered gradient pixels by 1 LSB vs the raw-GLSL catalog (the
-    /// exact-0 GL gate caught it; the vertex sRGB decode turned
-    /// srgbToLinear(1.0) into 0.99999988 the same way). -O0 preserves the
-    /// divisions. The Vulkan and WGSL legs must KEEP the default -O: their
-    /// pre-cutover baselines came from the slangc GLSL-ingestion pipeline,
-    /// which performed the same reduction — per-target bit-parity pins each
-    /// leg to its own history. Stage-A text stays on its proven default-O
-    /// recipe.
-    gl_o0: bool = false,
-    /// Emit only the GL dialects (no spirv/wgsl artifacts). Used for the
-    /// painted vertex, which exists solely because the GL leg needs the -O0
-    /// vertex while Vulkan/WGSL keep sharing the text vertex.
+    /// Emit only the GL dialects (no spirv/wgsl artifacts): linear_resolve
+    /// (Vulkan/WebGPU render to hardware-sRGB targets and have no resolve
+    /// pass) and the game's material family (its Vulkan leg is compiled by
+    /// the demo build directly).
     gl_only: bool = false,
-    /// Skip the WGSL artifact. (No current user: subpixel used this while
-    /// slangc's dropped [[vk::index(1)]] made a dual-source WGSL module
-    /// impossible; the __requirePrelude interop in
-    /// families/text_subpixel.slang now generates one — see README-notes.)
-    no_wgsl: bool = false,
     /// Skip the GLES 3.0 artifact (subpixel: ES 3.0 has no dual-source
-    /// blending; the composed catalog has no GLES subpixel program either).
+    /// blending).
     no_gles: bool = false,
     /// The GLES 3.0 dialect compiles its own SPIR-V leg with an additional
     /// -DSNAIL_TARGET_GLES: record-store families bind a 2D R32UI texture
     /// there instead of the desktop texel buffer (Buffer<uint> has no ES
     /// 3.0 translation — GL_EXT_texture_buffer requires ES 3.1).
     gles_define: bool = false,
-    /// GL dialects only: run build/glsl_patch_cubic_solver.zig on the
-    /// SPIRV-Cross output — substitutes the composed-catalog text of the
-    /// cubic Newton solver, whose regenerated emission Mesa compiles with
-    /// different multiply-add fusion (1-LSB drift on cubic path edges; see
-    /// the tool). This survived the naga→SPIRV-Cross switch: the AE=0 GL
-    /// gate needs the composed text either way.
-    patch_cubic_solver: bool = false,
 };
 
 /// The families gen-shaders produces. Vertex artifacts exist only where the
@@ -158,36 +135,30 @@ pub const Family = struct {
 /// text.vert.* — identical source, identical interface).
 pub const families = [_]Family{
     .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
-    .{ .name = "colr", .source = "families/painted.slang", .defines = &.{"SNAIL_FAMILY_COLR"}, .stages = &.{fragment_stage}, .gl_o0 = true, .patch_cubic_solver = true },
-    .{ .name = "path", .source = "families/painted.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .patch_cubic_solver = true },
-    .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
-    // WGSL artifact (spike): valid dual-source module via the in-source
-    // __requirePlude interop in families/text_subpixel.slang — the raw
-    // prelude entry `fragmentDualMain` carries @blend_src(0/1); the plain
-    // `fragmentMain` entry slang emits keeps MRT locations 0/1 (no
-    // consumer is wired; wgpu still uses the old catalog).
-    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
+    .{ .name = "colr", .source = "families/painted.slang", .defines = &.{"SNAIL_FAMILY_COLR"}, .stages = &.{fragment_stage} },
+    .{ .name = "path", .source = "families/painted.slang", .stages = &.{fragment_stage} },
+    .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage} },
+    .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage } },
+    // The WGSL artifact carries a dual-source entry (`fragmentDualMain`,
+    // @blend_src 0/1) via the in-source __requirePrelude interop in
+    // families/text_subpixel.slang; the plain `fragmentMain` entry keeps
+    // MRT locations 0/1. See README-notes for the mangled-name caveat.
+    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
     // Canonical artifacts for every target. Desktop GL is a plain
-    // `usamplerBuffer` texel buffer (new with the SPIRV-Cross leg — naga
-    // rejected Buffer<uint>). GLES 3.0 has no texel buffers at any
+    // `usamplerBuffer` texel buffer. GLES 3.0 has no texel buffers at any
     // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
     // compiles with -DSNAIL_TARGET_GLES and binds the emit words as a 2D
-    // R32UI texture instead (the composed catalog's ES answer, now
-    // single-sourced in Slang).
-    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .gles_define = true },
-    // The game demo's text-as-material shader (stage C): a caller-authored
-    // family importing the library's text_sample module. GL dialects are
-    // checked in next to the consumer; the Vulkan leg is compiled by the
-    // demo build directly (build.zig addGameShaderSpirv), like the library
+    // R32UI texture instead.
+    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gles_define = true },
+    // The game demo's text-as-material shader: a caller-authored family
+    // importing the library's text_sample module. GL dialects are checked
+    // in next to the consumer; the Vulkan leg is compiled by the demo
+    // build directly (build.zig addGameShaderSpirv), like the library
     // families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .out_prefix = "src/demo/game/generated/", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true, .gles_define = true },
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .out_prefix = "src/demo/game/generated/", .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true, .gles_define = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
-    .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
-    // GL-only -O0 vertex for the painted programs (colr + path share it);
-    // Vulkan/WGSL painted pipelines keep the text vertex (see gl_o0 docs).
-    .{ .name = "painted", .source = "families/painted.slang", .stages = &.{vertex_stage}, .gl_o0 = true, .gl_only = true },
+    .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true },
 };
 
 fn findFamily(comptime name: []const u8) Family {
@@ -277,14 +248,6 @@ pub fn addGenShadersStep(b: *std.Build) void {
             .optimize = .Debug,
         }),
     });
-    const solver_patch_tool = b.addExecutable(.{
-        .name = "glsl-patch-cubic-solver",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("build/glsl_patch_cubic_solver.zig"),
-            .target = b.graph.host,
-            .optimize = .Debug,
-        }),
-    });
 
     inline for (families) |family| {
         inline for (family.stages) |stage| {
@@ -295,21 +258,16 @@ pub fn addGenShadersStep(b: *std.Build) void {
                 const spv = vulkanStageSpv(b, family, stage);
                 update.addCopyFileToSource(spv, "src/snail/shader/generated/spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv");
 
-                if (!family.no_wgsl) {
-                    // WGSL — direct target.
-                    const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
-                    update.addCopyFileToSource(wgsl, "src/snail/shader/generated/wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
-                }
+                // WGSL — direct target.
+                const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
+                update.addCopyFileToSource(wgsl, "src/snail/shader/generated/wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both
             // fine through SPIRV-Cross), then spirv-cross per dialect.
             // `gles_define` families additionally compile a second SPIR-V
             // leg for the ES dialect (different record-store bindings).
-            const gl_args: []const []const u8 = if (family.gl_o0)
-                &.{ "-target", "spirv", "-profile", "spirv_1_3", "-O0" }
-            else
-                &.{ "-target", "spirv", "-profile", "spirv_1_3" };
+            const gl_args: []const []const u8 = &.{ "-target", "spirv", "-profile", "spirv_1_3" };
             const gl_spv = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_GL"}, gl_args, "gl-" ++ family.name ++ "." ++ stage.short ++ ".spv");
             const gles_spv = if (family.gles_define and !family.no_gles)
                 slangcFamily(b, family, stage, &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }, gl_args, "gles-" ++ family.name ++ "." ++ stage.short ++ ".spv")
@@ -337,12 +295,6 @@ pub fn addGenShadersStep(b: *std.Build) void {
                     }
                     cross.addArg("--output");
                     var glsl = cross.addOutputFileArg(out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
-                    if (family.patch_cubic_solver and comptime std.mem.eql(u8, stage.short, "frag")) {
-                        const patch = b.addRunArtifact(solver_patch_tool);
-                        patch.addFileArg(glsl);
-                        patch.addFileArg(b.path("src/snail/shader/glsl/snail_path_frag_body.glsl"));
-                        glsl = patch.addOutputFileArg("patched-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
-                    }
                     if (es) {
                         // Promote the fragment default precision to highp
                         // (SPIRV-Cross emits mediump; locals inherit it).

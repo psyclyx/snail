@@ -1,7 +1,7 @@
 const std = @import("std");
 const gl = @import("bindings.zig").gl;
 const gl_common = @import("../common.zig");
-const slang_gen = @import("snail").shader.slang_generated;
+const slang_gen = @import("snail").shader.generated;
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
@@ -78,7 +78,7 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
 }
 
 /// Link a native-Slang program (generated GLSL 330; see
-/// `snail.shader.slang_generated`). Uniforms live in one 96-byte std140
+/// `snail.shader.generated`). Uniforms live in one 96-byte std140
 /// block per stage — both block indices are bound to
 /// `NATIVE_TEXT_UBO_BINDING`, backed by the UBO created here — and the
 /// generated combined samplers are pinned to texture units 0..3

@@ -106,39 +106,24 @@ const colr_fragment_source: [:0]const u8 =
     glsl.source(.colr_body) ++ "\n" ++
     "void main() { snailColrFragment(); }\n";
 
+// Text-as-material rows measure the generated text_sample artifact (the
+// shipped module surface; the composed interface fragments are retired).
+// The fullscreen vertex feeds the scene position through the generated
+// module's location-0 varying (`snail_io0`); the fragment computes its own
+// footprint and reads glyph records from a R32UI texel buffer.
+const slang_gen = snail.shader.generated;
 const sample_vertex_source: [:0]const u8 =
     \\#version 330 core
-    \\out vec2 v_uv;
+    \\out vec2 snail_io0;
     \\const vec2 positions[4] = vec2[4](vec2(-1,-1), vec2(1,-1), vec2(1,1), vec2(-1,1));
     \\const vec2 uvs[4] = vec2[4](vec2(0,0), vec2(1,0), vec2(1,1), vec2(0,1));
-    \\void main() { v_uv = uvs[gl_VertexID]; gl_Position = vec4(positions[gl_VertexID], 0, 1); }
-;
-const sample_resources =
-    \\uniform sampler2DArray u_curve_tex;
-    \\uniform usampler2DArray u_band_tex;
-    \\uniform int u_fill_rule;
-    \\uniform int u_layer_base;
-    \\#define SNAIL_FILL_RULE u_fill_rule
-;
-const sample_entry =
-    \\in vec2 v_uv;
-    \\out vec4 frag_color;
     \\void main() {
-    \\    vec2 scene_pos = vec2(v_uv.x * 640.0, (1.0 - v_uv.y) * 360.0);
-    \\    frag_color = snail_text_sample_premul_linear_with_footprint(scene_pos, dFdx(scene_pos), dFdy(scene_pos));
+    \\    vec2 uv = uvs[gl_VertexID];
+    \\    snail_io0 = vec2(uv.x * 640.0, (1.0 - uv.y) * 360.0);
+    \\    gl_Position = vec4(positions[gl_VertexID], 0, 1);
     \\}
 ;
-const sample_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    sample_resources ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.text_sample_interface_gl) ++ "\n" ++
-    "#define SNAIL_TEXT_RECORD_WORDS_PER_GLYPH 23\n" ++
-    glsl.source(.text_sample_body) ++ "\n" ++
-    sample_entry;
+const sample_fragment_source: [:0]const u8 = slang_gen.textSampleFragGlsl330();
 
 pub fn main(init: std.process.Init) !void {
     const raw_args = try init.minimal.args.toSlice(init.arena.allocator());
@@ -208,7 +193,7 @@ pub fn main(init: std.process.Init) !void {
         const glyph_count = @min(glyph_count_requested, emitted.instance_len);
         program = try linkProgram(sample_vertex_source, sample_fragment_source, false);
         sample_geometry = initSampleGeometry(emitted.instances[0..glyph_count]);
-        bindSampleProgram(program, glyph_count);
+        bindSampleProgram(program, sample_geometry.?.params_ubo, glyph_count);
         draw_context = .{ .sample = &sample_geometry.? };
         sampled_glyphs = glyph_count;
         record_bytes = glyph_count * snail.render.records.BYTES_PER_INSTANCE;
@@ -613,12 +598,14 @@ const SampleGeometry = struct {
     ebo: c.GLuint,
     records_buffer: c.GLuint,
     records_texture: c.GLuint,
+    params_ubo: c.GLuint,
 
     fn deinit(self: *SampleGeometry) void {
         c.glDeleteVertexArrays(1, &self.vao);
         c.glDeleteBuffers(1, &self.ebo);
         c.glDeleteTextures(1, &self.records_texture);
         c.glDeleteBuffers(1, &self.records_buffer);
+        c.glDeleteBuffers(1, &self.params_ubo);
     }
 };
 
@@ -637,6 +624,7 @@ fn initSampleGeometry(instances: []const snail.render.records.Instance) SampleGe
     c.glActiveTexture(c.GL_TEXTURE3);
     c.glBindTexture(c.GL_TEXTURE_BUFFER, out.records_texture);
     c.glTexBuffer(c.GL_TEXTURE_BUFFER, c.GL_R32UI, out.records_buffer);
+    c.glGenBuffers(1, &out.params_ubo);
     return out;
 }
 
@@ -667,14 +655,31 @@ fn bindStandardProgram(program: c.GLuint, subpixel: bool) void {
     c.glUniform1i(c.glGetUniformLocation(program, "u_mask_output"), 0);
 }
 
-fn bindSampleProgram(program: c.GLuint, glyph_count: usize) void {
+/// std140 mirror of the generated module's `SnailTextSampleParams` block.
+const SampleParams = extern struct {
+    glyph_count: i32,
+    words_per_glyph: i32,
+    layer_base: i32,
+    coverage_exponent: f32,
+};
+
+fn bindSampleProgram(program: c.GLuint, params_ubo: c.GLuint, glyph_count: usize) void {
     c.glUseProgram(program);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_curve_tex"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_band_tex"), 1);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_snail_text_records"), 3);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_snail_text_glyph_count"), @intCast(glyph_count));
-    c.glUniform1i(c.glGetUniformLocation(program, "u_fill_rule"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_layer_base"), 0);
+    // Combined-sampler names are part of the generated-artifact contract.
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_curve_tex_name), 0);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_band_tex_name), 1);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_text_sample_records_name), 3);
+    const block = c.glGetUniformBlockIndex(program, slang_gen.glsl_text_sample_block_name);
+    c.glUniformBlockBinding(program, block, 0);
+    const params = SampleParams{
+        .glyph_count = @intCast(glyph_count),
+        .words_per_glyph = snail.render.records.BYTES_PER_INSTANCE / 4,
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+    };
+    c.glBindBuffer(c.GL_UNIFORM_BUFFER, params_ubo);
+    c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(SampleParams), &params, c.GL_STATIC_DRAW);
+    c.glBindBufferBase(c.GL_UNIFORM_BUFFER, 0, params_ubo);
 }
 
 fn compileShader(kind: c.GLenum, source: [:0]const u8) !c.GLuint {

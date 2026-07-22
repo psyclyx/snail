@@ -426,3 +426,37 @@ Stage D can now delete: the game's composed sources are ALREADY deleted
 snail_text_sample_body.glsl have no consumer left once the perf harness
 and minimal_gl stop composing (or are re-pointed), and
 vulkan_shaders.compileCallerShader has no caller in-tree.
+
+Stage D (2026-07-21): retirement, merge simplifications, docs
+=============================================================
+Retired: the GLSL-ingestion WGSL catalog (shader.wgsl + src/snail/shader/
+wgsl/ + build/wgsl_shaders.zig, spv_wgsl_prep, glsl_patch_dual_source,
+spv_patch_dual_source) and the whole Vulkan GLSL-ingestion path in
+build/vulkan_shaders.zig (shader_specs/compile/slangcCommand/
+compileCallerShader — the legacy composed .spv exports had no consumer
+left; src/demo/render/vulkan/glsl/ wrappers deleted with it).
+glsl_patch_base_vertex (dead since the SPIRV-Cross cutover) deleted too.
+The text_sample composed interface fragments
+(snail_text_sample.interface{,.gles30,.vulkan} + _body) are deleted; the
+perf harness text-sample rows now bench the generated glsl330 artifact
+(UBO + combined-sampler names from snail.shader.generated).
+
+Public surface: shader.wgsl removed; shader.slang_generated RENAMED to
+snail.shader.generated (file src/snail/shader/generated.zig).
+public_renderer_api locks both (no `wgsl`/`slang_generated` decls).
+
+Merge simplifications applied per the spike recommendation: gl_o0 and the
+painted GL-only vertex family are gone (all GL legs compile default -O;
+colr/path/tt_hinted/subpixel pair with text.vert on every target), and
+glsl_patch_cubic_solver is DELETED — the generated artifacts are their own
+goldens from here. Re-baseline vs the pre-stage-D tree: demo-gl/gles30
+AE=514/403200 each, banner-gl/gles30 AE≈4176/921600 each, max channel
+delta EXACTLY 1 on every differing pixel (AE at -fuzz 2% is 0 across the
+board) — the cubic-fusion class plus the 1-ULP sRGB-decode shift the -O0
+vertex used to pin (srgbToLinear(1.0)=0.99999988 under strength
+reduction), spread across gradient/dither spans. All twelve other
+screenshot targets (CPU, Vulkan, wgpu, game gl33/gl44/gles30/vulkan,
+minimal-gl, autohint) byte-identical. Trap 11 is thereby RETIRED as a
+tool and demoted to a known 1-LSB Mesa fusion sensitivity; trap 9's
+Vulkan/WGSL default-O pinning is moot (those legs never changed).
+glsl_patch_es_highp is the one surviving patch tool.

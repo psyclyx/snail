@@ -5,10 +5,10 @@
 // mirroring how the GLSL catalog composes snail_colr_frag_body.glsl on top
 // of the path body.
 //
-// Per-target compile flags and the naga legs match families/text.slang (see
-// build/slang_shaders.zig). The fragment has loops, so its GL leg goes
-// -emit-spirv-via-glsl; the vertex is the same raw-VertexIndex spirv_asm
-// body as the text family's.
+// Per-target compile flags match families/text.slang (see
+// build/slang_shaders.zig). The vertex is the same raw-VertexIndex
+// spirv_asm body as the text family's — both families pair with the text
+// vertex artifacts on every target.
 //
 // ── Resource bindings ──
 //
@@ -22,7 +22,7 @@
 //    split-sampler contract (filtering sampler slot).
 //  - GL: no explicit bindings; slangc fuses Texture+SamplerState back into
 //    a combined sampler and the generated names are recorded in
-//    snail.shader.slang_generated.
+//    snail.shader.generated.
 module painted;
 
 import render_abi;

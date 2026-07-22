@@ -26,10 +26,6 @@ pub const Fragment = enum {
     autohint_warp,
     autohint_fast_body,
     text_subpixel_body,
-    text_sample_interface_gl,
-    text_sample_interface_gles,
-    text_sample_interface_vulkan,
-    text_sample_body,
     linear_resolve_body,
 };
 
@@ -55,10 +51,6 @@ pub fn source(comptime fragment: Fragment) [:0]const u8 {
         .autohint_warp => @embedFile("glsl/snail_autohint_warp.glsl"),
         .autohint_fast_body => @embedFile("glsl/snail_autohint_fast_main.glsl"),
         .text_subpixel_body => @embedFile("glsl/snail_text_subpixel_body.glsl"),
-        .text_sample_interface_gl => @embedFile("glsl/snail_text_sample.interface.glsl"),
-        .text_sample_interface_gles => @embedFile("glsl/snail_text_sample.interface.gles30.glsl"),
-        .text_sample_interface_vulkan => @embedFile("glsl/snail_text_sample.interface.vulkan.glsl"),
-        .text_sample_body => @embedFile("glsl/snail_text_sample_body.glsl"),
         .linear_resolve_body => @embedFile("glsl/snail_linear_resolve_body.glsl"),
     };
 }
@@ -85,10 +77,6 @@ pub fn fileName(fragment: Fragment) []const u8 {
         .autohint_warp => "snail_autohint_warp.glsl",
         .autohint_fast_body => "snail_autohint_fast_main.glsl",
         .text_subpixel_body => "snail_text_subpixel_body.glsl",
-        .text_sample_interface_gl => "snail_text_sample.interface.glsl",
-        .text_sample_interface_gles => "snail_text_sample.interface.gles30.glsl",
-        .text_sample_interface_vulkan => "snail_text_sample.interface.vulkan.glsl",
-        .text_sample_body => "snail_text_sample_body.glsl",
         .linear_resolve_body => "snail_linear_resolve_body.glsl",
     };
 }
@@ -104,14 +92,10 @@ pub const dependencies = struct {
     pub const autohint_vertex = [_]Fragment{ .color_common, .autohint_warp, .vertex_body, .autohint_vertex_body };
     pub const autohint_fast = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_fast_body };
     pub const text_subpixel = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_subpixel_body };
-    pub const text_sample = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .text_sample_body };
     /// Fullscreen linear-resolve pass (float intermediate seed/encode) for
     /// hosts without hardware sRGB encode; see the fragment's recipe doc.
     pub const linear_resolve = [_]Fragment{ .color_common, .linear_resolve_body };
 };
-
-/// Storage width required by the GLES records-interface fragment.
-pub const gles_records_texture_width: u32 = 1024;
 
 test "catalog sources and filenames describe the same atomic fragments" {
     const std = @import("std");
@@ -120,9 +104,4 @@ test "catalog sources and filenames describe the same atomic fragments" {
         try std.testing.expect(std.mem.endsWith(u8, fileName(fragment), ".glsl"));
         try std.testing.expect(std.mem.indexOf(u8, source(fragment), "void main") == null);
     }
-    try std.testing.expect(std.mem.indexOf(
-        u8,
-        source(.text_sample_body),
-        "snail_text_sample_premul_linear_with_footprint",
-    ) != null);
 }

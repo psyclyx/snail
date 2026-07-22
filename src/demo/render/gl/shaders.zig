@@ -3,7 +3,7 @@
 //! reusable, entry-point-free pieces in `snail.shader.glsl`.
 
 const glsl = @import("snail").shader.glsl;
-const slang_gen = @import("snail").shader.slang_generated;
+const slang_gen = @import("snail").shader.generated;
 const vert_interface = glsl.source(.vertex_interface);
 const autohint_vert_interface = glsl.source(.autohint_vertex_interface);
 const frag_interface = glsl.source(.render_fragment_interface);
@@ -78,12 +78,11 @@ pub const Gl330 = struct {
     pub const linear_resolve_fragment_shader = version ++ linear_resolve_fragment_body;
 
     // Native-Slang generated families: complete shaders, UBO parameter
-    // block instead of loose uniforms. See `snail.shader.slang_generated`
+    // block instead of loose uniforms. See `snail.shader.generated`
     // for the interface contract. The fragment-only families pair with
     // `native_text_vertex_shader` (shared stage IO).
     pub const native_text_vertex_shader = slang_gen.textGlsl330(.vertex);
     pub const native_text_fragment_shader = slang_gen.textGlsl330(.fragment);
-    pub const native_painted_vertex_shader = slang_gen.paintedVertGlsl330();
     pub const native_colr_fragment_shader = slang_gen.colrFragGlsl330();
     pub const native_path_fragment_shader = slang_gen.pathFragGlsl330();
     pub const native_tt_hinted_fragment_shader = slang_gen.ttHintedFragGlsl330();
@@ -117,7 +116,6 @@ pub const Gles30 = struct {
     // Native-Slang generated families; see Gl330 above.
     pub const native_text_vertex_shader = slang_gen.textGles300(.vertex);
     pub const native_text_fragment_shader = slang_gen.textGles300(.fragment);
-    pub const native_painted_vertex_shader = slang_gen.paintedVertGles300();
     pub const native_colr_fragment_shader = slang_gen.colrFragGles300();
     pub const native_path_fragment_shader = slang_gen.pathFragGles300();
     pub const native_tt_hinted_fragment_shader = slang_gen.ttHintedFragGles300();

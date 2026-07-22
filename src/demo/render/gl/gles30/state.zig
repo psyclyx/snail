@@ -69,9 +69,9 @@ pub const Gles30TextState = struct {
         // composed GLSL-fragment catalog. The fragment-only native families
         // share the native text vertex stage.
         self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
-        self.colr_program = try gl_programs.loadNativeProgramState("colr-native", shaders.native_painted_vertex_shader, shaders.native_colr_fragment_shader);
-        self.path_program = try gl_programs.loadNativeProgramState("path-native", shaders.native_painted_vertex_shader, shaders.native_path_fragment_shader);
-        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_painted_vertex_shader, shaders.native_tt_hinted_fragment_shader);
+        self.colr_program = try gl_programs.loadNativeProgramState("colr-native", shaders.native_text_vertex_shader, shaders.native_colr_fragment_shader);
+        self.path_program = try gl_programs.loadNativeProgramState("path-native", shaders.native_text_vertex_shader, shaders.native_path_fragment_shader);
+        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
         self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
         try self.linear_resolve.init();
 
