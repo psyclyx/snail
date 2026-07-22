@@ -3,7 +3,8 @@
 //! Font parsing, shaping, geometry, atlases, upload plans, emitted draw records,
 //! and entry-point-free shader fragments live here. Snail owns no GPU objects or
 //! command submission. The complete CPU renderer is the separate, optional
-//! `snail-raster` module and consumes only this public API.
+//! `snail-raster` module; its package-private fitting support is wired by the
+//! build and does not enlarge this module's public API.
 //!
 //! Color contract: every `[4]f32` color crossing this API is LINEAR light
 //! with straight alpha, and fragment output is premultiplied linear — snail
@@ -42,7 +43,6 @@ pub const Faces = faces_mod.Faces;
 pub const shape = faces_mod.shape;
 pub const FontWeight = text_mod.FontWeight;
 pub const FontStyle = text_mod.FontStyle;
-pub const SyntheticStyle = text_mod.SyntheticStyle;
 pub const SourceRange = text_mod.SourceRange;
 pub const OpenTypeFeature = text_mod.OpenTypeFeature;
 pub const ShapeOptions = text_mod.ShapeOptions;
@@ -72,11 +72,14 @@ pub const RadialGradient = paint_mod.RadialGradient;
 pub const ConicGradient = paint_mod.ConicGradient;
 pub const ImagePaint = paint_mod.ImagePaint;
 pub const Paint = paint_mod.Paint;
+pub const PaintValidationError = paint_mod.PaintValidationError;
+pub const PaintMapError = paint_mod.PaintMapError;
 pub const FillStyle = paint_mod.FillStyle;
 pub const StrokeCap = paint_mod.StrokeCap;
 pub const StrokeJoin = paint_mod.StrokeJoin;
 pub const StrokePlacement = paint_mod.StrokePlacement;
 pub const StrokeStyle = paint_mod.StrokeStyle;
+pub const StrokeValidationError = paint_mod.StrokeValidationError;
 pub const mapPaintToLocal = paint_mod.mapToLocal;
 pub const FillRule = paint_mod.FillRule;
 
@@ -88,7 +91,6 @@ pub const record_key = record_key_mod;
 
 pub const GlyphCurves = @import("atlas/curves.zig").GlyphCurves;
 pub const PagePool = @import("atlas/page_pool.zig").PagePool;
-pub const AtlasPage = @import("atlas/page.zig").AtlasPage;
 
 const atlas_mod = @import("atlas.zig");
 pub const Atlas = atlas_mod.Atlas;
@@ -96,15 +98,12 @@ pub const Atlas = atlas_mod.Atlas;
 /// placement planner. The complete contract is public so callers never need
 /// to reach through the internal `files` namespace for its backing types.
 pub const atlas_upload = @import("atlas/upload_plan.zig");
-pub const AtlasUploadPlanner = atlas_upload.Planner;
-pub const OwnedAtlasUploadPlanner = atlas_upload.OwnedPlanner;
 pub const AtlasEntry = atlas_mod.Entry;
 pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
 pub const CompositeMode = atlas_mod.CompositeMode;
 pub const AtlasLayer = atlas_mod.Layer;
 pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
-pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 pub const RecordFilter = atlas_mod.RecordFilter;
 
@@ -122,18 +121,17 @@ pub const Shape = shape_mod.Shape;
 
 pub const emit = @import("draw/emit.zig");
 
+const autohint_producer = @import("font/autohint/producer.zig");
+
 pub const autohint = struct {
     pub const policy = @import("font/autohint/policy.zig");
     pub const AutohintPolicy = policy.AutohintPolicy;
     pub const Fade = policy.Fade;
-    pub const analysis = @import("font/autohint/analysis.zig");
-    pub const warp = @import("font/autohint/warp.zig");
-    pub const blue = @import("font/autohint/blue.zig");
-    pub const producer = @import("font/autohint/producer.zig");
-    pub const AutohintAnalyzer = producer.AutohintAnalyzer;
-    pub const GlyphFeatures = producer.GlyphFeatures;
-    pub const FontFeatures = producer.FontFeatures;
-    pub const FeatureEdge = analysis.FeatureEdge;
+    pub const AutohintAnalyzer = autohint_producer.AutohintAnalyzer;
+    pub const GlyphFeatures = autohint_producer.GlyphFeatures;
+    pub const FontFeatures = autohint_producer.FontFeatures;
+    pub const FeatureEdge = autohint_producer.FeatureEdge;
+    pub const max_features_per_axis = autohint_producer.max_features_per_axis;
 };
 
 pub const TtHintVm = @import("font/tt_hint_vm.zig").TtHintVm;
@@ -179,7 +177,6 @@ test {
     _ = @import("font/tt_hint_vm.zig");
     _ = @import("font/autohint/policy.zig");
     _ = @import("font/autohint/analysis.zig");
-    _ = @import("font/autohint/warp.zig");
     _ = @import("font/autohint/blue.zig");
     _ = @import("font/autohint/producer.zig");
     _ = @import("format/autohint_record.zig");

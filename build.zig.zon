@@ -2,5 +2,16 @@
     .name = .snail,
     .version = "0.12.1",
     .fingerprint = 0x1a87b1b848f90ebf,
-    .paths = .{""},
+    // Publish only the consumable project. Repository administration, CI,
+    // Nix pins, local plans, and generated outputs are not package inputs.
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "build",
+        "src",
+        "assets",
+        "README.md",
+        "LICENSE",
+        "valgrind.supp",
+    },
 }

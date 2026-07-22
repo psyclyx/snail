@@ -226,6 +226,12 @@ fn createRasterModule(
     const raster = if (public_name) |name| b.addModule(name, module_options) else b.createModule(module_options);
     raster.addImport("snail", snail_mod);
     raster.addImport("render-state", render_state_mod);
+    raster.addImport("snail-raster-support", b.createModule(.{
+        .root_source_file = b.path("src/snail/raster_support.zig"),
+        .target = target,
+        .optimize = optimize,
+        .imports = &.{.{ .name = "snail", .module = snail_mod }},
+    }));
     if (assets_mod) |assets| raster.addImport("assets", assets);
     return raster;
 }
@@ -337,12 +343,14 @@ fn addTestSteps(
     config: BuildConfig,
     modules: ProjectModules,
 ) void {
-    const test_step = b.step("test", "Run unit tests");
+    const test_step = b.step("test", "Run the complete unit and shader-contract test suite");
+    const core_test_step = b.step("test-core", "Run library and CPU-renderer tests without shader-generation tools");
+    test_step.dependOn(core_test_step);
     const snail_tests = createSnailModuleFull(b, config.target, config.optimize, null, modules.assets, null);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
+    core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
     const test_render_state = createRenderStateModule(b, config.target, config.optimize, snail_tests);
     const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, test_render_state, modules.assets, null, null);
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
+    core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
     const public_api_tests = b.createModule(.{
         .root_source_file = b.path("src/tests/public_renderer_api.zig"),
@@ -351,10 +359,20 @@ fn addTestSteps(
         .imports = &.{
             .{ .name = "snail", .module = snail_tests },
             .{ .name = "snail-raster", .module = raster_tests },
+        },
+    });
+    core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
+
+    const public_shader_api_tests = b.createModule(.{
+        .root_source_file = b.path("src/tests/public_shader_api.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .imports = &.{
+            .{ .name = "snail", .module = snail_tests },
             .{ .name = "snail_shaders", .module = modules.shaders },
         },
     });
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
+    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_shader_api_tests })).step);
 
     // The generated-artifact contract tests live in the snail-shaders
     // module root (binding names, entry points, no #line leakage, ...).
@@ -365,7 +383,7 @@ fn addTestSteps(
     });
     test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = shaders_tests })).step);
 
-    test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
+    core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = modules.support })).step);
 
     // The dependency-free TGA pixel gate used by the Windows CI job.
     const pixelgate_tests = b.addTest(.{ .root_module = b.createModule(.{
@@ -373,7 +391,7 @@ fn addTestSteps(
         .target = config.target,
         .optimize = config.optimize,
     }) });
-    test_step.dependOn(&b.addRunArtifact(pixelgate_tests).step);
+    core_test_step.dependOn(&b.addRunArtifact(pixelgate_tests).step);
 
     const autohint_compare_test_module = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
@@ -390,7 +408,7 @@ fn addTestSteps(
     selectDemoEntry(b, autohint_compare_test_module, .autohint_compare);
     const autohint_compare_tests = b.addTest(.{ .root_module = autohint_compare_test_module });
     const run_autohint_compare_tests = b.addRunArtifact(autohint_compare_tests);
-    test_step.dependOn(&run_autohint_compare_tests.step);
+    core_test_step.dependOn(&run_autohint_compare_tests.step);
 
     const character_diff_test_module = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
@@ -406,7 +424,7 @@ fn addTestSteps(
     });
     selectDemoEntry(b, character_diff_test_module, .autohint_character_diff);
     const character_diff_tests = b.addTest(.{ .root_module = character_diff_test_module });
-    test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
+    core_test_step.dependOn(&b.addRunArtifact(character_diff_tests).step);
 
     const test_valgrind_step = b.step("test-valgrind", "Run unit tests under Valgrind");
     const vg_snail = createSnailModuleFull(b, config.target, config.optimize, null, modules.assets, true);
