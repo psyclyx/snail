@@ -3,12 +3,11 @@
 //! Metal MSL artifacts (`snail_shaders`, runtime-compiled with
 //! `newLibraryWithSource:`).
 //!
-//! BEST-EFFORT STATUS: this file is written and cross-COMPILED on Linux
-//! (`zig build check-metal-demo`, aarch64-macos semantic analysis + codegen)
-//! but has never executed against a Metal runtime — there is none on the
-//! dev/CI hosts. `zig build run-minimal-metal` is gated to macOS hosts.
-//! See src/snail/shader/slang/README-notes, "Metal stage (best-effort)" for
-//! exactly what is and is not verified and where to report results.
+//! Linux cross-compiles this file (`zig build check-metal-demo`,
+//! aarch64-macos semantic analysis + codegen). macOS CI additionally
+//! runtime-compiles every generated MSL artifact, exercises the scene-used
+//! pipelines on a real Metal GPU, and pixel-gates the result. See
+//! src/snail/shader/slang/README-notes, "Metal stage", for coverage details.
 //!
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules — and none of the Apple SDK headers: Metal
@@ -367,13 +366,18 @@ const Pipelines = struct {
     }
 };
 
-/// Compile-check the two generated MSL artifacts the scene does not draw
-/// (LCD subpixel — plain-MRT flavor, see the generated module's caveat —
-/// and the text_sample material module) so a `run-minimal-metal` pass also
-/// validates them against the real Metal compiler.
+/// Compile-check every generated MSL fragment the scene does not draw: all
+/// three LCD-subpixel families (plain-MRT flavor, see the generated module's
+/// caveat) and the text_sample material module. This makes a
+/// `run-minimal-metal` pass validate the complete catalog against Apple's
+/// real Metal compiler.
 fn validateRemainingArtifacts(device: id) !void {
     const subpixel = try compileLibrary(device, slang_gen.subpixelFragMsl(), "text_subpixel.frag");
     release(subpixel);
+    const tt_subpixel = try compileLibrary(device, slang_gen.ttHintedSubpixelFragMsl(), "tt_hinted_text_subpixel.frag");
+    release(tt_subpixel);
+    const autohint_subpixel = try compileLibrary(device, slang_gen.autohintSubpixelFragMsl(), "autohint_subpixel.frag");
+    release(autohint_subpixel);
     const sample = try compileLibrary(device, slang_gen.textSampleFragMsl(), "text_sample.frag");
     release(sample);
 }

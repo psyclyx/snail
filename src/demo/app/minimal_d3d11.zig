@@ -218,13 +218,17 @@ const Pipelines = struct {
     }
 };
 
-/// Compile-check the two generated HLSL artifacts the scene does not draw
-/// (LCD subpixel and the text_sample material module) so a
-/// `run-minimal-d3d11` pass also validates them against the real
-/// d3dcompiler_47.
+/// Compile-check every generated HLSL fragment the scene does not draw: all
+/// three LCD-subpixel families and the text_sample material module. This makes
+/// `run-minimal-d3d11` validate the complete catalog against the real
+/// d3dcompiler_47 frontend.
 fn validateRemainingArtifacts() !void {
     const subpixel = try compileHlsl(slang_gen.subpixelFragHlsl(), slang_gen.hlsl_fragment_entry, "ps_5_0", "text_subpixel.frag");
     release(@as(?*c.ID3DBlob, subpixel));
+    const tt_subpixel = try compileHlsl(slang_gen.ttHintedSubpixelFragHlsl(), slang_gen.hlsl_fragment_entry, "ps_5_0", "tt_hinted_text_subpixel.frag");
+    release(@as(?*c.ID3DBlob, tt_subpixel));
+    const autohint_subpixel = try compileHlsl(slang_gen.autohintSubpixelFragHlsl(), slang_gen.hlsl_fragment_entry, "ps_5_0", "autohint_subpixel.frag");
+    release(@as(?*c.ID3DBlob, autohint_subpixel));
     const sample = try compileHlsl(slang_gen.textSampleFragHlsl(), slang_gen.hlsl_fragment_entry, "ps_5_0", "text_sample.frag");
     release(@as(?*c.ID3DBlob, sample));
 }
