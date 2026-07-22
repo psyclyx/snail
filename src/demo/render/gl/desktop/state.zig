@@ -100,6 +100,10 @@ fn TextStateFor(comptime backend: Backend) type {
             output_srgb: i32 = 0,
             coverage_exponent_set: bool = false,
             coverage_exponent: f32 = 0,
+            // Native-Slang text program only: shadow of the last-uploaded
+            // 96-byte UBO block.
+            push_block_set: bool = false,
+            push_block: gl_common.NativeTextPushBlock = undefined,
         };
 
         // ── Init / Deinit ──
@@ -112,7 +116,10 @@ fn TextStateFor(comptime backend: Backend) type {
             errdefer self.deinit();
 
             // Link all draw programs during renderer init so draw never compiles or links.
-            self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
+            // Regular text uses the native-Slang generated pair (stage A of
+            // the Slang cutover); the other families keep the composed
+            // GLSL-fragment catalog.
+            self.text_program = try gl_programs.loadNativeTextProgramState(shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
             self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
             self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
             self.tt_hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
@@ -368,6 +375,32 @@ fn TextStateFor(comptime backend: Backend) type {
 
             const cache_slot = self.programUniformCache(prog_state.handle);
 
+            // Native-Slang text program: every per-draw parameter lives in
+            // one 96-byte UBO block; upload it when it changed and (re)bind
+            // the buffer to the block binding point. Loose-uniform locs are
+            // all -1 for this program, so the code below is a no-op for it —
+            // return early instead of probing them.
+            if (prog_state.ubo != 0) {
+                const order: i32 = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order);
+                const block = gl_common.NativeTextPushBlock{
+                    .mvp = draw_state.mvp.data,
+                    .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+                    .subpixel_order = order,
+                    .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
+                    .layer_base = 0,
+                    .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
+                    .dither_scale = draw_state.surface.format.ditherAmplitude(),
+                    .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+                };
+                gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
+                if (!cache_slot.push_block_set or !std.mem.eql(u8, std.mem.asBytes(&cache_slot.push_block), std.mem.asBytes(&block))) {
+                    gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, @sizeOf(gl_common.NativeTextPushBlock), &block);
+                    cache_slot.push_block = block;
+                    cache_slot.push_block_set = true;
+                }
+                return;
+            }
+
             if (!cache_slot.mvp_set or !std.mem.eql(f32, &cache_slot.mvp_data, &draw_state.mvp.data)) {
                 gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
                 cache_slot.mvp_data = draw_state.mvp.data;
@@ -438,6 +471,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 slot.subpixel_order_set = false;
                 slot.output_srgb_set = false;
                 slot.coverage_exponent_set = false;
+                slot.push_block_set = false;
             }
             self.active_program = 0;
             self.active_cache = null;

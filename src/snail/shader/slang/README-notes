@@ -1,0 +1,116 @@
+Native-Slang shader source — stage A notes (regular-text family)
+================================================================
+
+One Slang source tree, four targets, regression-gated against the composed
+GLSL catalog. `zig build gen-shaders` (nix-shell: slangc 2026.5.2 + naga)
+regenerates the checked-in artifacts in src/snail/shader/generated/.
+
+Module layout
+-------------
+  render_abi.slang      shared ABI constants
+  color_common.slang    sRGB transfer + premultiply helpers
+  coverage_common.slang root-code / band-span / transfer machinery
+  text_coverage.slang   text-family glyph coverage evaluator
+  vertex.slang          instance-quad vertex body (dilation math)
+  text_main.slang       regular-text fragment logic
+  families/text.slang   resource bindings + [shader(...)] entry points
+
+Math is ported 1:1 from src/snail/shader/glsl/ (the behavioral spec —
+epsilons, literals, and operation order preserved). Structural changes are
+plumbing only: textures and the coverage exponent are function parameters
+(no cross-module preprocessor state in Slang), texelFetch(tex, ivec3(l, a),
+0) becomes tex.Load(int4(l, a, 0)).
+
+Per-target flag sets (source of truth: build/slang_shaders.zig)
+---------------------------------------------------------------
+Common: -default-image-format-unknown -entry <e> -stage <s>
+        -I src/snail/shader/slang
+
+  vulkan  -DSNAIL_TARGET_VULKAN -target spirv -profile spirv_1_3
+  wgsl    -DSNAIL_TARGET_WGSL -target wgsl        (direct; validates in naga)
+  gl      -DSNAIL_TARGET_GL -target spirv -profile spirv_1_3
+          [fragment only: -emit-spirv-via-glsl -warnings-disable 41012]
+          then: naga --input-kind spv --keep-coordinate-space
+                --profile core330 | es300
+
+Matrix convention (re-verified empirically for NATIVE Slang)
+------------------------------------------------------------
+The GLSL-ingestion finding (-matrix-layout-row-major mandatory) does NOT
+carry over. For native Slang the DEFAULT layout is correct: `mul(mvp, v)`
+emits `RowMajor` + MatrixStride 16 + `OpVectorTimesMatrix(v, M)`, which
+reads the CPU's column-major GLSL bytes with GLSL `M * v` semantics
+(Vulkan gate: AE = 0 vs the glslc-era baseline). Passing
+-matrix-layout-column-major transposes every matrix (blank render). Also
+remember the indexing transpose when porting: GLSL `M[c][r]` vs Slang
+`M[r][c]` — GLSL's row-gather `vec4(M[0].x, M[1].x, M[2].x, M[3].x)` is
+just `mvp[0]` in Slang.
+
+Semantic traps found (stage B must respect all of these)
+--------------------------------------------------------
+1. SV_VertexID is D3D-semantics: Slang lowers it to VertexIndex−BaseVertex,
+   dragging in the DrawParameters capability (a Vulkan device feature the
+   demo devices don't enable) and gl_BaseVertex (GL 4.6-only) through naga.
+   For SPIR-V targets load the raw builtin via spirv_asm (see
+   families/text.slang); WGSL's vertex_index is already raw — keep
+   SV_VertexID there.
+2. slang direct-SPIR-V loops are the recorded naga-structurizer trap: naga
+   buries the loop-exit break inside a do{}while(false) wrapper → the loop
+   never terminates → GPU hang / white frame. Any stage with a loop that
+   goes through naga must compile -emit-spirv-via-glsl. spirv_asm does not
+   compile through the via-glsl backend, so a stage cannot have both a
+   loop and spirv_asm. (Text: vertex = spirv_asm + no loops → direct;
+   fragment = loops + no spirv_asm → via-glsl.)
+3. WGSL clip space is y-up; every other target of ours is Vulkan y-down
+   convention. slangc's WGSL backend performs no coordinate-space
+   conversion and -fvk-invert-y is a no-op for -target wgsl: negate
+   position.y in the WGSL entry (families/text.slang). For the naga GL leg
+   the opposite holds: pass --keep-coordinate-space or naga *inserts* a
+   flip + depth remap.
+4. Texture element types: without -default-image-format-unknown slangc
+   guesses an image format (e.g. Rg32ui for Texture2DArray<uint2>) and
+   pulls in the StorageImageExtendedFormats capability for load-only
+   textures.
+5. Descriptor compatibility: declaring bare Texture2DArray (no sampler)
+   yields SAMPLED_IMAGE variables, which Vulkan happily binds from the
+   existing COMBINED_IMAGE_SAMPLER set — no descriptor-layout change
+   needed. WGSL likewise needs no sampler bindings for Load-only use.
+6. Entry-point names: single-entry SPIR-V compiles are renamed to `main`;
+   -target wgsl keeps the Slang function names (vertexMain/fragmentMain) —
+   pipelines must pass them explicitly (see minimal_wgpu createPipelineEntries).
+7. Uniform-block names in the naga GL output are generated (and differ per
+   SPIR-V leg): SnailPushConstants_std140_block_0Vertex vs
+   block_SnailPushConstants_0_block_0Fragment; samplers are
+   _group_0_binding_N_fs. snail.shader.slang_generated records them; GL
+   hosts bind both blocks to one 96-byte UBO (contract.zig PushConstants
+   layout — std140 and std430 agree on every offset of this block).
+8. slang/glslang strength-reduce constant divisions (c/12.92 → c*0.0774…)
+   — measured pixel-exact after 8-bit quantization on all gates, but keep
+   the exact-0 GL gate to catch regressions.
+
+Stage B recipe (per remaining family: colr, path, tt_hinted_text,
+autohint, subpixel, text_sample, linear_resolve)
+----------------------------------------------------------------
+1. Port the family's fragment body from src/snail/shader/glsl/ into a new
+   module (math 1:1; textures/uniform scalars as parameters). Reuse
+   coverage_common/color_common/text_coverage/vertex.
+2. Add entries to a families/<name>.slang following families/text.slang's
+   binding pattern (three target flavors; layer-info tex = binding 2,
+   image array = binding 3 for paint-record families).
+3. Extend build/slang_shaders.zig's matrix (same flags; via-glsl for any
+   naga-bound stage with loops).
+4. Wire behind the existing per-family switch points: contract.zig recipe
+   (Vulkan), gl shaders.zig + loadNativeTextProgramState-style loader
+   (GL/GLES), minimal_wgpu Pipelines.init (WGSL).
+5. Gate: regenerate baselines from the unmodified tree first, then require
+   AE 0 (GL/GLES) and the existing tolerance (Vulkan/wgpu); run the
+   validation-layer sweep and diff message counts.
+   Family-specific watchpoints: subpixel needs dual-source outputs
+   ([[vk::location(0)]] index 0/1 — check slangc drops the index qualifier
+   like the ingestion path did, and that glBindFragDataLocationIndexed
+   still applies on the GL side); autohint has a texture read in the
+   VERTEX stage (fetch through a via-glsl-compatible path — no spirv_asm
+   in that stage; its vertex index must come from another route, e.g.
+   compile the autohint vertex leg direct only if it stays loop-free);
+   paint-record families read u_layer_tex/u_image_tex with SAMPLING
+   (not just Load) — declare SamplerState and check the split-sampler
+   binding contract on WGSL (group 1) and the GL combined-sampler names.

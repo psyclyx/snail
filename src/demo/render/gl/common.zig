@@ -31,6 +31,28 @@ pub const LinearResolvePass = enum(c_int) {
     encode_to_target = 1,
 };
 
+/// The 96-byte std140 uniform block of the native-Slang text-family
+/// shaders (`snail.shader.slang_generated`). Field-for-field identical to
+/// the Vulkan `contract.zig:PushConstants`; the GL hosts upload it into a
+/// UBO instead of setting loose uniforms.
+pub const NativeTextPushBlock = extern struct {
+    mvp: [16]f32,
+    viewport: [2]f32,
+    subpixel_order: i32,
+    output_srgb: i32,
+    layer_base: i32,
+    coverage_exponent: f32,
+    dither_scale: f32,
+    mask_output: i32,
+};
+
+comptime {
+    if (@sizeOf(NativeTextPushBlock) != 96) @compileError("NativeTextPushBlock must be 96 bytes");
+}
+
+/// The UBO binding point both native text uniform blocks are bound to.
+pub const NATIVE_TEXT_UBO_BINDING: c_uint = 0;
+
 /// sRGB transfer function — single channel.
 pub fn srgbFloatToLinear(v: f32) f32 {
     const c = std.math.clamp(v, 0.0, 1.0);

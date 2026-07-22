@@ -1,4 +1,5 @@
 const std = @import("std");
+const slang_shaders = @import("slang_shaders.zig");
 
 fn appendBytes(dest: []u8, offset: *usize, bytes: []const u8) void {
     @memcpy(dest[offset.*..][0..bytes.len], bytes);
@@ -329,5 +330,13 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
     inline for (shader_specs, 0..) |spec, i| {
         mod.addAnonymousImport(spec.import_name, .{ .root_source_file = spv_outputs[i] });
     }
+
+    // Stage A of the Slang cutover: the regular-text pipeline compiles from
+    // the native-Slang family source (src/snail/shader/slang/families/
+    // text.slang) instead of the composed GLSL. Other families keep the
+    // GLSL-ingestion path above. See build/slang_shaders.zig for flags.
+    const native_text = slang_shaders.vulkanTextSpv(b);
+    mod.addAnonymousImport("snail_text_native.vert.spv", .{ .root_source_file = native_text.vert });
+    mod.addAnonymousImport("snail_text_native.frag.spv", .{ .root_source_file = native_text.frag });
     return mod;
 }

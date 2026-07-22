@@ -64,7 +64,10 @@ pub const Gles30TextState = struct {
         self.backend = gl_backend.detect(gl);
 
         // Link all draw programs during renderer init so draw never compiles or links.
-        self.text_program = try loadProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text, false);
+        // Regular text uses the native-Slang generated pair (stage A of the
+        // Slang cutover); the other families keep the composed GLSL-fragment
+        // catalog.
+        self.text_program = try gl_programs.loadNativeTextProgramState(shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
         self.colr_program = try loadProgramState("text-colr", shaders.vertex_shader, shaders.fragment_shader_colr, false);
         self.path_program = try loadProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path, false);
         self.tt_hinted_text_program = try loadProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
@@ -192,6 +195,25 @@ pub const Gles30TextState = struct {
         }
         // Sampler unit pinning + u_layer_base = 0 are baked at link
         // time by loadProgramState; no per-draw glUniform1i needed.
+
+        // Native-Slang text program: every per-draw parameter lives in one
+        // 96-byte UBO block; loose-uniform locs are all -1 for it.
+        if (prog_state.ubo != 0) {
+            const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
+            const block = gl_common.NativeTextPushBlock{
+                .mvp = draw_state.mvp.data,
+                .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+                .subpixel_order = @intFromEnum(order),
+                .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
+                .layer_base = 0,
+                .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
+                .dither_scale = draw_state.surface.format.ditherAmplitude(),
+                .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+            };
+            gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
+            gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, @sizeOf(gl_common.NativeTextPushBlock), &block);
+            return;
+        }
 
         gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
         gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);

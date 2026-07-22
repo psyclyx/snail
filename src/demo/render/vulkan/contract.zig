@@ -127,6 +127,12 @@ pub const frag_autohint_spv = vk_shaders.frag_autohint_spv;
 pub const frag_colr_spv = vk_shaders.frag_colr_spv;
 pub const frag_path_spv = vk_shaders.frag_path_spv;
 pub const frag_text_subpixel_dual_spv = vk_shaders.frag_text_subpixel_dual_spv;
+/// Native-Slang text family (stage A of the Slang cutover). Same push
+/// constants, vertex input, and descriptor-set layout: the shaders declare
+/// the curve/band textures as sampled images, which Vulkan permits to be
+/// backed by the existing COMBINED_IMAGE_SAMPLER descriptors.
+pub const vert_text_native_spv = vk_shaders.vert_text_native_spv;
+pub const frag_text_native_spv = vk_shaders.frag_text_native_spv;
 
 // ── Blend ──
 
@@ -172,7 +178,10 @@ pub const PipelineRecipe = struct {
 
 pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
-        .text => .{ .vert_spv = vert_spv, .frag_spv = frag_text_spv, .blend = .premultiplied },
+        // Stage A of the Slang cutover: regular text draws with the
+        // native-Slang compiled pair; every other family keeps the
+        // GLSL-catalog modules.
+        .text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_text_native_spv, .blend = .premultiplied },
         .colr => .{ .vert_spv = vert_spv, .frag_spv = frag_colr_spv, .blend = .premultiplied },
         .path => .{ .vert_spv = vert_spv, .frag_spv = frag_path_spv, .blend = .premultiplied },
         .tt_hinted_text => .{ .vert_spv = vert_spv, .frag_spv = frag_tt_hinted_text_spv, .blend = .premultiplied },

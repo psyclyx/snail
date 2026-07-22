@@ -154,6 +154,7 @@ pub const render = @import("render.zig");
 pub const shader = struct {
     pub const glsl = @import("shader/glsl.zig");
     pub const wgsl = @import("shader/wgsl.zig");
+    pub const slang_generated = @import("shader/slang_generated.zig");
 };
 
 test {
@@ -192,4 +193,5 @@ test {
     _ = shader;
     _ = shader.glsl;
     _ = shader.wgsl;
+    _ = shader.slang_generated;
 }

@@ -40,6 +40,7 @@ const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
 const wgsl = snail.shader.wgsl;
+const slang_gen = snail.shader.slang_generated;
 
 /// The Vulkan push-constant block reshaped as a uniform buffer (std140; the
 /// scalar fields land on the same offsets as the C struct's). Must stay in
@@ -320,10 +321,15 @@ const Pipelines = struct {
     fn init(device: c.WGPUDevice, layout: c.WGPUPipelineLayout) !Pipelines {
         const text_vert = try createShaderModule(device, wgsl.source(.text, .vertex), "snail-text-vert");
         defer c.wgpuShaderModuleRelease(text_vert);
+        // Stage A of the Slang cutover: the regular-text pipeline uses the
+        // native-Slang generated WGSL (same @group/@binding contract; entry
+        // points keep their Slang names). Other families keep the catalog.
+        const native_text_vert = try createShaderModule(device, slang_gen.textWgsl(.vertex), "snail-text-native-vert");
+        defer c.wgpuShaderModuleRelease(native_text_vert);
+        const native_text_frag = try createShaderModule(device, slang_gen.textWgsl(.fragment), "snail-text-native-frag");
+        defer c.wgpuShaderModuleRelease(native_text_frag);
         const autohint_vert = try createShaderModule(device, wgsl.source(.autohint, .vertex), "snail-autohint-vert");
         defer c.wgpuShaderModuleRelease(autohint_vert);
-        const text_frag = try createShaderModule(device, wgsl.source(.text, .fragment), "snail-text-frag");
-        defer c.wgpuShaderModuleRelease(text_frag);
         const autohint_frag = try createShaderModule(device, wgsl.source(.autohint, .fragment), "snail-autohint-frag");
         defer c.wgpuShaderModuleRelease(autohint_frag);
         const tt_frag = try createShaderModule(device, wgsl.source(.tt_hinted_text, .fragment), "snail-tt-frag");
@@ -334,7 +340,7 @@ const Pipelines = struct {
         defer c.wgpuShaderModuleRelease(colr_frag);
 
         return .{
-            .regular = try createPipeline(device, layout, text_vert, text_frag, "snail-text"),
+            .regular = try createPipelineEntries(device, layout, native_text_vert, slang_gen.wgsl_vertex_entry, native_text_frag, slang_gen.wgsl_fragment_entry, "snail-text"),
             .autohint = try createPipeline(device, layout, autohint_vert, autohint_frag, "snail-autohint"),
             .tt_hint = try createPipeline(device, layout, text_vert, tt_frag, "snail-tt-hint"),
             .path = try createPipeline(device, layout, text_vert, path_frag, "snail-path"),
@@ -367,6 +373,18 @@ const Pipelines = struct {
         frag: c.WGPUShaderModule,
         label: []const u8,
     ) !c.WGPURenderPipeline {
+        return createPipelineEntries(device, layout, vert, "main", frag, "main", label);
+    }
+
+    fn createPipelineEntries(
+        device: c.WGPUDevice,
+        layout: c.WGPUPipelineLayout,
+        vert: c.WGPUShaderModule,
+        vert_entry: []const u8,
+        frag: c.WGPUShaderModule,
+        frag_entry: []const u8,
+        label: []const u8,
+    ) !c.WGPURenderPipeline {
         var attributes = vertexAttributes();
         const vertex_buffers = [1]c.WGPUVertexBufferLayout{.{
             .stepMode = c.WGPUVertexStepMode_Instance,
@@ -388,7 +406,7 @@ const Pipelines = struct {
         const fragment = c.WGPUFragmentState{
             .nextInChain = null,
             .module = frag,
-            .entryPoint = sv("main"),
+            .entryPoint = sv(frag_entry),
             .constantCount = 0,
             .constants = null,
             .targetCount = targets.len,
@@ -401,7 +419,7 @@ const Pipelines = struct {
             .vertex = .{
                 .nextInChain = null,
                 .module = vert,
-                .entryPoint = sv("main"),
+                .entryPoint = sv(vert_entry),
                 .constantCount = 0,
                 .constants = null,
                 .bufferCount = vertex_buffers.len,

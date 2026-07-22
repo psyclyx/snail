@@ -1,8 +1,13 @@
 const std = @import("std");
 const gl = @import("bindings.zig").gl;
+const gl_common = @import("../common.zig");
+const slang_gen = @import("snail").shader.slang_generated;
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
+    /// Non-zero for the native-Slang text program: the 96-byte UBO backing
+    /// its `SnailPushConstants` uniform blocks (loose-uniform locs stay -1).
+    ubo: gl.GLuint = 0,
     mvp_loc: gl.GLint = -1,
     viewport_loc: gl.GLint = -1,
     curve_tex_loc: gl.GLint = -1,
@@ -71,8 +76,44 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
     return ps;
 }
 
+/// Link the native-Slang text program (generated GLES 300 es; see
+/// `snail.shader.slang_generated`). Mirrors the GL 3.3/4.4 loader in
+/// `gl/programs.zig`: one 96-byte std140 block per stage bound to
+/// `NATIVE_TEXT_UBO_BINDING`, curve/band samplers pinned to units 0/1.
+pub fn loadNativeTextProgramState(vs_src: [*c]const u8, fs_src: [*c]const u8) !ProgramState {
+    const handle = try linkProgram("text-native", vs_src, fs_src, false);
+    var ps = ProgramState{
+        .handle = handle,
+        .curve_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_curve_tex_name),
+        .band_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_band_tex_name),
+    };
+
+    const vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_vertex_block_name);
+    const fragment_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_fragment_block_name);
+    if (vertex_block == gl.GL_INVALID_INDEX or fragment_block == gl.GL_INVALID_INDEX) {
+        gl.glDeleteProgram(handle);
+        return error.ShaderLinkFailed;
+    }
+    gl.glUniformBlockBinding(handle, vertex_block, gl_common.NATIVE_TEXT_UBO_BINDING);
+    gl.glUniformBlockBinding(handle, fragment_block, gl_common.NATIVE_TEXT_UBO_BINDING);
+
+    gl.glGenBuffers(1, &ps.ubo);
+    gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, ps.ubo);
+    gl.glBufferData(gl.GL_UNIFORM_BUFFER, @sizeOf(gl_common.NativeTextPushBlock), null, gl.GL_DYNAMIC_DRAW);
+    gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
+
+    var prev_program: gl.GLint = 0;
+    gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
+    gl.glUseProgram(handle);
+    if (ps.curve_tex_loc >= 0) gl.glUniform1i(ps.curve_tex_loc, 0);
+    if (ps.band_tex_loc >= 0) gl.glUniform1i(ps.band_tex_loc, 1);
+    gl.glUseProgram(@intCast(prev_program));
+    return ps;
+}
+
 pub fn deleteProgramState(prog_state: *ProgramState) void {
     if (prog_state.handle != 0) gl.glDeleteProgram(prog_state.handle);
+    if (prog_state.ubo != 0) gl.glDeleteBuffers(1, &prog_state.ubo);
     prog_state.* = .{};
 }
 
