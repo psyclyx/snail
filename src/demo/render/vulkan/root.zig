@@ -33,9 +33,8 @@ const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .tt_hinted_text
 
 pub const RenderError = error{
     StaleBinding,
-    MalformedBatch,
     VertexBufferFull,
-};
+} || snail.render.records.DrawRecords.ValidationError;
 
 pub const Renderer = struct {
     device: vk.VkDevice,
@@ -131,13 +130,12 @@ pub const Renderer = struct {
         instances: []const snail.render.records.Instance,
         batches: []const snail.render.records.DrawBatch,
     ) RenderError!void {
+        try (snail.render.records.DrawRecords{ .instances = instances, .batches = batches }).validate();
         const instance_bytes = std.mem.sliceAsBytes(instances);
         const next_cursor = std.math.add(usize, self.cursor, instance_bytes.len) catch return error.VertexBufferFull;
         if (next_cursor > self.slot_bytes) return error.VertexBufferFull;
         for (batches) |batch| {
             if (!cache.isBindingLive(batch.binding)) return error.StaleBinding;
-            const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
-            if (end > instances.len) return error.MalformedBatch;
         }
         const base = self.cur_slot_base + self.cursor;
         @memcpy(self.vbo.bytes()[base..][0..instance_bytes.len], instance_bytes);
@@ -146,13 +144,13 @@ pub const Renderer = struct {
         vk.vkCmdBindIndexBuffer(cmd, self.ibo.buffer, 0, vk.VK_INDEX_TYPE_UINT32);
 
         // Y-flipped viewport (Vulkan clip space), matching the reference.
-        const w = draw_state.surface.pixel_width;
-        const h = draw_state.surface.pixel_height;
+        const w: f32 = @floatFromInt(draw_state.surface.pixel_width);
+        const h: f32 = @floatFromInt(draw_state.surface.pixel_height);
         const vp = vk.VkViewport{ .x = 0, .y = h, .width = w, .height = -h, .minDepth = 0, .maxDepth = 1 };
         vk.vkCmdSetViewport(cmd, 0, 1, &vp);
         const scissor = vk.VkRect2D{
             .offset = .{ .x = 0, .y = 0 },
-            .extent = .{ .width = @intFromFloat(@max(w, 0)), .height = @intFromFloat(@max(h, 0)) },
+            .extent = .{ .width = draw_state.surface.pixel_width, .height = draw_state.surface.pixel_height },
         };
         vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
 

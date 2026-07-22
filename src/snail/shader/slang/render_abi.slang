@@ -3,9 +3,9 @@
 // the GLSL catalog.
 module render_abi;
 
-public static const int SNAIL_RENDER_ABI_VERSION = 1;
+public static const int SNAIL_RENDER_ABI_VERSION = 2;
 
-public static const int SNAIL_SPECIAL_LAYER_SENTINEL = 255;
+public static const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;
 public static const int SNAIL_SPECIAL_KIND_COLR = 0;
 public static const int SNAIL_SPECIAL_KIND_PATH = 1;
 public static const int SNAIL_SPECIAL_KIND_TT_HINTED_TEXT = 2;

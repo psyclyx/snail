@@ -41,10 +41,10 @@ pub const FontSet = struct {
         errdefer allocator.free(fonts);
         for (data, 0..) |bytes, i| fonts[i] = try snail.Font.init(bytes);
         var faces = try snail.Faces.build(allocator, &.{
-            .{ .font = &fonts[0] },
-            .{ .font = &fonts[1], .fallback = true },
-            .{ .font = &fonts[2], .fallback = true },
-            .{ .font = &fonts[3], .fallback = true },
+            .{ .font = &fonts[0], .font_id = 0 },
+            .{ .font = &fonts[1], .font_id = 1, .fallback = true },
+            .{ .font = &fonts[2], .font_id = 2, .fallback = true },
+            .{ .font = &fonts[3], .font_id = 3, .fallback = true },
         });
         errdefer faces.deinit();
         return .{ .allocator = allocator, .fonts = fonts, .faces = faces };
@@ -305,8 +305,8 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
             if (entry.key.eql(base_key)) break entry.curves;
         } else continue;
         if (base.isEmpty()) continue;
-        const x = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
-        const y = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
+        const x = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
+        const y = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
         const analysis = try analyzer.analyzeGlyph(build.scratch(), glyph.glyph_id, x, y);
         try build.entries.append(build.allocator, .{
             .key = key,
@@ -420,7 +420,7 @@ fn addPaths(build: *SceneBuild) !void {
         try build.entries.append(build.allocator, .{
             .key = key,
             .curves = build.owned_curves.items[build.owned_curves.items.len - 1],
-            .paint = prepared.paintForDesign(.{ .solid = colors[(row * 6 + col) % colors.len] }),
+            .paint = try prepared.paintForDesign(.{ .solid = colors[(row * 6 + col) % colors.len] }),
         });
         try build.shapes.append(build.allocator, .{
             .key = key,

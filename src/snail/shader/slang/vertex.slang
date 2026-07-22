@@ -18,9 +18,9 @@ public struct TextVertexIn {
     public float4 xform;   // linear transform: xx, xy, yx, yy
     public float2 origin;  // tx, ty
     public uint2 glyph;    // gz, gw packed glyph data
-    public float4 bnd;     // band scale x, scale y, offset x, offset y
-    public float4 col;     // base color RGBA
-    public float4 tint;    // instance tint RGBA
+    public uint4 payload;  // regular band-transform bits or compact autohint policy
+    public float4 col;     // linear-light f16 base color
+    public float4 tint;    // linear-light f16 instance tint
 };
 
 public struct TextVertexResult {
@@ -67,13 +67,18 @@ public TextVertexResult snailTextVertex(TextVertexIn input, uint vertex_index, f
         eff_xform.z * nd.x + eff_xform.w * nd.y
     );
 
-    float det = eff_xform.x * eff_xform.w - eff_xform.y * eff_xform.z;
-    float inv_det = 1.0 / det;
+    // Normalize before forming the determinant: direct f32 products can
+    // underflow/overflow for otherwise representable affine inverses.
+    float xform_scale = max(max(abs(eff_xform.x), abs(eff_xform.y)),
+                            max(abs(eff_xform.z), abs(eff_xform.w)));
+    float4 unit_xform = eff_xform / xform_scale;
+    float det = unit_xform.x * unit_xform.w - unit_xform.y * unit_xform.z;
+    float inv_det_scale = 1.0 / (det * xform_scale);
     float4 jac = float4(
-        eff_xform.w * inv_det,
-        -eff_xform.y * inv_det,
-        -eff_xform.z * inv_det,
-        eff_xform.x * inv_det
+        unit_xform.w * inv_det_scale,
+        -unit_xform.y * inv_det_scale,
+        -unit_xform.z * inv_det_scale,
+        unit_xform.x * inv_det_scale
     );
 
     TextVertexResult r;
@@ -81,13 +86,9 @@ public TextVertexResult snailTextVertex(TextVertexIn input, uint vertex_index, f
     uint gz = input.glyph.x;
     uint gw = input.glyph.y;
     r.glyph = int4(int(gz & 0xFFFFu), int(gz >> 16u), int(gw & 0xFFFFu), int(gw >> 16u));
-    r.banding = input.bnd;
-    // sRGB decode the per-instance color and tint at the vertex stage:
-    // these are constant across all four corners of the glyph quad, so
-    // per-vertex conversion is 4 invocations vs the ~100+ fragments per
-    // glyph. Fragment shaders use them as already-linear values.
-    r.color = float4(srgbToLinear(input.col.rgb), input.col.a);
-    r.tint = float4(srgbToLinear(eff_tint.rgb), eff_tint.a);
+    r.banding = asfloat(input.payload);
+    r.color = input.col;
+    r.tint = eff_tint;
 
     // Slug dynamic dilation. GLSL gathered rows element-wise
     // (m0 = vec4(M[0].x, M[1].x, M[2].x, M[3].x)); Slang's row indexing

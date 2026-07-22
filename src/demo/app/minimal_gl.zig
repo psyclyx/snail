@@ -130,7 +130,7 @@ const GpuAtlas = struct {
     curve_tex: c.GLuint = 0,
     band_tex: c.GLuint = 0,
     layer_tex: c.GLuint = 0,
-    uploads: snail.OwnedAtlasUploadPlanner,
+    uploads: snail.atlas_upload.OwnedPlanner,
     binding: ?snail.render.records.Binding = null,
 
     const options = snail.atlas_upload.Options{
@@ -144,7 +144,7 @@ const GpuAtlas = struct {
     fn init(allocator: std.mem.Allocator, pool: *snail.PagePool) !GpuAtlas {
         var self = GpuAtlas{
             .pool = pool,
-            .uploads = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, options),
+            .uploads = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, options),
         };
         errdefer self.uploads.deinit();
         self.createTextures();
@@ -160,19 +160,20 @@ const GpuAtlas = struct {
     }
 
     fn createTextures(self: *GpuAtlas) void {
-        const curve_height = self.pool.options.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
-        const band_height = self.pool.options.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
+        const pool_config = self.pool.config();
+        const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
+        const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
 
         c.glGenTextures(1, &self.curve_tex);
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RGBA16F, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(self.pool.options.max_layers), 0, c.GL_RGBA, c.GL_HALF_FLOAT, null);
+        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RGBA16F, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(pool_config.max_layers), 0, c.GL_RGBA, c.GL_HALF_FLOAT, null);
         setNearest(c.GL_TEXTURE_2D_ARRAY);
 
         c.glGenTextures(1, &self.band_tex);
         c.glActiveTexture(c.GL_TEXTURE1);
         c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RG16UI, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(self.pool.options.max_layers), 0, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, null);
+        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RG16UI, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(pool_config.max_layers), 0, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, null);
         setNearest(c.GL_TEXTURE_2D_ARRAY);
 
         c.glGenTextures(1, &self.layer_tex);
@@ -242,8 +243,8 @@ pub fn main() !void {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
     var emoji_font = try snail.Font.init(assets.twemoji_mozilla);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font },
-        .{ .font = &emoji_font, .fallback = true },
+        .{ .font = &font, .font_id = 0 },
+        .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0).?;
@@ -438,12 +439,12 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
         .{
             .key = fill_key,
             .curves = fill_curves,
-            .paint = prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
+            .paint = try prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
         },
         .{
             .key = stroke_key,
             .curves = stroke_curves,
-            .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+            .paint = try prepared_stroke.paintForDesign(stroke_style.paint),
         },
     });
     return .{
@@ -567,12 +568,10 @@ fn initGeometry(byte_capacity: usize) Geometry {
     floatAttribute(1, 4, c.GL_FLOAT, c.GL_FALSE, stride, @offsetOf(Instance, "xform"));
     floatAttribute(2, 2, c.GL_FLOAT, c.GL_FALSE, stride, @offsetOf(Instance, "origin"));
     intAttribute(3, 2, stride, @offsetOf(Instance, "glyph"));
-    floatAttribute(4, 4, c.GL_FLOAT, c.GL_FALSE, stride, @offsetOf(Instance, "band"));
-    floatAttribute(5, 4, c.GL_UNSIGNED_BYTE, c.GL_TRUE, stride, @offsetOf(Instance, "color"));
-    floatAttribute(6, 4, c.GL_UNSIGNED_BYTE, c.GL_TRUE, stride, @offsetOf(Instance, "tint"));
-    intAttribute(7, 4, stride, @offsetOf(Instance, "policy"));
-    intAttribute(8, 3, stride, @offsetOf(Instance, "policy") + 16);
-    inline for (0..9) |location| c.glVertexAttribDivisor(location, 1);
+    intAttribute(4, 4, stride, @offsetOf(Instance, "payload"));
+    floatAttribute(5, 4, c.GL_HALF_FLOAT, c.GL_FALSE, stride, @offsetOf(Instance, "color"));
+    floatAttribute(6, 4, c.GL_HALF_FLOAT, c.GL_FALSE, stride, @offsetOf(Instance, "tint"));
+    inline for (0..7) |location| c.glVertexAttribDivisor(location, 1);
     return out;
 }
 

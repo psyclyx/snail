@@ -39,9 +39,8 @@ public float4 snailTtHintedTextFragment(
     float coverage_exponent,
     int mask_output)
 {
-    int layer_byte = (v.glyph.w >> 8) & 0xFF;
-    if (layer_byte != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
-    int special_kind = v.glyph.w & 0xFF;
+    if ((uint(v.glyph.w) & 0x8000u) == 0u) discard;
+    int special_kind = v.glyph.w & 0x3;
     if (special_kind != SNAIL_SPECIAL_KIND_TT_HINTED_TEXT) discard;
 
     float2 rc = v.texcoord;
@@ -55,7 +54,7 @@ public float4 snailTtHintedTextFragment(
     int packed_counts = asint(header.z);
     int band_max_h = packed_counts & 0xFFFF;
     int band_max_v = (packed_counts >> 16) & 0xFFFF;
-    int atlas_layer = layer_base + int(v.banding.w);
+    int atlas_layer = layer_base + ((v.glyph.w >> 2) & 0xff);
 
     float cov = evalGlyphCoverage(rc, epp, ppe, int2(int(header.x), int(header.y)),
                                   int2(band_max_v, band_max_h), band,

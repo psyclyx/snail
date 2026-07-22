@@ -1,8 +1,7 @@
 in vec4 v_paint;
 in vec3 v_texcoord_layer;
 flat in ivec2 v_info;
-flat in uvec4 v_policy0;
-flat in uvec3 v_policy1;
+flat in uvec4 v_policy;
 flat in vec4 v_ah_x_targets[4];
 flat in vec4 v_ah_y_targets[4];
 flat in uvec4 v_ah_x_sources;

@@ -47,29 +47,29 @@ bool snailAhCount(float encoded, out int count) {
     return true;
 }
 
-bool snailDecodeAutohintPolicy(uvec4 p0, uvec3 p1, out SnailAutohintPolicy p) {
-    uint x = p0.x;
-    uint y = p0.y;
-    // word0: x config bits 0-7, then the packed whole-glyph fade (bits 8-22).
-    if ((x & ~0x7fffffu) != 0u || (y & ~0x3fu) != 0u) return false;
-    p.xAlign = int(x & 3u);
-    p.xStem = int((x >> 2u) & 3u);
-    p.xPositioning = int((x >> 4u) & 3u);
-    p.xRegistration = int((x >> 6u) & 3u);
-    p.fadeEnabled = int((x >> 8u) & 1u);
-    p.fadeStart = float((x >> 9u) & 0x7fu);
-    p.fadeFull = float((x >> 16u) & 0x7fu);
-    p.yAlign = int(y & 3u);
-    p.yStem = int((y >> 2u) & 3u);
-    p.yOvershoot = int((y >> 4u) & 3u);
+bool snailDecodeAutohintPolicy(uvec4 words, out SnailAutohintPolicy p) {
+    uint config = words.x;
+    if ((config & ~0x1fffffffu) != 0u || (words.w >> 16u) != 0u) return false;
+    p.xAlign = int(config & 3u);
+    p.xStem = int((config >> 2u) & 3u);
+    p.xPositioning = int((config >> 4u) & 3u);
+    p.xRegistration = int((config >> 6u) & 3u);
+    p.yAlign = int((config >> 8u) & 3u);
+    p.yStem = int((config >> 10u) & 3u);
+    p.yOvershoot = int((config >> 12u) & 3u);
+    p.fadeEnabled = int((config >> 14u) & 1u);
+    p.fadeStart = float((config >> 15u) & 0x7fu);
+    p.fadeFull = float((config >> 22u) & 0x7fu);
     if (p.xAlign > 1 || p.xStem > 2 || p.xPositioning > 1 ||
         p.xRegistration > 1 || p.yAlign > 2 || p.yStem > 2 || p.yOvershoot > 1)
         return false;
-    p.xRatio = uintBitsToFloat(p0.z);
-    p.xMaxPx = uintBitsToFloat(p0.w);
-    p.yRatio = uintBitsToFloat(p1.x);
-    p.yMaxPx = uintBitsToFloat(p1.y);
-    p.overshootMinPx = uintBitsToFloat(p1.z);
+    vec2 xValues = unpackHalf2x16(words.y);
+    vec2 yValues = unpackHalf2x16(words.z);
+    p.xRatio = xValues.x;
+    p.xMaxPx = xValues.y;
+    p.yRatio = yValues.x;
+    p.yMaxPx = yValues.y;
+    p.overshootMinPx = unpackHalf2x16(words.w).x;
     if ((p.xStem != 0 && (!snailAhFinite(p.xRatio) || p.xRatio < 0.0)) ||
         (p.xStem == 1 && (!snailAhFinite(p.xMaxPx) || p.xMaxPx < 0.0)) ||
         (p.yStem != 0 && (!snailAhFinite(p.yRatio) || p.yRatio < 0.0)) ||

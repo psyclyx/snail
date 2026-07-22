@@ -191,16 +191,16 @@ public SubpixelResult snailSubpixelFragment(
     r.blend = float4(0.0);
     r.discard_fragment = false;
 
-    int layer_byte = (v.glyph.w >> 8) & 0xFF;
-    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) { r.discard_fragment = true; return r; }
+    if ((uint(v.glyph.w) & 0x8000u) != 0u) { r.discard_fragment = true; return r; }
+    int layer_byte = (v.glyph.z >> 8) & 0xFF;
     int layer = layer_base + layer_byte;
 
     float2 rc = v.texcoord;
-    int2 band_max = int2(v.glyph.w & 0xFF, v.glyph.z);
+    int2 band_max = int2((v.glyph.z >> 4) & 0xF, v.glyph.z & 0xF);
     int2 glyph_loc = v.glyph.xy;
     float4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v.banding, layer,
                                                 subpixel_order, coverage_exponent, curve_tex, band_tex);
 
-    // v.color / v.tint are already sRGB-decoded in the vertex shader.
+    // v.color / v.tint arrive as linear-light f16 vertex attributes.
     return snailPackSubpixelResult(v.color * v.tint, cov_alpha, output_srgb);
 }

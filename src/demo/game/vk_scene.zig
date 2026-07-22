@@ -300,13 +300,13 @@ pub const VkSceneRenderer = struct {
     pub fn record(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, frame_index: u32, scene: *Scene, view_proj: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
         self.caller.beginFrame(frame_index);
         const desc0 = self.cache.descriptorSet();
-        const w = surface.pixel_width;
-        const h = surface.pixel_height;
+        const w: f32 = @floatFromInt(surface.pixel_width);
+        const h: f32 = @floatFromInt(surface.pixel_height);
 
         // 1. Material quad (own pipeline; depth test + write).
         const vp = vk.VkViewport{ .x = 0, .y = h, .width = w, .height = -h, .minDepth = 0, .maxDepth = 1 };
         vk.vkCmdSetViewport(cmd, 0, 1, &vp);
-        const scissor = vk.VkRect2D{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = @intFromFloat(@max(w, 0)), .height = @intFromFloat(@max(h, 0)) } };
+        const scissor = vk.VkRect2D{ .offset = .{ .x = 0, .y = 0 }, .extent = .{ .width = surface.pixel_width, .height = surface.pixel_height } };
         vk.vkCmdSetScissor(cmd, 0, 1, &scissor);
         vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.material_pipeline);
         var sets = [2]vk.VkDescriptorSet{ desc0, self.ssbo_set };

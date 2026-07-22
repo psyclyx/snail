@@ -1,3 +1,4 @@
+const std = @import("std");
 const band_tex = @import("band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const vec = @import("../math/vec.zig");
@@ -12,8 +13,9 @@ pub const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 pub const CursorError = error{
     /// The instance buffer has no room for another instance.
     BufferTooSmall,
-    /// A composed transform had a near-zero determinant.
-    InvalidTransform,
+    /// The packed instance could not be represented or violated an ABI
+    /// invariant. Higher-level emitters should preflight detailed errors.
+    InvalidInstance,
 };
 
 /// Incremental writer over an instance-word buffer.
@@ -27,7 +29,9 @@ pub const Cursor = struct {
     len: *usize,
 
     fn ensureInstanceCapacity(self: Cursor) CursorError!void {
-        if (self.len.* + WORDS_PER_INSTANCE > self.buf.len) return error.BufferTooSmall;
+        if (self.len.* > self.buf.len or self.buf.len - self.len.* < WORDS_PER_INSTANCE) {
+            return error.BufferTooSmall;
+        }
     }
 
     fn dst(self: Cursor) []u32 {
@@ -49,7 +53,7 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateGlyphVerticesTransformedTinted(self.dst(), bbox, band_entry, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -63,11 +67,11 @@ pub const Cursor = struct {
         tint: [4]f32,
         layer: u8,
         transform: Transform2D,
-        policy: [7]u32,
+        policy: [4]u32,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateAutohintVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform, policy))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -84,7 +88,7 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generatePathRecordVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -101,7 +105,7 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateMultiLayerGlyphVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -118,7 +122,18 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateTtHintedTextVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 };
+
+test "cursor capacity check is total for an invalid or overflowing length" {
+    var storage: [WORDS_PER_INSTANCE]u32 = undefined;
+    var invalid_len: usize = std.math.maxInt(usize);
+    const invalid_cursor = Cursor{ .buf = &storage, .len = &invalid_len };
+    try std.testing.expectError(error.BufferTooSmall, invalid_cursor.ensureInstanceCapacity());
+
+    var short_len: usize = 1;
+    const short_cursor = Cursor{ .buf = storage[0..WORDS_PER_INSTANCE], .len = &short_len };
+    try std.testing.expectError(error.BufferTooSmall, short_cursor.ensureInstanceCapacity());
+}

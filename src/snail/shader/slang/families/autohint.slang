@@ -5,13 +5,13 @@
 //
 // ── Stage IO contract ──
 //
-// Vertex inputs are the full instance stream, locations 0..8 (policy words
-// 7/8 feed the fit). Varyings mirror the catalog's SNAIL_WGSL variant on
+// Vertex inputs are the compact instance stream, locations 0..6; location 4
+// is the autohint policy payload. Varyings mirror the catalog's SNAIL_WGSL variant on
 // EVERY target — the two target arrays are scalarized into eight float4
 // varyings (WGSL forbids array-typed entry-point IO, and one shape for all
 // targets keeps the family single-source): 0 paint, 1 texcoord+layer,
-// 2 info (flat), 3/4 policy words (flat), 5..8 x targets (flat),
-// 9..12 y targets (flat), 13/14 packed sources (flat).
+// 2 info (flat), 3 policy (flat), 4..7 x targets (flat),
+// 8..11 y targets (flat), 12/13 packed sources (flat).
 //
 // ── Vertex index ──
 //
@@ -69,11 +69,9 @@ struct VsInput {
     [[vk::location(1)]] float4 xform : ATTRIB1;
     [[vk::location(2)]] float2 origin : ATTRIB2;
     [[vk::location(3)]] uint2 glyph : ATTRIB3;
-    [[vk::location(4)]] float4 bnd : ATTRIB4;
+    [[vk::location(4)]] uint4 payload : ATTRIB4;
     [[vk::location(5)]] float4 col : ATTRIB5;
     [[vk::location(6)]] float4 tint : ATTRIB6;
-    [[vk::location(7)]] uint4 policy0 : ATTRIB7;
-    [[vk::location(8)]] uint3 policy1 : ATTRIB8;
 };
 
 struct VsOutput {
@@ -81,18 +79,17 @@ struct VsOutput {
     [[vk::location(0)]] float4 paint : TEXCOORD0;
     [[vk::location(1)]] float3 texcoord_layer : TEXCOORD1;
     [[vk::location(2)]] nointerpolation int2 info : TEXCOORD2;
-    [[vk::location(3)]] nointerpolation uint4 policy0 : TEXCOORD3;
-    [[vk::location(4)]] nointerpolation uint3 policy1 : TEXCOORD4;
-    [[vk::location(5)]] nointerpolation float4 x_targets0 : TEXCOORD5;
-    [[vk::location(6)]] nointerpolation float4 x_targets1 : TEXCOORD6;
-    [[vk::location(7)]] nointerpolation float4 x_targets2 : TEXCOORD7;
-    [[vk::location(8)]] nointerpolation float4 x_targets3 : TEXCOORD8;
-    [[vk::location(9)]] nointerpolation float4 y_targets0 : TEXCOORD9;
-    [[vk::location(10)]] nointerpolation float4 y_targets1 : TEXCOORD10;
-    [[vk::location(11)]] nointerpolation float4 y_targets2 : TEXCOORD11;
-    [[vk::location(12)]] nointerpolation float4 y_targets3 : TEXCOORD12;
-    [[vk::location(13)]] nointerpolation uint4 x_sources : TEXCOORD13;
-    [[vk::location(14)]] nointerpolation uint4 y_sources : TEXCOORD14;
+    [[vk::location(3)]] nointerpolation uint4 policy : TEXCOORD3;
+    [[vk::location(4)]] nointerpolation float4 x_targets0 : TEXCOORD4;
+    [[vk::location(5)]] nointerpolation float4 x_targets1 : TEXCOORD5;
+    [[vk::location(6)]] nointerpolation float4 x_targets2 : TEXCOORD6;
+    [[vk::location(7)]] nointerpolation float4 x_targets3 : TEXCOORD7;
+    [[vk::location(8)]] nointerpolation float4 y_targets0 : TEXCOORD8;
+    [[vk::location(9)]] nointerpolation float4 y_targets1 : TEXCOORD9;
+    [[vk::location(10)]] nointerpolation float4 y_targets2 : TEXCOORD10;
+    [[vk::location(11)]] nointerpolation float4 y_targets3 : TEXCOORD11;
+    [[vk::location(12)]] nointerpolation uint4 x_sources : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint4 y_sources : TEXCOORD13;
 };
 
 #if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
@@ -122,21 +119,20 @@ VsOutput vertexBody(VsInput input, uint vertex_index) {
     v.xform = input.xform;
     v.origin = input.origin;
     v.glyph = input.glyph;
-    v.bnd = input.bnd;
+    v.payload = input.payload;
     v.col = input.col;
     v.tint = input.tint;
 
     AutohintVertexResult r = snailAutohintVertex(v, vertex_index, pc.mvp, pc.viewport,
-                                                 pc.subpixel_order, input.policy0,
-                                                 input.policy1, u_layer_tex);
+                                                 pc.subpixel_order, input.payload,
+                                                 u_layer_tex);
 
     VsOutput o;
     o.position = r.position;
     o.paint = r.paint;
     o.texcoord_layer = r.texcoord_layer;
     o.info = r.info;
-    o.policy0 = r.policy0;
-    o.policy1 = r.policy1;
+    o.policy = r.policy;
     o.x_targets0 = r.x_targets[0];
     o.x_targets1 = r.x_targets[1];
     o.x_targets2 = r.x_targets[2];
@@ -156,8 +152,7 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     v.paint = input.paint;
     v.texcoord_layer = input.texcoord_layer;
     v.info = input.info;
-    v.policy0 = input.policy0;
-    v.policy1 = input.policy1;
+    v.policy = input.policy;
     v.x_targets[0] = input.x_targets0;
     v.x_targets[1] = input.x_targets1;
     v.x_targets[2] = input.x_targets2;

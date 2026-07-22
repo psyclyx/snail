@@ -6,7 +6,7 @@
 //! Per-cache resident state:
 //!
 //! - `curve_array`, `band_array` — `TEXTURE_2D_ARRAY` sized to
-//!   `pool.options.max_layers`. Pages stream in via `glTexSubImage3D`.
+//!   `pool.config().max_layers`. Pages stream in via `glTexSubImage3D`.
 //! - `layer_info_tex` — single `TEXTURE_2D` of `INFO_WIDTH × options
 //!   .layer_info_height` `RGBA32F` texels. Each binding occupies a
 //!   row band starting at `binding.info_row_base`.
@@ -24,7 +24,6 @@ const std = @import("std");
 const atlas_mod = @import("snail");
 const draw_records = @import("snail").render.records;
 const page_pool_mod = @import("snail");
-const page_mod = @import("snail");
 const image_mod = @import("snail");
 const upload_plan = @import("snail").atlas_upload;
 
@@ -46,7 +45,6 @@ inline fn bindingsFor(comptime v: Variant) type {
 }
 
 pub const Atlas = atlas_mod.Atlas;
-pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const Image = image_mod.Image;
@@ -96,7 +94,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         // Persistent image array (TEXTURE_2D_ARRAY of sRGBA8).
         image_array_tex: gl.GLuint = 0,
 
-        // Font-atlas upload planning — caller-owned state (snail.AtlasUploadPlanner).
+        // Font-atlas upload planning — caller-owned state (snail.atlas_upload.Planner).
         // The cache keeps only the GL textures; allocation/deltas/patching are the
         // planner's. Backing slices are cache-owned.
         planner: upload_plan.Planner,
@@ -122,11 +120,12 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         }
 
         fn validateDeviceLimits(pool: *const PagePool, options: DeviceAtlasOptions) upload_plan.InitError!void {
-            const curve_height = pool.options.curve_words_per_page / CURVE_WORDS_PER_ROW;
-            const band_height = pool.options.band_words_per_page / BAND_WORDS_PER_ROW;
+            const pool_config = pool.config();
+            const curve_height = pool_config.curve_words_per_page / CURVE_WORDS_PER_ROW;
+            const band_height = pool_config.band_words_per_page / BAND_WORDS_PER_ROW;
             if (curve_height > std.math.maxInt(i32) or
                 band_height > std.math.maxInt(i32) or
-                pool.options.max_layers > std.math.maxInt(i32) or
+                pool_config.max_layers > std.math.maxInt(i32) or
                 options.layer_info_height > std.math.maxInt(i32) or
                 options.max_image_width > std.math.maxInt(i32) or
                 options.max_image_height > std.math.maxInt(i32) or
@@ -410,7 +409,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         fn ensurePoolTextures(self: *Self) void {
             if (self.curve_array != 0 and self.band_array != 0) return;
 
-            const options = self.pool.options;
+            const options = self.pool.config();
             self.curve_height = options.curve_words_per_page / CURVE_WORDS_PER_ROW;
             self.band_height = options.band_words_per_page / BAND_WORDS_PER_ROW;
             self.layer_count = options.max_layers;
@@ -461,10 +460,10 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             // caller asked for caps that don't fit this content; bail
             // before allocating texture state.
             for (atlases) |atlas| {
-                const records = atlas.paint_image_records orelse continue;
-                for (records) |maybe_rec| {
-                    const rec = maybe_rec orelse continue;
-                    if (rec.image.width > self.options.max_image_width or rec.image.height > self.options.max_image_height) {
+                const records = atlas.paint_records orelse continue;
+                for (records) |rec| {
+                    const image = rec.image orelse continue;
+                    if (image.width > self.options.max_image_width or image.height > self.options.max_image_height) {
                         return error.ImageTooLarge;
                     }
                 }
@@ -591,7 +590,7 @@ test "GlDeviceAtlas init allocates fixed-capacity slots" {
     defer cache.deinit();
 
     // Planner backing sized from the caller's options (allocation + range logic
-    // now lives in `snail.AtlasUploadPlanner`, unit-tested in upload_plan.zig).
+    // now lives in `snail.atlas_upload.Planner`, unit-tested in upload_plan.zig).
     try testing.expectEqual(@as(usize, 3), cache.plan_slots.len);
     try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
 

@@ -54,13 +54,13 @@
 //!    DummySampler`), Sample sites with the real one
 //!    (`SPIRV_Cross_Combined<tex><sampler>`). Varyings are renamed to the
 //!    location-keyed `snail_io<N>` table at generation time (GLSL <4.10
-//!    links varyings by name). Vertex inputs keep locations 0..8 of the
+//!    links varyings by name). Vertex inputs keep locations 0..6 of the
 //!    instance stream; entry point is `main`.
 //!  - `hlsl` (D3D11, SM 5.0 / FXC class — compiles with d3dcompiler_47 and
 //!    dxc alike): the parameter block is `cbuffer` register b0; textures
 //!    sit on the Vulkan binding numbers as registers t0 curve, t1 band,
 //!    t2 layer-info, t3 image array, s0 image sampler (t2 = the records
-//!    buffer for text_sample). Vertex-input semantics are `ATTRIB0..8`
+//!    buffer for text_sample). Vertex-input semantics are `ATTRIB0..6`
 //!    (instance-stream locations); entry points keep their Slang names
 //!    (`vertexMain` / `fragmentMain`). The subpixel fragment emits
 //!    SV_Target0/SV_Target1 — D3D11 dual-source (SRC1 blend factors).
@@ -72,7 +72,7 @@
 //!    layer-info (= the records `texture_buffer<uint>` for text_sample,
 //!    which needs MSL 2.1+), [[texture(3)]] image array, [[sampler(0)]]
 //!    image sampler. Vertex data arrives via [[stage_in]] with
-//!    [[attribute(0..8)]] — the host's MTLVertexDescriptor chooses the
+//!    [[attribute(0..6)]] — the host's MTLVertexDescriptor chooses the
 //!    instance buffer index; it must not collide with [[buffer(0)]].
 //!    Entry points keep their Slang names ([[vertex]] `vertexMain` /
 //!    [[fragment]] `fragmentMain`). Metal clip space is y-up (z [0,1])
@@ -81,6 +81,8 @@
 //!    are plain MRT [[color(0)]]/[[color(1)]] — slangc's Metal backend
 //!    drops [[vk::index(1)]]; rewrite the blend output to
 //!    `[[color(0), index(1)]]` before compiling for dual-source use.
+
+const std = @import("std");
 
 pub const Stage = enum { vertex, fragment };
 
@@ -119,7 +121,7 @@ pub const wgsl_fragment_entry = "fragmentMain";
 
 /// HLSL entry-point names (like WGSL, the Slang function names survive) and
 /// the vertex-input semantic prefix: input-layout elements are
-/// `ATTRIB0..ATTRIB8`, one per instance-stream location of
+/// `ATTRIB0..ATTRIB6`, one per instance-stream location of
 /// contract.zig:vertexInputAttributes.
 pub const hlsl_vertex_entry = "vertexMain";
 pub const hlsl_fragment_entry = "fragmentMain";
@@ -478,8 +480,32 @@ pub fn textSampleFragSpv() []align(4) const u8 {
     return &aligned_text_sample_frag_spv;
 }
 
+fn expectNo16BitArithmeticSpv(spv: []const u8) !void {
+    try std.testing.expect(spv.len >= 5 * @sizeOf(u32));
+    try std.testing.expect(spv.len % @sizeOf(u32) == 0);
+    var word_index: usize = 5; // SPIR-V's fixed five-word module header.
+    while (word_index < spv.len / @sizeOf(u32)) {
+        const byte_index = word_index * @sizeOf(u32);
+        const instruction = std.mem.readInt(u32, spv[byte_index..][0..4], .little);
+        const word_count: usize = @intCast(instruction >> 16);
+        const opcode: u16 = @truncate(instruction);
+        try std.testing.expect(word_count != 0);
+        try std.testing.expect(word_index + word_count <= spv.len / @sizeOf(u32));
+        if (opcode == 17) { // OpCapability: Float16 = 9, Int16 = 22.
+            try std.testing.expect(word_count >= 2);
+            const capability = std.mem.readInt(u32, spv[byte_index + 4 ..][0..4], .little);
+            try std.testing.expect(capability != 9 and capability != 22);
+        } else if (opcode == 21 or opcode == 22) { // OpTypeInt / OpTypeFloat.
+            try std.testing.expect(word_count >= 3);
+            const width = std.mem.readInt(u32, spv[byte_index + 8 ..][0..4], .little);
+            try std.testing.expect(width != 16);
+        }
+        word_index += word_count;
+    }
+    try std.testing.expectEqual(spv.len / @sizeOf(u32), word_index);
+}
+
 test "generated artifacts carry the documented interface names" {
-    const std = @import("std");
     inline for (.{ textGlsl330(.vertex), textGles300(.vertex) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_vertex_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "void main") != null);
@@ -522,6 +548,36 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_layer_tex_name) != null);
     }
+    // Baseline GL 3.3 / GLES 3.0 do not provide explicit 16-bit arithmetic.
+    // Compact autohint policy decode must remain entirely 32-bit in Slang so
+    // SPIRV-Cross never emits a mandatory extension prologue or narrow GLSL
+    // conversion type. Check every affected stage, including the desktop-only
+    // subpixel fragment.
+    inline for (.{
+        autohintGlsl330(.vertex),
+        autohintGlsl330(.fragment),
+        autohintSubpixelFragGlsl330(),
+        autohintGles300(.vertex),
+        autohintGles300(.fragment),
+    }) |src| {
+        inline for (.{
+            "GL_EXT_shader_explicit_arithmetic_types",
+            "GL_AMD_gpu_shader_int16",
+            "GL_AMD_gpu_shader_half_float",
+            "GL_NV_gpu_shader5",
+            "uint16_t",
+            "uint16BitsToFloat16",
+            "No extension available for Int16",
+            "No extension available for FP16",
+        }) |forbidden| {
+            try std.testing.expect(std.mem.indexOf(u8, src, forbidden) == null);
+        }
+    }
+    inline for (.{
+        autohintSpv(.vertex),
+        autohintSpv(.fragment),
+        autohintSubpixelFragSpv(),
+    }) |spv| try expectNo16BitArithmeticSpv(spv);
     try std.testing.expect(std.mem.indexOf(u8, autohintWgsl(.vertex), "fn " ++ wgsl_vertex_entry) != null);
     // Subpixel families: dual-source output qualifiers must survive to the
     // GL 3.3 artifacts (SPIRV-Cross leaves the index-0 output implicit —

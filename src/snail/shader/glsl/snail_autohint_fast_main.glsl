@@ -110,7 +110,7 @@ void snailAutohintFragment() {
         SnailAutohintPolicy policy;
         float stdX = snailWarpF(0, 8);
         float stdY = snailWarpF(0, 9);
-        valid = snailDecodeAutohintPolicy(v_policy0, v_policy1, policy) &&
+        valid = snailDecodeAutohintPolicy(v_policy, policy) &&
             snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0;
         if (valid && fallbackX) {
             float bases[SNAIL_AH_MAX_KNOTS];

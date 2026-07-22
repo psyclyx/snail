@@ -71,7 +71,7 @@ pub fn main(init: std.process.Init) !void {
 
     const pixels = try allocator.alloc(u8, @as(usize, fixtures.width) * fixtures.height * 4);
     defer allocator.free(pixels);
-    var renderer = try raster.Renderer.init(pixels, fixtures.width, fixtures.height, fixtures.width * 4);
+    var renderer = try raster.Renderer.init(pixels, fixtures.width, fixtures.height, fixtures.width * 4, .rgba8_unorm);
 
     var worker_pool: raster.ThreadPool = undefined;
     var worker_pool_live = false;

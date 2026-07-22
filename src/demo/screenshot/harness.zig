@@ -77,7 +77,7 @@ pub fn drawStateRaster(width: u32, height: u32, exponent: f32, subpixel_order: r
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     return .{
-        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .srgb },
         .raster = .{ .subpixel_order = subpixel_order, .coverage_transfer = .{ .exponent = exponent } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };
@@ -170,7 +170,7 @@ pub fn renderCpuToPixelsFmt(
     defer allocator.free(batches);
     const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var renderer = try raster.Renderer.init(pixels, width, height, stride);
+    var renderer = try raster.Renderer.init(pixels, width, height, stride, format);
     var state = drawState(width, height);
     state.surface.format = format;
     try raster.draw(
@@ -213,7 +213,7 @@ pub fn renderCpuToPixels(
     defer allocator.free(batches);
     const e = try emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var renderer = try raster.Renderer.init(pixels, width, height, stride);
+    var renderer = try raster.Renderer.init(pixels, width, height, stride, .rgba8_unorm);
     try raster.draw(
         &renderer,
         drawStateRaster(width, height, opts.coverage_exponent, opts.subpixel_order),
@@ -392,7 +392,7 @@ pub fn renderGlR8Mask(allocator: std.mem.Allocator, scene: Scene, width: u32, he
     const wf: f32 = @floatFromInt(width);
     const hf: f32 = @floatFromInt(height);
     const ds = @import("snail-raster").DrawState{
-        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .linear, .format = .r8_unorm },
+        .surface = .{ .pixel_width = width, .pixel_height = height, .encoding = .linear, .format = .r8_unorm },
         .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
     };

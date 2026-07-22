@@ -56,6 +56,13 @@
 //!    loaders bind samplers by name (`SPIRV_Cross_Combined*`, see
 //!    src/snail/shader/generated_root.zig) exactly like the composed
 //!    catalog's loose `u_*` samplers.
+//!  - Portable binary16 decode: the compact autohint policy is unpacked in
+//!    Slang with uint32/float32 operations, not `f16tof32`. That intrinsic
+//!    survives the SPIR-V leg as real 16-bit operations, making SPIRV-Cross
+//!    emit mandatory Int16/FP16 extensions unavailable in baseline GL 3.3
+//!    and GLES 3.0. Generated-artifact tests reject those capabilities and
+//!    narrow GLSL types so this cannot silently regress with source/toolchain
+//!    changes.
 //!  - GLES default precision: SPIRV-Cross fragments open with `precision
 //!    mediump float;` and only qualify globals explicitly — locals inherit
 //!    the default. build/glsl_patch_es_highp.zig promotes the default to
@@ -164,7 +171,7 @@ pub const Family = struct {
 ///    "unexpected IR opcode during code emit") including the clip-space
 ///    y-flip (D3D11 clip space is y-up like WebGPU's), and the plain
 ///    resource-declaration branch shared with the GL family.
-///  - IO struct fields need HLSL semantics (ATTRIB0..8 vertex inputs,
+///  - IO struct fields need HLSL semantics (ATTRIB0..6 vertex inputs,
 ///    TEXCOORD0..14 varyings, declared in the family sources next to the
 ///    [[vk::location]]s); without them dxc/fxc reject the entry point.
 ///  - -line-directive-mode none keeps absolute build paths out of the
@@ -202,7 +209,7 @@ const hlsl_args: []const []const u8 = &.{ "-target", "hlsl", "-profile", "sm_5_0
 ///    [[texture(0)]] curve, [[texture(1)]] band, [[texture(2)]] layer-info
 ///    (= the records texture_buffer for text_sample), [[texture(3)]] image
 ///    array, [[sampler(0)]] image sampler. Stage-in vertex data arrives
-///    via [[attribute(0..8)]] (a MTLVertexDescriptor maps the instance
+///    via [[attribute(0..6)]] (a MTLVertexDescriptor maps the instance
 ///    stream; its buffer index is the HOST's choice and must not collide
 ///    with [[buffer(0)]]).
 ///  - -DSNAIL_TARGET_METAL selects the SV_VertexID entry branch shared

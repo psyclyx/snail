@@ -41,6 +41,6 @@ public SubpixelResult snailAutohintSubpixelFragment(
         w.rc, display_dx * w.slope, display_dy * w.slope,
         w.gLoc, w.bandMax, w.band, w.texLayer,
         subpixel_order, coverage_exponent, curve_tex, band_tex);
-    // v.paint is color * tint, sRGB-decoded at the vertex stage.
+    // v.paint is the product of linear-light f16 color and tint.
     return snailPackSubpixelResult(v.paint, cov_alpha, output_srgb);
 }

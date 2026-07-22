@@ -259,8 +259,7 @@ fn TextStateFor(comptime backend: Backend) type {
         pub const DrawError = error{
             MissingBinding,
             StaleBinding,
-            MalformedBatch,
-        } || std.mem.Allocator.Error;
+        } || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
 
         /// Walk `DrawRecords.batches`, bind each batch's matching
         /// `GlDeviceAtlas` cache, dispatch the encoded instances through
@@ -272,6 +271,7 @@ fn TextStateFor(comptime backend: Backend) type {
             records: draw_records_mod.DrawRecords,
             caches: []const *const GlDeviceAtlas,
         ) DrawError!void {
+            try records.validate();
             // Apply `draw_state.scissor_rect` via `GL_SCISSOR_TEST`. We
             // save / restore both the enable flag and the rect so a
             // surrounding linear-resolve pass (which uses scissor too)
@@ -279,7 +279,7 @@ fn TextStateFor(comptime backend: Backend) type {
             // y-up framebuffer space, so we flip from snail's y-down
             // `PixelRect`.
             const scissor_restore: ?ScissorRestore = if (draw_state.scissor_rect) |rect|
-                applyScissor(rect, draw_state.surface.pixel_height)
+                applyScissor(rect, @floatFromInt(draw_state.surface.pixel_height))
             else
                 null;
             defer if (scissor_restore) |r| r.restore();
@@ -289,8 +289,6 @@ fn TextStateFor(comptime backend: Backend) type {
                     for (caches) |candidate| if (candidate.pool == batch.binding.pool) return error.StaleBinding;
                     return error.MissingBinding;
                 };
-                const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
-                if (end > records.instances.len) return error.MalformedBatch;
                 const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
                 _ = scratch;
                 try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
@@ -408,7 +406,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 const order: i32 = @intFromEnum(if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order);
                 const block = gl_common.NativeTextPushBlock{
                     .mvp = draw_state.mvp.data,
-                    .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+                    .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
                     .subpixel_order = order,
                     .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
                     .layer_base = 0,
@@ -430,8 +428,8 @@ fn TextStateFor(comptime backend: Backend) type {
                 cache_slot.mvp_data = draw_state.mvp.data;
                 cache_slot.mvp_set = true;
             }
-            const vw = draw_state.surface.pixel_width;
-            const vh = draw_state.surface.pixel_height;
+            const vw: f32 = @floatFromInt(draw_state.surface.pixel_width);
+            const vh: f32 = @floatFromInt(draw_state.surface.pixel_height);
             if (!cache_slot.viewport_set or cache_slot.viewport[0] != vw or cache_slot.viewport[1] != vh) {
                 gl.glUniform2f(prog_state.viewport_loc, vw, vh);
                 cache_slot.viewport = .{ vw, vh };
@@ -635,17 +633,14 @@ fn setupVertexAttribs() void {
     setupVertexAttrib(2, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "origin"));
     gl.glVertexAttribIPointer(3, 2, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "glyph")));
     gl.glEnableVertexAttribArray(3);
-    setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
-    setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
-    setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "tint"));
-    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy")));
-    gl.glEnableVertexAttribArray(7);
-    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy") + 16));
-    gl.glEnableVertexAttribArray(8);
+    gl.glVertexAttribIPointer(4, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "payload")));
+    gl.glEnableVertexAttribArray(4);
+    setupVertexAttrib(5, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "color"));
+    setupVertexAttrib(6, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "tint"));
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..9) |i| {
+    inline for (0..7) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
 }
@@ -662,15 +657,11 @@ fn setupVertexArrayAttribs(vao: gl.GLuint) void {
     gl.glEnableVertexArrayAttrib(vao, 3);
     gl.glVertexArrayAttribIFormat(vao, 3, 2, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "glyph")));
     gl.glVertexArrayAttribBinding(vao, 3, 0);
-    setupVertexArrayAttrib(vao, 4, 4, gl.GL_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "band"));
-    setupVertexArrayAttrib(vao, 5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "color"));
-    setupVertexArrayAttrib(vao, 6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, @offsetOf(vertex.Instance, "tint"));
-    gl.glEnableVertexArrayAttrib(vao, 7);
-    gl.glVertexArrayAttribIFormat(vao, 7, 4, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy")));
-    gl.glVertexArrayAttribBinding(vao, 7, 0);
-    gl.glEnableVertexArrayAttrib(vao, 8);
-    gl.glVertexArrayAttribIFormat(vao, 8, 3, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "policy") + 16));
-    gl.glVertexArrayAttribBinding(vao, 8, 0);
+    gl.glEnableVertexArrayAttrib(vao, 4);
+    gl.glVertexArrayAttribIFormat(vao, 4, 4, gl.GL_UNSIGNED_INT, @intCast(@offsetOf(vertex.Instance, "payload")));
+    gl.glVertexArrayAttribBinding(vao, 4, 0);
+    setupVertexArrayAttrib(vao, 5, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "color"));
+    setupVertexArrayAttrib(vao, 6, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, @offsetOf(vertex.Instance, "tint"));
 }
 
 fn setupVertexArrayAttrib(vao: gl.GLuint, loc: u32, components: gl.GLint, ty: gl.GLenum, normalized: gl.GLboolean, offset: usize) void {

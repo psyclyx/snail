@@ -683,16 +683,16 @@ public float4 snailPaintedFragment(
     float2 epp = fwidth(rc);
     float2 ppe = 1.0 / max(epp, float2(1.0 / 65536.0));
 
-    int special_kind = v.glyph.w & 0xFF;
-    if (((v.glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+    int special_kind = v.glyph.w & 0x3;
+    if ((uint(v.glyph.w) & 0x8000u) == 0u) discard;
     if (special_kind != expected_special_kind) discard;
 
     int2 infoBase = v.glyph.xy;
     float4 firstInfo = layer_tex.Load(int3(infoBase, 0));
     if (firstInfo.w >= 0.0) discard;
 
-    int texLayer = p.layer_base + int(v.banding.w);
-    // v.tint is already sRGB-decoded in the vertex shader.
+    int texLayer = p.layer_base + ((v.glyph.w >> 2) & 0xff);
+    // v.tint arrives as a linear-light f16 vertex attribute.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup(curve_tex, band_tex, layer_tex, image_tex, image_sampler, rc, epp, ppe, infoBase, firstInfo, texLayer, v.tint, p.coverage_exponent);

@@ -16,7 +16,7 @@
 //! Binding contract (see `snail_shaders`): registers land on the
 //! Vulkan binding numbers — b0 = the 96-byte push-constant block as a
 //! constant buffer, t0 curve, t1 band, t2 layer-info, t3 image array,
-//! s0 image sampler. Vertex-input semantics are `ATTRIB0..8` over the
+//! s0 image sampler. Vertex-input semantics are `ATTRIB0..6` over the
 //! instance stream; entry points keep their Slang names
 //! (`vertexMain`/`fragmentMain`). D3D11 clip space is y-up like WebGPU's,
 //! so the mvp matches `minimal_wgpu` (`ortho(0, w, 0, h)`; the shader
@@ -110,12 +110,12 @@ fn blobBytes(blob: *c.ID3DBlob) []const u8 {
     return ptr[0..blob.*.lpVtbl.*.GetBufferSize.?(blob)];
 }
 
-/// The nine per-instance input-layout elements mirroring the Vulkan
-/// contract's attributes at locations 0–8; the generated HLSL names them
-/// ATTRIB0..8. Layouts built from this table also serve vertex shaders
+/// The seven per-instance input-layout elements mirroring the Vulkan
+/// contract's attributes at locations 0–6; the generated HLSL names them
+/// ATTRIB0..6. Layouts built from this table also serve vertex shaders
 /// consuming a prefix of it (text reads ATTRIB0..6) — extra elements are
 /// legal in D3D11.
-fn inputElements() [9]c.D3D11_INPUT_ELEMENT_DESC {
+fn inputElements() [7]c.D3D11_INPUT_ELEMENT_DESC {
     const Instance = snail.render.records.Instance;
     const step = c.D3D11_INPUT_PER_INSTANCE_DATA;
     return .{
@@ -123,11 +123,9 @@ fn inputElements() [9]c.D3D11_INPUT_ELEMENT_DESC {
         .{ .SemanticName = "ATTRIB", .SemanticIndex = 1, .Format = c.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "xform"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
         .{ .SemanticName = "ATTRIB", .SemanticIndex = 2, .Format = c.DXGI_FORMAT_R32G32_FLOAT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "origin"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
         .{ .SemanticName = "ATTRIB", .SemanticIndex = 3, .Format = c.DXGI_FORMAT_R32G32_UINT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "glyph"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
-        .{ .SemanticName = "ATTRIB", .SemanticIndex = 4, .Format = c.DXGI_FORMAT_R32G32B32A32_FLOAT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "band"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
-        .{ .SemanticName = "ATTRIB", .SemanticIndex = 5, .Format = c.DXGI_FORMAT_R8G8B8A8_UNORM, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "color"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
-        .{ .SemanticName = "ATTRIB", .SemanticIndex = 6, .Format = c.DXGI_FORMAT_R8G8B8A8_UNORM, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "tint"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
-        .{ .SemanticName = "ATTRIB", .SemanticIndex = 7, .Format = c.DXGI_FORMAT_R32G32B32A32_UINT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "policy"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
-        .{ .SemanticName = "ATTRIB", .SemanticIndex = 8, .Format = c.DXGI_FORMAT_R32G32B32_UINT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "policy") + 16, .InputSlotClass = step, .InstanceDataStepRate = 1 },
+        .{ .SemanticName = "ATTRIB", .SemanticIndex = 4, .Format = c.DXGI_FORMAT_R32G32B32A32_UINT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "payload"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
+        .{ .SemanticName = "ATTRIB", .SemanticIndex = 5, .Format = c.DXGI_FORMAT_R16G16B16A16_FLOAT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "color"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
+        .{ .SemanticName = "ATTRIB", .SemanticIndex = 6, .Format = c.DXGI_FORMAT_R16G16B16A16_FLOAT, .InputSlot = 0, .AlignedByteOffset = @offsetOf(Instance, "tint"), .InputSlotClass = step, .InstanceDataStepRate = 1 },
     };
 }
 
@@ -248,7 +246,7 @@ const GpuAtlas = struct {
     band_srv: ?*c.ID3D11ShaderResourceView = null,
     layer_srv: ?*c.ID3D11ShaderResourceView = null,
     image_srv: ?*c.ID3D11ShaderResourceView = null,
-    uploads: snail.OwnedAtlasUploadPlanner,
+    uploads: snail.atlas_upload.OwnedPlanner,
     binding: ?snail.render.records.Binding = null,
 
     const options = snail.atlas_upload.Options{
@@ -263,7 +261,7 @@ const GpuAtlas = struct {
         var self = GpuAtlas{
             .gpu = gpu,
             .pool = pool,
-            .uploads = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, options),
+            .uploads = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, options),
         };
         errdefer self.uploads.deinit();
         try self.createTextures();
@@ -285,9 +283,10 @@ const GpuAtlas = struct {
 
     fn createTextures(self: *GpuAtlas) !void {
         const device = self.gpu.device;
-        const curve_height = self.pool.options.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
-        const band_height = self.pool.options.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers: u32 = @intCast(self.pool.options.max_layers);
+        const pool_config = self.pool.config();
+        const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
+        const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
+        const layers: u32 = @intCast(pool_config.max_layers);
 
         self.curve_tex = try createTexture(device, c.DXGI_FORMAT_R16G16B16A16_FLOAT, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), layers);
         self.band_tex = try createTexture(device, c.DXGI_FORMAT_R16G16_UINT, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), layers);
@@ -383,8 +382,8 @@ pub fn main() !void {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
     var emoji_font = try snail.Font.init(assets.twemoji_mozilla);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font },
-        .{ .font = &emoji_font, .fallback = true },
+        .{ .font = &font, .font_id = 0 },
+        .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0).?;
@@ -730,12 +729,12 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
         .{
             .key = fill_key,
             .curves = fill_curves,
-            .paint = prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
+            .paint = try prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
         },
         .{
             .key = stroke_key,
             .curves = stroke_curves,
-            .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+            .paint = try prepared_stroke.paintForDesign(stroke_style.paint),
         },
     });
     return .{

@@ -238,17 +238,17 @@ void snailSubpixelFragment() {
 #ifdef SNAIL_DUAL_SOURCE
     frag_blend = vec4(0.0);
 #endif
-    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+    if ((uint(v_glyph.w) & 0x8000u) != 0u) discard;
+    int layer_byte = (v_glyph.z >> 8) & 0xFF;
     int layer = u_layer_base + layer_byte;
 
     vec2 rc = v_texcoord;
-    ivec2 band_max = ivec2(v_glyph.w & 0xFF, v_glyph.z);
+    ivec2 band_max = ivec2((v_glyph.z >> 4) & 0xF, v_glyph.z & 0xF);
     ivec2 glyph_loc = v_glyph.xy;
     vec4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v_banding, layer);
 
     vec3 cov = cov_alpha.rgb;
     if (max(max(cov.r, cov.g), cov.b) < 1.0 / 255.0) discard;
-    // v_color / v_tint are already sRGB-decoded in the vertex shader.
+    // v_color / v_tint arrive as linear-light f16 vertex attributes.
     emitSubpixelColor(v_color * v_tint, cov, cov_alpha.a);
 }

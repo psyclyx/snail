@@ -4,7 +4,7 @@
 //! (snail is a font library, not a renderer): the caller owns the GL context,
 //! programs, VAO, cache, and draw loop. snail provides only the pipeline
 //! packed contracts + includable shader functions (`snail.shader.glsl`) and
-//! the backend-agnostic atlas upload plan (`snail.AtlasUploadPlanner`).
+//! the backend-agnostic atlas upload plan (`snail.atlas_upload.Planner`).
 //!
 //! This module is the worked example integrators copy. It bundles:
 //!   - `Gl{33,44}Renderer` / `Gles30Renderer` — the all-in-one text renderers.

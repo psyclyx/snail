@@ -58,15 +58,6 @@ public float4 snailUnpackHalf4(uint lo, uint hi) {
     return float4(snailUnpackHalf2(lo), snailUnpackHalf2(hi));
 }
 
-public float4 snailUnpackUnorm4x8(uint word) {
-    return float4(
-        float(word & 0xFFu),
-        float((word >> 8u) & 0xFFu),
-        float((word >> 16u) & 0xFFu),
-        float((word >> 24u) & 0xFFu)
-    ) / 255.0;
-}
-
 public SnailTextSampleRecord snailTextSampleRecord<T : ISnailTextRecords>(T records, int words_per_glyph, int glyph_index) {
     SnailTextSampleRecord record;
     record.rect = snailUnpackHalf4(snailTextSampleWord(records, words_per_glyph, glyph_index, 0), snailTextSampleWord(records, words_per_glyph, glyph_index, 1));
@@ -87,8 +78,8 @@ public SnailTextSampleRecord snailTextSampleRecord<T : ISnailTextRecords>(T reco
         asfloat(snailTextSampleWord(records, words_per_glyph, glyph_index, 12)),
         asfloat(snailTextSampleWord(records, words_per_glyph, glyph_index, 13))
     );
-    record.color = snailUnpackUnorm4x8(snailTextSampleWord(records, words_per_glyph, glyph_index, 14));
-    record.tint = snailUnpackUnorm4x8(snailTextSampleWord(records, words_per_glyph, glyph_index, 15));
+    record.color = snailUnpackHalf4(snailTextSampleWord(records, words_per_glyph, glyph_index, 14), snailTextSampleWord(records, words_per_glyph, glyph_index, 15));
+    record.tint = snailUnpackHalf4(snailTextSampleWord(records, words_per_glyph, glyph_index, 16), snailTextSampleWord(records, words_per_glyph, glyph_index, 17));
     return record;
 }
 
@@ -136,18 +127,18 @@ public float4 snailTextSamplePremulLinearWithFootprint<T : ISnailTextRecords>(
 
         uint gz = record.glyph.x;
         uint gw = record.glyph.y;
-        int layer_byte = int((gw >> 24u) & 0xFFu);
-        if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) continue;
+        if ((gw & 0x80000000u) != 0u) continue;
+        int layer_byte = int((gw >> 8u) & 0xFFu);
         int atlas_layer = layer_base + layer_byte;
         int2 glyph_loc = int2(int(gz & 0xFFFFu), int(gz >> 16u));
-        int2 band_max = int2(int((gw >> 16u) & 0xFFu), int(gw & 0xFFFFu));
+        int2 band_max = int2(int((gw >> 4u) & 0xFu), int(gw & 0xFu));
         float2 ppe = float2(1.0 / max(epp.x, 1.0 / 65536.0),
                             1.0 / max(epp.y, 1.0 / 65536.0));
         float cov = evalGlyphCoverage(rc, epp, ppe, glyph_loc, band_max, record.banding, atlas_layer,
                                       curve_tex, band_tex, coverage_exponent);
         float alpha = clamp(cov * record.color.a * record.tint.a, 0.0, 1.0);
         if (alpha <= 1.0 / 255.0) continue;
-        float3 linear_rgb = srgbToLinear(record.color.rgb) * srgbToLinear(record.tint.rgb);
+        float3 linear_rgb = record.color.rgb * record.tint.rgb;
         paint.rgb = linear_rgb * alpha + paint.rgb * (1.0 - alpha);
         paint.a = alpha + paint.a * (1.0 - alpha);
     }

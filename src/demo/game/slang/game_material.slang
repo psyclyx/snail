@@ -36,7 +36,7 @@ import text_sample;
 // Record stride in u32 words. Must match snail's packed instance layout
 // (snail.render.records.BYTES_PER_INSTANCE / 4; gl_material.zig
 // comptime-asserts the value against the library).
-static const int SNAIL_TEXT_RECORD_WORDS_PER_GLYPH = 23;
+static const int SNAIL_TEXT_RECORD_WORDS_PER_GLYPH = 18;
 
 public struct GameMaterialParams {
 #if defined(SNAIL_TARGET_VULKAN)

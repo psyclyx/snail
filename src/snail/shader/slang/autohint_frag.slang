@@ -20,8 +20,7 @@ public struct AutohintVaryings {
     public float4 paint;
     public float3 texcoord_layer;
     public int2 info;
-    public uint4 policy0;
-    public uint3 policy1;
+    public uint4 policy;
     public float4 x_targets[4];
     public float4 y_targets[4];
     public uint4 x_sources;
@@ -142,7 +141,7 @@ public SnailAutohintWarped snailAutohintWarpSample(
         SnailAutohintPolicy policy;
         float stdX = snailWarpF(layer_tex, v.info, 0, 8);
         float stdY = snailWarpF(layer_tex, v.info, 0, 9);
-        valid = snailDecodeAutohintPolicy(v.policy0, v.policy1, policy) &&
+        valid = snailDecodeAutohintPolicy(v.policy, policy) &&
             snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0;
         if (valid && fallbackX) {
             float bases[SNAIL_AH_FRAG_KNOTS];

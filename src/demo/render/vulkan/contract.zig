@@ -53,7 +53,7 @@ pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
 pub fn textPushConstants(draw_state: render_state.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
     return .{
         .mvp = draw_state.mvp.data,
-        .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+        .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
         .subpixel_order = @intFromEnum(if (grayscale) render_state.SubpixelOrder.none else draw_state.raster.subpixel_order),
         .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
         .layer_base = @intCast(local_layer_base),
@@ -85,19 +85,17 @@ pub fn vertexInputBinding() vk.VkVertexInputBindingDescription {
     };
 }
 
-/// The 9 vertex attributes (locations 0–8) mapping the instance stream into
+/// The 7 vertex attributes (locations 0–6) mapping the instance stream into
 /// the vertex shader inputs.
-pub fn vertexInputAttributes() [9]vk.VkVertexInputAttributeDescription {
+pub fn vertexInputAttributes() [7]vk.VkVertexInputAttributeDescription {
     return .{
         .{ .location = 0, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "rect") },
         .{ .location = 1, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "xform") },
         .{ .location = 2, .binding = 0, .format = vk.VK_FORMAT_R32G32_SFLOAT, .offset = @offsetOf(vertex.Instance, "origin") },
         .{ .location = 3, .binding = 0, .format = vk.VK_FORMAT_R32G32_UINT, .offset = @offsetOf(vertex.Instance, "glyph") },
-        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_SFLOAT, .offset = @offsetOf(vertex.Instance, "band") },
-        .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "color") },
-        .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R8G8B8A8_UNORM, .offset = @offsetOf(vertex.Instance, "tint") },
-        .{ .location = 7, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(vertex.Instance, "policy") },
-        .{ .location = 8, .binding = 0, .format = vk.VK_FORMAT_R32G32B32_UINT, .offset = @offsetOf(vertex.Instance, "policy") + 16 },
+        .{ .location = 4, .binding = 0, .format = vk.VK_FORMAT_R32G32B32A32_UINT, .offset = @offsetOf(vertex.Instance, "payload") },
+        .{ .location = 5, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "color") },
+        .{ .location = 6, .binding = 0, .format = vk.VK_FORMAT_R16G16B16A16_SFLOAT, .offset = @offsetOf(vertex.Instance, "tint") },
     };
 }
 

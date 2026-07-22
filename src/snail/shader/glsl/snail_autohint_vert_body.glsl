@@ -106,7 +106,7 @@ void snailAutohintVertex() {
     int featureYCount = 0;
     float stdX = snailWarpF(0, 8);
     float stdY = snailWarpF(0, 9);
-    bool valid = snailDecodeAutohintPolicy(a_policy0, a_policy1, policy) &&
+    bool valid = snailDecodeAutohintPolicy(a_payload, policy) &&
         snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0 &&
         snailAhCount(snailWarpF(0, 10), blueCount);
     int xRun = 12 + 2 * blueCount;

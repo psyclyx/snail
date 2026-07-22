@@ -38,11 +38,11 @@ const BAND_UNIT: i32 = 4;
 /// UBO binding point for the material parameter block.
 const PARAMS_BINDING: u32 = 0;
 
-// The shader source hardcodes the 23-word record stride
+// The shader source hardcodes the 18-word record stride
 // (SNAIL_TEXT_RECORD_WORDS_PER_GLYPH in game_material.slang); keep it in
 // lockstep with the library's packed instance layout.
 comptime {
-    std.debug.assert(snail.render.records.BYTES_PER_INSTANCE / @sizeOf(u32) == 23);
+    std.debug.assert(snail.render.records.BYTES_PER_INSTANCE / @sizeOf(u32) == 18);
 }
 
 /// Row width (in u32 texels) of the GLES records texture; must match

@@ -33,39 +33,37 @@ void snailVertex() {
         eff_xform.z * nd.x + eff_xform.w * nd.y
     );
 
-    float det = eff_xform.x * eff_xform.w - eff_xform.y * eff_xform.z;
-    float inv_det = 1.0 / det;
+    // Normalize before forming the determinant: direct f32 products can
+    // underflow/overflow for otherwise representable affine inverses.
+    float xform_scale = max(max(abs(eff_xform.x), abs(eff_xform.y)),
+                            max(abs(eff_xform.z), abs(eff_xform.w)));
+    vec4 unit_xform = eff_xform / xform_scale;
+    float det = unit_xform.x * unit_xform.w - unit_xform.y * unit_xform.z;
+    float inv_det_scale = 1.0 / (det * xform_scale);
     vec4 jac = vec4(
-        eff_xform.w * inv_det,
-        -eff_xform.y * inv_det,
-        -eff_xform.z * inv_det,
-        eff_xform.x * inv_det
+        unit_xform.w * inv_det_scale,
+        -unit_xform.y * inv_det_scale,
+        -unit_xform.z * inv_det_scale,
+        unit_xform.x * inv_det_scale
     );
 
     uint gz = a_glyph.x;
     uint gw = a_glyph.y;
     #ifdef SNAIL_AUTOHINT_VERTEX
     v_info = ivec2(gz & 0xFFFFu, gz >> 16u);
-    v_policy0 = a_policy0;
-    v_policy1 = a_policy1;
-    v_texcoord_layer.z = a_bnd.w;
+    v_policy = a_payload;
+    v_texcoord_layer.z = float((gw >> 18u) & 0xffu);
     #else
     v_glyph = ivec4(gz & 0xFFFFu, gz >> 16u, gw & 0xFFFFu, gw >> 16u);
-    v_policy0 = a_policy0;
-    v_policy1 = a_policy1;
-    v_banding = a_bnd;
+    v_policy = a_payload;
+    v_banding = uintBitsToFloat(a_payload);
     #endif
-    // sRGB decode the per-instance color and tint at the vertex stage:
-    // these are constant across all four corners of the glyph quad
-    // (text uses one color per instance), so per-vertex conversion is
-    // 4 invocations vs the ~100+ fragments per glyph that previously
-    // each ran 6 `pow` calls. Fragment shaders now use `v_color` /
-    // `v_tint` as already-linear values.
+    // The f16 vertex attributes are already linear-light values.
     #ifdef SNAIL_AUTOHINT_VERTEX
-    v_paint = vec4(srgbToLinear(a_col.rgb), a_col.a) * vec4(srgbToLinear(eff_tint.rgb), eff_tint.a);
+    v_paint = a_col * eff_tint;
     #else
-    v_color = vec4(srgbToLinear(a_col.rgb), a_col.a);
-    v_tint = vec4(srgbToLinear(eff_tint.rgb), eff_tint.a);
+    v_color = a_col;
+    v_tint = eff_tint;
     #endif
 
     // Slug dynamic dilation

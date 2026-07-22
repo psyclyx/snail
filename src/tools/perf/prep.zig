@@ -189,7 +189,7 @@ fn shapeFontCase(
     text: []const u8,
     default_iterations: usize,
 ) !void {
-    var faces = try snail.Faces.build(allocator, &.{.{ .font = font }});
+    var faces = try snail.Faces.build(allocator, &.{.{ .font = font, .font_id = 0 }});
     defer faces.deinit();
     var context = ShapeContext{ .allocator = allocator, .faces = &faces, .text = text };
     const result = try common.measure(allocator, &context, iterations(args, default_iterations), args.samples);
@@ -424,8 +424,8 @@ const AutohintAnalyzeContext = struct {
     pub fn run(self: *AutohintAnalyzeContext) !void {
         for (self.glyphs) |glyph_id| {
             const a = self.scratch.allocator();
-            const x = try a.alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
-            const y = try a.alloc(snail.autohint.FeatureEdge, snail.autohint.warp.max_knots);
+            const x = try a.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
+            const y = try a.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
             const analysis = try self.analyzer.analyzeGlyph(a, glyph_id, x, y);
             common.hashValue(&self.checksum, analysis.x.len);
             common.hashValue(&self.checksum, analysis.y.len);
@@ -585,7 +585,7 @@ fn uploadOptions() snail.atlas_upload.Options {
 }
 
 const UploadPlanContext = struct {
-    planner: *snail.OwnedAtlasUploadPlanner,
+    planner: *snail.atlas_upload.OwnedPlanner,
     atlas: *const snail.Atlas,
     region_count: usize = 0,
     upload_bytes: usize = 0,
@@ -609,7 +609,7 @@ fn uploadPlanCase(allocator: std.mem.Allocator, args: common.Args) !void {
     defer pool.deinit();
     var scene = try fixtures.buildScene(allocator, pool, .mixed);
     defer scene.deinit();
-    var planner = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, uploadOptions());
+    var planner = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, uploadOptions());
     defer planner.deinit();
     var context = UploadPlanContext{ .planner = &planner, .atlas = &scene.atlas };
     const result = try common.measure(allocator, &context, iterations(args, 2048), args.samples);

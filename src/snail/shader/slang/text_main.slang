@@ -25,18 +25,18 @@ public float4 snailTextFragment(
     float coverage_exponent,
     int mask_output)
 {
-    int layer_byte = (v.glyph.w >> 8) & 0xFF;
-    if (layer_byte == SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+    if ((uint(v.glyph.w) & 0x8000u) != 0u) discard;
+    int layer_byte = (v.glyph.z >> 8) & 0xFF;
     int atlas_layer = layer_base + layer_byte;
     float2 rc = v.texcoord;
     float2 epp = fwidth(rc);
     float2 ppe = float2(1.0 / max(epp.x, 1.0 / 65536.0), 1.0 / max(epp.y, 1.0 / 65536.0));
     float cov = evalGlyphCoverage(rc, epp, ppe, v.glyph.xy,
-                                  int2(v.glyph.w & 0xFF, v.glyph.z),
+                                                   int2((v.glyph.z >> 4) & 0xF, v.glyph.z & 0xF),
                                   v.banding, atlas_layer,
                                   curve_tex, band_tex, coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
-    // v.color / v.tint are already sRGB-decoded in the vertex shader.
+    // v.color / v.tint arrive as linear-light f16 vertex attributes.
     float4 premul = premultiplyColor(v.color * v.tint, cov);
     return (mask_output != 0) ? float4(premul.a) : ((output_srgb != 0) ? srgbEncodePremultiplied(premul) : premul);
 }

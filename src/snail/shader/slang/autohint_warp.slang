@@ -68,30 +68,49 @@ public bool snailAhCount(int max_knots, float encoded, out int count) {
     return true;
 }
 
-public bool snailDecodeAutohintPolicy(uint4 p0, uint3 p1, out SnailAutohintPolicy p) {
+// Decode a binary16 value using only uint32/float32 operations. Slang's
+// f16tof32 intrinsic lowers to SPIR-V 16-bit arithmetic; SPIRV-Cross then
+// correctly requires Int16 + FP16 extensions which are not part of desktop
+// GL 3.3 or GLES 3.0. Every binary16 value is exactly representable as an
+// f32, including subnormals. Preserve infinities and NaNs so the policy's
+// finite-value validation keeps rejecting corrupt/non-finite payloads.
+public float snailAhDecodeFloat16(uint bits) {
+    bits &= 0xffffu;
+    uint sign = (bits & 0x8000u) << 16u;
+    uint exponent = (bits >> 10u) & 31u;
+    uint fraction = bits & 1023u;
+    if (exponent == 0u) {
+        if (fraction == 0u) return asfloat(sign);
+        float magnitude = float(fraction) * 5.960464477539063e-8;
+        return sign == 0u ? magnitude : -magnitude;
+    }
+    if (exponent == 31u)
+        return asfloat(sign | 0x7f800000u | (fraction << 13u));
+    return asfloat(sign | ((exponent + 112u) << 23u) | (fraction << 13u));
+}
+
+public bool snailDecodeAutohintPolicy(uint4 words, out SnailAutohintPolicy p) {
     p = (SnailAutohintPolicy)0;
-    uint x = p0.x;
-    uint y = p0.y;
-    // word0: x config bits 0-7, then the packed whole-glyph fade (bits 8-22).
-    if ((x & ~0x7fffffu) != 0u || (y & ~0x3fu) != 0u) return false;
-    p.xAlign = int(x & 3u);
-    p.xStem = int((x >> 2u) & 3u);
-    p.xPositioning = int((x >> 4u) & 3u);
-    p.xRegistration = int((x >> 6u) & 3u);
-    p.fadeEnabled = int((x >> 8u) & 1u);
-    p.fadeStart = float((x >> 9u) & 0x7fu);
-    p.fadeFull = float((x >> 16u) & 0x7fu);
-    p.yAlign = int(y & 3u);
-    p.yStem = int((y >> 2u) & 3u);
-    p.yOvershoot = int((y >> 4u) & 3u);
+    uint config = words.x;
+    if ((config & ~0x1fffffffu) != 0u || (words.w >> 16u) != 0u) return false;
+    p.xAlign = int(config & 3u);
+    p.xStem = int((config >> 2u) & 3u);
+    p.xPositioning = int((config >> 4u) & 3u);
+    p.xRegistration = int((config >> 6u) & 3u);
+    p.yAlign = int((config >> 8u) & 3u);
+    p.yStem = int((config >> 10u) & 3u);
+    p.yOvershoot = int((config >> 12u) & 3u);
+    p.fadeEnabled = int((config >> 14u) & 1u);
+    p.fadeStart = float((config >> 15u) & 0x7fu);
+    p.fadeFull = float((config >> 22u) & 0x7fu);
     if (p.xAlign > 1 || p.xStem > 2 || p.xPositioning > 1 ||
         p.xRegistration > 1 || p.yAlign > 2 || p.yStem > 2 || p.yOvershoot > 1)
         return false;
-    p.xRatio = asfloat(p0.z);
-    p.xMaxPx = asfloat(p0.w);
-    p.yRatio = asfloat(p1.x);
-    p.yMaxPx = asfloat(p1.y);
-    p.overshootMinPx = asfloat(p1.z);
+    p.xRatio = snailAhDecodeFloat16(words.y);
+    p.xMaxPx = snailAhDecodeFloat16(words.y >> 16u);
+    p.yRatio = snailAhDecodeFloat16(words.z);
+    p.yMaxPx = snailAhDecodeFloat16(words.z >> 16u);
+    p.overshootMinPx = snailAhDecodeFloat16(words.w);
     if ((p.xStem != 0 && (!snailAhFinite(p.xRatio) || p.xRatio < 0.0)) ||
         (p.xStem == 1 && (!snailAhFinite(p.xMaxPx) || p.xMaxPx < 0.0)) ||
         (p.yStem != 0 && (!snailAhFinite(p.yRatio) || p.yRatio < 0.0)) ||

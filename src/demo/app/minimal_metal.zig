@@ -26,7 +26,7 @@
 //! textures land on the Vulkan binding numbers as [[texture(0)]] curve,
 //! [[texture(1)]] band, [[texture(2)]] layer-info, [[texture(3)]] image
 //! array, [[sampler(0)]] image sampler. The instance stream arrives via
-//! [[stage_in]] / [[attribute(0..8)]]; its MTLVertexDescriptor buffer index
+//! [[stage_in]] / [[attribute(0..6)]]; its MTLVertexDescriptor buffer index
 //! is the host's choice and must not collide with the parameter block —
 //! this demo uses buffer index 1. Entry points keep their Slang names
 //! (`vertexMain`/`fragmentMain`). Metal clip space is y-up with z in [0,1]
@@ -143,12 +143,10 @@ const mtl = struct {
     const PixelFormatRGBA16Float: NSUInteger = 115;
     const PixelFormatRGBA32Float: NSUInteger = 125;
     // MTLVertexFormat
-    const VertexFormatUChar4Normalized: NSUInteger = 9;
     const VertexFormatHalf4: NSUInteger = 27;
     const VertexFormatFloat2: NSUInteger = 29;
     const VertexFormatFloat4: NSUInteger = 31;
     const VertexFormatUInt2: NSUInteger = 37;
-    const VertexFormatUInt3: NSUInteger = 38;
     const VertexFormatUInt4: NSUInteger = 39;
     // MTLVertexStepFunction
     const VertexStepFunctionPerInstance: NSUInteger = 2;
@@ -241,24 +239,22 @@ fn compileLibrary(device: id, source: [:0]const u8, label: []const u8) !id {
     return library;
 }
 
-/// The nine per-instance attributes mirroring the Vulkan contract's
-/// locations 0–8 (the generated MSL names them [[attribute(0..8)]]).
+/// The seven per-instance attributes mirroring the Vulkan contract's
+/// locations 0–6 (the generated MSL names them [[attribute(0..6)]]).
 /// One descriptor serves every vertex function — Metal ignores descriptor
 /// attributes a function does not declare (text reads 0..6).
 fn createVertexDescriptor() id {
     const Instance = snail.render.records.Instance;
     const desc = msg(id, class("MTLVertexDescriptor"), "vertexDescriptor", .{}); // autoreleased
     const attrs = msg(id, desc, "attributes", .{});
-    const table = [9]struct { format: NSUInteger, offset: NSUInteger }{
+    const table = [7]struct { format: NSUInteger, offset: NSUInteger }{
         .{ .format = mtl.VertexFormatHalf4, .offset = @offsetOf(Instance, "rect") },
         .{ .format = mtl.VertexFormatFloat4, .offset = @offsetOf(Instance, "xform") },
         .{ .format = mtl.VertexFormatFloat2, .offset = @offsetOf(Instance, "origin") },
         .{ .format = mtl.VertexFormatUInt2, .offset = @offsetOf(Instance, "glyph") },
-        .{ .format = mtl.VertexFormatFloat4, .offset = @offsetOf(Instance, "band") },
-        .{ .format = mtl.VertexFormatUChar4Normalized, .offset = @offsetOf(Instance, "color") },
-        .{ .format = mtl.VertexFormatUChar4Normalized, .offset = @offsetOf(Instance, "tint") },
-        .{ .format = mtl.VertexFormatUInt4, .offset = @offsetOf(Instance, "policy") },
-        .{ .format = mtl.VertexFormatUInt3, .offset = @offsetOf(Instance, "policy") + 16 },
+        .{ .format = mtl.VertexFormatUInt4, .offset = @offsetOf(Instance, "payload") },
+        .{ .format = mtl.VertexFormatHalf4, .offset = @offsetOf(Instance, "color") },
+        .{ .format = mtl.VertexFormatHalf4, .offset = @offsetOf(Instance, "tint") },
     };
     for (table, 0..) |entry, i| {
         const attr = msg(id, attrs, "objectAtIndexedSubscript:", .{@as(NSUInteger, i)});
@@ -394,7 +390,7 @@ const GpuAtlas = struct {
     band_tex: id = null,
     layer_tex: id = null,
     image_tex: id = null, // 1×1 placeholder: the scene packs no image paints
-    uploads: snail.OwnedAtlasUploadPlanner,
+    uploads: snail.atlas_upload.OwnedPlanner,
     binding: ?snail.render.records.Binding = null,
 
     const options = snail.atlas_upload.Options{
@@ -409,7 +405,7 @@ const GpuAtlas = struct {
         var self = GpuAtlas{
             .gpu = gpu,
             .pool = pool,
-            .uploads = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, options),
+            .uploads = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, options),
         };
         errdefer self.uploads.deinit();
         try self.createTextures();
@@ -427,9 +423,10 @@ const GpuAtlas = struct {
 
     fn createTextures(self: *GpuAtlas) !void {
         const device = self.gpu.device;
-        const curve_height = self.pool.options.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
-        const band_height = self.pool.options.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers: NSUInteger = @intCast(self.pool.options.max_layers);
+        const pool_config = self.pool.config();
+        const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
+        const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
+        const layers: NSUInteger = @intCast(pool_config.max_layers);
 
         self.curve_tex = try createTexture(device, mtl.TextureType2DArray, mtl.PixelFormatRGBA16Float, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), layers);
         self.band_tex = try createTexture(device, mtl.TextureType2DArray, mtl.PixelFormatRG16Uint, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), layers);
@@ -515,8 +512,8 @@ pub fn main() !void {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
     var emoji_font = try snail.Font.init(assets.twemoji_mozilla);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font },
-        .{ .font = &emoji_font, .fallback = true },
+        .{ .font = &font, .font_id = 0 },
+        .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0).?;
@@ -835,12 +832,12 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
         .{
             .key = fill_key,
             .curves = fill_curves,
-            .paint = prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
+            .paint = try prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
         },
         .{
             .key = stroke_key,
             .curves = stroke_curves,
-            .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+            .paint = try prepared_stroke.paintForDesign(stroke_style.paint),
         },
     });
     return .{

@@ -19,6 +19,8 @@ pub const records = struct {
 
     pub const Instance = vertex_mod.Instance;
     pub const BYTES_PER_INSTANCE = vertex_mod.BYTES_PER_INSTANCE;
+    pub const InstanceValidationError = vertex_mod.ValidationError;
+    pub const validateInstance = vertex_mod.validateInstance;
 
     pub const Binding = draw_mod.Binding;
     pub const DrawBatch = draw_mod.DrawBatch;
@@ -43,7 +45,7 @@ pub const records = struct {
 };
 
 /// Decoders for the immutable geometry/record bytes returned by
-/// `AtlasUploadPlanner`.
+/// `atlas_upload.Planner`.
 /// GPU callers normally use the shipped shader functions; this surface lets a
 /// software renderer consume the exact same representation.
 pub const geometry = struct {
@@ -59,11 +61,11 @@ pub const geometry = struct {
     pub const autohint = struct {
         pub const header_floats = autohint_record_mod.header_floats;
         pub const BandEntry = autohint_record_mod.BandEntry;
-        pub const readBandEntry = autohint_record_mod.readBandEntry;
-        pub const fontFeatures = autohint_record_mod.fontFeatures;
-        pub const glyphLeft = autohint_record_mod.glyphLeft;
-        pub const xFeatures = autohint_record_mod.xFeatures;
-        pub const yFeatures = autohint_record_mod.yFeatures;
+        pub const DecodedRecord = autohint_record_mod.DecodedRecord;
+        pub const DecodeError = autohint_record_mod.DecodeError;
+        /// Validate one record and borrow its feature runs. The source float
+        /// slice must remain alive and unchanged while the result is used.
+        pub const decode = autohint_record_mod.decode;
     };
 };
 

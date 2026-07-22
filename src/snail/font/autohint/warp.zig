@@ -19,11 +19,31 @@
 
 const std = @import("std");
 
-const analysis = @import("analysis.zig");
-const policy_mod = @import("policy.zig");
-const Vec2 = @import("../../math/vec.zig").Vec2;
-const Edge = analysis.Edge;
-const FeatureEdge = analysis.FeatureEdge;
+const snail = @import("snail");
+const policy_mod = snail.autohint.policy;
+const Vec2 = snail.Vec2;
+const FeatureEdge = snail.autohint.FeatureEdge;
+
+const Axis = enum { x, y };
+
+/// Private fitting form. Analysis exports a richer edge representation; the
+/// runtime warp needs only these immutable semantic fields.
+const Edge = struct {
+    pos: f32,
+    min: f32,
+    max: f32,
+    dir: i8,
+    stem: i16 = -1,
+    width: f32 = 0,
+    blue: i16 = -1,
+    round: bool = false,
+    synthetic_apex: bool = false,
+    companion: i16 = -2,
+
+    fn isStem(self: Edge) bool {
+        return self.stem >= 0;
+    }
+};
 
 /// Upper bound on edges fed to the warp. Glyphs with more horizontal
 /// features than this (dense CJK, ornate display faces) fall back to the
@@ -60,7 +80,7 @@ pub const Sample = struct {
     inv_slope: f32,
 };
 
-/// Tuning for the grid-fit warp. Like `analysis.Params`, these heuristic
+/// Tuning for the grid-fit warp. These heuristic
 /// thresholds are exposed rather than baked in — pick explicitly per the
 /// project's no-magic-thresholds rule. See [[feedback_no_magic_thresholds]].
 pub const Params = struct {
@@ -102,7 +122,7 @@ pub const Params = struct {
     pub const default: Params = .{};
 };
 
-fn AxisPolicy(comptime axis: analysis.Axis) type {
+fn AxisPolicy(comptime axis: Axis) type {
     return switch (axis) {
         .x => policy_mod.XPolicy,
         .y => policy_mod.YPolicy,
@@ -120,7 +140,7 @@ pub const AxisKnots = struct {
 pub fn fitAxis(
     features: []const FeatureEdge,
     font: anytype,
-    comptime axis: analysis.Axis,
+    comptime axis: Axis,
     axis_policy: AxisPolicy(axis),
     pixels_per_em: f32,
     left: f32,
@@ -696,24 +716,29 @@ const GlslHostPolicy = struct {
     overshoot_min_px: f32,
 };
 
-fn glslHostDecodePolicy(words: [7]u32) ?GlslHostPolicy {
-    if (words[0] & ~@as(u32, 0x7fffff) != 0 or words[1] & ~@as(u32, 0x3f) != 0) return null;
+fn packedHalf(word: u32, high: bool) f32 {
+    const bits: u16 = @intCast(if (high) word >> 16 else word & 0xffff);
+    return @floatCast(@as(f16, @bitCast(bits)));
+}
+
+fn glslHostDecodePolicy(words: [4]u32) ?GlslHostPolicy {
+    if (words[0] & ~@as(u32, 0x1fffffff) != 0 or words[3] >> 16 != 0) return null;
     const p: GlslHostPolicy = .{
         .x_align = words[0] & 3,
         .x_stem = (words[0] >> 2) & 3,
         .x_positioning = (words[0] >> 4) & 3,
         .x_registration = (words[0] >> 6) & 3,
-        .fade_enabled = (words[0] >> 8) & 1,
-        .fade_start = @floatFromInt((words[0] >> 9) & 0x7f),
-        .fade_full = @floatFromInt((words[0] >> 16) & 0x7f),
-        .y_align = words[1] & 3,
-        .y_stem = (words[1] >> 2) & 3,
-        .y_overshoot = (words[1] >> 4) & 3,
-        .x_ratio = @bitCast(words[2]),
-        .x_max_px = @bitCast(words[3]),
-        .y_ratio = @bitCast(words[4]),
-        .y_max_px = @bitCast(words[5]),
-        .overshoot_min_px = @bitCast(words[6]),
+        .y_align = (words[0] >> 8) & 3,
+        .y_stem = (words[0] >> 10) & 3,
+        .y_overshoot = (words[0] >> 12) & 3,
+        .fade_enabled = (words[0] >> 14) & 1,
+        .fade_start = @floatFromInt((words[0] >> 15) & 0x7f),
+        .fade_full = @floatFromInt((words[0] >> 22) & 0x7f),
+        .x_ratio = packedHalf(words[1], false),
+        .x_max_px = packedHalf(words[1], true),
+        .y_ratio = packedHalf(words[2], false),
+        .y_max_px = packedHalf(words[2], true),
+        .overshoot_min_px = packedHalf(words[3], false),
     };
     if (p.x_align > 1 or p.x_stem > 2 or p.x_positioning > 1 or p.x_registration > 1 or
         p.y_align > 2 or p.y_stem > 2 or p.y_overshoot > 1 or
@@ -730,7 +755,7 @@ fn glslHostSnap(value: f32, scale: f32) f32 {
     return @round(value * scale) / scale;
 }
 
-fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, comptime axis: analysis.Axis, words: [7]u32, scale: f32, left: f32, out: []Knot) []Knot {
+fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, comptime axis: Axis, words: [4]u32, scale: f32, left: f32, out: []Knot) []Knot {
     const policy = glslHostDecodePolicy(words) orelse return out[0..0];
     if (!std.math.isFinite(font.std_x) or font.std_x < 0 or !std.math.isFinite(font.std_y) or font.std_y < 0 or
         !std.math.isFinite(scale) or scale <= 0 or features.len == 0 or features.len > max_knots or
@@ -937,7 +962,7 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
     var cpu_buf: [max_knots]Knot = undefined;
     var glsl_buf: [max_knots]Knot = undefined;
     const identity_cpu = fitAxis(&identity_features, TestFontFeatures{ .std_x = 0.08 }, .x, identity_policy.x, 13, 0, &cpu_buf);
-    const identity_glsl = glslHostFitAxis(&identity_features, TestFontFeatures{ .std_x = 0.08 }, .x, identity_policy.pack(), 13, 0, &glsl_buf);
+    const identity_glsl = glslHostFitAxis(&identity_features, TestFontFeatures{ .std_x = 0.08 }, .x, try identity_policy.pack(), 13, 0, &glsl_buf);
     try expectGlslFixtureAxis(identity_cpu, identity_glsl, &probes);
 
     // Blue y, including preserved and suppressed round overshoot.
@@ -953,7 +978,7 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
     } };
     inline for (.{ preserve_policy, suppress_policy }) |fixture_policy| {
         const cpu = fitAxis(&blue_features, blue_font, .y, fixture_policy.y, 13, 0, &cpu_buf);
-        const gpu = glslHostFitAxis(&blue_features, blue_font, .y, fixture_policy.pack(), 13, 0, &glsl_buf);
+        const gpu = glslHostFitAxis(&blue_features, blue_font, .y, try fixture_policy.pack(), 13, 0, &glsl_buf);
         try expectGlslFixtureAxis(cpu, gpu, &probes);
     }
 
@@ -969,14 +994,14 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
         .overshoot = .{ .suppress_below_px = 0.5 },
     } };
     const apex_cpu = fitAxis(&apex_features, blue_font, .y, apex_policy.y, 11, 0, &cpu_buf);
-    const apex_glsl = glslHostFitAxis(&apex_features, blue_font, .y, apex_policy.pack(), 11, 0, &glsl_buf);
+    const apex_glsl = glslHostFitAxis(&apex_features, blue_font, .y, try apex_policy.pack(), 11, 0, &glsl_buf);
     try expectGlslFixtureAxis(apex_cpu, apex_glsl, &probes);
 
     // Y-grid retains blue indices for knot selection and stem anchoring even
     // though it does not use blue-zone reference targets.
     const y_grid_policy: policy_mod.AutohintPolicy = .{ .y = .{ .@"align" = .grid } };
     const y_grid_cpu = fitAxis(&blue_features, blue_font, .y, y_grid_policy.y, 13, 0, &cpu_buf);
-    const y_grid_glsl = glslHostFitAxis(&blue_features, blue_font, .y, y_grid_policy.pack(), 13, 0, &glsl_buf);
+    const y_grid_glsl = glslHostFitAxis(&blue_features, blue_font, .y, try y_grid_policy.pack(), 13, 0, &glsl_buf);
     try expectGlslFixtureAxis(y_grid_cpu, y_grid_glsl, &probes);
 
     // Full-width relative x with multiple stems and left registration.
@@ -991,7 +1016,7 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
     } };
     const full_font = TestFontFeatures{ .std_x = 0.08 };
     const full_cpu = fitAxis(&full_features, full_font, .x, full_policy.x, 13, 0.01, &cpu_buf);
-    const full_glsl = glslHostFitAxis(&full_features, full_font, .x, full_policy.pack(), 13, 0.01, &glsl_buf);
+    const full_glsl = glslHostFitAxis(&full_features, full_font, .x, try full_policy.pack(), 13, 0.01, &glsl_buf);
     try expectGlslFixtureAxis(full_cpu, full_glsl, &probes);
 
     // Degenerate scale and malformed either-axis metrics select identity.
@@ -1001,14 +1026,14 @@ test "CPU-generated policy fixtures match host GLSL evaluator targets and invers
     };
     for (malformed_fonts) |font| {
         const cpu_x = fitAxis(&full_features, font, .x, full_policy.x, 13, 0.01, &cpu_buf);
-        const glsl_x = glslHostFitAxis(&full_features, font, .x, full_policy.pack(), 13, 0.01, &glsl_buf);
+        const glsl_x = glslHostFitAxis(&full_features, font, .x, try full_policy.pack(), 13, 0.01, &glsl_buf);
         try expectGlslFixtureAxis(cpu_x, glsl_x, &probes);
         const cpu_y = fitAxis(&blue_features, font, .y, preserve_policy.y, 13, 0, &cpu_buf);
-        const glsl_y = glslHostFitAxis(&blue_features, font, .y, preserve_policy.pack(), 13, 0, &glsl_buf);
+        const glsl_y = glslHostFitAxis(&blue_features, font, .y, try preserve_policy.pack(), 13, 0, &glsl_buf);
         try expectGlslFixtureAxis(cpu_y, glsl_y, &probes);
     }
     const scale_cpu = fitAxis(&full_features, full_font, .x, full_policy.x, 0, 0.01, &cpu_buf);
-    const scale_glsl = glslHostFitAxis(&full_features, full_font, .x, full_policy.pack(), 0, 0.01, &glsl_buf);
+    const scale_glsl = glslHostFitAxis(&full_features, full_font, .x, try full_policy.pack(), 0, 0.01, &glsl_buf);
     try expectGlslFixtureAxis(scale_cpu, scale_glsl, &probes);
 }
 

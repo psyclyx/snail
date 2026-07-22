@@ -17,8 +17,7 @@ public struct AutohintVertexResult {
     public float4 paint;
     public float3 texcoord_layer;
     public int2 info;
-    public uint4 policy0;
-    public uint3 policy1;
+    public uint4 policy;
     public float4 x_targets[4];
     public float4 y_targets[4];
     public uint4 x_sources;
@@ -102,8 +101,7 @@ public AutohintVertexResult snailAutohintVertex(
     float4x4 mvp,
     float2 viewport,
     int subpixel_order,
-    uint4 policy0,
-    uint3 policy1,
+    uint4 packed_policy,
     Texture2D<float4> layer_tex)
 {
     TextVertexResult base = snailTextVertex(input, vertex_index, mvp, viewport, subpixel_order);
@@ -112,11 +110,10 @@ public AutohintVertexResult snailAutohintVertex(
     r.position = base.position;
     // v_paint = decoded color * decoded tint (constant across the quad).
     r.paint = base.color * base.tint;
-    r.texcoord_layer = float3(base.texcoord, input.bnd.w);
+    r.texcoord_layer = float3(base.texcoord, float((input.glyph.y >> 18u) & 0xffu));
     uint gz = input.glyph.x;
     r.info = int2(int(gz & 0xFFFFu), int(gz >> 16u));
-    r.policy0 = policy0;
-    r.policy1 = policy1;
+    r.policy = packed_policy;
 
     // The reference GL index order makes vertex 0 the last (provoking) vertex
     // of both triangles; Vulkan's default convention uses the same vertex as
@@ -139,13 +136,13 @@ public AutohintVertexResult snailAutohintVertex(
         return r;
     }
 
-    SnailAutohintPolicy policy;
+    SnailAutohintPolicy decoded_policy;
     int blueCount = 0;
     int featureXCount = 0;
     int featureYCount = 0;
     float stdX = snailWarpF(layer_tex, info_base, 0, 8);
     float stdY = snailWarpF(layer_tex, info_base, 0, 9);
-    bool valid = snailDecodeAutohintPolicy(policy0, policy1, policy) &&
+    bool valid = snailDecodeAutohintPolicy(packed_policy, decoded_policy) &&
         snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0 &&
         snailAhCount(SNAIL_AH_VERTEX_KNOTS, snailWarpF(layer_tex, info_base, 0, 10), blueCount);
     int xRun = 12 + 2 * blueCount;
@@ -168,10 +165,10 @@ public AutohintVertexResult snailAutohintVertex(
     int ySource[SNAIL_AH_VERTEX_KNOTS];
     bool xValid = snailFitAutohintAxis<SNAIL_AH_VERTEX_KNOTS, true>(layer_tex, info_base,
         0, xRun, blueCount, stdX, snailWarpF(layer_tex, info_base, 0, 11),
-        scale.x, policy, xCount, xBase, xTarget, xSource);
+        scale.x, decoded_policy, xCount, xBase, xTarget, xSource);
     bool yValid = snailFitAutohintAxis<SNAIL_AH_VERTEX_KNOTS, true>(layer_tex, info_base,
         1, yRun, blueCount, stdY, 0.0,
-        scale.y, policy, yCount, yBase, yTarget, ySource);
+        scale.y, decoded_policy, yCount, yBase, yTarget, ySource);
     if (xValid) snailAhPackAxis(xCount, xTarget, xSource, r.x_targets, r.x_sources);
     else snailAhMarkFallback(r.x_targets, r.x_sources);
     if (yValid) snailAhPackAxis(yCount, yTarget, ySource, r.y_targets, r.y_sources);

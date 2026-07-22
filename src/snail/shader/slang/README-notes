@@ -551,8 +551,8 @@ Validation (cheapest that genuinely validates, per artifact class):
 minimal_d3d11 (src/demo/app/minimal_d3d11.zig): mirrors minimal_wgpu's
 structure and scene exactly (same fonts/atlas planner/emit stream/mvp).
 Headless D3D11CreateDevice (hardware, WARP fallback), RGBA8_UNORM_SRGB
-render-target texture, UpdateSubresource per planner region, the 92-byte
-instance layout as 9 per-instance input-layout elements (ATTRIB0..8, one
+render-target texture, UpdateSubresource per planner region, the 72-byte
+instance layout as 7 per-instance input-layout elements (ATTRIB0..6, one
 input layout per vertex shader), premultiplied-over blend / cull-none /
 depth-off, DrawIndexedInstanced per batch, CopyResource + Map readback,
 TGA writer (D3D readback rows are already top-first, like wgpu).
@@ -756,7 +756,7 @@ artifacts (`snail-shaders-<target>` scoped modules / the generated_root
 accessors) and the generated parameter ABI that ships next to them
 (`reflection.PushConstants` / `reflection.binding` — machine-derived per
 build, not hand-pinned numbers), plus snail's data ABI (the instance
-stream at locations 0..8, format/abi.zig). The caller's own shaders
+stream at locations 0..6, format/abi.zig). The caller's own shaders
 being Slang is irrelevant; snail's families are opaque artifacts.
 
 Tier 2 — compose custom shading over snail's evaluators: author a family

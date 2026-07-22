@@ -18,9 +18,8 @@
 //
 // ── Stage IO contract ──
 //
-// Vertex inputs mirror contract.zig:vertexInputAttributes locations 0..6
-// (policy words 7/8 exist in the instance stream but the text family does
-// not consume them — pipelines may still declare them). Varyings keep the
+// Vertex inputs mirror contract.zig:vertexInputAttributes locations 0..6.
+// The text family bitcasts the shared payload into its band transform. Varyings keep the
 // Vulkan GLSL wrapper's locations: 0 color, 1 texcoord, 2 banding (flat),
 // 3 glyph (flat), 4 tint.
 //
@@ -72,7 +71,7 @@ struct VsInput {
     [[vk::location(1)]] float4 xform : ATTRIB1;
     [[vk::location(2)]] float2 origin : ATTRIB2;
     [[vk::location(3)]] uint2 glyph : ATTRIB3;
-    [[vk::location(4)]] float4 bnd : ATTRIB4;
+    [[vk::location(4)]] uint4 payload : ATTRIB4;
     [[vk::location(5)]] float4 col : ATTRIB5;
     [[vk::location(6)]] float4 tint : ATTRIB6;
 };
@@ -131,7 +130,7 @@ VsOutput vertexBody(VsInput input, uint vertex_index) {
     v.xform = input.xform;
     v.origin = input.origin;
     v.glyph = input.glyph;
-    v.bnd = input.bnd;
+    v.payload = input.payload;
     v.col = input.col;
     v.tint = input.tint;
 

@@ -1,7 +1,7 @@
 // LCD-subpixel autohint family (dual-source blended): native-Slang single
 // source. Fragment-only family — the vertex stage is the autohint
 // family's own vertex (families/autohint.slang vertexMain; identical
-// varying interface, locations 0..14), so hosts pair autohint.vert with
+// varying interface, locations 0..13), so hosts pair autohint.vert with
 // this fragment.
 //
 // Dual-source output contract matches families/text_subpixel.slang: both
@@ -55,18 +55,17 @@ struct VsOutput {
     [[vk::location(0)]] float4 paint : TEXCOORD0;
     [[vk::location(1)]] float3 texcoord_layer : TEXCOORD1;
     [[vk::location(2)]] nointerpolation int2 info : TEXCOORD2;
-    [[vk::location(3)]] nointerpolation uint4 policy0 : TEXCOORD3;
-    [[vk::location(4)]] nointerpolation uint3 policy1 : TEXCOORD4;
-    [[vk::location(5)]] nointerpolation float4 x_targets0 : TEXCOORD5;
-    [[vk::location(6)]] nointerpolation float4 x_targets1 : TEXCOORD6;
-    [[vk::location(7)]] nointerpolation float4 x_targets2 : TEXCOORD7;
-    [[vk::location(8)]] nointerpolation float4 x_targets3 : TEXCOORD8;
-    [[vk::location(9)]] nointerpolation float4 y_targets0 : TEXCOORD9;
-    [[vk::location(10)]] nointerpolation float4 y_targets1 : TEXCOORD10;
-    [[vk::location(11)]] nointerpolation float4 y_targets2 : TEXCOORD11;
-    [[vk::location(12)]] nointerpolation float4 y_targets3 : TEXCOORD12;
-    [[vk::location(13)]] nointerpolation uint4 x_sources : TEXCOORD13;
-    [[vk::location(14)]] nointerpolation uint4 y_sources : TEXCOORD14;
+    [[vk::location(3)]] nointerpolation uint4 policy : TEXCOORD3;
+    [[vk::location(4)]] nointerpolation float4 x_targets0 : TEXCOORD4;
+    [[vk::location(5)]] nointerpolation float4 x_targets1 : TEXCOORD5;
+    [[vk::location(6)]] nointerpolation float4 x_targets2 : TEXCOORD6;
+    [[vk::location(7)]] nointerpolation float4 x_targets3 : TEXCOORD7;
+    [[vk::location(8)]] nointerpolation float4 y_targets0 : TEXCOORD8;
+    [[vk::location(9)]] nointerpolation float4 y_targets1 : TEXCOORD9;
+    [[vk::location(10)]] nointerpolation float4 y_targets2 : TEXCOORD10;
+    [[vk::location(11)]] nointerpolation float4 y_targets3 : TEXCOORD11;
+    [[vk::location(12)]] nointerpolation uint4 x_sources : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint4 y_sources : TEXCOORD13;
 };
 
 struct FsOutput {
@@ -81,8 +80,7 @@ FsOutput fragmentMain(VsOutput input) {
     v.paint = input.paint;
     v.texcoord_layer = input.texcoord_layer;
     v.info = input.info;
-    v.policy0 = input.policy0;
-    v.policy1 = input.policy1;
+    v.policy = input.policy;
     v.x_targets[0] = input.x_targets0;
     v.x_targets[1] = input.x_targets1;
     v.x_targets[2] = input.x_targets2;

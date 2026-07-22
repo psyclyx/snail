@@ -76,13 +76,26 @@ pub const LinearResolve = struct {
         /// Decode the current target contents into the linear intermediate before
         /// drawing Snail content. This is the fully general, most expensive path.
         target,
-        /// Seed the intermediate with an sRGB straight-alpha color.
+        /// Seed the intermediate with an sRGB straight-alpha color. Every
+        /// component must be finite and in `[0, 1]`.
         clear: [4]f32,
         /// Seed the intermediate with transparent black.
         transparent,
         /// Leave the intermediate contents unspecified. The caller promises Snail
         /// fully covers the resolve region.
         dont_care,
+
+        pub const ValidationError = error{InvalidBackdrop};
+
+        pub fn validate(self: Backdrop) ValidationError!void {
+            switch (self) {
+                .clear => |color| for (color) |component| {
+                    if (!std.math.isFinite(component) or component < 0 or component > 1)
+                        return error.InvalidBackdrop;
+                },
+                .target, .transparent, .dont_care => {},
+            }
+        }
     };
 
     pub const Format = enum(c_int) {
@@ -92,8 +105,10 @@ pub const LinearResolve = struct {
 };
 
 pub const TargetSurface = struct {
-    pixel_width: f32,
-    pixel_height: f32,
+    /// Exact framebuffer dimensions. Integer storage avoids lossy f32
+    /// round-trips and makes every rectangle helper total.
+    pixel_width: u32,
+    pixel_height: u32,
     encoding: TargetEncoding,
     /// Byte layout of the attachment. GPU backends pack in hardware regardless,
     /// but use it to set the per-format dither amplitude (0 for float, 1/1023
@@ -101,10 +116,7 @@ pub const TargetSurface = struct {
     format: PixelFormat = .rgba8_unorm,
 
     pub fn pixelRect(self: TargetSurface) PixelRect {
-        return PixelRect.full(
-            @intFromFloat(@max(self.pixel_width, 0.0)),
-            @intFromFloat(@max(self.pixel_height, 0.0)),
-        );
+        return PixelRect.full(self.pixel_width, self.pixel_height);
     }
 
     pub fn supportsLinearResolve(self: TargetSurface) bool {
@@ -243,12 +255,23 @@ pub const CoverageTransfer = struct {
 };
 
 pub fn resolveRect(surface: TargetSurface, resolve: LinearResolve) PixelRect {
-    const width: u32 = @intFromFloat(@max(surface.pixel_width, 0.0));
-    const height: u32 = @intFromFloat(@max(surface.pixel_height, 0.0));
-    return resolve.region.rect(width, height);
+    return resolve.region.rect(surface.pixel_width, surface.pixel_height);
 }
 
 test "pixel rect clips to target bounds" {
     try std.testing.expectEqual(PixelRect{ .x = 2, .y = 0, .w = 3, .h = 4 }, (PixelRect{ .x = 2, .y = -3, .w = 8, .h = 7 }).clipped(5, 4));
     try std.testing.expectEqual(PixelRect{}, (PixelRect{ .x = 9, .y = 1, .w = 2, .h = 2 }).clipped(5, 4));
+}
+
+test "linear resolve clear validates its shared sRGB domain" {
+    try (LinearResolve.Backdrop{ .clear = .{ 0, 0.5, 1, 1 } }).validate();
+    try std.testing.expectError(error.InvalidBackdrop, (LinearResolve.Backdrop{
+        .clear = .{ std.math.nan(f32), 0, 0, 1 },
+    }).validate());
+    try std.testing.expectError(error.InvalidBackdrop, (LinearResolve.Backdrop{
+        .clear = .{ 1.01, 0, 0, 1 },
+    }).validate());
+    try std.testing.expectError(error.InvalidBackdrop, (LinearResolve.Backdrop{
+        .clear = .{ 0, 0, 0, -0.01 },
+    }).validate());
 }

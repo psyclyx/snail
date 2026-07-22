@@ -926,8 +926,8 @@ fn mainLoop(allocator: std.mem.Allocator) !void {
         const draw_state = @import("snail-raster").DrawState{
             .mvp = mvp,
             .surface = .{
-                .pixel_width = viewport_w,
-                .pixel_height = viewport_h,
+                .pixel_width = fb_size[0],
+                .pixel_height = fb_size[1],
                 .encoding = target_encoding,
             },
             .raster = .{

@@ -130,8 +130,7 @@ pub const Gles30TextState = struct {
     pub const DrawError = error{
         MissingBinding,
         StaleBinding,
-        MalformedBatch,
-    } || std.mem.Allocator.Error;
+    } || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
     /// `Gles30DeviceAtlas` cache, dispatch the encoded instances
@@ -144,6 +143,7 @@ pub const Gles30TextState = struct {
         records: draw_records_mod.DrawRecords,
         caches: []const *const gles30_upload.Gles30DeviceAtlas,
     ) DrawError!void {
+        try records.validate();
         gl.glBindVertexArray(self.vao);
         gl.glBindBuffer(gl.GL_ARRAY_BUFFER, self.vbo);
 
@@ -152,8 +152,6 @@ pub const Gles30TextState = struct {
                 for (caches) |candidate| if (candidate.pool == batch.binding.pool) return error.StaleBinding;
                 return error.MissingBinding;
             };
-            const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
-            if (end > records.instances.len) return error.MalformedBatch;
             const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
             _ = scratch;
             try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
@@ -206,7 +204,7 @@ pub const Gles30TextState = struct {
             const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
             const block = gl_common.NativeTextPushBlock{
                 .mvp = draw_state.mvp.data,
-                .viewport = .{ draw_state.surface.pixel_width, draw_state.surface.pixel_height },
+                .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
                 .subpixel_order = @intFromEnum(order),
                 .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
                 .layer_base = 0,
@@ -220,7 +218,7 @@ pub const Gles30TextState = struct {
         }
 
         gl.glUniformMatrix4fv(prog_state.mvp_loc, 1, gl.GL_FALSE, &draw_state.mvp.data);
-        gl.glUniform2f(prog_state.viewport_loc, draw_state.surface.pixel_width, draw_state.surface.pixel_height);
+        gl.glUniform2f(prog_state.viewport_loc, @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height));
         if (prog_state.subpixel_order_loc >= 0) {
             const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
             gl.glUniform1i(prog_state.subpixel_order_loc, @intFromEnum(order));
@@ -306,17 +304,14 @@ fn setupVertexAttribs() void {
     setupVertexAttrib(2, 2, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "origin"));
     gl.glVertexAttribIPointer(3, 2, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "glyph")));
     gl.glEnableVertexAttribArray(3);
-    setupVertexAttrib(4, 4, gl.GL_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "band"));
-    setupVertexAttrib(5, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "color"));
-    setupVertexAttrib(6, 4, gl.GL_UNSIGNED_BYTE, gl.GL_TRUE, stride, @offsetOf(vertex.Instance, "tint"));
-    gl.glVertexAttribIPointer(7, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy")));
-    gl.glEnableVertexAttribArray(7);
-    gl.glVertexAttribIPointer(8, 3, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "policy") + 16));
-    gl.glEnableVertexAttribArray(8);
+    gl.glVertexAttribIPointer(4, 4, gl.GL_UNSIGNED_INT, stride, @ptrFromInt(@offsetOf(vertex.Instance, "payload")));
+    gl.glEnableVertexAttribArray(4);
+    setupVertexAttrib(5, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "color"));
+    setupVertexAttrib(6, 4, gl.GL_HALF_FLOAT, gl.GL_FALSE, stride, @offsetOf(vertex.Instance, "tint"));
 }
 
 fn setupInstanceDivisors() void {
-    inline for (0..9) |i| {
+    inline for (0..7) |i| {
         gl.glVertexAttribDivisor(@intCast(i), 1);
     }
 }

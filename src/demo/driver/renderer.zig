@@ -595,7 +595,7 @@ fn glRender(
 
     // Surface dims are uniform across passes (one window).
     const surface = passes[0].draw_state.surface;
-    gl.glViewport(0, 0, @intFromFloat(surface.pixel_width), @intFromFloat(surface.pixel_height));
+    gl.glViewport(0, 0, @intCast(surface.pixel_width), @intCast(surface.pixel_height));
 
     const clear_t0 = wayland.getTime();
     var resolve_restore: ?@TypeOf(try self.renderer_state.state.beginLinearResolve(surface, .{
@@ -670,7 +670,7 @@ const CpuDriver = struct {
         const px = cpu_platform.getPixelBuffer() orelse return error.NoPixelBuffer;
         const bsz = cpu_platform.getBufferSize();
         const buffer_len: usize = @as(usize, bsz[0]) * @as(usize, bsz[1]) * 4;
-        const renderer_state = try raster.Renderer.init(px[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4);
+        const renderer_state = try raster.Renderer.init(px[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4, .rgba8_unorm);
 
         const pool_ptr = try allocator.create(raster.ThreadPool);
         errdefer allocator.destroy(pool_ptr);
@@ -722,7 +722,7 @@ const CpuDriver = struct {
         self.buf_width = bsz[0];
         self.buf_height = bsz[1];
         const buffer_len: usize = @as(usize, bsz[0]) * @as(usize, bsz[1]) * 4;
-        try self.renderer_state.reinitBuffer(fb_ptr[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4);
+        try self.renderer_state.reinitBuffer(fb_ptr[0..buffer_len], bsz[0], bsz[1], bsz[0] * 4, .rgba8_unorm);
 
         // Clear the framebuffer in the storage encoding (shared by all passes).
         // Splat the RGBA bytes into a single u32 word and `@memset` it across

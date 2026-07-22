@@ -39,7 +39,7 @@ pub fn main() !void {
         harness.srgbToLinear(0.035), harness.srgbToLinear(0.045), harness.srgbToLinear(0.065), 1.0,
     }));
     const view_proj = snail.Mat4.multiply(scene_mod.vulkan_z_fix, scene.viewProj(@as(f32, @floatFromInt(W)) / @as(f32, @floatFromInt(H))));
-    const surface = @import("snail-raster").TargetSurface{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = @import("snail-raster").TargetEncoding.srgb };
+    const surface = @import("snail-raster").TargetSurface{ .pixel_width = W, .pixel_height = H, .encoding = @import("snail-raster").TargetEncoding.srgb };
     try sr.record(cmd, 0, &scene, view_proj, surface);
     vulkan_platform.endFrameOffscreen();
     vulkan_platform.queueWaitIdle();

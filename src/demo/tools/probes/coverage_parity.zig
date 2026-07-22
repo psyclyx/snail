@@ -100,9 +100,9 @@ const Panel = struct {
     /// Render into `pixels` (RGBA8, linear target: alpha == raw coverage).
     fn draw(self: *Panel, pixels: []u8, mvp: snail.Mat4) !void {
         @memset(pixels, 0);
-        var renderer = try raster.Renderer.init(pixels, W, H, W * 4);
+        var renderer = try raster.Renderer.init(pixels, W, H, W * 4, .rgba8_unorm);
         const ds = raster.DrawState{
-            .surface = .{ .pixel_width = @floatFromInt(W), .pixel_height = @floatFromInt(H), .encoding = .linear },
+            .surface = .{ .pixel_width = W, .pixel_height = H, .encoding = .linear },
             .raster = .{ .subpixel_order = .none, .coverage_transfer = .{ .exponent = 1.0 } },
             .mvp = mvp,
         };

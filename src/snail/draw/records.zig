@@ -64,6 +64,40 @@ pub const DrawBatch = struct {
 pub const DrawRecords = struct {
     instances: []const Instance,
     batches: []const DrawBatch,
+
+    pub const ValidationError = error{
+        EmptyBatch,
+        BatchRangeOverflow,
+        BatchOutOfBounds,
+        NonContiguousBatch,
+        UncoveredInstances,
+        InvalidInstance,
+        BatchKindMismatch,
+    };
+
+    /// Validate the complete renderer-facing record stream. Batches must form
+    /// one contiguous, non-overlapping partition of `instances`, and every
+    /// instance must decode to the batch's declared semantic family.
+    pub fn validate(self: DrawRecords) ValidationError!void {
+        var cursor: usize = 0;
+        for (self.batches) |batch| {
+            if (batch.instance_count == 0) return error.EmptyBatch;
+            if (@as(usize, batch.first_instance) != cursor) return error.NonContiguousBatch;
+            const end = std.math.add(
+                usize,
+                @as(usize, batch.first_instance),
+                @as(usize, batch.instance_count),
+            ) catch return error.BatchRangeOverflow;
+            if (end > self.instances.len) return error.BatchOutOfBounds;
+            for (self.instances[cursor..end]) |*instance| {
+                vertex_mod.validateInstance(instance) catch return error.InvalidInstance;
+                const kind = shapeKind(instance) orelse return error.InvalidInstance;
+                if (kind != batch.kind) return error.BatchKindMismatch;
+            }
+            cursor = end;
+        }
+        if (cursor != self.instances.len) return error.UncoveredInstances;
+    }
 };
 
 /// Try to merge `next` into the last batch of `batches` if the two are
@@ -74,18 +108,19 @@ pub fn mergeIfAdjacent(batches: []DrawBatch, len: *usize, next: DrawBatch) bool 
     const last = &batches[len.* - 1];
     if (!last.binding.eql(next.binding)) return false;
     if (last.kind != next.kind) return false;
-    if (last.first_instance + last.instance_count != next.first_instance) return false;
-    last.instance_count += next.instance_count;
+    const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return false;
+    if (last_end != next.first_instance) return false;
+    last.instance_count = std.math.add(u32, last.instance_count, next.instance_count) catch return false;
     return true;
 }
 
 /// Decode the semantic family encoded in one packed instance. Emit uses this
 /// once while constructing homogeneous batches; it is also useful for ABI
 /// validation and diagnostics without imposing renderer dispatch policy.
-pub fn shapeKind(instance: *const Instance) ShapeKind {
+pub fn shapeKind(instance: *const Instance) ?ShapeKind {
     const packed_word = instance.glyph[1];
     if (!abi_mod.glyphWordIsSpecial(packed_word)) return .regular;
-    return switch (abi_mod.specialGlyphWordKind(packed_word) orelse .colr) {
+    return switch (abi_mod.specialGlyphWordKind(packed_word) orelse return null) {
         .colr => .colr,
         .path => .path,
         .tt_hinted_text => .tt_hinted_text,
@@ -150,4 +185,45 @@ test "mergeIfAdjacent merges only contiguous homogeneous batches" {
         .kind = .path,
     };
     try std.testing.expect(!mergeIfAdjacent(buf[0..], &len, different_kind));
+}
+
+test "DrawRecords validation rejects malformed ranges and kind mismatches" {
+    var pool = try PagePool.init(std.testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 128,
+        .band_words_per_page = 64,
+    });
+    defer pool.deinit();
+
+    var instances = [_]Instance{std.mem.zeroes(Instance)};
+    instances[0].xform = .{ 1, 0, 0, 1 };
+    const binding = Binding{ .pool = pool };
+    const regular = [_]DrawBatch{.{
+        .binding = binding,
+        .first_instance = 0,
+        .instance_count = 1,
+        .kind = .regular,
+    }};
+    try (DrawRecords{ .instances = &instances, .batches = &regular }).validate();
+
+    const empty = [_]DrawBatch{.{
+        .binding = binding,
+        .first_instance = 0,
+        .instance_count = 0,
+        .kind = .regular,
+    }};
+    try std.testing.expectError(error.EmptyBatch, (DrawRecords{ .instances = &.{}, .batches = &empty }).validate());
+
+    const wrong_kind = [_]DrawBatch{.{
+        .binding = binding,
+        .first_instance = 0,
+        .instance_count = 1,
+        .kind = .path,
+    }};
+    try std.testing.expectError(error.BatchKindMismatch, (DrawRecords{ .instances = &instances, .batches = &wrong_kind }).validate());
+
+    // Marker plus a reserved bit: special, but not a decodable semantic kind.
+    instances[0].glyph[1] = @as(u32, 1) << 31 | @as(u32, 1) << 26;
+    try std.testing.expectEqual(@as(?ShapeKind, null), shapeKind(&instances[0]));
+    try std.testing.expectError(error.InvalidInstance, (DrawRecords{ .instances = &instances, .batches = &regular }).validate());
 }

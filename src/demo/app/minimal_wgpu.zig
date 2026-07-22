@@ -332,19 +332,17 @@ const Layouts = struct {
 };
 
 /// One instance-rate vertex buffer mirroring the Vulkan contract's nine
-/// attributes at locations 0–8 (the generated WGSL preserves them).
-fn vertexAttributes() [9]c.WGPUVertexAttribute {
+/// attributes at locations 0–6 (the generated WGSL preserves them).
+fn vertexAttributes() [7]c.WGPUVertexAttribute {
     const Instance = snail.render.records.Instance;
     return .{
         .{ .format = c.WGPUVertexFormat_Float16x4, .offset = @offsetOf(Instance, "rect"), .shaderLocation = 0 },
         .{ .format = c.WGPUVertexFormat_Float32x4, .offset = @offsetOf(Instance, "xform"), .shaderLocation = 1 },
         .{ .format = c.WGPUVertexFormat_Float32x2, .offset = @offsetOf(Instance, "origin"), .shaderLocation = 2 },
         .{ .format = c.WGPUVertexFormat_Uint32x2, .offset = @offsetOf(Instance, "glyph"), .shaderLocation = 3 },
-        .{ .format = c.WGPUVertexFormat_Float32x4, .offset = @offsetOf(Instance, "band"), .shaderLocation = 4 },
-        .{ .format = c.WGPUVertexFormat_Unorm8x4, .offset = @offsetOf(Instance, "color"), .shaderLocation = 5 },
-        .{ .format = c.WGPUVertexFormat_Unorm8x4, .offset = @offsetOf(Instance, "tint"), .shaderLocation = 6 },
-        .{ .format = c.WGPUVertexFormat_Uint32x4, .offset = @offsetOf(Instance, "policy"), .shaderLocation = 7 },
-        .{ .format = c.WGPUVertexFormat_Uint32x3, .offset = @offsetOf(Instance, "policy") + 16, .shaderLocation = 8 },
+        .{ .format = c.WGPUVertexFormat_Uint32x4, .offset = @offsetOf(Instance, "payload"), .shaderLocation = 4 },
+        .{ .format = c.WGPUVertexFormat_Float16x4, .offset = @offsetOf(Instance, "color"), .shaderLocation = 5 },
+        .{ .format = c.WGPUVertexFormat_Float16x4, .offset = @offsetOf(Instance, "tint"), .shaderLocation = 6 },
     };
 }
 
@@ -503,7 +501,7 @@ const GpuAtlas = struct {
     band_tex: c.WGPUTexture = null,
     layer_tex: c.WGPUTexture = null,
     image_tex: c.WGPUTexture = null, // 1×1 placeholder: the scene packs no image paints
-    uploads: snail.OwnedAtlasUploadPlanner,
+    uploads: snail.atlas_upload.OwnedPlanner,
     binding: ?snail.render.records.Binding = null,
 
     const options = snail.atlas_upload.Options{
@@ -518,7 +516,7 @@ const GpuAtlas = struct {
         var self = GpuAtlas{
             .gpu = gpu,
             .pool = pool,
-            .uploads = try snail.OwnedAtlasUploadPlanner.init(allocator, pool, options),
+            .uploads = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, options),
         };
         errdefer self.uploads.deinit();
         try self.createTextures();
@@ -535,9 +533,10 @@ const GpuAtlas = struct {
     }
 
     fn createTextures(self: *GpuAtlas) !void {
-        const curve_height = self.pool.options.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
-        const band_height = self.pool.options.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers = self.pool.options.max_layers;
+        const pool_config = self.pool.config();
+        const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
+        const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
+        const layers = pool_config.max_layers;
 
         self.curve_tex = try createTexture(self.gpu.device, "snail-curves", c.WGPUTextureFormat_RGBA16Float, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(layers));
         self.band_tex = try createTexture(self.gpu.device, "snail-bands", c.WGPUTextureFormat_RG16Uint, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(layers));
@@ -630,8 +629,8 @@ pub fn main() !void {
     var font = try snail.Font.init(assets.dejavu_sans_mono);
     var emoji_font = try snail.Font.init(assets.twemoji_mozilla);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font },
-        .{ .font = &emoji_font, .fallback = true },
+        .{ .font = &font, .font_id = 0 },
+        .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     const font_id = faces.fontIdForFace(0).?;
@@ -1026,12 +1025,12 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
         .{
             .key = fill_key,
             .curves = fill_curves,
-            .paint = prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
+            .paint = try prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
         },
         .{
             .key = stroke_key,
             .curves = stroke_curves,
-            .paint = prepared_stroke.paintForDesign(stroke_style.paint),
+            .paint = try prepared_stroke.paintForDesign(stroke_style.paint),
         },
     });
     return .{

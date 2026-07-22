@@ -96,6 +96,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
         pub fn begin(self: *Self, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
             if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
             if (self.active) return error.LinearResolveAlreadyActive;
+            try resolve.backdrop.validate();
             const target_rect = surface.pixelRect();
             const width = target_rect.w;
             const height = target_rect.h;

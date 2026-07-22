@@ -685,16 +685,16 @@ void snailPaintedFragment(int expected_special_kind) {
     vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
-    int special_kind = v_glyph.w & 0xFF;
-    if (((v_glyph.w >> 8) & 0xFF) != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
+    int special_kind = v_glyph.w & 0x3;
+    if ((uint(v_glyph.w) & 0x8000u) == 0u) discard;
     if (special_kind != expected_special_kind) discard;
 
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
     if (firstInfo.w >= 0.0) discard;
 
-    int texLayer = u_layer_base + int(v_banding.w);
-    // v_tint is already sRGB-decoded in the vertex shader.
+    int texLayer = u_layer_base + ((v_glyph.w >> 2) & 0xff);
+    // v_tint arrives as a linear-light f16 vertex attribute.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup(rc, epp, ppe, infoBase, firstInfo, texLayer, v_tint);

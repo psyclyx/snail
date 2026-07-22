@@ -8,9 +8,8 @@ ivec2 offsetTtHintedInfoLoc(ivec2 base, int offset) {
 }
 
 void snailTtHintedTextFragment() {
-    int layer_byte = (v_glyph.w >> 8) & 0xFF;
-    if (layer_byte != SNAIL_SPECIAL_LAYER_SENTINEL) discard;
-    int special_kind = v_glyph.w & 0xFF;
+    if ((uint(v_glyph.w) & 0x8000u) == 0u) discard;
+    int special_kind = v_glyph.w & 0x3;
     if (special_kind != SNAIL_SPECIAL_KIND_TT_HINTED_TEXT) discard;
 
     vec2 rc = v_texcoord;
@@ -24,7 +23,7 @@ void snailTtHintedTextFragment() {
     int packed_counts = floatBitsToInt(header.z);
     int band_max_h = packed_counts & 0xFFFF;
     int band_max_v = (packed_counts >> 16) & 0xFFFF;
-    int atlas_layer = u_layer_base + int(v_banding.w);
+    int atlas_layer = u_layer_base + ((v_glyph.w >> 2) & 0xff);
 
     float cov = evalGlyphCoverage(rc, epp, ppe, ivec2(header.xy),
                                   ivec2(band_max_v, band_max_h), band,

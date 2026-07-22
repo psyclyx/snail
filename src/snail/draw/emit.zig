@@ -22,6 +22,8 @@ const math = @import("../math/vec.zig");
 const vertex = @import("../format/vertex.zig");
 const instance_emit = @import("../format/instance_emit.zig");
 const atlas_mod = @import("../atlas.zig");
+const page_mod = @import("../atlas/page.zig");
+const page_pool_mod = @import("../atlas/page_pool.zig");
 const record_key_mod = @import("../atlas/record_key.zig");
 const autohint_policy = @import("../font/autohint/policy.zig");
 const draw_records = @import("records.zig");
@@ -105,7 +107,7 @@ const InspectedShape = struct {
     info_x: u16 = 0,
     info_y: u16 = 0,
     layer_count: u16 = 0,
-    packed_policy: [7]u32 = [_]u32{0} ** 7,
+    packed_policy: [4]u32 = [_]u32{0} ** 4,
 };
 
 fn allFinite(values: anytype) bool {
@@ -116,9 +118,21 @@ fn allFinite(values: anytype) bool {
 }
 
 fn validTransform(transform: Transform2D) bool {
-    if (!allFinite(.{ transform.xx, transform.xy, transform.tx, transform.yx, transform.yy, transform.ty })) return false;
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    return std.math.isFinite(det) and @abs(det) >= 1e-10;
+    return transform.inverse() != null;
+}
+
+fn validInstanceColor(color: [4]f32) bool {
+    if (!allFinite(color) or color[3] < 0 or color[3] > 1) return false;
+    const limit: f32 = std.math.floatMax(f16);
+    return @abs(color[0]) <= limit and @abs(color[1]) <= limit and @abs(color[2]) <= limit;
+}
+
+fn validInstanceBBox(bbox: @import("../math/bezier.zig").BBox) bool {
+    const values = .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y };
+    if (!allFinite(values) or bbox.min.x > bbox.max.x or bbox.min.y > bbox.max.y) return false;
+    const limit: f32 = std.math.floatMax(f16);
+    inline for (values) |value| if (@abs(value) > limit) return false;
+    return true;
 }
 
 /// Resolve and validate everything that could make one instance fail before
@@ -134,25 +148,24 @@ fn inspectShape(
     const rec = atlas.lookupRecord(shape.key) orelse return error.MissingRecord;
     if (rec.curve_count == 0) return null;
 
-    if (!allFinite(shape.local_color) or !allFinite(world_tint)) return error.InvalidColor;
+    if (!validInstanceColor(shape.local_color) or !validInstanceColor(world_tint)) return error.InvalidColor;
 
     if (rec.page_index >= atlas.pages.len) return error.InvalidAtlasRecord;
     const page = atlas.pages[rec.page_index];
-    if (page.layer_index >= binding.pool.pages.len or
-        binding.pool.pages[page.layer_index] != page or
-        rec.page_generation != page.currentGeneration())
+    const layer = page_mod.layerIndex(page);
+    if (!page_pool_mod.ownsPage(binding.pool, layer, page) or
+        rec.page_generation != page_mod.currentGeneration(page))
     {
         return error.InvalidAtlasRecord;
     }
     const curve_texels = std.math.mul(u32, rec.curve_count, curve_tex_format.SEGMENT_TEXELS) catch return error.InvalidAtlasRecord;
     const curve_end = std.math.add(u32, rec.curve_texel, curve_texels) catch return error.InvalidAtlasRecord;
-    if (curve_end > page.curve.usedWords() / 4 or
-        !allFinite(.{ rec.bbox.min.x, rec.bbox.min.y, rec.bbox.max.x, rec.bbox.max.y }))
+    if (curve_end > page_mod.publishedWords(page).curve / 4 or
+        !validInstanceBBox(rec.bbox))
     {
         return error.InvalidAtlasRecord;
     }
-    // 0xff is the packed special-record sentinel, not a usable page layer.
-    if (page.layer_index >= std.math.maxInt(u8)) return error.AtlasLayerOverflow;
+    if (layer > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
 
     const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
     if (!validTransform(final_transform)) return error.InvalidTransform;
@@ -160,7 +173,7 @@ fn inspectShape(
     var inspected = InspectedShape{
         .rec = rec,
         .mode = .regular,
-        .atlas_layer = @intCast(page.layer_index),
+        .atlas_layer = @intCast(layer),
         .final_transform = final_transform,
     };
 
@@ -171,7 +184,7 @@ fn inspectShape(
         inspected.info_x = info.info_x;
         inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
         inspected.layer_count = info.layer_count;
-        inspected.packed_policy = policy.pack();
+        inspected.packed_policy = policy.pack() catch return error.InvalidAutohintPolicy;
     } else if (atlas.lookupTtHintedRecord(shape.key)) |info| {
         if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
         inspected.mode = .tt_hinted_text;
@@ -187,11 +200,14 @@ fn inspectShape(
     } else {
         if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
         if (rec.bands.h_band_count == 0 or rec.bands.v_band_count == 0 or
+            rec.bands.h_band_count > 16 or rec.bands.v_band_count > 16 or
             !allFinite(.{ rec.bands.band_scale_x, rec.bands.band_scale_y, rec.bands.band_offset_x, rec.bands.band_offset_y }))
         {
             return error.InvalidAtlasRecord;
         }
     }
+
+    if (inspected.mode != .regular and inspected.layer_count == 0) return error.InvalidAtlasRecord;
 
     return inspected;
 }
@@ -202,11 +218,12 @@ fn inspectShape(
 /// light, straight alpha (see `color.zig`); the renderer multiplies them
 /// in linear space.
 ///
-/// The operation is failure-atomic: every shape and both output capacities are
-/// preflighted before either buffer or cursor is changed. On error,
-/// `instance_len` and `batch_len` and all existing output elements are
-/// unchanged. Empty records are skipped before shape-specific transform,
-/// color, and autohint-policy validation because they emit no draw work.
+/// The operation is failure-atomic at the published slice boundary. On error,
+/// `instance_len`, `batch_len`, and every element below those input lengths are
+/// unchanged. The unused buffer tails are scratch and may be overwritten even
+/// when an error is returned. Empty records are skipped before shape-specific
+/// transform, color, and autohint-policy validation because they emit no draw
+/// work.
 pub fn emit(
     instances_buf: []Instance,
     batches_buf: []DrawBatch,
@@ -224,43 +241,25 @@ pub fn emit(
         if (binding.pool != pool) return error.BindingPoolMismatch;
     }
 
-    // Full preflight makes the operation failure-atomic. Count only records
-    // that render: spaces and zero-contour controls consume no capacity.
-    var emitted_len: usize = 0;
-    var batches_needed: usize = 0;
-    var previous_kind: ?draw_records.ShapeKind = null;
-    for (shapes) |shape| {
-        const inspected = (try inspectShape(binding, atlas, shape, world_xform, world_tint)) orelse continue;
-        const kind = inspected.mode.kind();
-        if (emitted_len == 0) {
-            var merges_existing = false;
-            if (batch_len.* > 0) {
-                const last = batches_buf[batch_len.* - 1];
-                const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return error.InvalidCursor;
-                merges_existing = last_end == @as(u32, @intCast(instance_len.*)) and
-                    last.binding.eql(binding) and last.kind == kind;
-            }
-            if (!merges_existing) batches_needed += 1;
-        } else if (previous_kind.? != kind) {
-            batches_needed += 1;
-        }
-        previous_kind = kind;
-        emitted_len += 1;
-    }
-
-    const final_instance_len = std.math.add(usize, instance_len.*, emitted_len) catch return error.OutputTooLarge;
-    if (final_instance_len > std.math.maxInt(u32)) return error.OutputTooLarge;
-    if (final_instance_len > instances_buf.len or batches_needed > batches_buf.len - batch_len.*) return error.BufferTooSmall;
-
+    // Stage directly into the unused tails of the caller buffers. Their
+    // published lengths are not changed until every shape has been inspected
+    // and encoded successfully, so an error leaves the observable records
+    // unchanged without resolving every atlas key twice or allocating scratch.
     const words_buf: []u32 = @ptrCast(std.mem.sliceAsBytes(instances_buf));
     var cursor: usize = instance_len.* * WORDS_PER_INSTANCE;
     const cur = InstanceCursor{ .buf = words_buf, .len = &cursor };
     var emitted: u32 = 0;
     var working_batch_len = batch_len.*;
     var batches_added: u32 = 0;
+    var merge_into_existing: bool = false;
+    var existing_increment: u32 = 0;
+    var previous_kind: ?draw_records.ShapeKind = null;
 
     for (shapes) |shape| {
-        const inspected = inspectShape(binding, atlas, shape, world_xform, world_tint) catch unreachable orelse continue;
+        const inspected = (try inspectShape(binding, atlas, shape, world_xform, world_tint)) orelse continue;
+
+        const current_instance_len = cursor / WORDS_PER_INSTANCE;
+        if (current_instance_len >= std.math.maxInt(u32)) return error.OutputTooLarge;
 
         switch (inspected.mode) {
             .autohint => cur.appendAutohintTransformedTinted(
@@ -273,7 +272,10 @@ pub fn emit(
                 inspected.atlas_layer,
                 inspected.final_transform,
                 inspected.packed_policy,
-            ) catch unreachable,
+            ) catch |err| return switch (err) {
+                error.BufferTooSmall => error.BufferTooSmall,
+                error.InvalidInstance => unreachable,
+            },
             .tt_hinted_text => cur.appendTtHintedTextTransformedTinted(
                 inspected.rec.bbox,
                 inspected.info_x,
@@ -283,7 +285,10 @@ pub fn emit(
                 world_tint,
                 inspected.atlas_layer,
                 inspected.final_transform,
-            ) catch unreachable,
+            ) catch |err| return switch (err) {
+                error.BufferTooSmall => error.BufferTooSmall,
+                error.InvalidInstance => unreachable,
+            },
             .colr => cur.appendMultiLayerGlyphTransformedTinted(
                 inspected.rec.bbox,
                 inspected.info_x,
@@ -293,7 +298,10 @@ pub fn emit(
                 world_tint,
                 inspected.atlas_layer,
                 inspected.final_transform,
-            ) catch unreachable,
+            ) catch |err| return switch (err) {
+                error.BufferTooSmall => error.BufferTooSmall,
+                error.InvalidInstance => unreachable,
+            },
             .path => cur.appendPathRecordTransformedTinted(
                 inspected.rec.bbox,
                 inspected.info_x,
@@ -303,7 +311,10 @@ pub fn emit(
                 world_tint,
                 inspected.atlas_layer,
                 inspected.final_transform,
-            ) catch unreachable,
+            ) catch |err| return switch (err) {
+                error.BufferTooSmall => error.BufferTooSmall,
+                error.InvalidInstance => unreachable,
+            },
             .regular => cur.appendGlyphTransformedTinted(
                 inspected.rec.bbox,
                 .{
@@ -320,25 +331,58 @@ pub fn emit(
                 world_tint,
                 inspected.atlas_layer,
                 inspected.final_transform,
-            ) catch unreachable,
+            ) catch |err| return switch (err) {
+                error.BufferTooSmall => error.BufferTooSmall,
+                error.InvalidInstance => unreachable,
+            },
         }
 
         const instance_index = cursor / WORDS_PER_INSTANCE - 1;
-        const batch = DrawBatch{
-            .binding = binding,
-            .first_instance = @intCast(instance_index),
-            .instance_count = 1,
-            .kind = inspected.mode.kind(),
-        };
-        if (!draw_records.mergeIfAdjacent(batches_buf, &working_batch_len, batch)) {
-            std.debug.assert(working_batch_len < batches_buf.len);
-            batches_buf[working_batch_len] = batch;
+        const kind = inspected.mode.kind();
+        if (previous_kind == null) {
+            if (batch_len.* > 0) {
+                const last = batches_buf[batch_len.* - 1];
+                const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return error.InvalidCursor;
+                merge_into_existing = last_end == @as(u32, @intCast(instance_len.*)) and
+                    last.binding.eql(binding) and last.kind == kind;
+            }
+            if (merge_into_existing) {
+                existing_increment = 1;
+            } else {
+                if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
+                batches_buf[working_batch_len] = .{
+                    .binding = binding,
+                    .first_instance = @intCast(instance_index),
+                    .instance_count = 1,
+                    .kind = kind,
+                };
+                working_batch_len += 1;
+                batches_added += 1;
+            }
+        } else if (previous_kind.? == kind) {
+            if (merge_into_existing and working_batch_len == batch_len.*) {
+                existing_increment = std.math.add(u32, existing_increment, 1) catch return error.OutputTooLarge;
+            } else {
+                batches_buf[working_batch_len - 1].instance_count += 1;
+            }
+        } else {
+            if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
+            batches_buf[working_batch_len] = .{
+                .binding = binding,
+                .first_instance = @intCast(instance_index),
+                .instance_count = 1,
+                .kind = kind,
+            };
             working_batch_len += 1;
             batches_added += 1;
         }
+        previous_kind = kind;
         emitted += 1;
     }
 
+    if (existing_increment != 0) {
+        batches_buf[batch_len.* - 1].instance_count += existing_increment;
+    }
     instance_len.* = cursor / WORDS_PER_INSTANCE;
     batch_len.* = working_batch_len;
 
@@ -354,7 +398,6 @@ pub fn emit(
 
 const testing = std.testing;
 const curves_mod = @import("../atlas/curves.zig");
-const page_pool_mod = @import("../atlas/page_pool.zig");
 const curve_tex_format = @import("../format/curve_texture.zig");
 
 const PagePool = page_pool_mod.PagePool;
@@ -367,15 +410,17 @@ fn makeTinyCurves(allocator: std.mem.Allocator) !GlyphCurves {
     curve_bytes[10] = 0; // packed quadratic
 
     // 1 h-band + 1 v-band, 1 ref each.
-    const band_bytes = try allocator.alloc(u16, 8);
-    band_bytes[0] = 1; // h-band count
-    band_bytes[1] = 2; // h-band offset
-    band_bytes[2] = 1; // v-band count
-    band_bytes[3] = 3; // v-band offset
-    band_bytes[4] = 0; // h-band ref0: cx=0
-    band_bytes[5] = 0; // cy=0
-    band_bytes[6] = 0; // v-band ref0: cx=0
-    band_bytes[7] = 0;
+    const band_bytes = try allocator.alloc(u16, 12);
+    const prefix = @import("../format/band_texture.zig").packBlockPrefix(1, 1);
+    @memcpy(band_bytes[0..prefix.len], &prefix);
+    band_bytes[4] = 1; // h-band count
+    band_bytes[5] = 2; // h-band offset
+    band_bytes[6] = 1; // v-band count
+    band_bytes[7] = 3; // v-band offset
+    band_bytes[8] = 0; // h-band ref0: cx=0
+    band_bytes[9] = 0; // cy=0
+    band_bytes[10] = 0; // v-band ref0: cx=0
+    band_bytes[11] = 0;
 
     return .{
         .allocator = allocator,
@@ -443,7 +488,7 @@ fn instanceWords(instances: []const Instance, index: usize) []const u32 {
     return words[index * WORDS_PER_INSTANCE ..][0..WORDS_PER_INSTANCE];
 }
 
-test "autohint shapes share lookup data and emit distinct seven-word policies" {
+test "autohint shapes share lookup data and emit distinct compact policies" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 2,
         .curve_words_per_page = 1024,
@@ -473,8 +518,8 @@ test "autohint shapes share lookup data and emit distinct seven-word policies" {
 
     const decoded_a = vertex.decodeInstance(instanceWords(&instances, 0));
     const decoded_b = vertex.decodeInstance(instanceWords(&instances, 1));
-    const packed_a = policy_a.pack();
-    const packed_b = policy_b.pack();
+    const packed_a = try policy_a.pack();
+    const packed_b = try policy_b.pack();
     try testing.expectEqualSlices(u32, &packed_a, &decoded_a.policy);
     try testing.expectEqualSlices(u32, &packed_b, &decoded_b.policy);
     try testing.expect(!std.mem.eql(u32, &decoded_a.policy, &decoded_b.policy));
@@ -599,7 +644,7 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
         },
         local_color,
         world_tint,
-        @intCast(atlas.pages[rec.page_index].layer_index),
+        @intCast(page_mod.layerIndex(atlas.pages[rec.page_index])),
         final_t,
     ));
 
@@ -627,7 +672,7 @@ test "emit reports MissingRecord on unknown key" {
     try testing.expectError(EmitError.MissingRecord, emit(&instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 }));
 }
 
-test "emit reports BufferTooSmall before writing anything" {
+test "emit reports BufferTooSmall without publishing partial records" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 512,
@@ -642,7 +687,8 @@ test "emit reports BufferTooSmall before writing anything" {
         .{ .key = record_key_mod.unhintedGlyph(0, 1) },
     };
 
-    // Two shapes, one-instance buffer: rejected up front.
+    // Two shapes, one-instance buffer: the staged first record is not
+    // published when the second runs out of room.
     var instances: [1]Instance = undefined;
     var batches: [2]DrawBatch = undefined;
     var ilen: usize = 0;
@@ -795,7 +841,7 @@ test "emit rejects a binding from another pool before writing" {
         .band_words_per_page = 128,
     });
     defer pool.deinit();
-    var other_pool = try PagePool.init(testing.allocator, pool.options);
+    var other_pool = try PagePool.init(testing.allocator, pool.config());
     defer other_pool.deinit();
     var atlas = try buildTestAtlas(pool, &.{1});
     defer atlas.deinit();
@@ -864,7 +910,7 @@ test "emit validates cursors instead of subtracting past buffer bounds" {
     ));
 }
 
-test "emit is failure-atomic for errors discovered late in a shape slice" {
+test "emit leaves published prefixes unchanged for errors discovered late" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 512,
@@ -876,7 +922,6 @@ test "emit is failure-atomic for errors discovered late in a shape slice" {
 
     var instances: [2]Instance = undefined;
     @memset(std.mem.asBytes(&instances), 0x5a);
-    const before = instances;
     var batches: [2]DrawBatch = undefined;
     var instance_len: usize = 0;
     var batch_len: usize = 0;
@@ -898,10 +943,9 @@ test "emit is failure-atomic for errors discovered late in a shape slice" {
     ));
     try testing.expectEqual(@as(usize, 0), instance_len);
     try testing.expectEqual(@as(usize, 0), batch_len);
-    try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&instances));
 }
 
-test "emit preflights batch capacity before writing instances" {
+test "emit leaves cursors unchanged when batch capacity is exhausted" {
     var pool = try PagePool.init(testing.allocator, .{
         .max_layers = 1,
         .curve_words_per_page = 512,
@@ -913,7 +957,6 @@ test "emit preflights batch capacity before writing instances" {
 
     var instances: [1]Instance = undefined;
     @memset(std.mem.asBytes(&instances), 0x3c);
-    const before = instances;
     var no_batches: [0]DrawBatch = .{};
     var instance_len: usize = 0;
     var batch_len: usize = 0;
@@ -930,5 +973,4 @@ test "emit preflights batch capacity before writing instances" {
         .{ 1, 1, 1, 1 },
     ));
     try testing.expectEqual(@as(usize, 0), instance_len);
-    try testing.expectEqualSlices(u8, std.mem.asBytes(&before), std.mem.asBytes(&instances));
 }

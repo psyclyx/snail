@@ -22,7 +22,7 @@ const assets = @import("assets");
 pub const Fonts = struct {
     allocator: std.mem.Allocator,
     faces: snail.Faces,
-    /// Heap-allocated so `Faces.face(i).?.font` (raw `*const Font`) survives
+    /// Heap-allocated so `Faces.fontForFace(i)` (raw `*const Font`) survives
     /// `Fonts` getting moved during `init`'s return-by-value. The unwrap is
     /// valid only after checking `i < faceCount()`.
     fonts: []snail.Font,
@@ -39,8 +39,8 @@ pub const Fonts = struct {
         }
 
         var faces = try snail.Faces.build(allocator, &.{
-            .{ .font = &fonts[0] },
-            .{ .font = &fonts[1], .weight = .bold },
+            .{ .font = &fonts[0], .font_id = 0 },
+            .{ .font = &fonts[1], .font_id = 1, .weight = .bold },
         });
         errdefer faces.deinit();
 
@@ -138,7 +138,7 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = prepared.paintForDesign(paint),
+            .paint = try prepared.paintForDesign(paint),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
@@ -162,7 +162,7 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = prepared.paintForDesign(stroke.paint),
+            .paint = try prepared.paintForDesign(stroke.paint),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
@@ -197,7 +197,7 @@ pub const PassBuilder = struct {
             try self.path_entries.append(self.allocator, .{
                 .key = key,
                 .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-                .paint = prepared.paintForDesign(fill),
+                .paint = try prepared.paintForDesign(fill),
             });
             try self.path_shapes.append(self.allocator, .{
                 .key = key,
@@ -215,7 +215,7 @@ pub const PassBuilder = struct {
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = prepared.paintForDesign(stroke.paint),
+            .paint = try prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
 
@@ -224,7 +224,7 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 2],
-            .paint = prepared.paintForDesign(fill),
+            .paint = try prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,
         });
@@ -250,8 +250,8 @@ pub const PassBuilder = struct {
         const to_paint = demo_support.placeRectUniform(rect);
         var unit_stroke = stroke;
         unit_stroke.width = demo_support.unitStrokeWidth(rect, stroke.width);
-        unit_stroke.paint = snail.mapPaintToLocal(stroke.paint, to_paint) orelse stroke.paint;
-        const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
+        unit_stroke.paint = try snail.mapPaintToLocal(stroke.paint, to_paint);
+        const local_fill = try snail.mapPaintToLocal(fill, to_paint);
         try self.addPathFillAndInsideStroke(&p, local_fill, unit_stroke, to_paint);
     }
 
@@ -268,7 +268,7 @@ pub const PassBuilder = struct {
         var p = try demo_support.unitRoundedRectPathFor(self.allocator, rect, radius);
         defer p.deinit();
         const to_paint = demo_support.placeRectUniform(rect);
-        const local_fill = snail.mapPaintToLocal(fill, to_paint) orelse fill;
+        const local_fill = try snail.mapPaintToLocal(fill, to_paint);
         var prepared = try p.prepare(self.allocator);
         defer prepared.deinit();
         const fill_curves = try prepared.fillCurves(self.allocator, self.allocator);
@@ -283,7 +283,7 @@ pub const PassBuilder = struct {
         try self.path_entries.append(self.allocator, .{
             .key = key,
             .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
-            .paint = prepared.paintForDesign(local_fill),
+            .paint = try prepared.paintForDesign(local_fill),
         });
         try self.path_shapes.append(self.allocator, .{
             .key = key,
@@ -403,7 +403,7 @@ pub const PassBuilder = struct {
                 .yy = -em,
                 .ty = pen_y,
             };
-            const local_paint = snail.mapPaintToLocal(paint, transform) orelse continue;
+            const local_paint = try snail.mapPaintToLocal(paint, transform);
 
             const curves = try font_ref.extractCurves(self.allocator, self.allocator, g.glyph_id);
             try self.path_curves_owned.append(self.allocator, curves);

@@ -73,11 +73,15 @@ pub const AutohintPolicy = struct {
         return policyValidate(self);
     }
 
-    pub fn pack(self: AutohintPolicy) [7]u32 {
+    /// Validate and encode this policy for the draw-instance ABI. Numeric
+    /// thresholds use IEEE-754 binary16; callers therefore get a typed error
+    /// instead of an infinity when a finite f32 is outside that format.
+    pub fn pack(self: AutohintPolicy) PolicyError![4]u32 {
+        try self.validate();
         return policyPack(self);
     }
 
-    pub fn unpack(words: [7]u32) PolicyError!AutohintPolicy {
+    pub fn unpack(words: [4]u32) PolicyError!AutohintPolicy {
         return policyUnpack(words);
     }
 };
@@ -86,16 +90,18 @@ pub fn validate(policy: AutohintPolicy) PolicyError!void {
     return policyValidate(policy);
 }
 
-pub fn pack(policy: AutohintPolicy) [7]u32 {
-    return policyPack(policy);
+pub fn pack(policy: AutohintPolicy) PolicyError![4]u32 {
+    return policy.pack();
 }
 
-pub fn unpack(words: [7]u32) PolicyError!AutohintPolicy {
+pub fn unpack(words: [4]u32) PolicyError!AutohintPolicy {
     return policyUnpack(words);
 }
 
+const max_packed_threshold: f32 = std.math.floatMax(f16);
+
 fn validThreshold(value: f32) bool {
-    return std.math.isFinite(value) and value >= 0;
+    return std.math.isFinite(value) and value >= 0 and value <= max_packed_threshold;
 }
 
 fn validateStemWidth(stem_width: StemWidth) PolicyError!void {
@@ -132,7 +138,8 @@ fn policyValidate(policy: AutohintPolicy) PolicyError!void {
         .none => {},
         .ppem_range => |r| {
             if (!validThreshold(r.start_px) or !validThreshold(r.full_px) or
-                r.start_px > fade_max_px or r.full_px > fade_max_px or r.start_px > r.full_px)
+                r.start_px > fade_max_px or r.full_px > fade_max_px or r.start_px > r.full_px or
+                @trunc(r.start_px) != r.start_px or @trunc(r.full_px) != r.full_px)
             {
                 return error.InvalidThreshold;
             }
@@ -144,30 +151,29 @@ const x_align_shift = 0;
 const x_stem_shift = 2;
 const x_positioning_shift = 4;
 const x_registration_shift = 6;
-const y_align_shift = 0;
-const y_stem_shift = 2;
-const y_overshoot_shift = 4;
+const y_align_shift = 8;
+const y_stem_shift = 10;
+const y_overshoot_shift = 12;
 const two_bit_mask: u32 = 0b11;
-// Whole-glyph fade bit-packs into word[0]'s spare bits (the x-config fields only
-// use bits 0-7) so the on-wire policy stays 7 words: enabled flag + two 7-bit
-// whole-ppem thresholds (0..127). Kept integer because a fade threshold never
-// needs sub-pixel precision.
+// All enum/configuration state and the integer-only fade range share word 0.
+// The other three words contain five binary16 thresholds, leaving the upper
+// half of word 3 reserved for future ABI-compatible policy data.
 const fade_max_px: f32 = 127;
-const fade_enabled_shift: u5 = 8;
-const fade_start_shift: u5 = 9;
-const fade_full_shift: u5 = 16;
+const fade_enabled_shift: u5 = 14;
+const fade_start_shift: u5 = 15;
+const fade_full_shift: u5 = 22;
 const seven_bit_mask: u32 = 0x7F;
 const fade_mask: u32 = (@as(u32, 1) << fade_enabled_shift) |
     (seven_bit_mask << fade_start_shift) |
     (seven_bit_mask << fade_full_shift);
-const x_config_mask: u32 = (two_bit_mask << x_align_shift) |
+const config_mask: u32 = (two_bit_mask << x_align_shift) |
     (two_bit_mask << x_stem_shift) |
     (two_bit_mask << x_positioning_shift) |
     (two_bit_mask << x_registration_shift) |
-    fade_mask;
-const y_config_mask: u32 = (two_bit_mask << y_align_shift) |
+    (two_bit_mask << y_align_shift) |
     (two_bit_mask << y_stem_shift) |
-    (two_bit_mask << y_overshoot_shift);
+    (two_bit_mask << y_overshoot_shift) |
+    fade_mask;
 
 fn stemWidthTag(stem_width: StemWidth) u32 {
     return switch (stem_width) {
@@ -177,41 +183,71 @@ fn stemWidthTag(stem_width: StemWidth) u32 {
     };
 }
 
-fn policyPack(policy: AutohintPolicy) [7]u32 {
-    var words = [_]u32{0} ** 7;
+fn f16Bits(value: f32) u16 {
+    return @bitCast(@as(f16, @floatCast(value)));
+}
+
+fn f16Value(bits: u16) f32 {
+    return @floatCast(@as(f16, @bitCast(bits)));
+}
+
+fn packHalf2(lo: f32, hi: f32) u32 {
+    return @as(u32, f16Bits(lo)) | (@as(u32, f16Bits(hi)) << 16);
+}
+
+fn halfLo(word: u32) f32 {
+    return f16Value(@intCast(word & 0xffff));
+}
+
+fn halfHi(word: u32) f32 {
+    return f16Value(@intCast(word >> 16));
+}
+
+fn policyPack(policy: AutohintPolicy) [4]u32 {
+    var words = [_]u32{0} ** 4;
 
     words[0] = (@as(u32, @intFromEnum(policy.x.@"align")) << x_align_shift) |
         (stemWidthTag(policy.x.stem_width) << x_stem_shift) |
         (@as(u32, @intFromEnum(policy.x.positioning)) << x_positioning_shift) |
         (@as(u32, @intFromEnum(policy.x.registration)) << x_registration_shift) |
-        packFade(policy.fade);
-    words[1] = (@as(u32, @intFromEnum(policy.y.@"align")) << y_align_shift) |
+        (@as(u32, @intFromEnum(policy.y.@"align")) << y_align_shift) |
         (stemWidthTag(policy.y.stem_width) << y_stem_shift) |
         ((switch (policy.y.overshoot) {
             .preserve => @as(u32, 0),
             .suppress_below_px => @as(u32, 1),
-        }) << y_overshoot_shift);
+        }) << y_overshoot_shift) |
+        packFade(policy.fade);
+
+    var x_ratio: f32 = 0;
+    var x_max: f32 = 0;
+    var y_ratio: f32 = 0;
+    var y_max: f32 = 0;
+    var overshoot: f32 = 0;
 
     switch (policy.x.stem_width) {
         .natural => {},
         .light => |light| {
-            words[2] = @bitCast(light.std_snap_ratio);
-            words[3] = @bitCast(light.max_px);
+            x_ratio = light.std_snap_ratio;
+            x_max = light.max_px;
         },
-        .full => |full| words[2] = @bitCast(full.std_snap_ratio),
+        .full => |full| x_ratio = full.std_snap_ratio,
     }
     switch (policy.y.stem_width) {
         .natural => {},
         .light => |light| {
-            words[4] = @bitCast(light.std_snap_ratio);
-            words[5] = @bitCast(light.max_px);
+            y_ratio = light.std_snap_ratio;
+            y_max = light.max_px;
         },
-        .full => |full| words[4] = @bitCast(full.std_snap_ratio),
+        .full => |full| y_ratio = full.std_snap_ratio,
     }
     switch (policy.y.overshoot) {
         .preserve => {},
-        .suppress_below_px => |threshold| words[6] = @bitCast(threshold),
+        .suppress_below_px => |threshold| overshoot = threshold,
     }
+
+    words[1] = packHalf2(x_ratio, x_max);
+    words[2] = packHalf2(y_ratio, y_max);
+    words[3] = @as(u32, f16Bits(overshoot));
 
     return words;
 }
@@ -237,20 +273,20 @@ fn unpackFade(word: u32) Fade {
     } };
 }
 
-fn decodeStemWidth(tag: u32, ratio_word: u32, max_word: u32) PolicyError!StemWidth {
+fn decodeStemWidth(tag: u32, ratio: f32, max_px: f32) PolicyError!StemWidth {
     return switch (tag) {
         0 => .natural,
         1 => .{ .light = .{
-            .std_snap_ratio = @bitCast(ratio_word),
-            .max_px = @bitCast(max_word),
+            .std_snap_ratio = ratio,
+            .max_px = max_px,
         } },
-        2 => .{ .full = .{ .std_snap_ratio = @bitCast(ratio_word) } },
+        2 => .{ .full = .{ .std_snap_ratio = ratio } },
         else => error.InvalidEncoding,
     };
 }
 
-fn policyUnpack(words: [7]u32) PolicyError!AutohintPolicy {
-    if (words[0] & ~x_config_mask != 0 or words[1] & ~y_config_mask != 0) {
+fn policyUnpack(words: [4]u32) PolicyError!AutohintPolicy {
+    if (words[0] & ~config_mask != 0 or words[3] >> 16 != 0) {
         return error.InvalidEncoding;
     }
 
@@ -269,33 +305,34 @@ fn policyUnpack(words: [7]u32) PolicyError!AutohintPolicy {
         1 => .left_round_outline,
         else => return error.InvalidEncoding,
     };
-    const y_align: YAlignment = switch (field(words[1], y_align_shift)) {
+    const y_align: YAlignment = switch (field(words[0], y_align_shift)) {
         0 => .none,
         1 => .grid,
         2 => .blue_zones,
         else => return error.InvalidEncoding,
     };
-    const overshoot: Overshoot = switch (field(words[1], y_overshoot_shift)) {
+    const overshoot: Overshoot = switch (field(words[0], y_overshoot_shift)) {
         0 => .preserve,
-        1 => .{ .suppress_below_px = @bitCast(words[6]) },
+        1 => .{ .suppress_below_px = halfLo(words[3]) },
         else => return error.InvalidEncoding,
     };
 
     const policy: AutohintPolicy = .{
         .x = .{
             .@"align" = x_align,
-            .stem_width = try decodeStemWidth(field(words[0], x_stem_shift), words[2], words[3]),
+            .stem_width = try decodeStemWidth(field(words[0], x_stem_shift), halfLo(words[1]), halfHi(words[1])),
             .positioning = x_positioning,
             .registration = x_registration,
         },
         .y = .{
             .@"align" = y_align,
-            .stem_width = try decodeStemWidth(field(words[1], y_stem_shift), words[4], words[5]),
+            .stem_width = try decodeStemWidth(field(words[0], y_stem_shift), halfLo(words[2]), halfHi(words[2])),
             .overshoot = overshoot,
         },
         .fade = unpackFade(words[0]),
     };
     try policy.validate();
+    if (!std.mem.eql(u32, &words, &policyPack(policy))) return error.InvalidEncoding;
     return policy;
 }
 
@@ -315,25 +352,80 @@ test "policy round-trips without named presets" {
         .fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 26 } },
     };
     try p.validate();
-    try testing.expectEqual(@as(usize, 7), p.pack().len);
-    try testing.expectEqualDeep(p, try AutohintPolicy.unpack(p.pack()));
+    const words = try p.pack();
+    try testing.expectEqual(@as(usize, 4), words.len);
+    const decoded = try AutohintPolicy.unpack(words);
+    try expectPolicyApproxEq(p, decoded);
 }
 
 test "fade bit-packs into word 0 and round-trips; default is none" {
     // Whole-ppem thresholds survive the 7-bit fields; default policy has no fade.
     const faded: AutohintPolicy = .{ .fade = .{ .ppem_range = .{ .start_px = 18, .full_px = 30 } } };
     try faded.validate();
-    try testing.expectEqualDeep(faded, try AutohintPolicy.unpack(faded.pack()));
+    const words = try faded.pack();
+    try testing.expectEqualDeep(faded, try AutohintPolicy.unpack(words));
     try testing.expectEqual(Fade.none, (AutohintPolicy{}).fade);
-    // Fade lives in word 0's spare bits, so the float payload words stay zero.
-    try testing.expectEqualSlices(u32, &.{ 0, 0, 0, 0, 0 }, faded.pack()[2..]);
+    // Fade lives in word 0; all binary16 payload words stay zero.
+    try testing.expectEqualSlices(u32, &.{ 0, 0, 0 }, words[1..]);
     // Reject an out-of-range or inverted range.
     try testing.expectError(error.InvalidThreshold, (AutohintPolicy{
         .fade = .{ .ppem_range = .{ .start_px = 30, .full_px = 18 } },
     }).validate());
+    try testing.expectError(error.InvalidThreshold, (AutohintPolicy{
+        .fade = .{ .ppem_range = .{ .start_px = 18.5, .full_px = 30 } },
+    }).validate());
 }
 
-test "all five simultaneous float payloads round-trip exactly" {
+fn thresholdTolerance(value: f32) f32 {
+    // Binary16 round-to-nearest is within half an ULP. This slightly looser
+    // bound covers subnormals and makes the quantization contract obvious.
+    return @max(@abs(value) / 1024.0, 0x1p-24);
+}
+
+fn expectPolicyApproxEq(expected: AutohintPolicy, actual: AutohintPolicy) !void {
+    try testing.expectEqual(expected.x.@"align", actual.x.@"align");
+    try testing.expectEqual(expected.x.positioning, actual.x.positioning);
+    try testing.expectEqual(expected.x.registration, actual.x.registration);
+    try testing.expectEqual(expected.y.@"align", actual.y.@"align");
+    try testing.expectEqual(expected.fade, actual.fade);
+    switch (expected.x.stem_width) {
+        .natural => try testing.expectEqual(StemWidth.natural, actual.x.stem_width),
+        .light => |e| switch (actual.x.stem_width) {
+            .light => |a| {
+                try testing.expectApproxEqAbs(e.std_snap_ratio, a.std_snap_ratio, thresholdTolerance(e.std_snap_ratio));
+                try testing.expectApproxEqAbs(e.max_px, a.max_px, thresholdTolerance(e.max_px));
+            },
+            else => return error.TestExpectedEqual,
+        },
+        .full => |e| switch (actual.x.stem_width) {
+            .full => |a| try testing.expectApproxEqAbs(e.std_snap_ratio, a.std_snap_ratio, thresholdTolerance(e.std_snap_ratio)),
+            else => return error.TestExpectedEqual,
+        },
+    }
+    switch (expected.y.stem_width) {
+        .natural => try testing.expectEqual(StemWidth.natural, actual.y.stem_width),
+        .light => |e| switch (actual.y.stem_width) {
+            .light => |a| {
+                try testing.expectApproxEqAbs(e.std_snap_ratio, a.std_snap_ratio, thresholdTolerance(e.std_snap_ratio));
+                try testing.expectApproxEqAbs(e.max_px, a.max_px, thresholdTolerance(e.max_px));
+            },
+            else => return error.TestExpectedEqual,
+        },
+        .full => |e| switch (actual.y.stem_width) {
+            .full => |a| try testing.expectApproxEqAbs(e.std_snap_ratio, a.std_snap_ratio, thresholdTolerance(e.std_snap_ratio)),
+            else => return error.TestExpectedEqual,
+        },
+    }
+    switch (expected.y.overshoot) {
+        .preserve => try testing.expectEqual(Overshoot.preserve, actual.y.overshoot),
+        .suppress_below_px => |e| switch (actual.y.overshoot) {
+            .suppress_below_px => |a| try testing.expectApproxEqAbs(e, a, thresholdTolerance(e)),
+            else => return error.TestExpectedEqual,
+        },
+    }
+}
+
+test "all five simultaneous float payloads round-trip within binary16 error" {
     const p: AutohintPolicy = .{
         .x = .{
             .@"align" = .grid,
@@ -351,9 +443,9 @@ test "all five simultaneous float payloads round-trip exactly" {
             .overshoot = .{ .suppress_below_px = @bitCast(@as(u32, 0x3d987654)) },
         },
     };
-    const words = p.pack();
-    try testing.expectEqualSlices(u32, &.{ 0x3eaaaaab, 0x41234567, 0x3f012345, 0x40abcdef, 0x3d987654 }, words[2..]);
-    try testing.expectEqualDeep(p, try AutohintPolicy.unpack(words));
+    const words = try p.pack();
+    try testing.expectEqual(@as(u32, 0), words[3] >> 16);
+    try expectPolicyApproxEq(p, try AutohintPolicy.unpack(words));
 }
 
 test "dependent operations reject missing alignment" {
@@ -376,14 +468,21 @@ test "thresholds must be finite and non-negative" {
     try testing.expectError(error.InvalidThreshold, (AutohintPolicy{
         .y = .{ .@"align" = .blue_zones, .overshoot = .{ .suppress_below_px = std.math.nan(f32) } },
     }).validate());
+    try testing.expectError(error.InvalidThreshold, (AutohintPolicy{
+        .x = .{ .stem_width = .{ .full = .{ .std_snap_ratio = 65505 } } },
+    }).pack());
 }
 
 test "unpack rejects reserved configuration encodings" {
-    var words = (AutohintPolicy{}).pack();
+    var words = try (AutohintPolicy{}).pack();
     words[0] |= @as(u32, 3) << x_stem_shift;
     try testing.expectError(error.InvalidEncoding, AutohintPolicy.unpack(words));
 
-    words = (AutohintPolicy{}).pack();
-    words[1] |= @as(u32, 1) << 31;
+    words = try (AutohintPolicy{}).pack();
+    words[3] |= @as(u32, 1) << 31;
+    try testing.expectError(error.InvalidEncoding, unpack(words));
+
+    words = try (AutohintPolicy{}).pack();
+    words[1] = packHalf2(0.5, 0);
     try testing.expectError(error.InvalidEncoding, unpack(words));
 }
