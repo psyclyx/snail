@@ -1020,6 +1020,95 @@ fn addMinimalD3d11Step(
     step.dependOn(&run.step);
 }
 
+/// Best-effort Metal demo (see src/demo/app/minimal_metal.zig and
+/// src/snail/shader/slang/README-notes "Metal stage"). Two steps:
+///
+///  - `check-metal-demo` (any host): cross-compiles the demo and its snail
+///    module (HarfBuzz amalgam included) for aarch64-macos into a static
+///    library — full semantic analysis + machine code generation with
+///    zig's bundled macOS libc/libc++ headers, forced through
+///    `comptime { _ = &main; }` in the demo file. What this does NOT
+///    verify: linking against the Apple frameworks (needs an SDK), the
+///    Objective-C selector spellings/enum values (runtime-checked only),
+///    and any Metal runtime behavior.
+///  - `run-minimal-metal` (macOS host only): native build linking
+///    Metal/Foundation/CoreGraphics (CoreGraphics is required for
+///    MTLCreateSystemDefaultDevice in a command-line tool), then runs it
+///    to produce zig-out/minimal-metal.tga.
+fn addMinimalMetalStep(
+    b: *std.Build,
+    modules: ProjectModules,
+) void {
+    const check_step = b.step("check-metal-demo", "Cross-compile the one-file Metal example for aarch64-macos (analysis+codegen only; no SDK link, no Metal runtime on this host)");
+    const run_step = b.step("run-minimal-metal", "Render the one-file public-API Metal example to zig-out/minimal-metal.tga (macOS hosts only)");
+    const hb_src = b.graph.environ_map.get("HARFBUZZ_SRC") orelse {
+        const fail = b.addFail("check-metal-demo / run-minimal-metal need HARFBUZZ_SRC (enter nix-shell; see shell.nix)");
+        check_step.dependOn(&fail.step);
+        run_step.dependOn(&fail.step);
+        return;
+    };
+
+    // The snail module for a macOS target: identical source, HarfBuzz
+    // compiled in from the amalgam (same pattern as the Windows/D3D11
+    // demo; zig bundles the macOS libc/libc++ headers, so this
+    // cross-compiles without an SDK).
+    const makeModule = struct {
+        fn make(bb: *std.Build, mods: ProjectModules, hb: []const u8, target: std.Build.ResolvedTarget) *std.Build.Module {
+            const snail_mac = bb.createModule(.{
+                .root_source_file = bb.path("src/snail/root.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .link_libc = true,
+                .link_libcpp = true,
+            });
+            snail_mac.addIncludePath(.{ .cwd_relative = bb.pathJoin(&.{ hb, "src" }) });
+            snail_mac.addCSourceFile(.{
+                .file = .{ .cwd_relative = bb.pathJoin(&.{ hb, "src", "harfbuzz.cc" }) },
+                .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" },
+                .language = .cpp,
+            });
+            const mod = bb.createModule(.{
+                .root_source_file = bb.path("src/demo/app/minimal_metal.zig"),
+                .target = target,
+                .optimize = .ReleaseFast,
+                .link_libc = true,
+                .imports = &.{
+                    .{ .name = "assets", .module = mods.assets },
+                    .{ .name = "snail", .module = snail_mac },
+                },
+            });
+            return mod;
+        }
+    }.make;
+
+    // Compile check: a static library needs no linker pass against the
+    // (absent) Apple SDK, but still compiles every Zig and C++ input.
+    const check_target = b.resolveTargetQuery(.{ .cpu_arch = .aarch64, .os_tag = .macos });
+    const check_lib = b.addLibrary(.{
+        .name = "snail-minimal-metal-check",
+        .linkage = .static,
+        .root_module = makeModule(b, modules, hb_src, check_target),
+    });
+    // Installing the archive forces real machine-code emission (a bare
+    // dependency would run analysis-only via -fno-emit-bin).
+    check_step.dependOn(&b.addInstallArtifact(check_lib, .{}).step);
+
+    if (b.graph.host.result.os.tag == .macos) {
+        const mod = makeModule(b, modules, hb_src, b.resolveTargetQuery(.{}));
+        mod.linkFramework("Metal", .{});
+        mod.linkFramework("Foundation", .{});
+        mod.linkFramework("CoreGraphics", .{});
+        const exe = b.addExecutable(.{ .name = "snail-minimal-metal", .root_module = mod });
+        const run = b.addRunArtifact(exe);
+        // Rendering output changes with the shaders/scene, not just the exe.
+        run.has_side_effects = true;
+        run_step.dependOn(&run.step);
+    } else {
+        const fail = b.addFail("run-minimal-metal needs a macOS host (this build has no Metal runtime); on this host use `zig build check-metal-demo`");
+        run_step.dependOn(&fail.step);
+    }
+}
+
 fn addMinimalWgpuStep(
     b: *std.Build,
     config: BuildConfig,
@@ -1081,6 +1170,7 @@ pub fn build(b: *std.Build) void {
     addMinimalGlStep(b, config, modules);
     addMinimalWgpuStep(b, config, modules);
     addMinimalD3d11Step(b, modules);
+    addMinimalMetalStep(b, modules);
     addPerfSteps(b, config, modules);
     slang_shaders.addGenShadersStep(b);
 }

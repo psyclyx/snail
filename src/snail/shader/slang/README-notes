@@ -558,3 +558,133 @@ module (not the family entry file) left every slangc output cached and
 gen-shaders silently rewrote stale artifacts. slangcFamily now registers
 every *.slang under the include dirs via addFileInput (see
 addModuleInputs in build/slang_shaders.zig).
+
+Metal stage (best-effort) (2026-07-21): MSL artifacts + minimal_metal
+=====================================================================
+Sixth target: `msl` — `slangc -DSNAIL_TARGET_METAL -target metal
+-ignore-capabilities -line-directive-mode none` for every non-gl_only
+family (nine artifacts in src/snail/shader/generated/msl/, exposed via
+snail.shader.generated: textMsl/autohintMsl/{colr,path,ttHinted,subpixel,
+textSample}FragMsl + msl_{vertex,fragment}_entry). BEST-EFFORT: everything
+below was verified by READING the emitted MSL and by textual artifact
+tests — there is no Metal compiler for Linux (checked nixpkgs: moltenvk is
+darwin-only; spirv-cross/glslang have no MSL front end; metal-cpp is
+headers, unpackaged, and wouldn't validate anyway), so even SYNTAX
+validation is deferred to the Mac. The demo runtime-compiles the sources
+with newLibraryWithSource:, which is the real validation pass.
+
+Findings (from the emitted code, not from running it):
+ - slangc capability-checker bug forces -ignore-capabilities: a fragment
+   entry that uses `discard` or any derivative op (fwidth) AND calls a
+   function from an IMPORTED module fails E36107 "unavailable features in
+   entry point" on -target metal. Minimal repro: `fwidth` + a call to a
+   trivial imported int-math function. The identical body pasted into the
+   entry's own file compiles; discard/fwidth alone compile (emitting
+   discard_fragment() / dfdx-based fwidth). The flag only relaxes this leg;
+   all other targets still compile without it.
+ - spirv_asm is the same hard error as HLSL ("unexpected IR opcode during
+   code emit"), so Metal joins the WGSL/D3D11 SV_VertexID entry branch
+   (families/{text,painted,autohint}.slang) — SV_VertexID emits the native
+   [[vertex_id]] (raw for our base-vertex-0 draws; Metal's vertex_id does
+   include base_vertex on indirect draws, which snail never issues here).
+ - Coordinate convention: the Metal backend inserts NO conversion — the
+   only y-negation in the artifact is the family source's explicit
+   `o.position.y = -o.position.y` from the shared y-up branch. Metal NDC is
+   y-up, clip z [0,1], texture origin top-left (all D3D11-like), so
+   mvp = ortho(0, w, 0, h) and readback rows are top-first, exactly like
+   minimal_wgpu/minimal_d3d11.
+ - Matrix convention: same shape as the AE-verified WGSL leg —
+   `_MatrixStorage_float4x4_ColMajornatural` + explicit transposed unpack
+   + `v * M` + `mvp[i]` row-gathers. The CPU's column-major GLSL bytes read
+   with GLSL `M * v` semantics; no flag needed.
+ - Binding layout (argument indices, declaration order like HLSL):
+   [[buffer(0)]] = the parameter block as `constant
+   SnailPushConstants_natural*` — NATURAL layout, byte-identical to the
+   96-byte extern struct (array<float4,4> @ 0, float2 viewport @ 64,
+   scalars @ 72..92). [[texture(0)]] curve, [[texture(1)]] band,
+   [[texture(2)]] layer-info (texture2d, NOT an array; = the records
+   texture_buffer for text_sample), [[texture(3)]] image array,
+   [[sampler(0)]] image sampler. The autohint VERTEX keeps [[texture(2)]]
+   with curve/band stripped. Stage IO: [[attribute(0..8)]] via [[stage_in]]
+   — the instance stream's vertex-descriptor buffer index is the HOST's
+   choice and shares the argument table with [[buffer(0)]]; minimal_metal
+   uses buffer index 1. Entry names survive ([[vertex]] vertexMain /
+   [[fragment]] fragmentMain). Varyings link by [[user(TEXCOORD_n)]] pairs
+   generated consistently in both stages.
+ - Dual source: the Metal backend DROPS [[vk::index(1)]] (same failure
+   class as WGSL) — text_subpixel emits plain MRT [[color(0)]]/[[color(1)]].
+   MSL does support dual-source natively ([[color(0), index(1)]]); a
+   consumer must textually rewrite the attribute before compiling. The
+   artifact test pins the current (dropped) form as the tripwire for slang
+   gaining native support. No prelude interop attempted for Metal.
+ - text_sample: Buffer<uint> → `texture_buffer<uint, access::read>`
+   ([[texture(2)]]) — needs MSL 2.1+; newLibraryWithSource with default
+   MTLCompileOptions uses the newest language version, so nothing is set.
+ - isnan survives on Metal (snailAhFinite keeps the isnan branch; the
+   magnitude-test variant remains WGSL/D3D11-only), and the autohint
+   packing loop keeps the plain dynamic-subscript form (MSL is C++; the
+   vkd3d [ForceUnroll] variant remains D3D11-only).
+ - `-target metallib` (AIR bytecode) fails on Linux exactly as expected:
+   "failed to load downstream compiler 'metal'" + E52002 pass-through
+   compiler not found (slangc shells out to Apple's metal compiler).
+   Runtime source compile is the shipped path; a metallib flavor is a
+   Mac-side follow-up.
+
+minimal_metal (src/demo/app/minimal_metal.zig): mirrors minimal_d3d11's
+scene exactly (same fonts/atlas planner/records/emit stream/mvp/blend/
+clear). No SDK headers: the whole Metal API is driven through extern
+objc_msgSend + sel_registerName + objc_getClass (+ the
+MTLCreateSystemDefaultDevice C entry point); enum values are pinned from
+the public headers in the `mtl` namespace. Headless: no swapchain; render
+target is RGBA8Unorm_sRGB, storage Private, read back with a blit into a
+Shared MTLBuffer + contents (works on Intel and Apple silicon; the ATLAS
+textures use Shared storage + replaceRegion:, which is Apple-silicon —
+switch them to Managed(1) on Intel, noted in-source). One PSO per family;
+text_subpixel + text_sample are compile-only validated
+(validateRemainingArtifacts). Output: zig-out/minimal-metal.tga (BGRA
+top-left TGA like the other minimal examples).
+
+What IS verified on Linux (2026-07-21):
+ - slangc emits all nine artifacts without errors; gen-shaders is
+   idempotent; every other target's artifacts are byte-identical.
+ - Textual contract tests in snail.shader.generated (bindings, entries,
+   vertex_id, texture_buffer, MRT-dual-source pin, no #line).
+ - `zig build check-metal-demo`: the demo + its snail module (HarfBuzz
+   amalgam) fully compile AND codegen for aarch64-macos into a static
+   archive (zig's bundled macOS libc/libc++; `comptime { _ = &main; }`
+   defeats lazy analysis; the install forces real emission past
+   -fno-emit-bin).
+What is NOT verified: framework linking (needs the macOS SDK), every
+Objective-C selector spelling and pinned enum value (runtime-only), MSL
+compilation itself, and every pixel.
+
+Mac handoff (run on the Mac, needs Xcode CLT + zig 0.16 + nix or a
+HARFBUZZ_SRC checkout exported in the environment):
+  zig build run-minimal-metal            # → zig-out/minimal-metal.tga
+  zig build run-minimal-gl               # (or copy minimal-gl.tga from Linux)
+  magick compare -metric AE -fuzz 4% zig-out/minimal-metal.tga \
+      zig-out/minimal-gl.tga null:      # expect ~650/403200 (the known
+                                        # AA-edge class; wgpu=650, d3d11=650)
+  magick compare -metric AE zig-out/minimal-metal.tga \
+      zig-out/minimal-wgpu.tga null:    # expect ~single digits raw AE if
+                                        # available (d3d11 vs wgpu was 3)
+Risks, ranked:
+ 1. objc shim typos (selector spellings, pinned enum values, msgSend
+    signatures) — crash or nil-object errors before any rendering. The
+    demo prints which call failed; paste the first failure.
+ 2. newLibraryWithSource errors — the MSL never met a real Metal frontend.
+    The demo prints the full NSError text per artifact; paste it verbatim
+    into this file's Metal section.
+ 3. Coordinate convention — a vertically flipped image means the y-up
+    analysis is wrong somewhere; compare against minimal-wgpu.tga first.
+ 4. sRGB attachment behavior — washed-out or double-dark output means the
+    RGBA8Unorm_sRGB encode-on-write assumption differs; check whether the
+    clear color band (0.955..0.985 linear) reads back ~[249,250,252].
+ 5. Argument-index mismatches (buffer 1 vs stage_in, texture slots) —
+    Metal validation layer (`MTL_DEBUG_LAYER=1 zig build run-minimal-metal`)
+    names the offending slot.
+ 6. Shared-storage atlas textures on Intel Macs — replaceRegion asserts;
+    switch GpuAtlas.createTexture to Managed(1).
+Report results (tga + console output + `magick compare` numbers) back into
+this section; on green, promote the README "best-effort" wording and
+consider a metallib offline-compile step on the Mac side.

@@ -1,7 +1,10 @@
 //! Generated, complete per-target shaders from the native-Slang source
-//! (`src/snail/shader/slang/`) — every family, five targets: Vulkan SPIR-V
+//! (`src/snail/shader/slang/`) — every family, six targets: Vulkan SPIR-V
 //! (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), GLES 300 (`gles300`),
-//! and D3D11 HLSL SM 5.0 (`hlsl`).
+//! D3D11 HLSL SM 5.0 (`hlsl`), and Metal MSL (`msl`; BEST-EFFORT — no
+//! Metal compiler exists on the Linux dev/CI hosts, so the MSL artifacts
+//! are textually validated only and real validation is deferred to a Mac,
+//! see slang/README-notes "Metal stage").
 //! The hand-written GLSL fragment catalog (`shader.glsl`) remains available
 //! as the behavioral spec and the composition surface for GL hosts.
 //!
@@ -48,6 +51,23 @@
 //!    (instance-stream locations); entry points keep their Slang names
 //!    (`vertexMain` / `fragmentMain`). The subpixel fragment emits
 //!    SV_Target0/SV_Target1 — D3D11 dual-source (SRC1 blend factors).
+//!  - `msl` (Metal, runtime-compile with `newLibraryWithSource:`): the
+//!    parameter block is `constant SnailPushConstants_natural*` at
+//!    [[buffer(0)]] — NATURAL (C) layout, byte-identical to the 96-byte
+//!    extern struct. Textures land on the Vulkan binding numbers as
+//!    [[texture(0)]] curve, [[texture(1)]] band, [[texture(2)]]
+//!    layer-info (= the records `texture_buffer<uint>` for text_sample,
+//!    which needs MSL 2.1+), [[texture(3)]] image array, [[sampler(0)]]
+//!    image sampler. Vertex data arrives via [[stage_in]] with
+//!    [[attribute(0..8)]] — the host's MTLVertexDescriptor chooses the
+//!    instance buffer index; it must not collide with [[buffer(0)]].
+//!    Entry points keep their Slang names ([[vertex]] `vertexMain` /
+//!    [[fragment]] `fragmentMain`). Metal clip space is y-up (z [0,1])
+//!    and the artifacts flip y in the vertex like the WGSL/HLSL ones:
+//!    mvp = ortho(0, w, 0, h). CAVEAT: the subpixel fragment's outputs
+//!    are plain MRT [[color(0)]]/[[color(1)]] — slangc's Metal backend
+//!    drops [[vk::index(1)]]; rewrite the blend output to
+//!    `[[color(0), index(1)]]` before compiling for dual-source use.
 
 pub const Stage = enum { vertex, fragment };
 
@@ -279,6 +299,52 @@ pub fn textSampleFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/text_sample.frag.hlsl");
 }
 
+// ── Metal MSL (best-effort: generated + textually checked on Linux;
+// compile validation deferred to a Mac — see slang/README-notes "Metal
+// stage"). Runtime-compile with `newLibraryWithSource:`; fragment-only
+// families pair with `textMsl(.vertex)`; autohint uses its own vertex. ──
+
+/// Metal entry-point names (like WGSL/HLSL, the Slang function names
+/// survive) — pass to `newFunctionWithName:`.
+pub const msl_vertex_entry = "vertexMain";
+pub const msl_fragment_entry = "fragmentMain";
+
+pub fn textMsl(comptime stage: Stage) [:0]const u8 {
+    return switch (stage) {
+        .vertex => @embedFile("generated/msl/text.vert.metal"),
+        .fragment => @embedFile("generated/msl/text.frag.metal"),
+    };
+}
+
+pub fn autohintMsl(comptime stage: Stage) [:0]const u8 {
+    return switch (stage) {
+        .vertex => @embedFile("generated/msl/autohint.vert.metal"),
+        .fragment => @embedFile("generated/msl/autohint.frag.metal"),
+    };
+}
+
+pub fn colrFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/colr.frag.metal");
+}
+
+pub fn pathFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/path.frag.metal");
+}
+
+pub fn ttHintedFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/tt_hinted_text.frag.metal");
+}
+
+/// Plain-MRT outputs [[color(0)]]/[[color(1)]] — NOT dual-source as
+/// emitted; see the module doc's `msl` caveat.
+pub fn subpixelFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/text_subpixel.frag.metal");
+}
+
+pub fn textSampleFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/text_sample.frag.metal");
+}
+
 const raw_text_vert_spv = @embedFile("generated/spirv/text.vert.spv");
 const raw_text_frag_spv = @embedFile("generated/spirv/text.frag.spv");
 const aligned_text_vert_spv: [raw_text_vert_spv.len]u8 align(4) = raw_text_vert_spv.*;
@@ -441,6 +507,49 @@ test "generated artifacts carry the documented interface names" {
     inline for (.{ textHlsl(.vertex), textHlsl(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
     }
+    // MSL artifacts (best-effort; textual contract only — no Metal
+    // compiler on this platform): the b0-analog parameter block at
+    // [[buffer(0)]], Vulkan-numbered [[texture(n)]] slots, [[vertex_id]]
+    // entries with the ATTRIB-analog [[attribute(n)]] stage_in, Slang
+    // entry names, and no #line leakage.
+    inline for (.{ textMsl(.vertex), autohintMsl(.vertex) }) |src| {
+        try std.testing.expect(std.mem.startsWith(u8, src, "#include <metal_stdlib>"));
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[buffer(0)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[vertex]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, msl_vertex_entry) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[vertex_id]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[attribute(0)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
+    }
+    // Autohint's vertex-stage layer read keeps the contract slot even with
+    // curve/band stripped as unused.
+    try std.testing.expect(std.mem.indexOf(u8, autohintMsl(.vertex), "[[texture(2)]]") != null);
+    inline for (.{ textMsl(.fragment), autohintMsl(.fragment), colrFragMsl(), pathFragMsl(), ttHintedFragMsl(), subpixelFragMsl(), textSampleFragMsl() }) |src| {
+        try std.testing.expect(std.mem.startsWith(u8, src, "#include <metal_stdlib>"));
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[buffer(0)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[fragment]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, msl_fragment_entry) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(0)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(1)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
+    }
+    inline for (.{ colrFragMsl(), pathFragMsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(2)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(3)]]") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "[[sampler(0)]]") != null);
+    }
+    try std.testing.expect(std.mem.indexOf(u8, ttHintedFragMsl(), "[[texture(2)]]") != null);
+    // Subpixel: slangc's Metal backend drops [[vk::index(1)]] — the
+    // artifact is plain MRT (documented caveat; a dual-source consumer
+    // rewrites [[color(1)]] to [[color(0), index(1)]]). This assertion is
+    // the tripwire for slang gaining native support.
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragMsl(), "[[color(0)]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragMsl(), "[[color(1)]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragMsl(), "index(1)") == null);
+    // Text-sample: the records texel buffer is texture_buffer<uint> on the
+    // t2-analog slot (MSL 2.1+).
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragMsl(), "texture_buffer<uint") != null);
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragMsl(), "[[texture(2)]]") != null);
     try std.testing.expect(std.mem.startsWith(u8, textGles300(.fragment), "#version 300 es"));
     // The GLES default float precision must be highp (the es-highp patch;
     // SPIRV-Cross emits mediump and locals inherit the default).

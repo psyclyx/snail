@@ -181,7 +181,9 @@ bytes/texel RGBA, sRGB-encoded, straight alpha.
 **Shader targets.** The native Slang modules in `src/snail/shader/slang/`
 are the source of truth. From them, `shader.generated` ships complete,
 checked-in shaders for every family and target — Vulkan SPIR-V, WGSL,
-GLSL 330, GLES 300 — plus the binding-name contracts loaders bind by.
+GLSL 330, GLES 300, D3D11 HLSL, and Metal MSL (best-effort: generated and
+cross-checked on Linux, not yet validated on a Mac) — plus the
+binding-name contracts loaders bind by.
 Regeneration is a maintainer step (`zig build gen-shaders`, needs `slangc`
 and SPIRV-Cross); consumers never need the Slang toolchain. Composition is
 Slang-level too: a caller-authored family can `import text_sample` and
@@ -267,6 +269,9 @@ zig build run                     # interactive Wayland banner demo (C cycles ba
 zig build run-game                # interactive 3D scene: world-space text, custom material shader
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
 zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
+zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga
+zig build run-minimal-metal       # same scene through Metal (macOS hosts; best-effort/unvalidated) → zig-out/minimal-metal.tga
+zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
 zig build gen-shaders             # regenerate the checked-in shader artifacts (maintainers; needs slang+spirv-cross)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)

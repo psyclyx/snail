@@ -61,7 +61,7 @@ public struct SnailPushConstants {
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-#else // GL family (desktop GLSL 330 / GLES 300 es) and D3D11 HLSL (registers b0/t0..t3/s0 in declaration order)
+#else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -95,17 +95,18 @@ struct VsOutput {
 // which does not exist in GLSL 330 / GLES 300. The raw SPIR-V VertexIndex
 // builtin (identical for our base-vertex-0 quad draws) is loaded through
 // inline SPIR-V instead. WGSL's @builtin(vertex_index) is already raw, so
-// the WGSL target keeps SV_VertexID — and on the D3D11 HLSL target
-// SV_VertexID is simply the native semantic (spirv_asm cannot compile
-// there at all: "unexpected IR opcode during code emit").
-#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11)
+// the WGSL target keeps SV_VertexID — and on the D3D11 HLSL and Metal MSL
+// targets SV_VertexID is simply the native semantic ([[vertex_id]] in MSL;
+// spirv_asm cannot compile on either: "unexpected IR opcode during code
+// emit").
+#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);
-    // WebGPU and D3D11 clip spaces are y-up while the CPU-side mvp
+    // WebGPU, D3D11, and Metal clip spaces are y-up while the CPU-side mvp
     // follows the Vulkan y-down convention (shared with every other
     // target). The old WGSL catalog got this flip injected by naga's
-    // SPIR-V front end; slangc's direct WGSL/HLSL backends perform no
+    // SPIR-V front end; slangc's direct WGSL/HLSL/MSL backends perform no
     // coordinate-space conversion (and `-fvk-invert-y` is a no-op for
     // them), so flip here.
     o.position.y = -o.position.y;

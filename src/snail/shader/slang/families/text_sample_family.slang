@@ -61,7 +61,9 @@ struct Records : ISnailTextRecords {
                                               linear_index / SNAIL_TEXT_RECORDS_TEX_WIDTH, 0)).x;
     }
 };
-#else // Desktop GL and D3D11: R32UI texel buffer.
+#else // Desktop GL, D3D11, and Metal: R32UI texel buffer (Buffer<uint> →
+      // usamplerBuffer / t2 / MSL texture_buffer<uint> at [[texture(2)]],
+      // which needs MSL 2.1+ at pipeline compile time).
 ConstantBuffer<SnailTextSampleParams> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;

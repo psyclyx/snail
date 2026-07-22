@@ -13,6 +13,8 @@
 //!   WGSL        slangc -DSNAIL_TARGET_WGSL -target wgsl              generated/wgsl/<f>.*.wgsl
 //!   D3D11       slangc -DSNAIL_TARGET_D3D11 -target hlsl             generated/hlsl/<f>.*.hlsl
 //!               -profile sm_5_0 -line-directive-mode none            (see hlsl_args for the trap notes)
+//!   Metal       slangc -DSNAIL_TARGET_METAL -target metal            generated/msl/<f>.*.metal
+//!               -ignore-capabilities -line-directive-mode none       (best-effort; see msl_args)
 //!   GLSL 330    slangc -DSNAIL_TARGET_GL -target spirv               generated/glsl330/<f>.*.glsl
 //!               -profile spirv_1_3, then
 //!               spirv-cross --version 330 --no-420pack-extension
@@ -160,6 +162,57 @@ pub const Family = struct {
 ///    dual-source form (blend factors SRC1_*) — so text_subpixel has a
 ///    full-fidelity HLSL artifact.
 const hlsl_args: []const []const u8 = &.{ "-target", "hlsl", "-profile", "sm_5_0", "-line-directive-mode", "none" };
+
+/// slangc arguments for the Metal MSL leg (BEST-EFFORT: generated and
+/// textually validated on Linux; never compiled by a real Metal compiler
+/// here — see README-notes "Metal stage"). Notes, verified against the
+/// emitted code (v2026.5.2):
+///
+///  - `-ignore-capabilities` is load-bearing: slangc's capability checker
+///    has a Metal-specific bug where a fragment entry that uses `discard`
+///    or a derivative op (`fwidth`) AND calls any function from an
+///    imported module fails with E36107 "unavailable features in entry
+///    point" — the same code compiles fine when the callee is pasted into
+///    the entry's own translation unit, and `discard`/`fwidth` alone are
+///    fine (they emit `discard_fragment()` / `dfdx`-based `fwidth`).
+///    Every other target still compiles WITHOUT the flag, so capability
+///    checking is only relaxed on this leg.
+///  - Matrix layout: same shape as the verified WGSL leg — the parameter
+///    block stores `_MatrixStorage_float4x4_ColMajornatural`, the entry
+///    unpacks it with an explicit transpose into the logical row-major
+///    matrix and multiplies `v * M`, so the CPU's column-major GLSL bytes
+///    read with GLSL `M * v` semantics. Byte-for-byte the same contract as
+///    every other target; no matrix flag is passed.
+///  - The parameter block is `constant SnailPushConstants_natural*` at
+///    [[buffer(0)]] with NATURAL (C) layout — identical offsets to the
+///    96-byte PushConstants extern struct (all fields naturally aligned).
+///  - Resources land on the Vulkan binding numbers in declaration order:
+///    [[texture(0)]] curve, [[texture(1)]] band, [[texture(2)]] layer-info
+///    (= the records texture_buffer for text_sample), [[texture(3)]] image
+///    array, [[sampler(0)]] image sampler. Stage-in vertex data arrives
+///    via [[attribute(0..8)]] (a MTLVertexDescriptor maps the instance
+///    stream; its buffer index is the HOST's choice and must not collide
+///    with [[buffer(0)]]).
+///  - -DSNAIL_TARGET_METAL selects the SV_VertexID entry branch shared
+///    with WGSL/D3D11 (spirv_asm is the same hard error as on HLSL:
+///    "unexpected IR opcode during code emit"); SV_VertexID becomes the
+///    native [[vertex_id]]. Metal clip space is y-up with z in [0,1] like
+///    D3D11's, and the Metal backend inserts NO coordinate conversion
+///    (verified: the only y-negation in the artifact is the family
+///    source's explicit flip), so mvp = ortho(0, w, 0, h) like
+///    minimal_wgpu/minimal_d3d11.
+///  - Entry points keep their Slang names ([[vertex]] vertexMain /
+///    [[fragment]] fragmentMain).
+///  - Dual source: the Metal backend DROPS [[vk::index(1)]] (like WGSL's)
+///    and emits text_subpixel's outputs as plain MRT [[color(0)]] /
+///    [[color(1)]]. A Metal dual-source consumer must textually rewrite
+///    the blend output to `[[color(0), index(1)]]` before compiling.
+///  - text_sample's Buffer<uint> emits as `texture_buffer<uint,
+///    access::read>` — MSL 2.1+ (set languageVersion when compiling).
+///  - -line-directive-mode none keeps build paths out of the artifacts
+///    (the Metal backend otherwise emits #line with the slangc input
+///    paths, like the HLSL backend).
+const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabilities", "-line-directive-mode", "none" };
 
 /// The families gen-shaders produces. Vertex artifacts exist only where the
 /// stage differs from the shared text vertex (colr/path/tt_hinted reuse
@@ -319,6 +372,12 @@ pub fn addGenShadersStep(b: *std.Build) void {
                 // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
                 update.addCopyFileToSource(hlsl, "src/snail/shader/generated/hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl");
+
+                // Metal MSL — direct target, best-effort (see msl_args;
+                // no Metal compiler exists on this platform, validation
+                // is textual + deferred to a real Mac).
+                const msl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_METAL"}, msl_args, family.name ++ "." ++ stage.short ++ ".metal");
+                update.addCopyFileToSource(msl, "src/snail/shader/generated/msl/" ++ family.name ++ "." ++ stage.short ++ ".metal");
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both

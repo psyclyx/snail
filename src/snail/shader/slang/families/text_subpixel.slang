@@ -9,7 +9,10 @@
 // contract.zig's `.dual_source` blend state). The GL host binds the
 // outputs with glBindFragDataLocationIndexed; WGSL needs the
 // dual_source_blending extension (@blend_src) — checked in the generated
-// artifact's test.
+// artifact's test. The Metal backend drops [[vk::index(1)]] like WGSL's
+// and emits plain MRT ([[color(0)]]/[[color(1)]]): a Metal dual-source
+// consumer must textually rewrite the blend output to
+// [[color(0), index(1)]] before compiling (see README-notes, Metal stage).
 module text_subpixel_family;
 
 import render_abi;
@@ -37,7 +40,7 @@ public struct SnailPushConstants {
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-#else // GL family (desktop GLSL 330; GLES 3.0 has no dual-source blending) and D3D11 HLSL
+#else // GL family (desktop GLSL 330; GLES 3.0 has no dual-source blending), D3D11 HLSL, and Metal MSL
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
