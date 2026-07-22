@@ -1074,6 +1074,11 @@ fn addMinimalD3d11Step(
     run.addArtifactArg(exe);
     run.setEnvironmentVariable("WINEPREFIX", b.pathFromRoot("zig-out/wineprefix"));
     run.setEnvironmentVariable("WINEDEBUG", "-all");
+    // First-run prefix creation pops wine-mono/wine-gecko installer
+    // dialogs, which hang a headless/CI run waiting for a click. Disable
+    // the mscoree/mshtml loaders outright — the demo needs neither .NET
+    // nor HTML — so prefix setup is fully non-interactive.
+    run.setEnvironmentVariable("WINEDLLOVERRIDES", "mscoree=d;mshtml=d");
     // Rendering output changes with the shaders/scene, not just the exe.
     run.has_side_effects = true;
     step.dependOn(&run.step);
