@@ -12,6 +12,17 @@ let
     mkdir -p $out
     tar --strip-components=1 -xf ${pkgs.harfbuzz.src} -C $out
   '';
+
+  # Upstream wgpu-native Windows (x86_64-gnu) release: mingw import lib +
+  # wgpu_native.dll for the cross-built Windows WebGPU gate
+  # (`install-windows-gates` in build.zig). Version-matched to the nixpkgs
+  # wgpu-native used by the native `run-minimal-wgpu` (27.0.4.0), so both
+  # legs exercise the same wgpu.
+  wgpuNativeWindows = pkgs.fetchzip {
+    url = "https://github.com/gfx-rs/wgpu-native/releases/download/v27.0.4.0/wgpu-windows-x86_64-gnu-release.zip";
+    sha256 = "0fdjfhha27mfwvqcnyvy8c0yj8gjd4782yfm7sq3pc1al4m52cil";
+    stripRoot = false;
+  };
 in
 pkgs.mkShell ({
   packages = with pkgs; [
@@ -20,6 +31,9 @@ pkgs.mkShell ({
     harfbuzz
     # Pixel gates (CI + local): explicit differing-pixel counts via `magick`.
     imagemagick
+    # Headless WebGPU reference example (`zig build run-minimal-wgpu`):
+    # Vulkan/GL backends on Linux, Metal on macOS.
+    wgpu-native
   ] ++ lib.optionals stdenv.isLinux [
     libGL
     # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
@@ -38,8 +52,6 @@ pkgs.mkShell ({
     # naga CLI (`naga <file>.wgsl`): validation tripwire for the generated
     # WGSL artifacts (the subpixel module's prelude entry in particular).
     wgpu-utils
-    # Headless WebGPU reference example (`zig build run-minimal-wgpu`).
-    wgpu-native
     # Headless D3D11 reference example (`zig build run-minimal-d3d11`):
     # runs the cross-compiled Windows exe; Wine's built-in d3dcompiler_47
     # is the FXC-class compiler for the generated HLSL artifacts. Needs
@@ -54,6 +66,11 @@ pkgs.mkShell ({
 
   # HarfBuzz amalgam source for the cross-compiled demos (see above).
   HARFBUZZ_SRC = "${harfbuzzSrc}";
+
+  # wgpu-native ships no pkg-config file; build.zig picks these up for the
+  # minimal WebGPU example (all platforms — Metal backend on macOS).
+  WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
+  WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
 } // lib.optionalAttrs stdenv.isLinux {
   LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
     libGL
@@ -63,14 +80,19 @@ pkgs.mkShell ({
     wgpu-native
   ]);
 
-  # wgpu-native ships no pkg-config file; build.zig picks these up for the
-  # minimal WebGPU example.
-  WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
-  WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
+  # The wgpu-native Windows release tree (include/ + lib/ with the mingw
+  # import lib and wgpu_native.dll) for the cross-built Windows WebGPU gate.
+  SNAIL_WGPU_WINDOWS = "${wgpuNativeWindows}";
 
   # GL comes fully from the pin: glvnd dispatches to this mesa (llvmpipe
   # under LIBGL_ALWAYS_SOFTWARE for the headless gates) instead of
   # whatever the host happens to ship — CI runners ship nothing.
   __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
   LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+
+  # The pinned mesa's lavapipe (software Vulkan) ICD manifest. Not exported
+  # as VK_DRIVER_FILES directly so local machines keep their real GPU by
+  # default; the headless Vulkan gates opt in with
+  #   VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-screenshot-vulkan
+  SNAIL_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
 })

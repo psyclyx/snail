@@ -113,11 +113,22 @@ pub const InstanceProfileBuffer = struct {
     }
 };
 
-/// CLOCK_MONOTONIC in nanoseconds. Used by the per-instance profiler
+/// Monotonic clock in nanoseconds. Used by the per-instance profiler
 /// to time each `renderBatchInstance` call. Zig 0.16 dropped
 /// `std.time.Instant`/`Timer`; this drops to `std.c.clock_gettime`
-/// directly, same as the demo's wayland platform.
+/// directly, same as the demo's wayland platform. Windows has no
+/// clock_gettime (std.c.clockid_t is void there, which fails analysis,
+/// not just linking), so it uses QueryPerformanceCounter instead.
 fn monotonicNanos() u64 {
+    if (@import("builtin").os.tag == .windows) {
+        const windows = std.os.windows;
+        var qpc: windows.LARGE_INTEGER = undefined;
+        var qpf: windows.LARGE_INTEGER = undefined;
+        if (!windows.ntdll.RtlQueryPerformanceCounter(&qpc).toBool()) return 0;
+        if (!windows.ntdll.RtlQueryPerformanceFrequency(&qpf).toBool()) return 0;
+        const ticks: u128 = @intCast(qpc);
+        return @intCast(ticks * 1_000_000_000 / @as(u128, @intCast(qpf)));
+    }
     var ts: std.c.timespec = undefined;
     _ = std.c.clock_gettime(.MONOTONIC, &ts);
     return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));

@@ -1036,6 +1036,58 @@ fn addMinimalD3d11Step(
     // prebuilt artifacts; the one nix-pinned toolchain stays on Linux
     // (see the `windows` job in .github/workflows/ci.yml).
     const gates_dir: std.Build.InstallDir = .{ .custom = "windows-gates" };
+
+    // Cross-built CPU-rasterizer screenshot (the `run-screenshot` demo-scene
+    // tool): no GL, no display, no D3D — pure snail-raster float math, so the
+    // Windows render is gated bit-identical (pixelgate threshold 0) against
+    // the checked-in Linux CPU reference. Reuses the amalgam-HarfBuzz snail
+    // module above.
+    {
+        const render_state_win = createRenderStateModule(b, win_target, .ReleaseFast, snail_win);
+        const raster_win = createRasterModule(b, win_target, .ReleaseFast, snail_win, render_state_win, null, null, null);
+        const support_win = createSupportModule(b, win_target, .ReleaseFast, snail_win, modules.assets);
+        const screenshot_cpu_win_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/root.zig"),
+            .target = win_target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = snail_win },
+                .{ .name = "snail-raster", .module = raster_win },
+                .{ .name = "support", .module = support_win },
+            },
+        });
+        selectDemoEntry(b, screenshot_cpu_win_mod, .screenshot_cpu);
+        const screenshot_cpu_win_exe = b.addExecutable(.{ .name = "snail-screenshot-cpu", .root_module = screenshot_cpu_win_mod });
+        gates_step.dependOn(&b.addInstallArtifact(screenshot_cpu_win_exe, .{ .dest_dir = .{ .override = gates_dir } }).step);
+        gates_step.dependOn(&b.addInstallFile(b.path("src/demo/tools/screenshots/demo_cpu_reference.tga"), "windows-gates/demo_cpu_reference.tga").step);
+    }
+
+    // Cross-built WebGPU demo (wgpu-native's D3D12 backend on the Windows
+    // runner): links the upstream wgpu-native Windows-gnu release import lib
+    // pinned in shell.nix (SNAIL_WGPU_WINDOWS, version-matched to the nixpkgs
+    // wgpu-native), ships wgpu_native.dll next to the exe.
+    if (b.graph.environ_map.get("SNAIL_WGPU_WINDOWS")) |wgpu_win| {
+        const wgpu_win_mod = b.createModule(.{
+            .root_source_file = b.path("src/demo/app/minimal_wgpu.zig"),
+            .target = win_target,
+            .optimize = .ReleaseFast,
+            .link_libc = true,
+            .imports = &.{
+                .{ .name = "assets", .module = modules.assets },
+                .{ .name = "snail", .module = snail_win },
+            },
+        });
+        wgpu_win_mod.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ wgpu_win, "include" }) });
+        wgpu_win_mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ wgpu_win, "lib" }) });
+        wgpu_win_mod.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
+        const wgpu_win_exe = b.addExecutable(.{ .name = "snail-minimal-wgpu", .root_module = wgpu_win_mod });
+        gates_step.dependOn(&b.addInstallArtifact(wgpu_win_exe, .{ .dest_dir = .{ .override = gates_dir } }).step);
+        gates_step.dependOn(&b.addInstallFile(.{ .cwd_relative = b.pathJoin(&.{ wgpu_win, "lib", "wgpu_native.dll" }) }, "windows-gates/wgpu_native.dll").step);
+    } else {
+        gates_step.dependOn(&b.addFail("install-windows-gates needs SNAIL_WGPU_WINDOWS (enter nix-shell; see shell.nix)").step);
+    }
     const pixelgate_win = b.addExecutable(.{
         .name = "pixelgate",
         .root_module = b.createModule(.{
@@ -1173,6 +1225,9 @@ fn addMinimalWgpuStep(
     }
     if (b.graph.environ_map.get("WGPU_NATIVE_LIB")) |lib_dir| {
         mod.addLibraryPath(.{ .cwd_relative = lib_dir });
+        // macOS: no LD_LIBRARY_PATH analog survives into the child process
+        // (SIP scrubs DYLD_*), so bake the nix store lib dir into the rpath.
+        mod.addRPath(.{ .cwd_relative = lib_dir });
     }
     mod.linkSystemLibrary("wgpu_native", .{ .use_pkg_config = .no });
     const exe = b.addExecutable(.{ .name = "snail-minimal-wgpu", .root_module = mod });

@@ -19,12 +19,15 @@ const std = @import("std");
 const builtin = @import("builtin");
 const linux = std.os.linux;
 
-comptime {
-    if (builtin.os.tag != .linux) {
-        @compileError("snail-raster.ThreadPool currently only supports Linux (futex-based sync). " ++
-            "Other platforms can be added by porting the Mutex/Cond primitives in this file.");
-    }
-}
+/// Worker parallelism is Linux-only (futex-based sync). On other platforms
+/// `ThreadPool` still compiles — so portable callers can hold a `?*ThreadPool`
+/// and CPU rendering works everywhere — but it never spawns workers:
+/// `init` with an explicit non-zero thread request fails with
+/// `error.UnsupportedPlatform`, the default (`threads = null`) resolves to 0,
+/// and `dispatch` runs every task on the calling thread. Adding real workers
+/// on another platform means porting the Mutex/Cond primitives below
+/// (WaitOnAddress on Windows, ulock/os_sync on macOS).
+pub const ThreadPool = if (builtin.os.tag == .linux) LinuxThreadPool else SerialThreadPool;
 
 // Drepper's three-state futex mutex (0=unlocked, 1=locked-no-waiters,
 // 2=locked-with-waiters). Self-initializes to `.unlocked`.
@@ -110,7 +113,40 @@ fn futexWake(addr: *const u32, count: u32) void {
 
 const wake_all: u32 = std.math.maxInt(i32);
 
-pub const ThreadPool = struct {
+/// Non-Linux stand-in: same API surface, zero workers, serial `dispatch`.
+const SerialThreadPool = struct {
+    pub const InitOptions = LinuxThreadPool.InitOptions;
+
+    pub fn init(self: *SerialThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
+        _ = allocator;
+        if (options.threads) |n| {
+            if (n > 0) return error.UnsupportedPlatform;
+        }
+        self.* = .{};
+    }
+
+    pub fn deinit(self: *SerialThreadPool) void {
+        self.* = undefined;
+    }
+
+    pub fn threadCount(self: *const SerialThreadPool) usize {
+        _ = self;
+        return 0;
+    }
+
+    pub fn dispatch(
+        self: *SerialThreadPool,
+        total: u32,
+        ctx: *anyopaque,
+        run: *const fn (*anyopaque, u32) void,
+    ) void {
+        _ = self;
+        var i: u32 = 0;
+        while (i < total) : (i += 1) run(ctx, i);
+    }
+};
+
+const LinuxThreadPool = struct {
     allocator: std.mem.Allocator,
     threads: []std.Thread,
 
@@ -133,7 +169,7 @@ pub const ThreadPool = struct {
         threads: ?usize = null,
     };
 
-    pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
+    pub fn init(self: *LinuxThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
         const thread_count = options.threads orelse blk: {
             const n = std.Thread.getCpuCount() catch 1;
             break :blk if (n > 1) n - 1 else 0;
@@ -171,7 +207,7 @@ pub const ThreadPool = struct {
         }
     }
 
-    pub fn deinit(self: *ThreadPool) void {
+    pub fn deinit(self: *LinuxThreadPool) void {
         self.mutex.lock();
         self.shutdown = true;
         self.work_ready.prepareWake();
@@ -182,7 +218,7 @@ pub const ThreadPool = struct {
         self.* = undefined;
     }
 
-    pub fn threadCount(self: *const ThreadPool) usize {
+    pub fn threadCount(self: *const LinuxThreadPool) usize {
         return self.threads.len;
     }
 
@@ -197,7 +233,7 @@ pub const ThreadPool = struct {
     /// task before workers observe `job_next < job_total`, and the
     /// "parallel" path runs serially.
     pub fn dispatch(
-        self: *ThreadPool,
+        self: *LinuxThreadPool,
         total: u32,
         ctx: *anyopaque,
         run: *const fn (*anyopaque, u32) void,
@@ -230,7 +266,7 @@ pub const ThreadPool = struct {
         self.mutex.unlock();
     }
 
-    fn workerLoop(self: *ThreadPool) void {
+    fn workerLoop(self: *LinuxThreadPool) void {
         while (true) {
             self.mutex.lock();
             while (!self.shutdown and (self.job_run == null or self.job_next >= self.job_total)) {

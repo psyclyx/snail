@@ -529,6 +529,9 @@ test "draw renders image-painted shape through special-layer path" {
 }
 
 test "draw threaded matches single-threaded pixel-for-pixel" {
+    // Worker threads are Linux-only (see thread_pool.zig); elsewhere the
+    // explicit 3-thread request below fails with UnsupportedPlatform.
+    if (@import("builtin").os.tag != .linux) return error.SkipZigTest;
     const allocator = testing.allocator;
     const font_data = @import("assets").noto_sans_regular;
 

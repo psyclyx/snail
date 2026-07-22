@@ -15,8 +15,52 @@ concurrency:
   cancel-in-progress: true
 
 # The entire toolchain (zig, harfbuzz + HARFBUZZ_SRC amalgam, slangc,
-# spirv-cross, mesa/llvmpipe, wine, imagemagick, ...) comes from shell.nix
-# via the npins-pinned nixpkgs — one pin for local dev and CI, no drift.
+# spirv-cross, mesa/llvmpipe+lavapipe, wine, imagemagick, wgpu-native, ...)
+# comes from shell.nix via the npins-pinned nixpkgs — one pin for local dev
+# and CI, no drift. The Windows runner installs nothing: it only executes
+# the prebuilt `windows-gates` artifacts cross-built inside that pin.
+#
+# Backend × platform coverage matrix
+# ==================================
+#   GATE  = rendered + pixel-gated in CI        smoke = rendered, crash/API gate only
+#   ubuntu = ubuntu-latest via nix-shell        windows = windows-2025, prebuilt artifacts only
+#   macos = macos-15 via nix-shell
+#
+# Backend | ubuntu                              | windows                          | macos
+# --------+-------------------------------------+----------------------------------+---------------------------------
+# CPU     | GATE: backend-compare vs GL,        | GATE: snail-screenshot-cpu.exe   | GATE: run-screenshot, magick
+# raster  | coverage-parity; also the source of | vs demo_cpu_reference.tga,       | 0-over-4% vs the same reference.
+#         | the checked-in demo_cpu_reference   | pixelgate threshold 0. Verified  | x86_64 is bit-identical (Wine);
+#         | (cmp tripwire keeps it fresh).      | BIT-IDENTICAL under Wine.        | aarch64 parity: first-push item.
+# GL33    | GATE (llvmpipe/EGL): backend-       | infeasible: runner has no GPU;   | infeasible: Apple ships CGL only
+#         | compare, minimal-gl, composite/     | stock opengl32 falls back to     | (GL deprecated, no EGL); the
+#         | gamma probes.                       | GDI GL 1.1; mesa would break the | EGL-offscreen tools are
+#         |                                     | artifact-only rule. Wine GL leg  | mesa/Linux-only.
+#         |                                     | is covered on ubuntu.            |
+# GL44    | GATE (llvmpipe): game screenshot,   | infeasible: same as GL33.        | infeasible: same as GL33 (Apple
+#         | cross-gated vs gl33 (baseline 363). |                                  | GL caps at 4.1 anyway).
+# GLES30  | GATE (llvmpipe): gamma probe exact  | infeasible: no GLES on the       | infeasible: no GLES on macOS
+#         | interior check + game screenshot    | runner (ANGLE is not in the      | (ANGLE is not in the pin).
+#         | cross-gate (baseline 824).          | pin).                            |
+# Vulkan  | GATE (lavapipe): demo + banner      | infeasible: runner ships no      | not attempted: would need
+#         | screenshots gated vs the CPU        | Vulkan ICD (WARP is D3D-only);   | MoltenVK from the pin + loader
+#         | rasterizer (baselines 0 / 280),     | a software ICD would break the   | wiring; recorded as future work.
+#         | game screenshot vs gl33 (1777).     | artifact-only rule.              |
+# WebGPU  | GATE: wgpu GL backend on llvmpipe   | GATE: cross-built exe + upstream | GATE: nixpkgs wgpu-native
+# (wgpu)  | (baseline 0 vs the GL reference).   | wgpu-native v27.0.4.0 gnu DLL    | 27.0.4.0, Metal backend; magick
+#         | The Vulkan backend on lavapipe      | (pinned in shell.nix); D3D12 —   | <=2000 vs the GL reference.
+#         | SEGVs after adapter selection       | WARP on the GPU-less runner.     | First push confirms (not
+#         | (wgpu 27.0.4.0 + mesa 26.0.5        | Verified under Wine via host     | runnable on the Linux dev box).
+#         | lavapipe, LLVM 21.1.8): the known   | Vulkan: 679 = the known wgpu     |
+#         | fwidth+loop fragment JIT crash.     | baseline. WARP adapter           |
+#         | Recorded infeasible for now.        | selection: first-push item.      |
+# D3D11   | GATE under Wine/Xvfb (wine 11.6     | GATE: the authoritative runtime  | infeasible: no D3D outside
+#         | vkd3d-shader compiles all nine      | (real d3dcompiler_47, WARP or    | windows/wine; wine is not
+#         | HLSL artifacts).                    | hardware).                       | packaged for aarch64-darwin in
+#         |                                     |                                  | the pin.
+# Metal   | compile-only: check-metal-demo      | infeasible: no Metal outside     | GATE: run-minimal-metal
+#         | (aarch64-macos codegen; no Metal    | Apple platforms.                 | (runtime newLibraryWithSource
+#         | compiler exists for Linux).         |                                  | + real GPU), magick <=2000.
 jobs:
   zig:
     name: Zig
@@ -56,11 +100,100 @@ jobs:
       - name: Coverage parity probe (CPU rasterizer)
         run: nix-shell --run "zig build run-coverage-parity -Dcpu=baseline"
 
+      # Interior-pixel gamma conformance, CPU vs GL33 vs GLES30, checked
+      # exactly against the analytic encode (the one GLES30 pixel gate that
+      # needs no reference image or tolerance).
+      - name: Gamma conformance probe (CPU/GL33/GLES30)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: nix-shell --run "zig build run-gamma-probe -Dcpu=baseline"
+
       - name: Minimal GL example
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
         run: nix-shell --run "zig build run-minimal-gl -Dcpu=baseline"
+
+      # CPU-rasterizer demo + banner renders: the comparison base for the
+      # Vulkan gates below, and the source of the checked-in Windows/macOS
+      # CPU reference — the cmp keeps that reference from rotting when the
+      # scene changes (regenerate it from zig-out/demo-screenshot.tga).
+      - name: CPU rasterizer screenshots
+        run: |
+          nix-shell --run "zig build run-screenshot -Dcpu=baseline"
+          nix-shell --run "zig build run-banner-screenshot -Dcpu=baseline"
+          cmp zig-out/demo-screenshot.tga src/demo/tools/screenshots/demo_cpu_reference.tga
+
+      # Native Vulkan through the pinned mesa's lavapipe. VK_DRIVER_FILES
+      # (not exported globally by shell.nix so local machines keep their real
+      # GPU) pins the loader to the software ICD.
+      - name: Vulkan screenshots (lavapipe)
+        run: |
+          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-screenshot-vulkan -Dcpu=baseline'
+          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-banner-screenshot-vulkan -Dcpu=baseline'
+
+      # Same rule/threshold family as the Metal/D3D11 gates (>4% max-channel
+      # delta per pixel, differing-pixel count); lavapipe-measured baselines:
+      # demo = 0/96000, banner = 280/921600 (AA-edge class).
+      - name: Gate the Vulkan renders (vs the CPU rasterizer)
+        run: |
+          for pair in "demo-screenshot demo-screenshot-vulkan" "banner-screenshot banner-screenshot-vulkan"; do
+            set -- $pair
+            n=$(nix-shell --run "magick zig-out/$1.tga zig-out/$2.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
+            echo "$2 vs $1: $n pixels over 4% channel delta (threshold 2000; baselines 0 / 280)"
+            case "$n" in
+              ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+            esac
+            test "$n" -le 2000
+          done
+
+      # GL44/GLES30 (llvmpipe) + Vulkan (lavapipe) game-scene renders,
+      # cross-gated against the gl33 render of the identical scene.
+      - name: Game-scene screenshots (gl33/gl44/gles30/vulkan)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+        run: |
+          nix-shell --run "zig build run-game-screenshot -Dcpu=baseline"
+          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-game-screenshot-vulkan -Dcpu=baseline'
+
+      # Measured baselines vs gl33 (1280x800): gl44 = 363, gles30 = 824,
+      # vulkan = 1777 — all AA/depth-edge class; real breakage (blank frame,
+      # wrong binding, flipped y) is tens of thousands of pixels.
+      - name: Gate the game renders (vs gl33)
+        run: |
+          for b in gl44 gles30 vulkan; do
+            n=$(nix-shell --run "magick zig-out/game-gl33.tga zig-out/game-$b.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
+            echo "game-$b vs game-gl33: $n pixels over 4% channel delta (threshold 4000; baselines 363/824/1777)"
+            case "$n" in
+              ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+            esac
+            test "$n" -le 4000
+          done
+
+      # wgpu's GL backend over surfaceless-EGL llvmpipe. The Vulkan backend
+      # is NOT used here: wgpu 27.0.4.0 on lavapipe (mesa 26.0.5, LLVM
+      # 21.1.8) SEGVs after adapter selection — the known llvmpipe JIT crash
+      # on fwidth+loop fragments (see the matrix above).
+      - name: Minimal WebGPU example (wgpu GL backend on llvmpipe)
+        env:
+          LIBGL_ALWAYS_SOFTWARE: "1"
+          GALLIUM_DRIVER: llvmpipe
+          SNAIL_WGPU_BACKEND: gl
+        run: nix-shell --run "zig build run-minimal-wgpu -Dcpu=baseline"
+
+      # Measured baseline: 0 (the reference IS a llvmpipe GL render of the
+      # identical scene); 2000 keeps the threshold uniform with the other
+      # minimal-example gates.
+      - name: Gate the WebGPU render
+        run: |
+          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          echo "pixels over 4% channel delta: $n (threshold 2000; llvmpipe-GL baseline: 0)"
+          case "$n" in
+            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          esac
+          test "$n" -le 2000
 
       # Wine's D3D11 needs a display connection to enumerate a GPU
       # adapter, so the headless exe runs under Xvfb; the GL underneath
@@ -85,10 +218,11 @@ jobs:
           esac
           test "$n" -le 2000
 
-      # Cross-build the artifacts the `windows` job executes: the D3D11 demo
-      # exe, the dependency-free pixelgate comparison tool, and the reference
-      # TGA. The Windows runner installs no toolchain — the one nix pin here
-      # builds everything it runs.
+      # Cross-build the artifacts the `windows` job executes: the D3D11 and
+      # WebGPU demo exes (+ the pinned upstream wgpu_native.dll), the
+      # CPU-rasterizer screenshot exe, the dependency-free pixelgate
+      # comparison tool, and the reference TGAs. The Windows runner installs
+      # no toolchain — the one nix pin here builds everything it runs.
       - name: Build Windows gate artifacts
         run: nix-shell --run "zig build install-windows-gates -Dcpu=baseline"
 
@@ -104,23 +238,28 @@ jobs:
           nix-shell --run "magick compare src/demo/app/minimal_reference.png \
             zig-out/minimal-d3d11.tga zig-out/minimal-d3d11-diff.png" || true
 
-      - name: Upload D3D11 render
+      - name: Upload renders
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: minimal-d3d11
+          name: zig-job-renders
           path: |
             zig-out/minimal-d3d11.tga
             zig-out/minimal-d3d11-diff.png
+            zig-out/minimal-wgpu.tga
+            zig-out/demo-screenshot-vulkan.tga
+            zig-out/banner-screenshot-vulkan.tga
+            zig-out/game-*.tga
           if-no-files-found: ignore
 
   # The same D3D11 exe the Wine gate ran, on the authoritative runtime: a
   # real Windows kernel, Microsoft's d3dcompiler_47 and D3D11 runtime
-  # (hardware or WARP). No Windows-side toolchain — the runner only
-  # executes the prebuilt `windows-gates` artifacts from the zig job,
-  # keeping shell.nix the single toolchain pin.
+  # (hardware or WARP) — plus the CPU-rasterizer and WebGPU (wgpu D3D12)
+  # gates. No Windows-side toolchain — the runner only executes the
+  # prebuilt `windows-gates` artifacts from the zig job, keeping shell.nix
+  # the single toolchain pin.
   windows:
-    name: Windows (D3D11)
+    name: Windows (D3D11 + CPU + wgpu)
     runs-on: windows-2025
     needs: zig
     timeout-minutes: 15
@@ -137,19 +276,42 @@ jobs:
       # Same rule and threshold as the Wine/Metal magick gates (>4%
       # max-channel delta per pixel, <= 2000 bad pixels; llvmpipe-measured
       # d3d11 baseline: ~680), via the cross-built pixelgate tool.
-      - name: Gate the render
+      - name: Gate the D3D11 render
         run: .\pixelgate.exe minimal_reference.tga zig-out\minimal-d3d11.tga 2000
 
-      - name: Upload Windows render
+      # Pure CPU float math renders bit-identical across x86_64 platforms:
+      # threshold 0, verified BIT-IDENTICAL under Wine against the Linux
+      # render that produced the reference.
+      - name: Render through the CPU rasterizer
+        run: .\snail-screenshot-cpu.exe
+
+      - name: Gate the CPU render
+        run: .\pixelgate.exe demo_cpu_reference.tga zig-out\demo-screenshot.tga 0
+
+      # wgpu-native (upstream v27.0.4.0 windows-gnu release, pinned in
+      # shell.nix) picks D3D12 here — WARP on the GPU-less runner. Wine
+      # smoke run (host Vulkan) measured 679 = the known wgpu baseline.
+      - name: Render through WebGPU (wgpu D3D12)
+        env:
+          SNAIL_WGPU_LOG: "1"
+        run: .\snail-minimal-wgpu.exe
+
+      - name: Gate the WebGPU render
+        run: .\pixelgate.exe minimal_reference.tga zig-out\minimal-wgpu.tga 2000
+
+      - name: Upload Windows renders
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: minimal-d3d11-windows
-          path: zig-out/minimal-d3d11.tga
+          name: windows-renders
+          path: |
+            zig-out/minimal-d3d11.tga
+            zig-out/demo-screenshot.tga
+            zig-out/minimal-wgpu.tga
           if-no-files-found: ignore
 
   macos:
-    name: macOS (Metal)
+    name: macOS (Metal + CPU + wgpu)
     runs-on: macos-15
     timeout-minutes: 30
     continue-on-error: false
@@ -164,6 +326,22 @@ jobs:
 
       - name: Cross-compile check of the Metal demo
         run: nix-shell --run "zig build check-metal-demo -Dcpu=baseline"
+
+      # CPU rasterizer against the checked-in Linux CPU reference (same
+      # >4%-channel rule as pixelgate). x86_64 measured bit-identical
+      # (Wine); aarch64 is expected to match — if this gate ever trips at
+      # a handful of pixels, suspect libm last-ulp drift and record it.
+      - name: CPU rasterizer screenshot
+        run: nix-shell --run "zig build run-screenshot -Dcpu=baseline"
+
+      - name: Gate the CPU render
+        run: |
+          n=$(nix-shell --run 'magick src/demo/tools/screenshots/demo_cpu_reference.tga zig-out/demo-screenshot.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          echo "pixels over 4% channel delta: $n (threshold 0; x86_64 is bit-identical)"
+          case "$n" in
+            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          esac
+          test "$n" -le 0
 
       # The real validation: the generated MSL artifacts meet an actual Metal
       # frontend (runtime newLibraryWithSource:) and a real GPU. No shader
@@ -191,20 +369,39 @@ jobs:
           esac
           test "$n" -le 2000
 
+      # wgpu-native from the same nixpkgs pin, Metal backend (the only
+      # backend on macOS). Same scene/reference/threshold as the other
+      # minimal-example gates.
+      - name: Minimal WebGPU example (wgpu Metal backend)
+        env:
+          SNAIL_WGPU_LOG: "1"
+        run: nix-shell --run "zig build run-minimal-wgpu -Dcpu=baseline"
+
+      - name: Gate the WebGPU render
+        run: |
+          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          echo "pixels over 4% channel delta: $n (threshold 2000; wgpu baseline: 679)"
+          case "$n" in
+            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          esac
+          test "$n" -le 2000
+
       - name: Write diff image on failure
         if: failure()
         run: |
           nix-shell --run "magick compare src/demo/app/minimal_reference.png \
             zig-out/minimal-metal.tga zig-out/minimal-metal-diff.png" || true
 
-      - name: Upload Metal render
+      - name: Upload macOS renders
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: minimal-metal
+          name: macos-renders
           path: |
             zig-out/minimal-metal.tga
             zig-out/minimal-metal-diff.png
+            zig-out/demo-screenshot.tga
+            zig-out/minimal-wgpu.tga
           if-no-files-found: ignore
 
   nix:

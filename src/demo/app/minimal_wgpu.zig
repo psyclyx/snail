@@ -27,6 +27,7 @@ const c = @cImport({
     @cInclude("stdio.h");
     @cInclude("stdlib.h");
     @cInclude("sys/stat.h");
+    if (@import("builtin").os.tag == .windows) @cInclude("direct.h"); // _mkdir
 });
 
 fn getenv(name: [:0]const u8) ?[]const u8 {
@@ -953,7 +954,12 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
 /// Write the readback (row 0 = top) as a top-left-origin BGRA TGA, matching
 /// the GL example's writer.
 fn writeTga(pixels: []const u8, path: [:0]const u8) !void {
-    _ = c.mkdir("zig-out", 0o755);
+    // mingw's mkdir is the one-argument _mkdir (no mode).
+    if (@import("builtin").os.tag == .windows) {
+        _ = c._mkdir("zig-out");
+    } else {
+        _ = c.mkdir("zig-out", 0o755);
+    }
     const file = c.fopen(path.ptr, "wb") orelse return error.OpenOutputFailed;
     defer _ = c.fclose(file);
     var header = [_]u8{0} ** 18;
