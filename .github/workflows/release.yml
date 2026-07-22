@@ -25,48 +25,27 @@ jobs:
           echo "Release workflow must run from a tag ref." >&2
           exit 1
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: "0.16.0"
-
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            libegl1-mesa-dev \
-            libgl1-mesa-dri \
-            libglvnd-dev \
-            libharfbuzz-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            wayland-protocols
-
-      # install-demo/install-game compile the native-Slang families to
-      # SPIR-V at build time (see .github/workflows/ci.yml for details).
-      - name: Install slangc (shader-slang)
-        run: |
-          curl -fsSL -o "$RUNNER_TEMP/slang.zip" \
-            https://github.com/shader-slang/slang/releases/download/v2026.5.2/slang-2026.5.2-linux-x86_64.zip
-          mkdir -p "$RUNNER_TEMP/slang"
-          unzip -q "$RUNNER_TEMP/slang.zip" -d "$RUNNER_TEMP/slang"
-          "$RUNNER_TEMP/slang/bin/slangc" -v
-          echo "$RUNNER_TEMP/slang/bin" >> "$GITHUB_PATH"
+      # Toolchain (zig, harfbuzz, slangc, mesa/llvmpipe, ...) comes from
+      # shell.nix via the npins-pinned nixpkgs — same pin as local dev/CI.
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Test public modules
-        run: zig build test -Dcpu=baseline
+        run: nix-shell --run "zig build test -Dcpu=baseline"
 
+      # install-demo/install-game compile the native-Slang families to
+      # SPIR-V at build time, so they need slangc (from shell.nix).
       - name: Build consumer entry points
         run: |
-          zig build install-demo --release=fast -Dcpu=baseline
-          zig build install-game --release=fast -Dcpu=baseline
-          zig build install-perf --release=fast -Dcpu=baseline
+          nix-shell --run "zig build install-demo --release=fast -Dcpu=baseline"
+          nix-shell --run "zig build install-game --release=fast -Dcpu=baseline"
+          nix-shell --run "zig build install-perf --release=fast -Dcpu=baseline"
 
       - name: Backend pixel comparison
         env:
           LIBGL_ALWAYS_SOFTWARE: "1"
           GALLIUM_DRIVER: llvmpipe
-        run: zig build run-backend-compare -Dcpu=baseline
+        run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
 
       - name: Extract release notes for this tag
         id: release_notes

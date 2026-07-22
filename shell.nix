@@ -1,25 +1,33 @@
 { pkgs ? import (import ./npins).nixpkgs { } }:
 
 let
-  # Unpacked HarfBuzz source tree: the cross-compiled Windows demo
-  # (`zig build run-minimal-d3d11`) compiles the single-file amalgam
-  # (src/harfbuzz.cc) for x86_64-windows-gnu instead of linking the host
-  # library. Same nixpkgs pin as the `harfbuzz` package below, so shaping
-  # behavior matches the native demos.
+  inherit (pkgs) lib stdenv;
+
+  # Unpacked HarfBuzz source tree: the cross-compiled demos
+  # (`zig build run-minimal-d3d11`, `check-metal-demo`/`run-minimal-metal`)
+  # compile the single-file amalgam (src/harfbuzz.cc) for the foreign
+  # target instead of linking the host library. Same nixpkgs pin as the
+  # `harfbuzz` package below, so shaping behavior matches the native demos.
   harfbuzzSrc = pkgs.runCommand "harfbuzz-src-${pkgs.harfbuzz.version}" { } ''
     mkdir -p $out
     tar --strip-components=1 -xf ${pkgs.harfbuzz.src} -C $out
   '';
 in
-pkgs.mkShell {
+pkgs.mkShell ({
   packages = with pkgs; [
     zig_0_16
     pkg-config
+    harfbuzz
+    # Pixel gates (CI + local): explicit differing-pixel counts via `magick`.
+    imagemagick
+  ] ++ lib.optionals stdenv.isLinux [
     libGL
+    # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
+    # see the env vars below.
+    mesa
     wayland
     wayland-protocols
     wayland-scanner
-    harfbuzz
     vulkan-loader
     vulkan-headers
     vulkan-validation-layers
@@ -38,21 +46,31 @@ pkgs.mkShell {
     # the development branch: stable wine 11.0's bundled vkd3d-shader
     # crashes compiling autohint.vert.hlsl (11.6 compiles all nine).
     wine64Packages.unstable
+    # Wine's D3D11 needs a display connection to enumerate a GPU adapter;
+    # on displayless machines (CI) run the gate as
+    # `xvfb-run -a zig build run-minimal-d3d11` (GL goes to llvmpipe).
+    xvfb-run
   ];
 
-  LD_LIBRARY_PATH = with pkgs; pkgs.lib.makeLibraryPath [
+  # HarfBuzz amalgam source for the cross-compiled demos (see above).
+  HARFBUZZ_SRC = "${harfbuzzSrc}";
+} // lib.optionalAttrs stdenv.isLinux {
+  LD_LIBRARY_PATH = lib.makeLibraryPath (with pkgs; [
     libGL
     wayland
     harfbuzz
     vulkan-loader
     wgpu-native
-  ];
+  ]);
 
   # wgpu-native ships no pkg-config file; build.zig picks these up for the
   # minimal WebGPU example.
   WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
   WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
 
-  # HarfBuzz amalgam source for the Windows cross-build (run-minimal-d3d11).
-  HARFBUZZ_SRC = "${harfbuzzSrc}";
-}
+  # GL comes fully from the pin: glvnd dispatches to this mesa (llvmpipe
+  # under LIBGL_ALWAYS_SOFTWARE for the headless gates) instead of
+  # whatever the host happens to ship — CI runners ship nothing.
+  __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+  LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+})

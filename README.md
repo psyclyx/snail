@@ -306,13 +306,15 @@ Workspace builds that import `snail/build.zig` directly can call `module()` /
 Alpha. The embeddable-only rewrite is complete (see
 [CHANGELOG](CHANGELOG.md)); the Zig API is settling but breaking changes are
 still expected. A C API against the current primitives is planned. Rendering
-correctness is gated in CI (GitHub Actions): the Linux job runs the unit
+correctness is gated in CI (GitHub Actions; the toolchain is the same
+nix-pinned shell.nix used for local dev): the Linux job runs the unit
 tests (including the byte-identity checks for `compact` and delta uploads),
 the CPU-vs-GL backend-compare, the composite/coverage/coverage-parity
-probes, and the minimal GL example under llvmpipe; a macOS job runs the
-Metal example on a real GPU and gates it against
-`src/demo/app/minimal_reference.png`. The gamma probe and the GLES/Vulkan
-screenshot variants remain local build steps.
+probes, the minimal GL example under llvmpipe, and the minimal D3D11
+example under Wine, gated against `src/demo/app/minimal_reference.png`;
+a macOS job runs the Metal example on a real GPU and gates it against the
+same reference. The gamma probe and the GLES/Vulkan screenshot variants
+remain local build steps.
 
 ## License
 
