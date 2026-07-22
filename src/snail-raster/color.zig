@@ -54,8 +54,19 @@ pub fn srgbToLinear(byte: u8) f32 {
     return srgb_to_linear_lut[byte];
 }
 
+/// Clamp a possibly non-finite channel to the normalized storage domain.
+/// NaN has no meaningful ordering or color interpretation, so canonicalize it
+/// to zero; infinities saturate at the corresponding endpoint. Keeping this
+/// helper total matters because otherwise two individually finite HDR layers
+/// can overflow during blending and trap in a later float-to-integer pack.
+pub fn clamp01(v: f32) f32 {
+    if (std.math.isNan(v) or v <= 0.0) return 0.0;
+    if (v >= 1.0) return 1.0;
+    return v;
+}
+
 pub fn linearToSrgb(v: f32) f32 {
-    const clamped = @max(v, 0.0);
+    const clamped = clamp01(v);
     if (clamped >= 1.0) return 1.0;
     return if (clamped <= 0.0031308) clamped * 12.92 else 1.055 * std.math.pow(f32, clamped, 1.0 / 2.4) - 0.055;
 }
@@ -75,14 +86,14 @@ const linear_to_srgb_float_buckets: [linear_to_srgb_bucket_count]f32 = blk: {
 };
 
 pub inline fn linearToSrgbApprox(v: f32) f32 {
-    const clamped = @min(@max(v, 0.0), 1.0);
+    const clamped = clamp01(v);
     const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
     const bucket = @min(@as(usize, @intFromFloat(bucket_float)), linear_to_srgb_bucket_count - 1);
     return linear_to_srgb_float_buckets[bucket];
 }
 
 pub fn linearToSrgbByte(v: f32) u8 {
-    const clamped = @min(@max(v, 0.0), 1.0);
+    const clamped = clamp01(v);
     const bucket_float = clamped * @as(f32, @floatFromInt(linear_to_srgb_bucket_count));
     const bucket = @min(@as(usize, @intFromFloat(bucket_float)), linear_to_srgb_bucket_count - 1);
     var byte = linear_to_srgb_byte_buckets[bucket];
@@ -99,7 +110,7 @@ pub fn srgbFloatToLinear(v: f32) f32 {
 }
 
 pub fn srgbToByte(v: f32) u8 {
-    return @intFromFloat(@round(@min(@max(v * 255.0, 0.0), 255.0)));
+    return @intFromFloat(@round(clamp01(v) * 255.0));
 }
 
 pub fn srgbColorToLinear(color: [4]f32) [4]f32 {
@@ -137,10 +148,6 @@ pub fn fract(v: f32) f32 {
     return v - @floor(v);
 }
 
-pub fn clamp01(v: f32) f32 {
-    return std.math.clamp(v, 0.0, 1.0);
-}
-
 pub fn max3(values: [3]f32) f32 {
     return @max(values[0], @max(values[1], values[2]));
 }
@@ -149,4 +156,14 @@ pub fn interleavedGradientNoise(row: u32, col: u32) f32 {
     const pixel_x = @as(f32, @floatFromInt(col)) + 0.5;
     const pixel_y = @as(f32, @floatFromInt(row)) + 0.5;
     return fract(52.9829189 * fract(pixel_x * 0.06711056 + pixel_y * 0.00583715));
+}
+
+test "normalized color packing is total for non-finite channels" {
+    try std.testing.expectEqual(@as(f32, 0), clamp01(std.math.nan(f32)));
+    try std.testing.expectEqual(@as(f32, 0), clamp01(-std.math.inf(f32)));
+    try std.testing.expectEqual(@as(f32, 1), clamp01(std.math.inf(f32)));
+    try std.testing.expectEqual(@as(u8, 0), linearToSrgbByte(std.math.nan(f32)));
+    try std.testing.expectEqual(@as(u8, 255), linearToSrgbByte(std.math.inf(f32)));
+    try std.testing.expectEqual(@as(u8, 0), srgbToByte(-std.math.inf(f32)));
+    try std.testing.expectEqual(@as(u8, 255), srgbToByte(std.math.inf(f32)));
 }

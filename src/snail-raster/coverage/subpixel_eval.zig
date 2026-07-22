@@ -57,7 +57,7 @@ pub fn evalGlyphCoverageSubpixel(
         .pointer => |ptr| ptr.child,
         else => @TypeOf(page),
     };
-    if (comptime @hasField(Page, "h_curves")) {
+    if (comptime @hasField(Page, "axis_curves")) {
         evalPreparedSamples(page, em_x, em_y, plan, be, band_max_h, band_max_v, fill_rule, &raw);
     } else {
         inline for (0..W) |k| {
@@ -105,8 +105,8 @@ fn evalPreparedSamples(
     inline for (0..W) |i| {
         const bx_f = em_x[i] * be.band_scale_x + be.band_offset_x;
         const by_f = em_y[i] * be.band_scale_y + be.band_offset_y;
-        v_band_idx[i] = coverage.clampInt(@as(i32, @intFromFloat(@floor(bx_f))), 0, band_max_v);
-        h_band_idx[i] = coverage.clampInt(@as(i32, @intFromFloat(@floor(by_f))), 0, band_max_h);
+        v_band_idx[i] = coverage.floorBandIndex(bx_f, band_max_v);
+        h_band_idx[i] = coverage.floorBandIndex(by_f, band_max_h);
     }
 
     // RGB/BGR keep em_y constant across the 7 samples (stripes run vertical);
@@ -161,7 +161,7 @@ pub fn evalPreparedAxis(
         }
     }
 
-    const curves = if (horizontal) page.h_curves else page.v_curves;
+    const curves = page.axis_curves;
     const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
 
     var u: usize = 0;

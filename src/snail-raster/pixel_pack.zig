@@ -11,13 +11,14 @@ const snail = @import("snail");
 const render_state = @import("render-state");
 
 const PixelFormat = render_state.PixelFormat;
+const clamp01 = @import("color.zig").clamp01;
 
 fn quantU8(v: f32) u8 {
-    return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * 255.0));
+    return @intFromFloat(@round(clamp01(v) * 255.0));
 }
 
 fn quant(v: f32, comptime max: u32) u32 {
-    return @intFromFloat(@round(std.math.clamp(v, 0.0, 1.0) * @as(f32, @floatFromInt(max))));
+    return @intFromFloat(@round(clamp01(v) * @as(f32, @floatFromInt(max))));
 }
 
 inline fn unormU8(b: u8) f32 {
@@ -138,4 +139,20 @@ test "mask formats keep only painted alpha" {
         try testing.expectEqual(@as(f32, 0), rt[2]);
         try testing.expectApproxEqAbs(@as(f32, 0.5), rt[3], 1.0 / 255.0);
     }
+}
+
+test "unorm packing saturates non-finite channels without trapping" {
+    try testing.expectEqual([4]u8{ 0, 255, 0, 255 }, pack(.rgba8_unorm, .{
+        std.math.nan(f32),
+        std.math.inf(f32),
+        -std.math.inf(f32),
+        std.math.inf(f32),
+    }));
+    const encoded = pack(.rgb10a2_unorm, .{
+        std.math.nan(f32),
+        std.math.inf(f32),
+        -std.math.inf(f32),
+        std.math.inf(f32),
+    });
+    try testing.expectEqual([4]f32{ 0, 1, 0, 1 }, unpack(.rgb10a2_unorm, &encoded));
 }

@@ -211,8 +211,8 @@ fn initGlyphBandState(
 ) GlyphBandState {
     const band_idx_x_f = em_x * be.band_scale_x + be.band_offset_x;
     const band_idx_y_f = em_y * be.band_scale_y + be.band_offset_y;
-    const band_idx_x = clampInt(@as(i32, @intFromFloat(@floor(band_idx_x_f))), 0, band_max_v);
-    const band_idx_y = clampInt(@as(i32, @intFromFloat(@floor(band_idx_y_f))), 0, band_max_h);
+    const band_idx_x = floorBandIndex(band_idx_x_f, band_max_v);
+    const band_idx_y = floorBandIndex(band_idx_y_f, band_max_h);
     const glyph_x = @as(u32, be.glyph_x);
     const glyph_y = @as(u32, be.glyph_y);
     const glyph_band_base = @as(usize, glyph_y) * @as(usize, page.band_width) + @as(usize, glyph_x);
@@ -688,7 +688,7 @@ pub inline fn accumulatePreparedCurveCoverage(
 
 fn evalPreparedGlyphCoverageAxisFromBand(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-    const curves = if (horizontal) page.h_curves else page.v_curves;
+    const curves = page.axis_curves;
     const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
     if (band_base >= curves.len) return result;
     const band_count = @min(@as(usize, count), curves.len - band_base);
@@ -708,7 +708,7 @@ fn evalGlyphCoverageAxis(page: anytype, sample_rc: Vec2, ppe: f32, band_base: us
         .pointer => |ptr| ptr.child,
         else => @TypeOf(page),
     };
-    if (comptime @hasField(Page, "h_curves")) {
+    if (comptime @hasField(Page, "axis_curves")) {
         return evalPreparedGlyphCoverageAxisFromBand(page, sample_rc, ppe, band_base, count, horizontal);
     }
     return evalGenericGlyphCoverageAxisFromBand(page, sample_rc, ppe, band_base, count, horizontal);
@@ -728,22 +728,19 @@ fn accumulateGenericCurveCoverage(result: *CoveragePair, page: anytype, curve_ba
     const tex0 = readCurveTexelF32Base(page, curve_base);
     const tex1 = readCurveTexelF32Base(page, curve_base + 4);
     const tex2 = readCurveTexelF32Base(page, curve_base + 8);
-    const stored_kind = tex2[2];
+    const encoding = texture.curveEncodingFromStoredKind(tex2[2]) orelse return .continue_scan;
 
-    const direct_quadratic = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5 and
-        stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 0.5;
-    if (stored_kind < 0.5 or direct_quadratic) {
-        return accumulateEncodedQuadraticCoverage(result, tex0, tex1, sample_rc, ppe, direct_quadratic, horizontal);
+    if (encoding.kind == .quadratic) {
+        return accumulateEncodedQuadraticCoverage(result, tex0, tex1, sample_rc, ppe, encoding.direct, horizontal);
     }
 
-    const direct_line = stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS + 2.5 and
-        stored_kind < curve_tex.DIRECT_ENCODING_KIND_BIAS + 3.5;
-    if ((stored_kind >= 2.5 and stored_kind < 3.5) or direct_line) {
-        return accumulateEncodedLineCoverage(result, tex0, tex1, sample_rc, ppe, direct_line, horizontal);
+    if (encoding.kind == .line) {
+        return accumulateEncodedLineCoverage(result, tex0, tex1, sample_rc, ppe, encoding.direct, horizontal);
     }
 
     const meta = readCurveTexelF32Base(page, curve_base + 12);
-    return accumulateGlyphCoverageSegment(result, decodeCurveSegment(tex0, tex1, tex2, meta), sample_rc, ppe, horizontal);
+    const segment = decodeCurveSegment(tex0, tex1, tex2, meta) orelse return .continue_scan;
+    return accumulateGlyphCoverageSegment(result, segment, sample_rc, ppe, horizontal);
 }
 
 fn accumulateEncodedQuadraticCoverage(result: *CoveragePair, tex0: [4]f32, tex1: [4]f32, sample_rc: Vec2, ppe: f32, direct: bool, comptime horizontal: bool) CoverageScan {
@@ -798,8 +795,8 @@ fn coverageBandSpan(coord: f32, epp_axis: f32, band_scale: f32, band_offset: f32
     // Match the path shader: evaluate every band touched by the pixel
     // footprint, then de-duplicate curve records across the span.
     const half_width = @max(@abs(epp_axis * band_scale) * 0.5, 1e-5);
-    const first = clampInt(@as(i32, @intFromFloat(@floor(center - half_width))), 0, band_max);
-    const last = clampInt(@as(i32, @intFromFloat(@floor(center + half_width))), 0, band_max);
+    const first = floorBandIndex(center - half_width, band_max);
+    const last = floorBandIndex(center + half_width, band_max);
     return .{ .first = first, .last = @max(first, last) };
 }
 
@@ -819,7 +816,7 @@ fn evalPreparedGlyphCoverageAxisBandSpan(
 ) CoveragePair {
     var result = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
     if (span.first > span.last) return result;
-    const curves = if (horizontal) page.h_curves else page.v_curves;
+    const curves = page.axis_curves;
     const cold_curves = if (horizontal) page.h_cold_curves else page.v_cold_curves;
     const dedup = span.first != span.last;
 
@@ -868,7 +865,7 @@ fn evalGenericGlyphCoverageAxisBandSpan(
             const tex1 = readCurveTexelF32Base(page, curve_ref.base + 4);
             const tex2 = readCurveTexelF32Base(page, curve_ref.base + 8);
             const meta = readCurveTexelF32Base(page, curve_ref.base + 12);
-            const segment = decodeCurveSegment(tex0, tex1, tex2, meta);
+            const segment = decodeCurveSegment(tex0, tex1, tex2, meta) orelse continue;
             if (accumulateGlyphCoverageSegment(&result, segment, sample_rc, ppe, horizontal) == .stop_scan) break;
         }
     }
@@ -888,7 +885,7 @@ inline fn evalGlyphCoverageAxisBandSpan(
         .pointer => |ptr| ptr.child,
         else => @TypeOf(page),
     };
-    if (comptime @hasField(Page, "h_curves")) {
+    if (comptime @hasField(Page, "axis_curves")) {
         return evalPreparedGlyphCoverageAxisBandSpan(page, sample_rc, ppe, glyph_band_base, header_base, span, horizontal);
     }
     return evalGenericGlyphCoverageAxisBandSpan(page, sample_rc, ppe, glyph_band_base, header_base, span, horizontal);
@@ -1042,19 +1039,19 @@ pub fn prepareRowHorizState(
     };
 
     const band_idx_y_f = em_y_row * be.band_scale_y + be.band_offset_y;
-    const band_idx_y = clampInt(@as(i32, @intFromFloat(@floor(band_idx_y_f))), 0, band_max_h);
+    const band_idx_y = floorBandIndex(band_idx_y_f, band_max_h);
 
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_idx_y)));
     const band_base = glyph_band_base + header[1];
-    if (band_base >= page.h_curves.len) {
+    if (band_base >= page.axis_curves.len) {
         state.valid = true;
         return state;
     }
-    const band_count = @min(@as(usize, header[0]), page.h_curves.len - band_base);
+    const band_count = @min(@as(usize, header[0]), page.axis_curves.len - band_base);
     if (band_count > max_row_horiz_curves) return state;
 
-    const band_curves = page.h_curves[band_base..][0..band_count];
+    const band_curves = page.axis_curves[band_base..][0..band_count];
     for (band_curves) |*curve| {
         if (!curve.valid) {
             state.curves[state.count] = .{};
@@ -1097,9 +1094,9 @@ pub fn prepareRowHorizSpanState(
     while (band <= span.last) : (band += 1) {
         const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band)));
         const band_base = glyph_band_base + header[1];
-        if (band_base >= page.h_curves.len) continue;
-        const band_count = @min(@as(usize, header[0]), page.h_curves.len - band_base);
-        const band_curves = page.h_curves[band_base..][0..band_count];
+        if (band_base >= page.axis_curves.len) continue;
+        const band_count = @min(@as(usize, header[0]), page.axis_curves.len - band_base);
+        const band_curves = page.axis_curves[band_base..][0..band_count];
         for (band_curves) |*curve| {
             if (!curve.valid) continue;
             if (dedup and !isBandSpanOwner(curve.first_member_band, band, span.first)) continue;
@@ -1333,9 +1330,9 @@ pub fn prepareSaturatedRowState(
     while (band <= band_max_v) : (band += 1) {
         const header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(header_base + band)));
         const band_base = glyph_band_base + header[1];
-        if (band_base >= page.v_curves.len) continue;
-        const band_count = @min(@as(usize, header[0]), page.v_curves.len - band_base);
-        const band_curves = page.v_curves[band_base..][0..band_count];
+        if (band_base >= page.axis_curves.len) continue;
+        const band_count = @min(@as(usize, header[0]), page.axis_curves.len - band_base);
+        const band_curves = page.axis_curves[band_base..][0..band_count];
 
         for (band_curves) |*curve| {
             if (!curve.valid) continue;
@@ -1454,7 +1451,7 @@ pub fn evalGlyphCoverageRowH(
     // V-axis: a single sample per pixel, identical to the V half of
     // initGlyphBandState + evalGlyphVertCoverage.
     const band_idx_x_f = em_x_pixel * be.band_scale_x + be.band_offset_x;
-    const band_idx_x = clampInt(@as(i32, @intFromFloat(@floor(band_idx_x_f))), 0, band_max_v);
+    const band_idx_x = floorBandIndex(band_idx_x_f, band_max_v);
     const glyph_band_base = @as(usize, be.glyph_y) * @as(usize, page.band_width) + @as(usize, be.glyph_x);
     const v_header = readBandTexelLinear(page, glyph_band_base + @as(usize, @intCast(band_max_h)) + 1 + @as(usize, @intCast(band_idx_x)));
     const v_state = GlyphBandState{
@@ -1495,7 +1492,7 @@ pub fn evalGlyphCoverageSubpixelRowH(
     var v_band_idx: [W]i32 = undefined;
     inline for (0..W) |i| {
         const bx_f = em_x[i] * be.band_scale_x + be.band_offset_x;
-        v_band_idx[i] = clampInt(@as(i32, @intFromFloat(@floor(bx_f))), 0, band_max_v);
+        v_band_idx[i] = floorBandIndex(bx_f, band_max_v);
     }
 
     var v_pairs: [W]CoveragePair = @splat(CoveragePair{ .cov = 0, .wgt = 0 });
@@ -1547,6 +1544,21 @@ test "monotonic cubic winding is invariant under path normalization" {
         );
         try std.testing.expectApproxEqAbs(@as(f32, 1.0), pair.cov, 1e-6);
     }
+}
+
+pub fn floorBandIndex(value: f32, band_max: i32) i32 {
+    if (band_max <= 0 or std.math.isNan(value) or value <= 0) return 0;
+    if (!std.math.isFinite(value) or value >= @as(f32, @floatFromInt(band_max))) return band_max;
+    return @intFromFloat(@floor(value));
+}
+
+test "band index conversion saturates hostile coordinates" {
+    try std.testing.expectEqual(@as(i32, 0), floorBandIndex(std.math.nan(f32), 15));
+    try std.testing.expectEqual(@as(i32, 0), floorBandIndex(-std.math.inf(f32), 15));
+    try std.testing.expectEqual(@as(i32, 15), floorBandIndex(std.math.inf(f32), 15));
+    try std.testing.expectEqual(@as(i32, 15), floorBandIndex(std.math.floatMax(f32), 15));
+    try std.testing.expectEqual(@as(i32, 3), floorBandIndex(3.9, 15));
+    try std.testing.expectEqual(@as(i32, 0), floorBandIndex(3.9, -1));
 }
 
 pub fn clampInt(v: i32, lo: i32, hi: i32) i32 {

@@ -9,17 +9,10 @@ const Transform2D = snail.Transform2D;
 const SubpixelOrder = render_state.SubpixelOrder;
 
 pub fn inverseTransform(transform: Transform2D) ?Transform2D {
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    if (@abs(det) < 1.0 / 65536.0) return null;
-    const inv_det = 1.0 / det;
-    return .{
-        .xx = transform.yy * inv_det,
-        .xy = -transform.xy * inv_det,
-        .tx = (transform.xy * transform.ty - transform.yy * transform.tx) * inv_det,
-        .yx = -transform.yx * inv_det,
-        .yy = transform.xx * inv_det,
-        .ty = (transform.yx * transform.tx - transform.xx * transform.ty) * inv_det,
-    };
+    // Keep raster acceptance identical to the public transform contract.
+    // Transform2D.inverse uses f64 intermediates, so small/large invertible
+    // f32 transforms are not misclassified by determinant under/overflow.
+    return transform.inverse();
 }
 
 pub const ScreenBounds = struct {
@@ -90,6 +83,13 @@ test "CPU grayscale footprint matches shader fwidth" {
     const epp = glyphEdgePixelsPerPixel(inv);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), epp.x, 0.0001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.5), epp.y, 0.0001);
+}
+
+test "CPU inverse accepts representable determinant underflow" {
+    const tiny = Transform2D{ .xx = 1.0e-20, .yy = 1.0e-20 };
+    const inverse = inverseTransform(tiny) orelse return error.TestExpectedInverse;
+    try std.testing.expectApproxEqRel(@as(f32, 1.0e20), inverse.xx, 1e-6);
+    try std.testing.expectApproxEqRel(@as(f32, 1.0e20), inverse.yy, 1e-6);
 }
 
 pub inline fn advanceLocalPixel(col: *u32, local: *Vec2, sample_dx: Vec2) void {
