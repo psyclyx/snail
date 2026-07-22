@@ -1,158 +1,25 @@
-//! Minimal caller-owned thread pool used by `snail-raster.Renderer` to fan tile work
-//! across cores without allocating in the draw path. The allocator is touched
-//! exactly twice: once at `init` for the worker `[]std.Thread`, and once at
-//! `deinit` to free it. `dispatch` is heap-free.
+//! Caller-owned portable thread pool used by `snail-raster.Renderer` to fan
+//! tile work across cores. Allocation happens only during `init`/`deinit`;
+//! `dispatch` is allocation-free.
 //!
-//! Sync primitives are built directly on Linux futex (`std.os.linux.futex_4arg`)
-//! to avoid pulling general-purpose task machinery into the rasterizer: Zig
-//! 0.16 ships `Mutex` /
-//! `Condition` only behind `std.Io`, which would re-introduce per-task
-//! allocations on the draw path. Linux-only — adding other platforms means
-//! adding the equivalent futex shims here.
-//!
-//! Not safe for concurrent dispatchers — at most one thread may call
-//! `dispatch` at a time. This matches snail's "renderer is single-threaded
-//! from the caller's perspective" rule; the pool fans work out internally and
-//! joins before returning.
+//! Synchronization uses Zig's portable futex-backed `std.Io.Mutex` and
+//! `std.Io.Condition`, so the same worker implementation runs on Linux,
+//! macOS, and Windows. Concurrent dispatchers are safely serialized.
 
 const std = @import("std");
-const builtin = @import("builtin");
-const linux = std.os.linux;
 
-/// Worker parallelism is Linux-only (futex-based sync). On other platforms
-/// `ThreadPool` still compiles — so portable callers can hold a `?*ThreadPool`
-/// and CPU rendering works everywhere — but it never spawns workers:
-/// `init` with an explicit non-zero thread request fails with
-/// `error.UnsupportedPlatform`, the default (`threads = null`) resolves to 0,
-/// and `dispatch` runs every task on the calling thread. Adding real workers
-/// on another platform means porting the Mutex/Cond primitives below
-/// (WaitOnAddress on Windows, ulock/os_sync on macOS).
-pub const ThreadPool = if (builtin.os.tag == .linux) LinuxThreadPool else SerialThreadPool;
+threadlocal var executing_pool: ?*ThreadPool = null;
 
-// Drepper's three-state futex mutex (0=unlocked, 1=locked-no-waiters,
-// 2=locked-with-waiters). Self-initializes to `.unlocked`.
-const Mutex = struct {
-    state: u32 = 0,
-
-    fn lock(m: *Mutex) void {
-        // Uncontended fast path.
-        if (@cmpxchgStrong(u32, &m.state, 0, 1, .acquire, .monotonic) == null) return;
-
-        while (true) {
-            // Decide whether to sleep. We sleep if state is 2 (already has
-            // waiters) or if we successfully promote 1 -> 2. If a 1->2 attempt
-            // observes 0, the lock is now free and we should re-try acquiring.
-            const sleep = blk: {
-                const observed = @atomicLoad(u32, &m.state, .monotonic);
-                if (observed == 2) break :blk true;
-                const cmp = @cmpxchgStrong(u32, &m.state, 1, 2, .monotonic, .monotonic);
-                if (cmp == null) break :blk true; // we set 1 -> 2; now sleep on 2
-                break :blk cmp.? != 0; // observed 1 or 2 just now
-            };
-            if (sleep) futexWait(&m.state, 2);
-
-            // Acquire as 2 to keep the waiters mark; an over-conservative wake
-            // is always correct, a missed wake is not.
-            if (@cmpxchgStrong(u32, &m.state, 0, 2, .acquire, .monotonic) == null) return;
-        }
-    }
-
-    fn unlock(m: *Mutex) void {
-        // If state was 2, it had waiters; clear and wake one.
-        const prev = @atomicRmw(u32, &m.state, .Sub, 1, .release);
-        if (prev != 1) {
-            @atomicStore(u32, &m.state, 0, .release);
-            futexWake(&m.state, 1);
-        }
-    }
-};
-
-// Sequence-based condition variable. Waiters snapshot `seq` while holding the
-// associated mutex, drop the mutex, then `futex_wait` on the snapshot — any
-// signal that increments `seq` between snapshot and wait causes wait to return
-// immediately, so signals are never lost.
-const Cond = struct {
-    seq: u32 = 0,
-
-    // Atomically (release the mutex, queue on `seq`); on return, mutex is held.
-    fn wait(c: *Cond, m: *Mutex) void {
-        const seq = @atomicLoad(u32, &c.seq, .monotonic);
-        m.unlock();
-        futexWait(&c.seq, seq);
-        m.lock();
-    }
-
-    // Bump the wakeup sequence. Caller MUST hold the associated mutex.
-    fn prepareWake(c: *Cond) void {
-        _ = @atomicRmw(u32, &c.seq, .Add, 1, .release);
-    }
-
-    // Wake up to `count` waiters. May be called outside the mutex; pair with
-    // a prior `prepareWake` under the mutex so waiters' seq snapshots see the
-    // increment.
-    fn wake(c: *Cond, count: u32) void {
-        futexWake(&c.seq, count);
-    }
-};
-
-const FUTEX_WAIT_PRIVATE: linux.FUTEX_OP = .{ .cmd = .WAIT, .private = true };
-const FUTEX_WAKE_PRIVATE: linux.FUTEX_OP = .{ .cmd = .WAKE, .private = true };
-
-fn futexWait(addr: *const u32, expected: u32) void {
-    // Spurious returns (EAGAIN, EINTR) are fine: every caller rechecks its
-    // predicate in a loop after `futexWait` returns.
-    _ = linux.futex_4arg(@ptrCast(addr), FUTEX_WAIT_PRIVATE, expected, null);
-}
-
-fn futexWake(addr: *const u32, count: u32) void {
-    // The kernel reads `val` as a signed int; values > INT_MAX (e.g. our
-    // `wakeAll` sentinel) would be observed as negative and return EINVAL.
-    const clamped = @min(count, @as(u32, std.math.maxInt(i32)));
-    _ = linux.futex_4arg(@ptrCast(addr), FUTEX_WAKE_PRIVATE, clamped, null);
-}
-
-const wake_all: u32 = std.math.maxInt(i32);
-
-/// Non-Linux stand-in: same API surface, zero workers, serial `dispatch`.
-const SerialThreadPool = struct {
-    pub const InitOptions = LinuxThreadPool.InitOptions;
-
-    pub fn init(self: *SerialThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
-        _ = allocator;
-        if (options.threads) |n| {
-            if (n > 0) return error.UnsupportedPlatform;
-        }
-        self.* = .{};
-    }
-
-    pub fn deinit(self: *SerialThreadPool) void {
-        self.* = undefined;
-    }
-
-    pub fn threadCount(self: *const SerialThreadPool) usize {
-        _ = self;
-        return 0;
-    }
-
-    pub fn dispatch(
-        self: *SerialThreadPool,
-        total: u32,
-        ctx: *anyopaque,
-        run: *const fn (*anyopaque, u32) void,
-    ) void {
-        _ = self;
-        var i: u32 = 0;
-        while (i < total) : (i += 1) run(ctx, i);
-    }
-};
-
-const LinuxThreadPool = struct {
+pub const ThreadPool = struct {
     allocator: std.mem.Allocator,
+    io_impl: std.Io.Threaded,
     threads: []std.Thread,
 
-    mutex: Mutex,
-    work_ready: Cond,
-    work_done: Cond,
+    // Serializes callers before they can mutate the one active job slot.
+    dispatch_mutex: std.Io.Mutex,
+    mutex: std.Io.Mutex,
+    work_ready: std.Io.Condition,
+    work_done: std.Io.Condition,
     shutdown: bool,
 
     // Active job state. Mutated under `mutex`.
@@ -163,27 +30,28 @@ const LinuxThreadPool = struct {
     job_active: u32,
 
     pub const InitOptions = struct {
-        /// Worker thread count. `null` defaults to one per logical core minus
-        /// one (the dispatching thread also runs tasks). `0` is allowed and
-        /// makes `dispatch` run every task on the calling thread.
+        /// Worker count. `null` uses every logical core because the dispatching
+        /// thread coordinates and waits rather than claiming work. `0` runs
+        /// every task synchronously on the calling thread.
         threads: ?usize = null,
     };
 
-    pub fn init(self: *LinuxThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
-        const thread_count = options.threads orelse blk: {
-            const n = std.Thread.getCpuCount() catch 1;
-            break :blk if (n > 1) n - 1 else 0;
-        };
-
-        const threads_slice = try allocator.alloc(std.Thread, thread_count);
-        errdefer allocator.free(threads_slice);
+    pub fn init(self: *ThreadPool, allocator: std.mem.Allocator, options: InitOptions) !void {
+        const thread_count = options.threads orelse (std.Thread.getCpuCount() catch 1);
+        const threads = try allocator.alloc(std.Thread, thread_count);
+        errdefer allocator.free(threads);
 
         self.* = .{
             .allocator = allocator,
-            .threads = threads_slice,
-            .mutex = .{},
-            .work_ready = .{},
-            .work_done = .{},
+            // This static Io configuration still exposes Threaded's portable
+            // uncancelable futex vtable, but creates no executor threads and
+            // installs no process signal handlers.
+            .io_impl = .init_single_threaded,
+            .threads = threads,
+            .dispatch_mutex = .init,
+            .mutex = .init,
+            .work_ready = .init,
+            .work_done = .init,
             .shutdown = false,
             .job_ctx = null,
             .job_run = null,
@@ -194,103 +62,240 @@ const LinuxThreadPool = struct {
 
         var spawned: usize = 0;
         errdefer {
-            self.mutex.lock();
+            self.lock();
             self.shutdown = true;
-            self.work_ready.prepareWake();
-            self.mutex.unlock();
-            self.work_ready.wake(wake_all);
-            for (threads_slice[0..spawned]) |t| t.join();
+            self.unlock();
+            self.work_ready.broadcast(self.io());
+            for (threads[0..spawned]) |thread| thread.join();
         }
-
-        while (spawned < threads_slice.len) : (spawned += 1) {
-            threads_slice[spawned] = try std.Thread.spawn(.{}, workerLoop, .{self});
+        while (spawned < threads.len) : (spawned += 1) {
+            threads[spawned] = try std.Thread.spawn(.{}, workerLoop, .{self});
         }
     }
 
-    pub fn deinit(self: *LinuxThreadPool) void {
-        self.mutex.lock();
+    /// Stop the workers and release storage. The caller must first ensure no
+    /// other thread is inside `dispatch`; destruction is not a dispatch fence.
+    pub fn deinit(self: *ThreadPool) void {
+        self.lock();
         self.shutdown = true;
-        self.work_ready.prepareWake();
-        self.mutex.unlock();
-        self.work_ready.wake(wake_all);
-        for (self.threads) |t| t.join();
+        self.unlock();
+        self.work_ready.broadcast(self.io());
+        for (self.threads) |thread| thread.join();
         self.allocator.free(self.threads);
         self.* = undefined;
     }
 
-    pub fn threadCount(self: *const LinuxThreadPool) usize {
+    pub fn threadCount(self: *const ThreadPool) usize {
         return self.threads.len;
     }
 
-    /// Run `run(ctx, i)` for every `i` in `[0, total)`, distributing across
-    /// workers. Blocks until all calls return. Allocation-free.
-    ///
-    /// If the pool has zero worker threads, all tasks run on the calling
-    /// thread. Otherwise the dispatcher just submits and waits — it does
-    /// not run tasks itself. Letting the dispatcher race workers for the
-    /// queue starves them: with task duration on the same order as the
-    /// `futex_wake` -> kernel-schedule latency, the dispatcher claims every
-    /// task before workers observe `job_next < job_total`, and the
-    /// "parallel" path runs serially.
+    /// Run `run(ctx, i)` exactly once for every `i` in `[0, total)`. Blocks
+    /// until all calls finish. With zero workers, executes synchronously.
     pub fn dispatch(
-        self: *LinuxThreadPool,
+        self: *ThreadPool,
         total: u32,
         ctx: *anyopaque,
         run: *const fn (*anyopaque, u32) void,
     ) void {
         if (total == 0) return;
-
+        // A worker callback may recursively submit to its own pool. Waiting
+        // for the outer dispatch slot would deadlock, so execute that nested
+        // work inline. Dispatch to a different pool keeps normal semantics.
+        if (executing_pool == self) {
+            var i: u32 = 0;
+            while (i < total) : (i += 1) run(ctx, i);
+            return;
+        }
+        self.dispatch_mutex.lockUncancelable(self.io());
+        defer self.dispatch_mutex.unlock(self.io());
         if (self.threads.len == 0) {
+            const previous = executing_pool;
+            executing_pool = self;
+            defer executing_pool = previous;
             var i: u32 = 0;
             while (i < total) : (i += 1) run(ctx, i);
             return;
         }
 
-        self.mutex.lock();
+        self.lock();
+        std.debug.assert(self.job_run == null);
         self.job_ctx = ctx;
         self.job_run = run;
         self.job_total = total;
         self.job_next = 0;
         self.job_active = 0;
-        self.work_ready.prepareWake();
-        self.mutex.unlock();
-        self.work_ready.wake(wake_all);
+        self.unlock();
+        self.work_ready.broadcast(self.io());
 
-        self.mutex.lock();
+        self.lock();
         while (self.job_next < total or self.job_active > 0) {
-            self.work_done.wait(&self.mutex);
+            self.work_done.waitUncancelable(self.io(), &self.mutex);
         }
         self.job_run = null;
         self.job_ctx = null;
         self.job_total = 0;
-        self.mutex.unlock();
+        self.unlock();
     }
 
-    fn workerLoop(self: *LinuxThreadPool) void {
+    fn workerLoop(self: *ThreadPool) void {
         while (true) {
-            self.mutex.lock();
+            self.lock();
             while (!self.shutdown and (self.job_run == null or self.job_next >= self.job_total)) {
-                self.work_ready.wait(&self.mutex);
+                self.work_ready.waitUncancelable(self.io(), &self.mutex);
             }
             if (self.shutdown) {
-                self.mutex.unlock();
+                self.unlock();
                 return;
             }
-            const idx = self.job_next;
+
+            const index = self.job_next;
             self.job_next += 1;
             self.job_active += 1;
             const ctx = self.job_ctx.?;
             const run = self.job_run.?;
-            self.mutex.unlock();
+            self.unlock();
 
-            run(ctx, idx);
+            const previous = executing_pool;
+            executing_pool = self;
+            run(ctx, index);
+            executing_pool = previous;
 
-            self.mutex.lock();
+            self.lock();
             self.job_active -= 1;
-            const last = self.job_active == 0 and self.job_next >= self.job_total;
-            if (last) self.work_done.prepareWake();
-            self.mutex.unlock();
-            if (last) self.work_done.wake(wake_all);
+            const finished = self.job_active == 0 and self.job_next >= self.job_total;
+            self.unlock();
+            if (finished) self.work_done.broadcast(self.io());
         }
     }
+
+    inline fn io(self: *ThreadPool) std.Io {
+        return self.io_impl.io();
+    }
+
+    inline fn lock(self: *ThreadPool) void {
+        self.mutex.lockUncancelable(self.io());
+    }
+
+    inline fn unlock(self: *ThreadPool) void {
+        self.mutex.unlock(self.io());
+    }
 };
+
+test "thread pool dispatches each index exactly once" {
+    var pool: ThreadPool = undefined;
+    try pool.init(std.testing.allocator, .{ .threads = 2 });
+    defer pool.deinit();
+    try std.testing.expectEqual(@as(usize, 2), pool.threadCount());
+
+    const Context = struct {
+        hits: *[37]u8,
+
+        fn run(opaque_ctx: *anyopaque, index: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            context.hits[index] += 1;
+        }
+    };
+    var hits = [_]u8{0} ** 37;
+    var context = Context{ .hits = &hits };
+    pool.dispatch(hits.len, &context, Context.run);
+    for (hits) |hit| try std.testing.expectEqual(@as(u8, 1), hit);
+}
+
+test "zero-worker pool dispatches synchronously" {
+    var pool: ThreadPool = undefined;
+    try pool.init(std.testing.allocator, .{ .threads = 0 });
+    defer pool.deinit();
+
+    const Context = struct {
+        count: u32 = 0,
+
+        fn run(opaque_ctx: *anyopaque, _: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            context.count += 1;
+        }
+    };
+    var context = Context{};
+    pool.dispatch(11, &context, Context.run);
+    try std.testing.expectEqual(@as(u32, 11), context.count);
+}
+
+test "independent pools survive either lifecycle order" {
+    var first: ThreadPool = undefined;
+    try first.init(std.testing.allocator, .{ .threads = 1 });
+    var second: ThreadPool = undefined;
+    try second.init(std.testing.allocator, .{ .threads = 1 });
+    defer second.deinit();
+
+    const Context = struct {
+        count: u32 = 0,
+
+        fn run(opaque_ctx: *anyopaque, _: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            context.count += 1;
+        }
+    };
+    var first_context = Context{};
+    var second_context = Context{};
+    first.dispatch(3, &first_context, Context.run);
+    second.dispatch(5, &second_context, Context.run);
+    first.deinit();
+
+    // Destroying one pool must not tear down synchronization used by another.
+    second.dispatch(7, &second_context, Context.run);
+    try std.testing.expectEqual(@as(u32, 3), first_context.count);
+    try std.testing.expectEqual(@as(u32, 12), second_context.count);
+}
+
+test "concurrent dispatchers are serialized without losing work" {
+    var pool: ThreadPool = undefined;
+    try pool.init(std.testing.allocator, .{ .threads = 2 });
+    defer pool.deinit();
+
+    const Context = struct {
+        pool: *ThreadPool,
+        hits: *[31]u8,
+
+        fn run(opaque_ctx: *anyopaque, index: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            context.hits[index] = 1;
+        }
+
+        fn dispatch(context: *@This()) void {
+            context.pool.dispatch(context.hits.len, context, run);
+        }
+    };
+    var first_hits = [_]u8{0} ** 31;
+    var second_hits = [_]u8{0} ** 31;
+    var first = Context{ .pool = &pool, .hits = &first_hits };
+    var second = Context{ .pool = &pool, .hits = &second_hits };
+    const first_thread = try std.Thread.spawn(.{}, Context.dispatch, .{&first});
+    const second_thread = try std.Thread.spawn(.{}, Context.dispatch, .{&second});
+    first_thread.join();
+    second_thread.join();
+    for (first_hits) |hit| try std.testing.expectEqual(@as(u8, 1), hit);
+    for (second_hits) |hit| try std.testing.expectEqual(@as(u8, 1), hit);
+}
+
+test "worker callbacks can recursively dispatch to the same pool" {
+    var pool: ThreadPool = undefined;
+    try pool.init(std.testing.allocator, .{ .threads = 2 });
+    defer pool.deinit();
+
+    const Context = struct {
+        pool: *ThreadPool,
+        inner_count: std.atomic.Value(u32) = .init(0),
+
+        fn inner(opaque_ctx: *anyopaque, _: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            _ = context.inner_count.fetchAdd(1, .monotonic);
+        }
+
+        fn outer(opaque_ctx: *anyopaque, _: u32) void {
+            const context: *@This() = @ptrCast(@alignCast(opaque_ctx));
+            context.pool.dispatch(3, context, inner);
+        }
+    };
+    var context = Context{ .pool = &pool };
+    pool.dispatch(4, &context, Context.outer);
+    try std.testing.expectEqual(@as(u32, 12), context.inner_count.load(.monotonic));
+}
