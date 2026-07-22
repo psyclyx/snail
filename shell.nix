@@ -40,6 +40,10 @@ pkgs.mkShell ({
     # tests (zig build test) and the Metal demo's MSL both generate.
     shader-slang
     spirv-cross
+    # naga CLI: static-validation tripwire for the subpixel WGSL artifact
+    # (prelude-injected dual-source entry) — run by `zig build test` and
+    # `gen-shaders` on every platform, never by consumer scopes.
+    wgpu-utils
   ] ++ lib.optionals stdenv.isLinux [
     libGL
     # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
@@ -51,9 +55,6 @@ pkgs.mkShell ({
     vulkan-loader
     vulkan-headers
     vulkan-validation-layers
-    # naga CLI (`naga <file>.wgsl`): validation tripwire for the generated
-    # WGSL artifacts (the subpixel module's prelude entry in particular).
-    wgpu-utils
     # Headless D3D11 reference example (`zig build run-minimal-d3d11`):
     # runs the cross-compiled Windows exe; Wine's built-in d3dcompiler_47
     # is the FXC-class compiler for the generated HLSL artifacts. Needs

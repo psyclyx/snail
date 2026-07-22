@@ -299,12 +299,14 @@ var toolchain_gate_cache: ?struct {
     owner: *std.Build,
     slangc_fail: ?*std.Build.Step,
     spirv_cross_fail: ?*std.Build.Step,
+    naga_fail: ?*std.Build.Step,
 } = null;
 
 fn toolchainGates(b: *std.Build) *@TypeOf(toolchain_gate_cache.?) {
     if (toolchain_gate_cache) |*g| if (g.owner == b) return g;
     const slangc_missing = if (b.findProgram(&.{"slangc"}, &.{})) |_| false else |_| true;
     const spirv_cross_missing = if (b.findProgram(&.{"spirv-cross"}, &.{})) |_| false else |_| true;
+    const naga_missing = if (b.findProgram(&.{"naga"}, &.{})) |_| false else |_| true;
     toolchain_gate_cache = .{
         .owner = b,
         .slangc_fail = if (slangc_missing)
@@ -313,6 +315,10 @@ fn toolchainGates(b: *std.Build) *@TypeOf(toolchain_gate_cache.?) {
             null,
         .spirv_cross_fail = if (spirv_cross_missing)
             &b.addFail("the glsl330/gles300 generated-shader targets need spirv-cross; enter nix-shell or install SPIRV-Cross (the spirv/wgsl/hlsl/msl targets need only slangc)").step
+        else
+            null,
+        .naga_fail = if (naga_missing)
+            &b.addFail("the subpixel WGSL validation tripwire needs the naga CLI (wgpu-utils); enter nix-shell or install it (only zig build test / gen-shaders run this)").step
         else
             null,
     };
@@ -413,6 +419,11 @@ pub const Entry = struct {
     target: Target,
     sub_path: []const u8,
     file: std.Build.LazyPath,
+    /// Optional validation step (naga over the fragile subpixel WGSL —
+    /// its prelude-injected dual-source entry references slang's mangled
+    /// names, so regeneration must re-prove validity). Run only by the
+    /// aggregate/test module and gen-shaders, never by consumer scopes.
+    validate: ?*std.Build.Step = null,
 };
 
 /// The full per-target artifact matrix, split by owner: `library` feeds the
@@ -425,7 +436,20 @@ pub const Artifacts = struct {
 };
 
 fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), target: Target, sub_path: []const u8, file: std.Build.LazyPath) void {
-    list.append(b.allocator, .{ .target = target, .sub_path = sub_path, .file = file }) catch @panic("OOM");
+    appendEntryValidated(b, list, target, sub_path, file, null);
+}
+
+fn appendEntryValidated(b: *std.Build, list: *std.ArrayList(Entry), target: Target, sub_path: []const u8, file: std.Build.LazyPath, validate: ?*std.Build.Step) void {
+    list.append(b.allocator, .{ .target = target, .sub_path = sub_path, .file = file, .validate = validate }) catch @panic("OOM");
+}
+
+/// `naga <artifact>` — static WGSL validation. Only wired into the
+/// aggregate/test module and gen-shaders (see Entry.validate).
+fn nagaValidation(b: *std.Build, wgsl: std.Build.LazyPath) *std.Build.Step {
+    const run = b.addSystemCommand(&.{"naga"});
+    run.addFileArg(wgsl);
+    if (toolchainGates(b).naga_fail) |fail| run.step.dependOn(fail);
+    return &run.step;
 }
 
 /// Wire every slangc/spirv-cross invocation as lazy Run steps and return
@@ -457,9 +481,17 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const spv = vulkanStageSpv(b, family, stage);
                 appendEntry(b, list, .spirv, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
 
-                // WGSL — direct target.
+                // WGSL — direct target. The subpixel family carries the
+                // prelude-injected dual-source entry (mangled-name
+                // dependent), so its artifact gets a naga validation step;
+                // the other families are runtime-validated by the wgpu
+                // example gates.
                 const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
-                appendEntry(b, list, .wgsl, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl);
+                const wgsl_validation: ?*std.Build.Step = if (comptime std.mem.eql(u8, family.name, "text_subpixel"))
+                    nagaValidation(b, wgsl)
+                else
+                    null;
+                appendEntryValidated(b, list, .wgsl, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl, wgsl_validation);
 
                 // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
@@ -546,11 +578,20 @@ pub const GeneratedModule = struct {
 /// (all targets — the artifact-contract test root and the public
 /// dependency surface) plus the per-target scopes.
 pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target) GeneratedModule {
+    return createGeneratedModuleOpts(b, name, artifacts, targets, false);
+}
+
+/// `run_validations` wires the artifacts' validation steps (naga over the
+/// subpixel WGSL) into the module — used by the aggregate/test module so
+/// `zig build test` re-proves the fragile artifacts; consumer scopes skip
+/// it and carry no naga requirement.
+pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target, run_validations: bool) GeneratedModule {
     const wf = b.addWriteFiles();
     const root = wf.addCopyFile(b.path("src/snail/shader/generated_root.zig"), "root.zig");
     for (artifacts.library) |e| {
         if (std.mem.indexOfScalar(Target, targets, e.target) == null) continue;
         _ = wf.addCopyFile(e.file, b.pathJoin(&.{ "generated", e.sub_path }));
+        if (run_validations) if (e.validate) |v| wf.step.dependOn(v);
     }
     return .{
         .module = b.addModule(name, .{ .root_source_file = root }),
@@ -563,7 +604,10 @@ pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifac
 /// game's material family) for inspection. Never writes into src/ —
 /// consumers embed straight from the build cache via `snail-shaders`.
 pub fn addGenShadersStep(b: *std.Build, artifacts: Artifacts) void {
-    const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + spirv-cross)");
-    for (artifacts.library) |e| step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);
+    const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + spirv-cross + naga)");
+    for (artifacts.library) |e| {
+        step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);
+        if (e.validate) |v| step.dependOn(v);
+    }
     for (artifacts.game) |e| step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", "game", e.sub_path })).step);
 }

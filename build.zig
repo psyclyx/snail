@@ -1324,7 +1324,9 @@ pub fn build(b: *std.Build) void {
     // the targets it embeds (the aggregate stays the published
     // `snail-shaders` module and the test root).
     const shader_artifacts = slang_shaders.collectArtifacts(b);
-    const generated_shaders = slang_shaders.createGeneratedModule(b, "snail-shaders", shader_artifacts, &.{ .spirv, .wgsl, .hlsl, .msl, .glsl330, .gles300 });
+    // The aggregate module (contract tests) runs the artifact validations
+    // (naga over the subpixel WGSL); consumer scopes below do not.
+    const generated_shaders = slang_shaders.createGeneratedModuleOpts(b, "snail-shaders", shader_artifacts, &.{ .spirv, .wgsl, .hlsl, .msl, .glsl330, .gles300 }, true);
 
     const modules = ProjectModules{
         .assets = assets_mod,
