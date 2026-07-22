@@ -1,5 +1,6 @@
 //! Atlas texture decoding for the software rasterizer.
 
+const std = @import("std");
 const snail = @import("snail");
 
 const bezier = @import("snail").render.geometry;
@@ -86,7 +87,7 @@ pub fn readCurveTexelF32Slice(data: []const f32, idx: usize) [4]f32 {
     };
 }
 
-pub fn decodeCurveSegmentFromSlice(curve_data_f32: []const f32, curve_base: u32) CurveSegment {
+pub fn decodeCurveSegmentFromSlice(curve_data_f32: []const f32, curve_base: u32) ?CurveSegment {
     const base: usize = @intCast(curve_base);
     const tex0 = readCurveTexelF32Slice(curve_data_f32, base);
     const tex1 = readCurveTexelF32Slice(curve_data_f32, base + 4);
@@ -95,29 +96,20 @@ pub fn decodeCurveSegmentFromSlice(curve_data_f32: []const f32, curve_base: u32)
     return decodeCurveSegment(tex0, tex1, tex2, meta);
 }
 
-pub fn isDirectEncodedCurveKind(stored_kind: f32) bool {
-    return stored_kind >= curve_tex.DIRECT_ENCODING_KIND_BIAS - 0.5;
+pub const CurveEncoding = struct {
+    kind: bezier.CurveKind,
+    direct: bool,
+};
+
+pub fn curveEncodingFromStoredKind(stored_kind: f32) ?CurveEncoding {
+    return if (stored_kind == 0) .{ .kind = .quadratic, .direct = false } else if (stored_kind == 1) .{ .kind = .conic, .direct = false } else if (stored_kind == 2) .{ .kind = .cubic, .direct = false } else if (stored_kind == 3) .{ .kind = .line, .direct = false } else if (stored_kind == curve_tex.DIRECT_ENCODING_KIND_BIAS) .{ .kind = .quadratic, .direct = true } else if (stored_kind == curve_tex.DIRECT_ENCODING_KIND_BIAS + 1) .{ .kind = .conic, .direct = true } else if (stored_kind == curve_tex.DIRECT_ENCODING_KIND_BIAS + 2) .{ .kind = .cubic, .direct = true } else if (stored_kind == curve_tex.DIRECT_ENCODING_KIND_BIAS + 3) .{ .kind = .line, .direct = true } else null;
 }
 
-pub fn curveKindFromStoredKind(stored_kind: f32) bezier.CurveKind {
-    const kind_u16: u16 = @intCast(if (isDirectEncodedCurveKind(stored_kind))
-        @as(i32, @intFromFloat(@round(stored_kind - curve_tex.DIRECT_ENCODING_KIND_BIAS)))
-    else
-        @as(i32, @intFromFloat(@round(stored_kind))));
-    return switch (kind_u16) {
-        1 => .conic,
-        2 => .cubic,
-        3 => .line,
-        else => .quadratic,
-    };
-}
-
-pub fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32) CurveSegment {
-    const stored_kind = tex2[2];
-    const kind = curveKindFromStoredKind(stored_kind);
-    if (isDirectEncodedCurveKind(stored_kind)) {
+pub fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32) ?CurveSegment {
+    const encoding = curveEncodingFromStoredKind(tex2[2]) orelse return null;
+    if (encoding.direct) {
         return .{
-            .kind = kind,
+            .kind = encoding.kind,
             .p0 = .{ .x = tex0[0], .y = tex0[1] },
             .p1 = .{ .x = tex0[2], .y = tex0[3] },
             .p2 = .{ .x = tex1[0], .y = tex1[1] },
@@ -131,7 +123,7 @@ pub fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32
         .{ .x = tex0[2], .y = tex0[3] },
     );
     return .{
-        .kind = kind,
+        .kind = encoding.kind,
         .p0 = p0,
         .p1 = .{ .x = p0.x + tex1[0], .y = p0.y + tex1[1] },
         .p2 = .{ .x = p0.x + tex1[2], .y = p0.y + tex1[3] },
@@ -142,4 +134,25 @@ pub fn decodeCurveSegment(tex0: [4]f32, tex1: [4]f32, tex2: [4]f32, meta: [4]f32
 
 pub fn f16ToF32(h: u16) f32 {
     return @floatCast(@as(f16, @bitCast(h)));
+}
+
+test "curve kind decoding accepts only canonical stored values" {
+    const kinds = [_]bezier.CurveKind{ .quadratic, .conic, .cubic, .line };
+    for (kinds, 0..) |kind, raw| {
+        const packed_encoding = curveEncodingFromStoredKind(@floatFromInt(raw)).?;
+        try std.testing.expectEqual(kind, packed_encoding.kind);
+        try std.testing.expect(!packed_encoding.direct);
+        const direct = curveEncodingFromStoredKind(curve_tex.DIRECT_ENCODING_KIND_BIAS + @as(f32, @floatFromInt(raw))).?;
+        try std.testing.expectEqual(kind, direct.kind);
+        try std.testing.expect(direct.direct);
+    }
+    for ([_]f32{ 3.5, 7.5, 8, 65504, std.math.nan(f32), std.math.inf(f32), -std.math.inf(f32) }) |raw| {
+        try std.testing.expectEqual(@as(?CurveEncoding, null), curveEncodingFromStoredKind(raw));
+        try std.testing.expectEqual(@as(?CurveSegment, null), decodeCurveSegment(
+            .{ 0, 0, 0, 0 },
+            .{ 0, 0, 0, 0 },
+            .{ 0, 0, raw, 0 },
+            .{ 0, 0, 0, 0 },
+        ));
+    }
 }

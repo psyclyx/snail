@@ -3,7 +3,7 @@
 //! Walks batches, resolves each batch's `Binding.pool` to a
 //! `DeviceAtlas` (caller-supplied), validates the binding's complete owner,
 //! generation, and placement identity, then dispatches per-instance into the
-//! CPU rasterizer via `Renderer.drawBatch`.
+//! CPU rasterizer through its package-private prepared-resource bridge.
 //!
 
 const std = @import("std");
@@ -23,24 +23,23 @@ pub const DeviceAtlas = device_atlas_mod.DeviceAtlas;
 pub const Binding = draw_records.Binding;
 pub const Transform2D = math.Transform2D;
 
-pub const DrawError = error{
+pub const DrawError = draw_records.DrawRecords.ValidationError || error{
     /// Batch references a `PagePool` no entry in `caches` covers.
     MissingBinding,
     /// A cache covers the pool, but no live slot matches the binding's complete
     /// source, generation, and placement identity.
     StaleBinding,
-    /// Batch's instance range falls outside `records.instances`.
-    MalformedBatch,
 };
 
-const Renderer = @import("renderer.zig").Renderer;
+const renderer_mod = @import("renderer.zig");
+const Renderer = renderer_mod.Renderer;
 const RendererPtr = *Renderer;
 
 /// Render `records` into `renderer`'s pixel buffer. `caches` provides the
 /// CPU-side prepared data for the bindings referenced by `records.batches`.
-/// Every batch range and complete binding identity is validated before that
-/// batch is rendered; an error can therefore occur after earlier batches have
-/// already modified the target.
+/// The complete record stream and every binding identity are preflighted
+/// before rendering, so malformed records and stale resources never produce a
+/// partially drawn target.
 ///
 /// `thread_pool` is the per-call work-distribution policy: pass a non-null
 /// pool to fan tile work across its workers, or `null` to rasterize on the
@@ -55,8 +54,12 @@ pub fn draw(
     thread_pool: ?*ThreadPool,
     // `NonAffineMvp` bubbles up from the rasterizer, which (unlike the GPU
     // backends) can't handle a perspective MVP.
-) (DrawError || Renderer.BufferError || error{NonAffineMvp} || std.mem.Allocator.Error)!void {
+) (DrawError || Renderer.DrawBatchError)!void {
     try renderer.validateTarget(state.surface);
+    try records.validate();
+    // Validate all resource identities before the first pixel write.
+    for (records.batches) |batch| _ = try findCache(caches, batch.binding);
+
     for (records.batches) |batch| {
         const cache = try findCache(caches, batch.binding);
 
@@ -71,7 +74,6 @@ pub fn draw(
                 .row_base = snap.info_row_base,
                 .path_records = snap.path_records,
                 .path_layers = snap.path_layers,
-                .paint_image_records = snap.paint_image_records,
             };
             layer_infos_slice = layer_info_buf[0..1];
             layer_info_count = 1;
@@ -82,10 +84,8 @@ pub fn draw(
             .layer_infos = layer_infos_slice,
             .layer_info_count = layer_info_count,
         };
-        const end = std.math.add(usize, @as(usize, batch.first_instance), @as(usize, batch.instance_count)) catch return error.MalformedBatch;
-        if (end > records.instances.len) return error.MalformedBatch;
         const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
-        try renderer.drawBatch(&prepared, batch_instances, state, 0, thread_pool);
+        try renderer_mod.drawPreparedBatch(renderer, &prepared, batch_instances, state, 0, thread_pool);
     }
 }
 
@@ -133,16 +133,18 @@ test "draw MissingBinding when no cache covers the binding's pool" {
     defer cache_a.deinit();
 
     var pixels: [16 * 16 * 4]u8 = .{0} ** (16 * 16 * 4);
-    var renderer = try @import("renderer.zig").Renderer.init(&pixels, 16, 16, 16 * 4);
+    var renderer = try @import("renderer.zig").Renderer.init(&pixels, 16, 16, 16 * 4, .rgba8_unorm);
     const state = makeIdentityState(16, 16);
 
     const batches = [_]draw_records.DrawBatch{.{
         .binding = .{ .pool = pool_b, .generation = 0 },
         .first_instance = 0,
-        .instance_count = 0,
+        .instance_count = 1,
         .kind = .regular,
     }};
-    const records = DrawRecords{ .instances = &.{}, .batches = &batches };
+    var instances = [_]snail.render.records.Instance{std.mem.zeroes(snail.render.records.Instance)};
+    instances[0].xform = .{ 1, 0, 0, 1 };
+    const records = DrawRecords{ .instances = &instances, .batches = &batches };
     try testing.expectError(error.MissingBinding, draw(&renderer, state, records, &.{&cache_a}, null));
 }
 
@@ -165,8 +167,8 @@ test "draw autohint fits per size without mutating atlas resources" {
 
     var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, font_data);
     defer analyzer.deinit();
-    var x_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
-    var y_features: [snail.autohint.warp.max_knots]snail.autohint.FeatureEdge = undefined;
+    var x_features: [snail.autohint.max_features_per_axis]snail.autohint.FeatureEdge = undefined;
+    var y_features: [snail.autohint.max_features_per_axis]snail.autohint.FeatureEdge = undefined;
     const glyph_features = try analyzer.analyzeGlyph(allocator, gid, &x_features, &y_features);
     try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
 
@@ -197,19 +199,9 @@ test "draw autohint fits per size without mutating atlas resources" {
     const pages_ptr = atlas.pages.ptr;
     const pages_len = atlas.pages.len;
     const page = atlas.pages[0];
-    const curve_data = page.curve.data;
-    const band_data = page.band.data;
     const layer_info = atlas.layer_info_data.?;
     const layer_info_copy = try allocator.dupe(f32, layer_info);
     defer allocator.free(layer_info_copy);
-    const curve_used = page.curve.usedWords();
-    const curve_uploaded = page.curve.uploadedWords();
-    const band_used = page.band.usedWords();
-    const band_uploaded = page.band.uploadedWords();
-    const curve_copy = try allocator.dupe(u16, page.curve.data[0..curve_used]);
-    defer allocator.free(curve_copy);
-    const band_copy = try allocator.dupe(u16, page.band.data[0..band_used]);
-    defer allocator.free(band_copy);
 
     const Render = struct {
         fn atSize(
@@ -232,7 +224,7 @@ test "draw autohint fits per size without mutating atlas resources" {
             var ilen: usize = 0;
             var blen: usize = 0;
             _ = try emit_mod.emit(&instances, &batches, &ilen, &blen, binding, atlas_ptr, &.{shape}, .identity, .{ 1, 1, 1, 1 });
-            var renderer = try @import("renderer.zig").Renderer.init(pixels, W, H, STRIDE);
+            var renderer = try @import("renderer.zig").Renderer.init(pixels, W, H, STRIDE, .rgba8_unorm);
             try draw(&renderer, makeIdentityState(W, H), .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{cache_ptr}, null);
         }
     };
@@ -256,19 +248,9 @@ test "draw autohint fits per size without mutating atlas resources" {
     try testing.expectEqual(pages_ptr, atlas.pages.ptr);
     try testing.expectEqual(pages_len, atlas.pages.len);
     try testing.expectEqual(page, atlas.pages[0]);
-    try testing.expectEqual(curve_data.ptr, page.curve.data.ptr);
-    try testing.expectEqual(curve_data.len, page.curve.data.len);
-    try testing.expectEqual(band_data.ptr, page.band.data.ptr);
-    try testing.expectEqual(band_data.len, page.band.data.len);
     try testing.expectEqual(layer_info.ptr, atlas.layer_info_data.?.ptr);
     try testing.expectEqual(layer_info.len, atlas.layer_info_data.?.len);
-    try testing.expectEqual(curve_used, page.curve.usedWords());
-    try testing.expectEqual(curve_uploaded, page.curve.uploadedWords());
-    try testing.expectEqual(band_used, page.band.usedWords());
-    try testing.expectEqual(band_uploaded, page.band.uploadedWords());
     try testing.expectEqualSlices(u8, std.mem.sliceAsBytes(layer_info_copy), std.mem.sliceAsBytes(atlas.layer_info_data.?));
-    try testing.expectEqualSlices(u16, curve_copy, page.curve.data[0..curve_used]);
-    try testing.expectEqualSlices(u16, band_copy, page.band.data[0..band_used]);
 }
 
 test "draw renders a small Picture into non-zero pixels" {
@@ -332,7 +314,7 @@ test "draw renders a small Picture into non-zero pixels" {
     var blen: usize = 0;
     _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE);
+    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE, .rgba8_unorm);
     const state = makeIdentityState(W, H);
     const records = DrawRecords{ .instances = instances[0..ilen], .batches = batches[0..blen] };
     try draw(&renderer, state, records, &.{&cache}, null);
@@ -412,7 +394,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
     var blen: usize = 0;
     _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE);
+    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE, .rgba8_unorm);
     const state = makeIdentityState(W, H);
     try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
 
@@ -490,9 +472,8 @@ test "draw renders image-painted shape through special-layer path" {
     }});
     defer atlas.deinit();
 
-    try testing.expect(atlas.paint_image_records != null);
-    try testing.expect(atlas.paint_image_records.?[0] != null);
-    try testing.expect(atlas.paint_image_records.?[0].?.image == &image);
+    try testing.expect(atlas.paint_records != null);
+    try testing.expect(atlas.paint_records.?[0].image == &image);
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 4 });
     defer cache.deinit();
@@ -516,7 +497,7 @@ test "draw renders image-painted shape through special-layer path" {
     var blen: usize = 0;
     _ = try emit_mod.emit(instances, batches[0..], &ilen, &blen, binding, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
 
-    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE);
+    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE, .rgba8_unorm);
     const state = makeIdentityState(W, H);
     try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
 
@@ -610,7 +591,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     const px_serial = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_serial);
     @memset(px_serial, 0);
-    var renderer_serial = try @import("renderer.zig").Renderer.init(px_serial, W, H, STRIDE);
+    var renderer_serial = try @import("renderer.zig").Renderer.init(px_serial, W, H, STRIDE, .rgba8_unorm);
     try draw(&renderer_serial, state, records, &.{&cache}, null);
 
     const px_threaded = try allocator.alloc(u8, H * STRIDE);
@@ -621,7 +602,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try thread_pool.init(allocator, .{ .threads = 3 });
     defer thread_pool.deinit();
 
-    var renderer_threaded = try @import("renderer.zig").Renderer.init(px_threaded, W, H, STRIDE);
+    var renderer_threaded = try @import("renderer.zig").Renderer.init(px_threaded, W, H, STRIDE, .rgba8_unorm);
     try draw(&renderer_threaded, state, records, &.{&cache}, &thread_pool);
 
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
@@ -814,8 +795,8 @@ test "compact preserves rendering byte-for-byte across record kinds" {
     var font = try snail.Font.init(@import("assets").dejavu_sans_mono);
     var emoji_font = try snail.Font.init(@import("assets").twemoji_mozilla);
     var faces = try snail.Faces.build(allocator, &.{
-        .{ .font = &font },
-        .{ .font = &emoji_font, .fallback = true },
+        .{ .font = &font, .font_id = 0 },
+        .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
     var shaped = try snail.shape(allocator, &faces, "Ab\xf0\x9f\x8c\x8d", .{});
@@ -897,7 +878,7 @@ test "compact preserves rendering byte-for-byte across record kinds" {
             }
 
             @memset(pixels, 0);
-            var renderer = try @import("renderer.zig").Renderer.init(pixels, 128, 48, 128 * 4);
+            var renderer = try @import("renderer.zig").Renderer.init(pixels, 128, 48, 128 * 4, .rgba8_unorm);
             try draw(&renderer, makeIdentityState(128, 48), .{
                 .instances = instances[0..ilen],
                 .batches = batches[0..blen],
@@ -931,7 +912,7 @@ fn makeIdentityState(w: u32, h: u32) render_state.DrawState {
     const wf: f32 = @floatFromInt(w);
     const hf: f32 = @floatFromInt(h);
     return .{
-        .surface = .{ .pixel_width = wf, .pixel_height = hf, .encoding = .srgb },
+        .surface = .{ .pixel_width = w, .pixel_height = h, .encoding = .srgb },
         .raster = .{
             .subpixel_order = .none,
             .coverage_transfer = .{ .exponent = 1.0 },
@@ -990,7 +971,7 @@ test "draw scissor_rect clips writes to the rect" {
     const px_full = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_full);
     @memset(px_full, 0);
-    var ren_full = try @import("renderer.zig").Renderer.init(px_full, W, H, STRIDE);
+    var ren_full = try @import("renderer.zig").Renderer.init(px_full, W, H, STRIDE, .rgba8_unorm);
     const state_full = makeIdentityState(W, H);
     try draw(&ren_full, state_full, records, &.{&cache}, null);
 
@@ -1000,7 +981,7 @@ test "draw scissor_rect clips writes to the rect" {
     const px_clip = try allocator.alloc(u8, H * STRIDE);
     defer allocator.free(px_clip);
     @memset(px_clip, 0);
-    var ren_clip = try @import("renderer.zig").Renderer.init(px_clip, W, H, STRIDE);
+    var ren_clip = try @import("renderer.zig").Renderer.init(px_clip, W, H, STRIDE, .rgba8_unorm);
     var state_clip = makeIdentityState(W, H);
     state_clip.scissor_rect = .{ .x = 24, .y = 0, .w = 24, .h = H };
     try draw(&ren_clip, state_clip, records, &.{&cache}, null);

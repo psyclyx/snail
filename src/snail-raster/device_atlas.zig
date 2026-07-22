@@ -34,19 +34,17 @@ const std = @import("std");
 
 const atlas_mod = @import("snail");
 const draw_records = @import("snail").render.records;
-const page_mod = @import("snail");
 const page_pool_mod = @import("snail");
 const upload_plan = @import("snail").atlas_upload;
 const resources_mod = @import("resources.zig");
+const texture_mod = @import("texture.zig");
 const path_paint_mod = @import("path_paint.zig");
 const image_mod = @import("snail");
 
 pub const Atlas = atlas_mod.Atlas;
-pub const AtlasPage = page_mod.AtlasPage;
 pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const PreparedAtlasPage = resources_mod.PreparedAtlasPage;
-pub const PaintImageRecord = atlas_mod.PaintImageRecord;
 pub const Image = image_mod.Image;
 
 const CURVE_WORDS_PER_ROW: u32 = upload_plan.CURVE_TEX_WIDTH * 4;
@@ -67,14 +65,10 @@ fn patchImagePaintRecord(data: []f32, row_base: u32, texel_offset: u32, layer: u
 }
 
 fn validateAtlasImages(atlas: *const Atlas) UploadError!void {
-    const records = atlas.paint_image_records orelse return;
-    for (records) |maybe_record| {
-        const record = maybe_record orelse continue;
-        const image = record.image;
-        if (image.width == 0 or image.height == 0) return error.InvalidImageFormat;
-        const pixels = std.math.mul(usize, image.width, image.height) catch return error.InvalidImageFormat;
-        const expected = std.math.mul(usize, pixels, 4) catch return error.InvalidImageFormat;
-        if (image.texels.len != expected) return error.InvalidImageFormat;
+    const records = atlas.paint_records orelse return;
+    for (records) |record| {
+        const image = record.image orelse continue;
+        if (image.bytesPerTexel() != 4) return error.InvalidImageFormat;
     }
 }
 
@@ -103,6 +97,12 @@ pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
     InvalidImageFormat,
     /// A planner region does not match the CPU device's texture contract.
     InvalidUploadRegion,
+    /// The uploaded RGBA32F layer-info slab contains a truncated, non-finite,
+    /// out-of-range, or otherwise malformed path-paint record.
+    InvalidLayerInfo,
+    /// Uploaded band references or curve records are non-canonical or point
+    /// outside the published texture words.
+    InvalidBandData,
 };
 pub const ResizeError = error{ActiveBindingsPreventResize} || upload_plan.InitError || std.mem.Allocator.Error;
 
@@ -115,7 +115,7 @@ pub const DeviceAtlas = struct {
     planner: upload_plan.OwnedPlanner,
 
     // Per-layer prepared atlas pages (one per pool layer, indexed by
-    // AtlasPage.layer_index).
+    // the pool's immutable layer index).
     prepared: []?PreparedAtlasPage,
     prepared_generation: []u64,
     prepared_curve_words: []u32,
@@ -143,9 +143,6 @@ pub const DeviceAtlas = struct {
         // Prepared records (offsets ABSOLUTE within layer_info_buf).
         path_records: []path_paint_mod.PreparedPathRecord = &.{},
         path_layers: []path_paint_mod.PreparedPathLayer = &.{},
-        // Image records owned per-binding (small slice; caller-owned
-        // image pointers).
-        paint_image_records: ?[]?PaintImageRecord = null,
     };
 
     fn plannerOptions(pool: *const PagePool, options: DeviceAtlasOptions) upload_plan.Options {
@@ -168,7 +165,7 @@ pub const DeviceAtlas = struct {
     /// Invalid/unrepresentable options and allocation failure leave no live
     /// partial cache.
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !DeviceAtlas {
-        const max_layers = pool.options.max_layers;
+        const max_layers = pool.config().max_layers;
 
         var planner = try upload_plan.OwnedPlanner.init(allocator, pool, plannerOptions(pool, options));
         errdefer planner.deinit();
@@ -236,7 +233,6 @@ pub const DeviceAtlas = struct {
     fn freeExtras(self: *DeviceAtlas, extras: *BindingExtras) void {
         if (extras.path_records.len > 0) self.allocator.free(extras.path_records);
         if (extras.path_layers.len > 0) self.allocator.free(extras.path_layers);
-        if (extras.paint_image_records) |r| self.allocator.free(r);
         extras.* = .{};
     }
 
@@ -367,7 +363,6 @@ pub const DeviceAtlas = struct {
             .info_height = extras.info_height,
             .path_records = extras.path_records,
             .path_layers = extras.path_layers,
-            .paint_image_records = extras.paint_image_records,
         };
     }
 
@@ -378,7 +373,6 @@ pub const DeviceAtlas = struct {
         info_height: u32,
         path_records: []path_paint_mod.PreparedPathRecord,
         path_layers: []path_paint_mod.PreparedPathLayer,
-        paint_image_records: ?[]const ?PaintImageRecord,
     };
 
     /// Whether the complete binding identity names an active slot in this
@@ -450,35 +444,120 @@ pub const DeviceAtlas = struct {
             for (staged_pages.items) |*staged| staged.page.deinit(self.allocator);
         };
 
-        // Prepare every stale page before modifying the cache. Within one page
-        // generation the source is append-only, so preserve already-decoded
-        // band entries and prepare only the tail.
-        for (atlas.pages) |p| {
-            const layer = p.layer_index;
-            if (layer >= self.prepared.len) return error.PageNotInPool;
-            const cur_gen = p.currentGeneration();
-            const cur_curve = p.curve.usedWords();
-            const cur_band = p.band.usedWords();
-            const stale = (self.prepared[layer] == null) or
-                self.prepared_generation[layer] != cur_gen or
-                self.prepared_curve_words[layer] != cur_curve or
-                self.prepared_band_words[layer] != cur_band;
-            if (!stale) continue;
+        // Reconstruct stale device pages exclusively from the backend-neutral
+        // upload regions. `AtlasPage` storage is opaque even to this package;
+        // the software renderer follows the same copy contract as a GPU host.
+        const PendingPage = struct {
+            layer: u32,
+            generation: u64,
+            curve_words: u32,
+            band_words: u32,
+            curve_data: []u16,
+            band_data: []u16,
+            extends_previous: bool,
+        };
+        var pending_pages: std.ArrayList(PendingPage) = .empty;
+        defer {
+            for (pending_pages.items) |pending| {
+                if (pending.curve_data.len > 0) self.allocator.free(pending.curve_data);
+                if (pending.band_data.len > 0) self.allocator.free(pending.band_data);
+            }
+            pending_pages.deinit(scratch);
+        }
+        const pending_by_layer = try scratch.alloc(usize, self.prepared.len);
+        defer scratch.free(pending_by_layer);
+        @memset(pending_by_layer, std.math.maxInt(usize));
 
-            const view = PageView.fromPage(p);
-            var prepared_page = if (self.prepared[layer]) |*previous|
-                if (self.prepared_generation[layer] == cur_gen)
-                    try PreparedAtlasPage.initExtended(self.allocator, previous, view)
-                else
-                    try PreparedAtlasPage.initFromView(self.allocator, view)
+        for (plan.regions) |region| switch (region.target) {
+            .curve, .band => {
+                const layer: usize = region.layer;
+                if (layer >= self.prepared.len) return error.PageNotInPool;
+                if (pending_by_layer[layer] != std.math.maxInt(usize)) continue;
+
+                const generation = self.planner.generation[layer];
+                const curve_words = self.planner.curve_words[layer];
+                const band_words = self.planner.band_words[layer];
+                const curve_data = try self.allocator.alloc(u16, curve_words);
+                const band_data = self.allocator.alloc(u16, band_words) catch |err| {
+                    self.allocator.free(curve_data);
+                    return err;
+                };
+
+                var extends_previous = false;
+                if (self.prepared[layer]) |*previous| {
+                    extends_previous = self.prepared_generation[layer] == generation and
+                        previous.curve_data.len <= curve_data.len and
+                        previous.band_data.len <= band_data.len;
+                    if (extends_previous) {
+                        @memcpy(curve_data[0..previous.curve_data.len], previous.curve_data);
+                        @memcpy(band_data[0..previous.band_data.len], previous.band_data);
+                        @memset(curve_data[previous.curve_data.len..], 0);
+                        @memset(band_data[previous.band_data.len..], 0);
+                    }
+                }
+                if (!extends_previous) {
+                    @memset(curve_data, 0);
+                    @memset(band_data, 0);
+                }
+
+                pending_pages.append(scratch, .{
+                    .layer = region.layer,
+                    .generation = generation,
+                    .curve_words = curve_words,
+                    .band_words = band_words,
+                    .curve_data = curve_data,
+                    .band_data = band_data,
+                    .extends_previous = extends_previous,
+                }) catch |err| {
+                    self.allocator.free(curve_data);
+                    self.allocator.free(band_data);
+                    return err;
+                };
+                pending_by_layer[layer] = pending_pages.items.len - 1;
+            },
+            .layer_info, .image => {},
+        };
+
+        for (plan.regions) |region| switch (region.target) {
+            .curve, .band => {
+                if (region.layer >= pending_by_layer.len) return error.PageNotInPool;
+                const pending_index = pending_by_layer[region.layer];
+                if (pending_index == std.math.maxInt(usize)) return error.InvalidUploadRegion;
+                const pending = &pending_pages.items[pending_index];
+                switch (region.target) {
+                    .curve => try applyWordRegion(pending.curve_data, region, upload_plan.CURVE_TEX_WIDTH, 4),
+                    .band => try applyWordRegion(pending.band_data, region, upload_plan.BAND_TEX_WIDTH, 2),
+                    else => unreachable,
+                }
+            },
+            .layer_info, .image => {},
+        };
+
+        for (pending_pages.items) |*pending| {
+            const view = PageView{
+                .curve_data = pending.curve_data,
+                .band_data = pending.band_data,
+                .curve_width = upload_plan.CURVE_TEX_WIDTH,
+                .curve_height = @intCast((pending.curve_words + CURVE_WORDS_PER_ROW - 1) / CURVE_WORDS_PER_ROW),
+                .band_width = upload_plan.BAND_TEX_WIDTH,
+                .band_height = @intCast((pending.band_words + BAND_WORDS_PER_ROW - 1) / BAND_WORDS_PER_ROW),
+            };
+            // The owned-view constructors consume both slices even on error.
+            pending.curve_data = &.{};
+            pending.band_data = &.{};
+            var prepared_page = (if (pending.extends_previous)
+                PreparedAtlasPage.initExtendedFromOwnedView(self.allocator, &self.prepared[pending.layer].?, view)
             else
-                try PreparedAtlasPage.initFromView(self.allocator, view);
+                PreparedAtlasPage.initFromOwnedView(self.allocator, view)) catch |err| switch (err) {
+                error.InvalidBandData => return error.InvalidUploadRegion,
+                error.OutOfMemory => return error.OutOfMemory,
+            };
             staged_pages.append(scratch, .{
-                .layer = layer,
+                .layer = pending.layer,
                 .page = prepared_page,
-                .generation = cur_gen,
-                .curve_words = cur_curve,
-                .band_words = cur_band,
+                .generation = pending.generation,
+                .curve_words = pending.curve_words,
+                .band_words = pending.band_words,
             }) catch |err| {
                 prepared_page.deinit(self.allocator);
                 return err;
@@ -541,15 +620,15 @@ pub const DeviceAtlas = struct {
         if (atlas.layer_info_data != null) {
             // Re-patch image-paint records for this device (direct image
             // sampling: uv scale 1.0; layer = planner's absolute layer).
-            if (atlas.paint_image_records) |records| {
-                for (records) |maybe_rec| {
-                    const rec = maybe_rec orelse continue;
+            if (atlas.paint_records) |records| {
+                for (records) |rec| {
+                    const image = rec.image orelse continue;
                     const local_layer = rec.image_layer;
                     if (local_layer >= staged_images.len) return error.InvalidUploadRegion;
                     if (rec.first_image_use) {
                         if (staged_images[local_layer] != null) return error.InvalidUploadRegion;
-                        staged_images[local_layer] = rec.image;
-                    } else if (staged_images[local_layer] != rec.image) {
+                        staged_images[local_layer] = image;
+                    } else if (staged_images[local_layer] != image) {
                         return error.InvalidUploadRegion;
                     }
                     const abs_layer = slot.image_layer_base + local_layer;
@@ -557,18 +636,22 @@ pub const DeviceAtlas = struct {
                 }
             }
 
-            if (atlas.paint_image_records) |records| {
-                const owned = try self.allocator.alloc(?PaintImageRecord, records.len);
-                @memcpy(owned, records);
-                staged_extras.paint_image_records = owned;
-            }
-            const prepared_records = try path_paint_mod.preparePathLayerInfoRecords(
-                self.allocator,
-                staged_info[0 .. @as(usize, atlas.layer_info_height) * INFO_WIDTH * 4],
-                INFO_WIDTH,
-                atlas.layer_info_height,
-                staged_extras.paint_image_records,
-            );
+            const staged_layer_info = staged_info[0 .. @as(usize, atlas.layer_info_height) * INFO_WIDTH * 4];
+            const prepared_records = if (atlas.paint_records) |records|
+                try path_paint_mod.preparePathLayerInfoRecords(
+                    self.allocator,
+                    staged_layer_info,
+                    INFO_WIDTH,
+                    atlas.layer_info_height,
+                    records,
+                )
+            else
+                try path_paint_mod.preparePathLayerInfoWithoutPaint(
+                    self.allocator,
+                    staged_layer_info,
+                    INFO_WIDTH,
+                    atlas.layer_info_height,
+                );
             staged_extras.path_records = prepared_records.records;
             staged_extras.path_layers = prepared_records.layers;
         }
@@ -596,6 +679,38 @@ pub const DeviceAtlas = struct {
     }
 };
 
+fn applyWordRegion(
+    destination: []u16,
+    region: upload_plan.Region,
+    texture_width: u32,
+    words_per_texel: u32,
+) UploadError!void {
+    if (region.width == 0 or region.height == 0) return error.InvalidUploadRegion;
+    const col_end = std.math.add(u32, region.col_base, region.width) catch return error.InvalidUploadRegion;
+    if (col_end > texture_width or @intFromPtr(region.src.ptr) % @alignOf(u16) != 0) return error.InvalidUploadRegion;
+
+    const row_words = std.math.mul(usize, region.width, words_per_texel) catch return error.InvalidUploadRegion;
+    const source_words = std.math.mul(usize, row_words, region.height) catch return error.InvalidUploadRegion;
+    const source_bytes = std.math.mul(usize, source_words, @sizeOf(u16)) catch return error.InvalidUploadRegion;
+    if (region.src.len != source_bytes) return error.InvalidUploadRegion;
+    const source = std.mem.bytesAsSlice(u16, @as([]align(2) const u8, @alignCast(region.src)));
+
+    var row: u32 = 0;
+    while (row < region.height) : (row += 1) {
+        const texture_row = std.math.add(u32, region.row_base, row) catch return error.InvalidUploadRegion;
+        const texel_base = std.math.add(
+            usize,
+            std.math.mul(usize, texture_row, texture_width) catch return error.InvalidUploadRegion,
+            region.col_base,
+        ) catch return error.InvalidUploadRegion;
+        const destination_base = std.math.mul(usize, texel_base, words_per_texel) catch return error.InvalidUploadRegion;
+        const destination_end = std.math.add(usize, destination_base, row_words) catch return error.InvalidUploadRegion;
+        if (destination_end > destination.len) return error.InvalidUploadRegion;
+        const source_base = @as(usize, row) * row_words;
+        @memcpy(destination[destination_base..destination_end], source[source_base..][0..row_words]);
+    }
+}
+
 const PageView = struct {
     curve_data: []const u16,
     band_data: []const u16,
@@ -603,19 +718,6 @@ const PageView = struct {
     curve_height: u32,
     band_width: u32,
     band_height: u32,
-
-    fn fromPage(p: *const AtlasPage) PageView {
-        const curve_words = p.curve.usedWords();
-        const band_words = p.band.usedWords();
-        return .{
-            .curve_data = p.curve.data[0..curve_words],
-            .band_data = p.band.data[0..band_words],
-            .curve_width = upload_plan.CURVE_TEX_WIDTH,
-            .curve_height = @intCast((curve_words + CURVE_WORDS_PER_ROW - 1) / CURVE_WORDS_PER_ROW),
-            .band_width = upload_plan.BAND_TEX_WIDTH,
-            .band_height = @intCast((band_words + BAND_WORDS_PER_ROW - 1) / BAND_WORDS_PER_ROW),
-        };
-    }
 };
 
 const testing = std.testing;
@@ -850,4 +952,110 @@ test "uploadDelta accepts a different atlas on the same pool" {
     const new_binding = try cache.uploadDelta(testing.allocator, binding[0], &atlas_b);
     try testing.expectEqual(binding[0].generation, new_binding.generation);
     try testing.expectEqual(binding[0].info_row_base, new_binding.info_row_base);
+}
+
+test "sibling snapshots prepare every self-described block on their shared page" {
+    const record_key_mod = @import("snail").record_key;
+    const font_mod = @import("snail").font;
+
+    var font = try font_mod.Font.init(@import("assets").noto_sans_regular);
+    const gid = try font.glyphIndex('A');
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer curves.deinit();
+
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    const root_key = record_key_mod.unhintedGlyph(0, 1);
+    const a_key = record_key_mod.unhintedGlyph(0, 2);
+    const b_key = record_key_mod.unhintedGlyph(0, 3);
+    var root_atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = root_key, .curves = curves }});
+    defer root_atlas.deinit();
+    var child_a = try root_atlas.extend(testing.allocator, &.{.{ .key = a_key, .curves = curves }});
+    defer child_a.deinit();
+    // Branch B publishes after A on the same physical page. Planning A below
+    // therefore uploads bytes through B's tail even though A cannot look up B.
+    var child_b = try root_atlas.extend(testing.allocator, &.{.{ .key = b_key, .curves = curves }});
+    defer child_b.deinit();
+
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{
+        .max_bindings = 2,
+        .layer_info_height = 1,
+        .max_images = 0,
+    });
+    defer cache.deinit();
+    var a_binding: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&child_a}, &a_binding);
+
+    const page_index = for (cache.prepared, 0..) |page, index| {
+        if (page != null) break index;
+    } else return error.TestUnexpectedResult;
+    const prepared_before = &cache.prepared[page_index].?;
+    const b_record = child_b.lookupRecord(b_key).?;
+    const b_base = @as(usize, b_record.bands.glyph_y) * @as(usize, prepared_before.band_width) +
+        @as(usize, b_record.bands.glyph_x);
+    for (0..b_record.bands.h_band_count) |band_index| {
+        const header = texture_mod.readBandTexelLinear(prepared_before, b_base + band_index);
+        const first = b_base + @as(usize, header[1]);
+        for (prepared_before.axis_curves[first..][0..@as(usize, header[0])]) |curve| try testing.expect(curve.valid);
+    }
+    for (0..b_record.bands.v_band_count) |band_index| {
+        const header = texture_mod.readBandTexelLinear(prepared_before, b_base + b_record.bands.h_band_count + band_index);
+        const first = b_base + @as(usize, header[1]);
+        for (prepared_before.axis_curves[first..][0..@as(usize, header[0])]) |curve| try testing.expect(curve.valid);
+    }
+
+    const curve_ptr = prepared_before.curve_data.ptr;
+    const h_cold_ptr = prepared_before.h_cold_curves.ptr;
+    const v_cold_ptr = prepared_before.v_cold_curves.ptr;
+    const resident_band_words = cache.prepared_band_words[page_index];
+    var b_binding: [1]Binding = undefined;
+    try cache.upload(testing.allocator, &.{&child_b}, &b_binding);
+
+    // The planner had already reached the shared page's physical watermark,
+    // so B emits no page region and preparation neither replaces the page nor
+    // duplicates any cold coefficient records.
+    const prepared_after = &cache.prepared[page_index].?;
+    try testing.expectEqual(curve_ptr, prepared_after.curve_data.ptr);
+    try testing.expectEqual(h_cold_ptr, prepared_after.h_cold_curves.ptr);
+    try testing.expectEqual(v_cold_ptr, prepared_after.v_cold_curves.ptr);
+    try testing.expectEqual(resident_band_words, cache.prepared_band_words[page_index]);
+}
+
+test "upload rejects malformed layer-info transactionally" {
+    const record_key_mod = @import("snail").record_key;
+    const font_mod = @import("snail").font;
+
+    var font = try font_mod.Font.init(@import("assets").noto_sans_regular);
+    const gid = try font.glyphIndex('A');
+    var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
+    defer curves.deinit();
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_layers = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+    var atlas = try Atlas.from(testing.allocator, pool, &.{.{
+        .key = record_key_mod.unhintedGlyph(0, gid),
+        .curves = curves,
+        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+    }});
+    defer atlas.deinit();
+    atlas.layer_info_data.?[0] = std.math.nan(f32);
+
+    var cache = try DeviceAtlas.init(testing.allocator, pool, .{
+        .max_bindings = 1,
+        .layer_info_height = 2,
+        .max_images = 0,
+    });
+    defer cache.deinit();
+    var binding: [1]Binding = undefined;
+    try testing.expectError(error.InvalidLayerInfo, cache.upload(testing.allocator, &.{&atlas}, &binding));
+    try testing.expectEqual(@as(u32, 0), cache.active_bindings);
+    try testing.expect(!cache.isBindingLive(binding[0]));
 }

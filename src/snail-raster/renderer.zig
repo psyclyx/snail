@@ -14,7 +14,7 @@ const bezier = @import("snail").render.geometry;
 const band_tex = @import("snail").render.geometry;
 const render_abi = @import("snail").render.records;
 const autohint_record = @import("snail").render.geometry.autohint;
-const autohint_warp = @import("snail").autohint.warp;
+const autohint_warp = @import("snail-raster-support").autohint.warp;
 const autohint_policy = @import("snail").autohint.policy;
 const vertex = @import("snail").render.records;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;
@@ -70,13 +70,55 @@ const PreparedPathLayer = path_paint_mod.PreparedPathLayer;
 const PreparedPathRecord = path_paint_mod.PreparedPathRecord;
 const PreparedAtlasPage = resources_mod.PreparedAtlasPage;
 const ScreenBounds = geometry_mod.ScreenBounds;
-const srgbBytesToLinearColor = color_mod.srgbBytesToLinearColor;
+
+fn halfColor(encoded: [4]u16) [4]f32 {
+    return .{ f16ToF32(encoded[0]), f16ToF32(encoded[1]), f16ToF32(encoded[2]), f16ToF32(encoded[3]) };
+}
+
+fn bandPayload(encoded: [4]u32) [4]f32 {
+    return .{ @bitCast(encoded[0]), @bitCast(encoded[1]), @bitCast(encoded[2]), @bitCast(encoded[3]) };
+}
 
 fn expandDeviceBounds(bounds: *ScreenBounds, pixels: f32) void {
     bounds.min.x -= pixels;
     bounds.min.y -= pixels;
     bounds.max.x += pixels;
     bounds.max.y += pixels;
+}
+
+const PixelAxisRange = struct { min: u32, max: u32 };
+
+/// Floor/ceil a floating bound only after clipping it to a representable pixel
+/// interval. This keeps off-screen Inf and extreme finite transforms from
+/// reaching a trapping float-to-int conversion.
+fn clippedPixelAxis(min_value: f32, max_value: f32, clip_min: u32, clip_max: u32) ?PixelAxisRange {
+    if (clip_min >= clip_max or std.math.isNan(min_value) or std.math.isNan(max_value) or min_value > max_value)
+        return null;
+    const min_wide: f64 = min_value;
+    const max_wide: f64 = max_value;
+    const clip_min_wide: f64 = @floatFromInt(clip_min);
+    const clip_max_wide: f64 = @floatFromInt(clip_max);
+    const first = if (min_wide <= clip_min_wide)
+        clip_min
+    else if (min_wide >= clip_max_wide)
+        clip_max
+    else
+        @as(u32, @intFromFloat(@floor(min_wide)));
+    const end = if (max_wide <= clip_min_wide)
+        clip_min
+    else if (max_wide >= clip_max_wide)
+        clip_max
+    else
+        @as(u32, @intFromFloat(@ceil(max_wide)));
+    return if (first < end) .{ .min = first, .max = end } else null;
+}
+
+fn pixelExtent(min_value: f32, max_value: f32) u32 {
+    if (std.math.isNan(min_value) or std.math.isNan(max_value) or max_value <= min_value) return 0;
+    const extent = @as(f64, max_value) - @as(f64, min_value);
+    if (!std.math.isFinite(extent) or extent >= @as(f64, @floatFromInt(std.math.maxInt(u32))))
+        return std.math.maxInt(u32);
+    return @intFromFloat(@ceil(extent));
 }
 const subpixelBlendCoverage = coverage_mod.subpixelBlendCoverage;
 const transformedGlyphBounds = geometry_mod.transformedGlyphBounds;
@@ -138,6 +180,7 @@ fn monotonicNanos() u64 {
 /// smaller rounds to zero in the final sRGB8 output, so the composite would
 /// be a no-op.
 const one_lsb_8bit: f32 = 1.0 / 255.0;
+var linear_resolve_token_nonce: std.atomic.Value(u64) = .init(1);
 
 pub const Renderer = struct {
     pixels: []u8, // caller-owned; validated before every operation that writes
@@ -148,12 +191,13 @@ pub const Renderer = struct {
     /// Encoding of the caller-owned pixel buffer. The unified `Renderer.draw`
     /// path sets this from `DrawState.surface.encoding` every frame.
     target_encoding: render_state.TargetEncoding,
-    /// Byte layout of the caller's pixel buffer. Defaults to rgba8; the caller
-    /// sets it (and a matching `stride` = width × bytesPerPixel) for other
-    /// formats. The blend path comptime-specializes on it once per draw.
+    /// Byte layout declared when the caller attaches the pixel buffer. The
+    /// blend path comptime-specializes on it once per draw.
     format: render_state.PixelFormat = .rgba8_unorm,
     target_resolve: blend_mod.ResolveMode,
     linear_resolve_active: bool,
+    linear_resolve_restore: ?LinearResolveState,
+    linear_resolve_token: ?LinearResolveToken,
     coverage_transfer: render_state.CoverageTransfer,
     // Half-open row window [row_clip_min, row_clip_max). Pixel writes outside
     // this range are skipped. Used by tile workers to claim disjoint scanline
@@ -182,16 +226,46 @@ pub const Renderer = struct {
         /// A row cannot hold `width` pixels in the selected format, or its
         /// required byte count overflows.
         InvalidStride,
-        /// Target dimensions are non-finite, do not exactly match the attached
-        /// buffer, or select an invalid/empty resolve surface.
+        /// Target dimensions or format do not match the attached buffer, or
+        /// select an invalid/empty resolve surface.
         InvalidTargetSurface,
     };
 
-    /// Attach a caller-owned pixel buffer. The format-specific row size is
-    /// checked when a `DrawState` selects the target format; this initial
-    /// validation still guarantees that every declared row is present.
-    pub fn init(pixels: []u8, width: u32, height: u32, stride: u32) BufferError!Renderer {
-        try validateBuffer(pixels, width, height, stride, null);
+    pub const LinearResolveError = BufferError || error{
+        UnsupportedResolve,
+        LinearResolveAlreadyActive,
+        InvalidBackdrop,
+    };
+
+    pub const EndLinearResolveError = error{
+        LinearResolveNotActive,
+        InvalidLinearResolveToken,
+    };
+
+    pub const ReinitBufferError = BufferError || error{LinearResolveActive};
+
+    /// Opaque capability for exactly one active resolve scope. All restoration
+    /// state stays private inside the renderer.
+    pub const LinearResolveToken = enum(u64) { _ };
+
+    const LinearResolveState = struct {
+        row_clip_min: u32,
+        row_clip_max: u32,
+        col_clip_min: u32,
+        col_clip_max: u32,
+        target_encoding: render_state.TargetEncoding,
+        target_resolve: blend_mod.ResolveMode,
+    };
+
+    pub const DrawBatchError = BufferError || error{
+        InvalidInstance,
+        NonAffineMvp,
+        TextureLayerOverflow,
+    };
+
+    /// Attach a caller-owned pixel buffer with its exact storage format.
+    pub fn init(pixels: []u8, width: u32, height: u32, stride: u32, format: render_state.PixelFormat) BufferError!Renderer {
+        try validateBuffer(pixels, width, height, stride, format);
         return .{
             .pixels = pixels,
             .width = width,
@@ -204,6 +278,9 @@ pub const Renderer = struct {
             .target_encoding = .srgb,
             .target_resolve = .{ .direct = {} },
             .linear_resolve_active = false,
+            .linear_resolve_restore = null,
+            .linear_resolve_token = null,
+            .format = format,
             .coverage_transfer = .identity,
             .row_clip_min = 0,
             .row_clip_max = height,
@@ -213,23 +290,24 @@ pub const Renderer = struct {
     }
 
     /// Replace the caller-owned pixel buffer and dimensions while retaining
-    /// renderer configuration and profiling state. Initial validation uses one
-    /// byte per pixel; the exact format-specific stride is checked by
-    /// `validateTarget`/`drawBatch`. Failure leaves the existing buffer intact.
-    pub fn reinitBuffer(self: *Renderer, pixels: []u8, width: u32, height: u32, stride: u32) BufferError!void {
-        try validateBuffer(pixels, width, height, stride, null);
+    /// renderer configuration and profiling state. Failure leaves the existing
+    /// buffer intact.
+    pub fn reinitBuffer(self: *Renderer, pixels: []u8, width: u32, height: u32, stride: u32, format: render_state.PixelFormat) ReinitBufferError!void {
+        if (self.linear_resolve_active) return error.LinearResolveActive;
+        try validateBuffer(pixels, width, height, stride, format);
         self.pixels = pixels;
         self.width = width;
         self.height = height;
         self.stride = stride;
+        self.format = format;
         self.row_clip_min = 0;
         self.row_clip_max = height;
         self.col_clip_min = 0;
         self.col_clip_max = width;
     }
 
-    fn validateBuffer(pixels: []u8, width: u32, height: u32, stride: u32, format: ?render_state.PixelFormat) BufferError!void {
-        const min_row_bytes = std.math.mul(u32, width, if (format) |fmt| fmt.bytesPerPixel() else 1) catch
+    fn validateBuffer(pixels: []u8, width: u32, height: u32, stride: u32, format: render_state.PixelFormat) BufferError!void {
+        const min_row_bytes = std.math.mul(u32, width, format.bytesPerPixel()) catch
             return error.InvalidStride;
         if (stride < min_row_bytes) return error.InvalidStride;
         const required = std.math.mul(usize, @as(usize, stride), @as(usize, height)) catch
@@ -237,31 +315,26 @@ pub const Renderer = struct {
         if (pixels.len < required) return error.InvalidBuffer;
     }
 
-    /// Validate that `surface` has finite dimensions exactly matching the
-    /// attached buffer and that `stride` and `pixels.len` can hold its selected
-    /// pixel format. Called before every public operation that writes pixels.
+    /// Validate that `surface` exactly matches the attached dimensions and
+    /// format. Called before every public operation that writes pixels.
     pub fn validateTarget(self: *const Renderer, surface: render_state.TargetSurface) BufferError!void {
-        if (!std.math.isFinite(surface.pixel_width) or !std.math.isFinite(surface.pixel_height) or
-            surface.pixel_width != @as(f32, @floatFromInt(self.width)) or
-            surface.pixel_height != @as(f32, @floatFromInt(self.height)))
-        {
+        if (surface.pixel_width != self.width or surface.pixel_height != self.height or surface.format != self.format)
+            return error.InvalidTargetSurface;
+        if (self.row_clip_min > self.row_clip_max or self.row_clip_max > self.height or
+            self.col_clip_min > self.col_clip_max or self.col_clip_max > self.width)
+            return error.InvalidTargetSurface;
+        if (self.linear_resolve_active) {
+            if (self.linear_resolve_restore == null or self.linear_resolve_token == null)
+                return error.InvalidTargetSurface;
+            switch (self.target_resolve) {
+                .linear => {},
+                .direct => return error.InvalidTargetSurface,
+            }
+        } else if (self.linear_resolve_restore != null or self.linear_resolve_token != null) {
             return error.InvalidTargetSurface;
         }
         try validateBuffer(self.pixels, self.width, self.height, self.stride, surface.format);
     }
-
-    /// Opaque renderer state returned by `beginLinearResolve`; pass it exactly
-    /// once to `endLinearResolve` after drawing the resolve pass.
-    pub const LinearResolveRestore = struct {
-        row_clip_min: u32,
-        row_clip_max: u32,
-        col_clip_min: u32,
-        col_clip_max: u32,
-        target_encoding: render_state.TargetEncoding,
-        target_resolve: blend_mod.ResolveMode,
-        linear_resolve_active: bool,
-        format: render_state.PixelFormat,
-    };
 
     /// Begin the CPU emulation of a linear intermediate resolve, restrict writes
     /// to its resolve rectangle, and seed the requested backdrop. The software
@@ -269,23 +342,25 @@ pub const Renderer = struct {
     /// other intermediate formats return `UnsupportedResolve`. Nested passes
     /// return `LinearResolveAlreadyActive`. Errors occur before renderer state
     /// or target pixels are changed.
-    pub fn beginLinearResolve(self: *Renderer, surface: render_state.TargetSurface, resolve: render_state.LinearResolve) !LinearResolveRestore {
+    pub fn beginLinearResolve(self: *Renderer, surface: render_state.TargetSurface, resolve: render_state.LinearResolve) LinearResolveError!LinearResolveToken {
         try self.validateTarget(surface);
         if (!surface.supportsLinearResolve()) return error.UnsupportedResolve;
         if (resolve.intermediate_format != .rgba16f) return error.UnsupportedResolve;
         if (self.linear_resolve_active) return error.LinearResolveAlreadyActive;
         const rect = render_state.resolveRect(surface, resolve);
         if (rect.w == 0 or rect.h == 0) return error.InvalidTargetSurface;
-        const restore = LinearResolveRestore{
+        resolve.backdrop.validate() catch return error.InvalidBackdrop;
+        const restore = LinearResolveState{
             .row_clip_min = self.row_clip_min,
             .row_clip_max = self.row_clip_max,
             .col_clip_min = self.col_clip_min,
             .col_clip_max = self.col_clip_max,
             .target_encoding = self.target_encoding,
             .target_resolve = self.target_resolve,
-            .linear_resolve_active = self.linear_resolve_active,
-            .format = self.format,
         };
+        const token = mintLinearResolveToken();
+        self.linear_resolve_restore = restore;
+        self.linear_resolve_token = token;
         self.col_clip_min = @intCast(rect.x);
         self.row_clip_min = @intCast(rect.y);
         self.col_clip_max = self.col_clip_min + rect.w;
@@ -295,22 +370,34 @@ pub const Renderer = struct {
         self.target_resolve = .{ .linear = resolve };
         self.linear_resolve_active = true;
         self.seedLinearResolveBackdrop(surface.encoding, rect, resolve.backdrop);
-        return restore;
+        return token;
     }
 
     /// End a successful linear-resolve scope and restore the renderer state
-    /// captured by `beginLinearResolve`. Calling this outside an active scope is
-    /// a contract violation asserted in safe builds.
-    pub fn endLinearResolve(self: *Renderer, restore: LinearResolveRestore) void {
-        std.debug.assert(self.linear_resolve_active);
+    /// captured by `beginLinearResolve`. Tokens are renderer- and
+    /// generation-specific; stale, copied-after-use, or cross-renderer tokens
+    /// return an error without modifying state.
+    pub fn endLinearResolve(self: *Renderer, token: LinearResolveToken) EndLinearResolveError!void {
+        if (!self.linear_resolve_active) return error.LinearResolveNotActive;
+        if (self.linear_resolve_token == null or self.linear_resolve_token.? != token)
+            return error.InvalidLinearResolveToken;
+        const restore = self.linear_resolve_restore orelse return error.LinearResolveNotActive;
         self.row_clip_min = restore.row_clip_min;
         self.row_clip_max = restore.row_clip_max;
         self.col_clip_min = restore.col_clip_min;
         self.col_clip_max = restore.col_clip_max;
         self.target_encoding = restore.target_encoding;
         self.target_resolve = restore.target_resolve;
-        self.linear_resolve_active = restore.linear_resolve_active;
-        self.format = restore.format;
+        self.linear_resolve_active = false;
+        self.linear_resolve_restore = null;
+        self.linear_resolve_token = null;
+    }
+
+    fn mintLinearResolveToken() LinearResolveToken {
+        while (true) {
+            const raw = linear_resolve_token_nonce.fetchAdd(1, .monotonic);
+            if (raw != 0) return @enumFromInt(raw);
+        }
     }
 
     fn seedLinearResolveBackdrop(self: *Renderer, _: render_state.TargetEncoding, rect: render_state.PixelRect, backdrop: render_state.LinearResolve.Backdrop) void {
@@ -353,13 +440,16 @@ pub const Renderer = struct {
         };
     }
 
-    /// Low-level draw of one homogeneous instance slice against prepared atlas
-    /// resources. The target surface is validated before writes. Perspective
-    /// MVPs return `NonAffineMvp`, because the CPU backend supports affine
-    /// scene-to-pixel transforms only. A non-null pool distributes bounded row
-    /// strips; null renders on the calling thread.
-    pub fn drawBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) !void {
+    fn drawPreparedBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) DrawBatchError!void {
         try self.validateTarget(state.surface);
+        for (instances) |*instance| {
+            vertex.validateInstance(instance) catch return error.InvalidInstance;
+            _ = std.math.add(
+                u32,
+                texture_layer_base,
+                @as(u32, render_abi.glyphWordAtlasLayer(instance.glyph[1])),
+            ) catch return error.TextureLayerOverflow;
+        }
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
         // them from scratch, and `beginLinearResolve` owns `target_resolve`
@@ -392,7 +482,11 @@ pub const Renderer = struct {
         // would silently disagree with the GPU backends. Refuse — but as a
         // returned error, not a process abort: an embedder feeding matrices
         // from its own camera code shouldn't be able to crash the host.
-        const scene = snail.mvpToScenePixel(state.mvp, state.surface.pixel_width, state.surface.pixel_height) orelse
+        const scene = snail.mvpToScenePixel(
+            state.mvp,
+            @floatFromInt(state.surface.pixel_width),
+            @floatFromInt(state.surface.pixel_height),
+        ) orelse
             return error.NonAffineMvp;
         if (thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
@@ -463,13 +557,11 @@ pub const Renderer = struct {
                     const decoded = decodeBatchInstance(inst, scene_to_pixel);
                     var bounds = geometry_mod.transformedGlyphBounds(decoded.bbox, decoded.transform);
                     geometry_mod.expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
-                    const w_f = @max(0.0, bounds.max.x - bounds.min.x);
-                    const h_f = @max(0.0, bounds.max.y - bounds.min.y);
                     p.entries[p.count] = .{
                         .index = idx,
                         .us = @as(f64, @floatFromInt(end_ns -% start_ns)) / 1000.0,
-                        .pixel_w = @intFromFloat(@ceil(w_f)),
-                        .pixel_h = @intFromFloat(@ceil(h_f)),
+                        .pixel_w = pixelExtent(bounds.min.x, bounds.max.x),
+                        .pixel_h = pixelExtent(bounds.min.y, bounds.max.y),
                     };
                     p.count += 1;
                 }
@@ -519,9 +611,16 @@ pub const Renderer = struct {
         // batch that only covers the top 100 rows would otherwise spawn
         // hundreds of empty tiles and let thread-pool barrier overhead
         // dominate the real rasterization.
-        const dispatch_range = batchPixelRowRange(instances, scene_to_pixel, self.subpixel_order, allow_subpixel);
-        const y0 = @max(self.row_clip_min, dispatch_range.min);
-        const y1 = @min(self.row_clip_max, dispatch_range.max);
+        const dispatch_range = batchPixelRowRange(
+            instances,
+            scene_to_pixel,
+            self.subpixel_order,
+            allow_subpixel,
+            self.row_clip_min,
+            self.row_clip_max,
+        );
+        const y0 = dispatch_range.min;
+        const y1 = dispatch_range.max;
         if (y1 <= y0) return;
         const rows = y1 - y0;
         // Bound the number of jobs that each rescan the instance stream. Tiny
@@ -550,7 +649,14 @@ pub const Renderer = struct {
     /// Union of every instance's pixel-Y bounds, clamped to u32 row
     /// indices. Returns the full possible range on an empty batch so
     /// the caller's row_clip intersection short-circuits naturally.
-    fn batchPixelRowRange(instances: []const vertex.Instance, scene_to_pixel: Transform2D, subpixel_order: SubpixelOrder, allow_subpixel: bool) struct { min: u32, max: u32 } {
+    fn batchPixelRowRange(
+        instances: []const vertex.Instance,
+        scene_to_pixel: Transform2D,
+        subpixel_order: SubpixelOrder,
+        allow_subpixel: bool,
+        clip_min: u32,
+        clip_max: u32,
+    ) PixelAxisRange {
         var min_y: f32 = std.math.floatMax(f32);
         var max_y: f32 = -std.math.floatMax(f32);
 
@@ -559,15 +665,14 @@ pub const Renderer = struct {
             var bounds = geometry_mod.transformedGlyphBounds(decoded.bbox, decoded.transform);
             geometry_mod.expandBoundsForCoverageSupport(&bounds, subpixel_order, allow_subpixel);
             if (decoded.isAutohint()) expandDeviceBounds(&bounds, 2.0);
+            if (std.math.isNan(bounds.min.y) or std.math.isNan(bounds.max.y))
+                return .{ .min = clip_min, .max = clip_max };
             if (bounds.min.y < min_y) min_y = bounds.min.y;
             if (bounds.max.y > max_y) max_y = bounds.max.y;
         }
 
-        if (min_y > max_y) return .{ .min = 0, .max = 0 };
-        const lo: u32 = if (min_y <= 0) 0 else @intFromFloat(@floor(min_y));
-        const hi_f = @ceil(max_y);
-        const hi: u32 = if (hi_f <= 0) 0 else @intFromFloat(hi_f);
-        return .{ .min = lo, .max = hi };
+        return clippedPixelAxis(min_y, max_y, clip_min, clip_max) orelse
+            .{ .min = clip_min, .max = clip_min };
     }
 
     const BatchInstance = struct {
@@ -577,7 +682,7 @@ pub const Renderer = struct {
         band: [4]f32,
         color: [4]f32,
         tint: [4]f32,
-        policy: [7]u32,
+        policy: [4]u32,
 
         fn atlasLayerByte(self: BatchInstance) u8 {
             return render_abi.glyphWordAtlasLayer(self.glyph[1]);
@@ -611,10 +716,10 @@ pub const Renderer = struct {
             // shader. The CPU backend renders in pixel space directly.
             .transform = Transform2D.multiply(scene_to_pixel, instance_transform),
             .glyph = encoded.glyph,
-            .band = encoded.band,
-            .color = srgbBytesToLinearColor(encoded.color),
-            .tint = srgbBytesToLinearColor(encoded.tint),
-            .policy = encoded.policy,
+            .band = bandPayload(encoded.payload),
+            .color = halfColor(encoded.color),
+            .tint = halfColor(encoded.tint),
+            .policy = encoded.payload,
         };
     }
 
@@ -651,11 +756,11 @@ pub const Renderer = struct {
         const gw = decoded.glyph[1];
         const info_x = render_abi.glyphLocationX(gz);
         const info_y = render_abi.glyphLocationY(gz);
-        const atlas_layer = texture_layer_base + @as(u32, @intFromFloat(decoded.band[3]));
+        const atlas_layer = texture_layer_base + @as(u32, decoded.atlasLayerByte());
 
         const resolved = prepared.resolveLayerInfo(info_y) orelse return;
         const entry = resolved.entry;
-        const special_kind = render_abi.specialGlyphWordKind(gw) orelse .colr;
+        const special_kind = render_abi.specialGlyphWordKind(gw) orelse return;
         if (special_kind == .tt_hinted_text) {
             self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y, allow_subpixel);
             return;
@@ -685,7 +790,7 @@ pub const Renderer = struct {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
-        const band_counts = render_abi.unpackBandCounts(@bitCast(header[2]));
+        const band_counts = render_abi.unpackBandCounts(@bitCast(header[2])) orelse return;
         const be = GlyphBandEntry{
             .glyph_x = @intFromFloat(header[0]),
             .glyph_y = @intFromFloat(header[1]),
@@ -718,8 +823,8 @@ pub const Renderer = struct {
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
         const off = (@as(usize, info_y) * entry.width + @as(usize, info_x)) * 4;
-        if (off + autohint_record.header_floats >= entry.data.len) return;
-        const rec = autohint_record.readBandEntry(entry.data, off);
+        const record = autohint_record.decode(entry.data, off) catch return;
+        const rec = record.band_entry;
         const be = GlyphBandEntry{
             .glyph_x = rec.glyph_x,
             .glyph_y = rec.glyph_y,
@@ -737,8 +842,7 @@ pub const Renderer = struct {
             be,
             decoded.transform,
             multiplyLinearColor(decoded.color, decoded.tint),
-            entry.data,
-            off,
+            record,
             policy,
             allow_subpixel,
         );
@@ -792,11 +896,8 @@ pub const Renderer = struct {
         var bounds = transformedGlyphBounds(bbox, transform);
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
 
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-        if (px0 >= px1 or py0 >= py1) return null;
+        const x_range = clippedPixelAxis(bounds.min.x, bounds.max.x, self.col_clip_min, self.col_clip_max) orelse return null;
+        const y_range = clippedPixelAxis(bounds.min.y, bounds.max.y, self.row_clip_min, self.row_clip_max) orelse return null;
 
         const epp = glyphEdgePixelsPerPixel(inverse);
         const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
@@ -804,10 +905,10 @@ pub const Renderer = struct {
         const sample_dy = Vec2.new(inverse.xy, inverse.yy);
         return .{
             .inverse = inverse,
-            .x0 = @intCast(px0),
-            .x1 = @intCast(px1),
-            .y0 = @intCast(py0),
-            .y1 = @intCast(py1),
+            .x0 = x_range.min,
+            .x1 = x_range.max,
+            .y0 = y_range.min,
+            .y1 = y_range.max,
             .epp = epp,
             .ppe = ppe,
             .sample_dx = sample_dx,
@@ -1649,8 +1750,7 @@ pub const Renderer = struct {
         be: GlyphBandEntry,
         transform: Transform2D,
         color: [4]f32,
-        record_data: []const f32,
-        record_off: usize,
+        record: autohint_record.DecodedRecord,
         policy: autohint_policy.AutohintPolicy,
         allow_subpixel: bool,
     ) void {
@@ -1660,11 +1760,7 @@ pub const Renderer = struct {
         );
         var x_out: [autohint_warp.max_knots]autohint_warp.Knot = undefined;
         var y_out: [autohint_warp.max_knots]autohint_warp.Knot = undefined;
-        const fitted = autohint_warp.fitGlyph(.{
-            .x = autohint_record.xFeatures(record_data, record_off),
-            .y = autohint_record.yFeatures(record_data, record_off),
-            .left = autohint_record.glyphLeft(record_data, record_off),
-        }, autohint_record.fontFeatures(record_data, record_off), policy, scale, &x_out, &y_out);
+        const fitted = autohint_warp.fitGlyph(record.glyph, record.font, policy, scale, &x_out, &y_out);
         self.renderTransformedGlyphMaybeHinted(page, bbox, be, transform, color, allow_subpixel, .{ .x = fitted.x, .y = fitted.y });
     }
 
@@ -1683,11 +1779,8 @@ pub const Renderer = struct {
         expandBoundsForCoverageSupport(&bounds, self.subpixel_order, allow_subpixel);
         if (warp != null) expandDeviceBounds(&bounds, 2.0);
 
-        const px0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.x))), @as(i32, @intCast(self.col_clip_min)));
-        const px1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.x))), @as(i32, @intCast(self.col_clip_max)));
-        const py0 = @max(@as(i32, @intFromFloat(@floor(bounds.min.y))), @as(i32, @intCast(self.row_clip_min)));
-        const py1 = @min(@as(i32, @intFromFloat(@ceil(bounds.max.y))), @as(i32, @intCast(self.row_clip_max)));
-        if (px0 >= px1 or py0 >= py1) return;
+        const x_range = clippedPixelAxis(bounds.min.x, bounds.max.x, self.col_clip_min, self.col_clip_max) orelse return;
+        const y_range = clippedPixelAxis(bounds.min.y, bounds.max.y, self.row_clip_min, self.row_clip_max) orelse return;
 
         const epp = glyphEdgePixelsPerPixel(inverse);
         const ppe = Vec2.new(1.0 / epp.x, 1.0 / epp.y);
@@ -1708,7 +1801,7 @@ pub const Renderer = struct {
             .pointer => |ptr| ptr.child,
             else => @TypeOf(page),
         };
-        const prepared_page = comptime @hasField(PageType, "h_curves");
+        const prepared_page = comptime @hasField(PageType, "axis_curves");
         const axis_aligned = @abs(sample_dx.y) < 1e-9;
         const subpixel_rgb = allow_subpixel and (self.subpixel_order == .rgb or self.subpixel_order == .bgr) and subpixel_plan.step.y == 0.0;
         const grayscale_path = !allow_subpixel or self.subpixel_order == .none;
@@ -1716,9 +1809,9 @@ pub const Renderer = struct {
         const use_row_h_grayscale = prepared_page and axis_aligned and grayscale_path and warp == null;
         const use_row_h = use_row_h_subpixel or use_row_h_grayscale;
 
-        var row: u32 = @intCast(py0);
-        while (row < @as(u32, @intCast(py1))) : (row += 1) {
-            var col: u32 = @intCast(px0);
+        var row = y_range.min;
+        while (row < y_range.max) : (row += 1) {
+            var col = x_range.min;
             var display_local = inverse.applyPoint(.{
                 .x = @as(f32, @floatFromInt(col)) + 0.5,
                 .y = @as(f32, @floatFromInt(row)) + 0.5,
@@ -1767,10 +1860,10 @@ pub const Renderer = struct {
                 grayscale_path and
                 h_uniform and
                 warp == null and
-                @as(u32, @intCast(px1)) > @as(u32, @intCast(px0)) + 2;
+                x_range.max > x_range.min + 2;
             if (fast_row_eligible) {
-                const px_first: u32 = @intCast(px0);
-                const px_last: u32 = @as(u32, @intCast(px1)) - 1;
+                const px_first = x_range.min;
+                const px_last = x_range.max - 1;
                 const px_mid: u32 = px_first + (px_last - px_first) / 2;
                 const loc_first = display_local;
                 const loc_mid = inverse.applyPoint(.{
@@ -1807,7 +1900,7 @@ pub const Renderer = struct {
                 }
             }
 
-            while (col < @as(u32, @intCast(px1))) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
+            while (col < x_range.max) : (advanceLocalPixel(&col, &display_local, sample_dx)) {
                 // Warp the sample coordinate back into base-outline space and
                 // rescale the AA footprint by the local inverse slope (ppe_base
                 // = ppe_screen / inv_slope). Identity when there's no warp.
@@ -2000,35 +2093,106 @@ pub const Renderer = struct {
     }
 };
 
+/// Package bridge used by the high-level draw entry. It deliberately lives on
+/// the unexported implementation module so `Renderer` does not expose a method
+/// whose prepared-resource argument callers cannot construct.
+pub fn drawPreparedBatch(
+    renderer: *Renderer,
+    prepared: *const PreparedResources,
+    instances: []const vertex.Instance,
+    state: render_state.DrawState,
+    texture_layer_base: u32,
+    thread_pool: ?*ThreadPool,
+) Renderer.DrawBatchError!void {
+    return renderer.drawPreparedBatch(prepared, instances, state, texture_layer_base, thread_pool);
+}
+
 const testing = std.testing;
+
+test "pixel bounds saturate extreme values before integer conversion" {
+    try testing.expectEqual(
+        PixelAxisRange{ .min = 3, .max = 9 },
+        clippedPixelAxis(-std.math.inf(f32), std.math.inf(f32), 3, 9).?,
+    );
+    try testing.expectEqual(@as(?PixelAxisRange, null), clippedPixelAxis(1.0e30, std.math.inf(f32), 3, 9));
+    try testing.expectEqual(@as(?PixelAxisRange, null), clippedPixelAxis(std.math.nan(f32), 8, 3, 9));
+    try testing.expectEqual(std.math.maxInt(u32), pixelExtent(-std.math.inf(f32), std.math.inf(f32)));
+}
 
 test "renderer validates slice length and format-specific stride" {
     var pixels: [8]u8 = .{0} ** 8;
-    try testing.expectError(error.InvalidStride, Renderer.init(&pixels, 4, 2, 3));
-    try testing.expectError(error.InvalidBuffer, Renderer.init(pixels[0..7], 4, 2, 4));
+    try testing.expectError(error.InvalidStride, Renderer.init(&pixels, 4, 2, 3, .r8_unorm));
+    try testing.expectError(error.InvalidBuffer, Renderer.init(pixels[0..7], 4, 2, 4, .r8_unorm));
 
-    var renderer = try Renderer.init(&pixels, 4, 2, 4);
+    var renderer = try Renderer.init(&pixels, 4, 2, 4, .r8_unorm);
     var prepared = PreparedResources{ .allocator = testing.allocator };
     const wf: f32 = 4;
     const hf: f32 = 2;
     var state = render_state.DrawState{
         .mvp = snail.Mat4.ortho(0, wf, hf, 0, -1, 1),
         .surface = .{
-            .pixel_width = wf,
-            .pixel_height = hf,
+            .pixel_width = 4,
+            .pixel_height = 2,
             .encoding = .linear,
             .format = .rgba8_unorm,
         },
     };
-    try testing.expectError(error.InvalidStride, renderer.drawBatch(&prepared, &.{}, state, 0, null));
+    try testing.expectError(error.InvalidTargetSurface, renderer.drawPreparedBatch(&prepared, &.{}, state, 0, null));
     state.surface.format = .r8_unorm;
-    try renderer.drawBatch(&prepared, &.{}, state, 0, null);
+    try renderer.drawPreparedBatch(&prepared, &.{}, state, 0, null);
     try testing.expectEqual(render_state.PixelFormat.r8_unorm, renderer.format);
+}
+
+test "renderer rejects corrupted internal clip bounds before writes" {
+    var pixels: [4]u8 = .{ 1, 2, 3, 4 };
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+    renderer.row_clip_max = 2;
+    const surface = render_state.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .linear,
+    };
+    try testing.expectError(error.InvalidTargetSurface, renderer.validateTarget(surface));
+    try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &pixels);
+}
+
+test "drawBatch rejects texture layer addition overflow before mutation" {
+    var pixels: [4]u8 = .{0} ** 4;
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+    var prepared = PreparedResources{ .allocator = testing.allocator };
+    var instance = std.mem.zeroes(vertex.Instance);
+    instance.xform = .{ 1, 0, 0, 1 };
+    instance.glyph[1] = @as(u32, 1) << 8;
+    const state = render_state.DrawState{
+        .mvp = snail.Mat4.identity,
+        .surface = .{ .pixel_width = 1, .pixel_height = 1, .encoding = .linear },
+    };
+    try testing.expectError(
+        error.TextureLayerOverflow,
+        renderer.drawPreparedBatch(&prepared, &.{instance}, state, std.math.maxInt(u32), null),
+    );
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &pixels);
+}
+
+test "drawBatch rejects malformed instances before mutation" {
+    var pixels: [4]u8 = .{ 11, 22, 33, 44 };
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+    var prepared = PreparedResources{ .allocator = testing.allocator };
+    const instance = std.mem.zeroes(vertex.Instance);
+    const state = render_state.DrawState{
+        .mvp = snail.Mat4.identity,
+        .surface = .{ .pixel_width = 1, .pixel_height = 1, .encoding = .linear },
+    };
+    try testing.expectError(
+        error.InvalidInstance,
+        renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null),
+    );
+    try testing.expectEqualSlices(u8, &.{ 11, 22, 33, 44 }, &pixels);
 }
 
 test "linear resolve clear honors target pixel format" {
     var pixels: [2]u8 = .{ 0, 0 };
-    var renderer = try Renderer.init(&pixels, 2, 1, 2);
+    var renderer = try Renderer.init(&pixels, 2, 1, 2, .a8_unorm);
     const surface = render_state.TargetSurface{
         .pixel_width = 2,
         .pixel_height = 1,
@@ -2036,7 +2200,7 @@ test "linear resolve clear honors target pixel format" {
         .format = .a8_unorm,
     };
     const restore = try renderer.beginLinearResolve(surface, .{ .backdrop = .{ .clear = .{ 1, 0, 0, 0.5 } } });
-    defer renderer.endLinearResolve(restore);
+    defer renderer.endLinearResolve(restore) catch unreachable;
     try testing.expectApproxEqAbs(@as(f32, 0.5), @as(f32, @floatFromInt(pixels[0])) / 255.0, 1.0 / 255.0);
     try testing.expectEqual(pixels[0], pixels[1]);
     try testing.expectError(error.LinearResolveAlreadyActive, renderer.beginLinearResolve(surface, .{}));
@@ -2044,11 +2208,65 @@ test "linear resolve clear honors target pixel format" {
 
 test "linear resolve rejects an unsupported intermediate format" {
     var pixels: [4]u8 = .{0} ** 4;
-    var renderer = try Renderer.init(&pixels, 1, 1, 4);
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
     const surface = render_state.TargetSurface{
         .pixel_width = 1,
         .pixel_height = 1,
         .encoding = .srgb_pixels_on_linear_attachment,
     };
     try testing.expectError(error.UnsupportedResolve, renderer.beginLinearResolve(surface, .{ .intermediate_format = .rgba32f }));
+}
+
+test "linear resolve rejects an invalid clear before state or pixel mutation" {
+    var pixels = [_]u8{0x5a} ** 4;
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+    };
+    try testing.expectError(error.InvalidBackdrop, renderer.beginLinearResolve(surface, .{
+        .backdrop = .{ .clear = .{ std.math.nan(f32), 0, 0, 1 } },
+    }));
+    try testing.expect(!renderer.linear_resolve_active);
+    try testing.expectEqualSlices(u8, &.{ 0x5a, 0x5a, 0x5a, 0x5a }, &pixels);
+}
+
+test "linear resolve end rejects cross-renderer, stale, and reused tokens" {
+    var pixels_a: [4]u8 = .{0} ** 4;
+    var pixels_b: [4]u8 = .{0} ** 4;
+    var renderer = try Renderer.init(&pixels_a, 1, 1, 4, .rgba8_unorm);
+    var other = try Renderer.init(&pixels_b, 1, 1, 4, .rgba8_unorm);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+    };
+
+    const token = try renderer.beginLinearResolve(surface, .{});
+    const other_token = try other.beginLinearResolve(surface, .{});
+    try testing.expectError(error.InvalidLinearResolveToken, renderer.endLinearResolve(other_token));
+    try renderer.endLinearResolve(token);
+    try testing.expectError(error.LinearResolveNotActive, renderer.endLinearResolve(token));
+    try other.endLinearResolve(other_token);
+
+    const next_token = try renderer.beginLinearResolve(surface, .{});
+    try testing.expectError(error.InvalidLinearResolveToken, renderer.endLinearResolve(token));
+    try renderer.endLinearResolve(next_token);
+}
+
+test "reinitBuffer rejects an active linear resolve without mutation" {
+    var pixels: [4]u8 = .{0} ** 4;
+    var replacement: [16]u8 = .{0} ** 16;
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 1,
+        .pixel_height = 1,
+        .encoding = .srgb_pixels_on_linear_attachment,
+    };
+    const token = try renderer.beginLinearResolve(surface, .{});
+    try testing.expectError(error.LinearResolveActive, renderer.reinitBuffer(&replacement, 2, 2, 8, .rgba8_unorm));
+    try testing.expectEqual(@as(u32, 1), renderer.width);
+    try testing.expect(renderer.pixels.ptr == pixels[0..].ptr);
+    try renderer.endLinearResolve(token);
 }
