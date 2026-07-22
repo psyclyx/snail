@@ -122,9 +122,10 @@ pub const Family = struct {
     /// painted vertex, which exists solely because the GL leg needs the -O0
     /// vertex while Vulkan/WGSL keep sharing the text vertex.
     gl_only: bool = false,
-    /// Skip the WGSL artifact (subpixel: slangc's WGSL backend drops
-    /// [[vk::index(1)]] — no @blend_src — so a valid dual-source WGSL
-    /// module cannot be generated natively; wgpu keeps the old catalog).
+    /// Skip the WGSL artifact. (No current user: subpixel used this while
+    /// slangc's dropped [[vk::index(1)]] made a dual-source WGSL module
+    /// impossible; the __requirePrelude interop in
+    /// families/text_subpixel.slang now generates one — see README-notes.)
     no_wgsl: bool = false,
     /// Skip the GLES 3.0 artifact (subpixel: ES 3.0 has no dual-source
     /// blending; the composed catalog has no GLES subpixel program either).
@@ -147,7 +148,12 @@ pub const families = [_]Family{
     .{ .name = "path", .source = "families/painted.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .patch_cubic_solver = true },
     .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
-    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_wgsl = true, .no_gles = true },
+    // WGSL artifact (spike): valid dual-source module via the in-source
+    // __requirePlude interop in families/text_subpixel.slang — the raw
+    // prelude entry `fragmentDualMain` carries @blend_src(0/1); the plain
+    // `fragmentMain` entry slang emits keeps MRT locations 0/1 (no
+    // consumer is wired; wgpu still uses the old catalog).
+    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
     // Canonical artifacts plus (new with the SPIRV-Cross leg) the desktop
     // GL dialect — naga rejected the Buffer<uint> texel buffer, SPIRV-Cross
     // emits a plain `usamplerBuffer` (validates under glslang as-is). No

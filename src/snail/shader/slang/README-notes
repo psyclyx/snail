@@ -142,7 +142,9 @@ Stage-B traps (discovered porting colr/path; apply to later families)
     emits `layout(location = 0, index = N)` — no
     glBindFragDataLocationIndexed needed for the native GL program. The
     WGSL backend DROPS the index (no @blend_src): the subpixel family
-    generates no WGSL artifact (wgpu keeps the old catalog).
+    generated no WGSL artifact (wgpu keeps the old catalog). [Since the
+    interop spike below, a WGSL artifact IS generated via a raw-prelude
+    entry — declaration-level support is still absent.]
 16. A family file cannot share its BASENAME with a module it imports
     (`import text_subpixel` from families/text_subpixel.slang resolves to
     itself → "recursive module import"). Name family translation units
@@ -238,7 +240,9 @@ Traps DEAD with SPIRV-Cross:
       `layout(location = 0, index = 1)` on the blend output straight from
       the [[vk::index(1)]] decoration and leaves index-0 implicit (the GL
       default) — no explicit Index-0 patch, no
-      glBindFragDataLocationIndexed. The WGSL half (no @blend_src) stands.
+      glBindFragDataLocationIndexed. The WGSL half (no @blend_src at
+      declaration level) stands, but see the interop spike below: a valid
+      dual-source WGSL artifact is now generated via __requirePrelude.
   17. (desktop half) texel-buffer rejection: dead. text_sample now has a
       glsl330 artifact — plain `uniform usamplerBuffer
       u_snail_text_records` + SnailTextSampleParams_std140 — which
@@ -281,3 +285,74 @@ all stages, byte-exact gates without re-baselining, and the text_sample
 desktop GL artifact naga could not produce. Re-baselining is NOT required
 at merge (AE=0 everywhere); if gl_o0 is dropped later, re-run the full
 suite (only the screenshot gates were checked under default -O).
+
+Slang-native interop spike (2026-07-21, a1-04 mechanisms vs patch tools)
+========================================================================
+Question: can `__target_switch` / `__intrinsic_asm` / `__requirePrelude` /
+spirv_asm replace the external patch tools? One structural fact decides
+the two GL candidates: since the SPIRV-Cross cutover, slangc NEVER emits
+the final GL text. The GL legs are `-target spirv`, so `case glsl:` does
+not even fire (verified: a glsl-case intrinsic is ignored on the direct
+leg, taken on -emit-spirv-via-glsl), and everything injected at slangc's
+GLSL emission is immediately compiled by glslang and re-emitted by
+SPIRV-Cross in SPIRV-Cross's own shape. In-source text control over the
+artifact is impossible by construction.
+
+1. Cubic-solver fusion pin (glsl_patch_cubic_solver): FAILED, tool KEPT.
+   Mechanism tried: `__target_switch { case glsl: __requirePrelude(<the
+   composed spec text, raw string>) + __intrinsic_asm forwarding call }`
+   with the colr/path GL legs switched to -emit-spirv-via-glsl (compiles
+   clean; slangc 2026.5.2 accepts prelude+intrinsic in a case, raw R"()"
+   strings included). Two independent kills:
+   a) The injected composed text does NOT survive: glslang→SPIRV-Cross
+      re-emits it with short-circuit `&&`/`||` lowered to branch
+      temporaries and reprinted literals — the artifact carries a THIRD
+      solver shape, not the spec text, defeating the tool's purpose.
+   b) The via-glsl leg breaks the loader name contract wholesale: uniform
+      block `SnailPushConstants_std140` → `block_SnailPushConstants_0`,
+      samplers gain slang's `_0` mangling
+      (`SPIRV_Cross_Combinedu_curve_tex_0SPIRV_Cross_DummySampler`) —
+      nothing binds. Gate: demo-gl/gles30, banner-gl/gles30, game-*
+      grossly broken (backend-compare 4465→81871/96000, max_delta 224).
+      Reverted; the patch tool remains the only way to pin the artifact
+      text.
+
+2. ES highp default (glsl_patch_es_highp): FAILED, tool KEPT. Same
+   structural reason: the `precision mediump float;` line is emitted by
+   SPIRV-Cross itself; no slangc-side mechanism reaches it, and GLSL
+   default-precision is not representable in SPIR-V (nothing spirv_asm
+   could pin). The C++ API has the knob
+   (CompilerGLSL::Options::fragment.default_float_precision) but the
+   spirv-cross CLI at 1.4.341.0 does not expose it (verified against
+   --help and by probing flag spellings). Equivalent-native alternative
+   would be a tiny C++ shim over the API — a bigger tool, not a deletion.
+
+3. WGSL dual-source (subpixel no_wgsl): ACHIEVED — no_wgsl is OFF and
+   generated/wgsl/text_subpixel.frag.wgsl now exists and validates in
+   naga (wgpu-utils 29.0.1 accepts `enable dual_source_blending` +
+   `@blend_src`). Mechanism: declaration-level is still impossible (the
+   WGSL backend renumbers the [[vk::index(1)]] output to @location(1) —
+   silently wrong MRT semantics, no @blend_src anywhere in libslang), but
+   `__target_switch { case wgsl: __requirePrelude(...) }` injects raw
+   WGSL at the very TOP of the module — a legal position for both the
+   `enable` directive and a hand-written second entry point
+   (`fragmentDualMain`), because WGSL module-scope declarations are
+   order-independent, so the prelude entry can call the slang-emitted
+   body helper defined later. The prelude entry re-declares its own
+   varyings but must reference slang's MANGLED names
+   (snailSubpixelFragment_0, SubpixelVaryings_0.color_2, u_curve_tex_0,
+   pc_0.layer_base_0, ...): stable per module content, NOT an API
+   contract — any edit to the family or its imports can renumber them
+   (gen-shaders + naga validation is the tripwire). A reachability
+   anchor call in fragmentMain keeps the prelude live. The plain
+   fragmentMain (MRT 0/1) coexists in the artifact; a dual-source
+   consumer must select entry `fragmentDualMain`. NOTHING is wired
+   (minimal_wgpu keeps the old catalog); an upstream slang issue for
+   real [[vk::index]]→@blend_src support is still the right ask.
+
+Double-underscore stability caveat: `__target_switch`, `__intrinsic_asm`,
+`__requirePrelude`, and the R"()" raw strings are the UNDOCUMENTED-tier
+compiler-internal surface (a1-04 explicitly reserves the right to break
+them); the subpixel WGSL artifact additionally depends on slang's name
+mangling. Treat candidate 3 as a regeneration-time convenience guarded by
+naga validation, not a stable contract.
