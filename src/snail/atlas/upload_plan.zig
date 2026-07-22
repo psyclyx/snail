@@ -5,10 +5,12 @@
 //! font-specific atlas→layer mapping (a caller can't know it); everything about
 //! GPU textures, uploads, and the queue is the caller's.
 //!
-//! No allocator: the caller owns every state buffer (sized via `sizes`) and the
-//! output `Region` buffer, exactly like `emit` takes caller-provided words.
-//! Every planner receives a unique binding-source identity, so bindings from
-//! two device caches over the same page pool cannot alias.
+//! The core `Planner` does not allocate: the caller owns every state buffer
+//! (sized via `sizes`) and the output `Region` buffer, exactly like `emit`
+//! takes caller-provided words. `OwnedPlanner` is the allocator-backed
+//! convenience wrapper. Every planner receives a unique binding-source
+//! identity, so bindings from two device caches over the same page pool cannot
+//! alias.
 
 const std = @import("std");
 
@@ -88,7 +90,7 @@ pub const InitError = PagePool.IdentityError || error{
     InvalidOptions,
 };
 
-/// Byte counts the caller must provide for each state buffer.
+/// Element counts the caller must provide for each typed state buffer.
 pub const Sizes = struct {
     generation: usize,
     curve_words: usize,
@@ -384,7 +386,15 @@ pub const Planner = struct {
         @memset(self.prepared_generation, 0);
         @memset(self.prepared_curve_words, 0);
         @memset(self.prepared_band_words, 0);
-        for (self.bindings) |*slot| slot.uploaded_info_rows = 0;
+        for (self.bindings) |*slot| {
+            slot.uploaded_info_rows = 0;
+            // A failed application means none of the binding-relative side
+            // data is known resident. Clear snapshot identity so even an
+            // exact-snapshot retry takes the conservative replacement path
+            // and re-emits image layers as well as layer-info rows.
+            slot.snapshot_id = 0;
+            slot.lineage = 0;
+        }
     }
 
     fn queue(self: *Planner, atlas: *const Atlas, slot: *Slot, out: []Region, out_len: *usize, layer_info_scratch: []f32) Error!void {
@@ -905,7 +915,7 @@ test "planDelta fully replaces side data for an unrelated same-height atlas" {
     try std.testing.expect(planner.release(first.binding));
 }
 
-test "planner enforces image dimensions and texel format atomically" {
+test "planner enforces image dimensions and format and retries invalidated uploads" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
         .max_layers = 1,
@@ -954,6 +964,33 @@ test "planner enforces image dimensions and texel format atomically" {
     defer wrong_format.deinit();
     try std.testing.expectError(error.InvalidImageFormat, wrong_format.plan(&atlas));
     try std.testing.expect(!wrong_format.bindings[0].active);
+
+    var valid = try OwnedPlanner.init(allocator, pool, .{
+        .max_bindings = 1,
+        .layer_info_height = atlas.layer_info_height,
+        .max_images = 1,
+        .max_image_width = 2,
+        .max_image_height = 1,
+    });
+    defer valid.deinit();
+
+    const first = try valid.plan(&atlas);
+    var first_image_regions: usize = 0;
+    for (first.regions) |region| {
+        if (region.target == .image) first_image_regions += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), first_image_regions);
+
+    // Simulate a host upload failure after planning. Retrying the exact same
+    // snapshot must include the image again; otherwise the binding would refer
+    // to a layer whose texels never reached the device.
+    valid.invalidateUploads();
+    const retry = try valid.planDelta(first.binding, &atlas);
+    var retry_image_regions: usize = 0;
+    for (retry.regions) |region| {
+        if (region.target == .image) retry_image_regions += 1;
+    }
+    try std.testing.expectEqual(@as(usize, 1), retry_image_regions);
 }
 
 test "planDelta uploads only the grown row band of an append-only page" {
