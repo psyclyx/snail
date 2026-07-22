@@ -121,5 +121,4 @@ pub const Cursor = struct {
             return error.InvalidTransform;
         self.commit();
     }
-
 };

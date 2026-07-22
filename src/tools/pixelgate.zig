@@ -174,7 +174,7 @@ fn encodeTga(
 }
 
 const test_rgb = [_]u8{
-    10,  20,  30,  40,  50,  60, // top row
+    10, 20, 30, 40, 50, 60, // top row
     200, 210, 220, 250, 240, 230, // bottom row
 };
 
