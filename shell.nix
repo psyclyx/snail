@@ -23,6 +23,17 @@ let
     sha256 = "0fdjfhha27mfwvqcnyvy8c0yj8gjd4782yfm7sq3pc1al4m52cil";
     stripRoot = false;
   };
+
+  # Microsoft DXC (dxcompiler.dll + dxil.dll) for the Windows WebGPU gate:
+  # wgpu's D3D12 backend generates a naga sampler heap (SM 5.1+ resource
+  # array) that FXC-class compilers reject, so the gate runs with
+  # WGPU_DX12_COMPILER=dxc and these dlls next to the exe. v1.8.2502 is the
+  # minimum wgpu documents for its dxc path.
+  dxcWindows = pkgs.fetchzip {
+    url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2502/dxc_2025_02_20.zip";
+    sha256 = "0dwyghlnx0fwmj6w2qc92gaz2x39a0qsb51a9ljcwsgpn70mr840";
+    stripRoot = false;
+  };
 in
 pkgs.mkShell ({
   packages = with pkgs; [
@@ -86,6 +97,9 @@ pkgs.mkShell ({
   # The wgpu-native Windows release tree (include/ + lib/ with the mingw
   # import lib and wgpu_native.dll) for the cross-built Windows WebGPU gate.
   SNAIL_WGPU_WINDOWS = "${wgpuNativeWindows}";
+
+  # DXC release tree (bin/x64/{dxcompiler,dxil}.dll) for the same gate.
+  SNAIL_DXC_WINDOWS = "${dxcWindows}";
 
   # GL comes fully from the pin: glvnd dispatches to this mesa (llvmpipe
   # under LIBGL_ALWAYS_SOFTWARE for the headless gates) instead of

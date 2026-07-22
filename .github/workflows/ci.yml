@@ -55,12 +55,15 @@ concurrency:
 #         | game screenshot vs gl33 (1777).     | artifact-only rule.              |
 # WebGPU  | GATE: wgpu GL backend on llvmpipe   | GATE: cross-built exe + upstream | GATE: nixpkgs wgpu-native
 # (wgpu)  | (baseline 0 vs the GL reference).   | wgpu-native v27.0.4.0 gnu DLL    | 27.0.4.0, Metal backend; magick
-#         | The Vulkan backend on lavapipe      | (pinned in shell.nix); D3D12 —   | <=2000 vs the GL reference.
-#         | SEGVs after adapter selection       | WARP on the GPU-less runner.     | First push confirms (not
-#         | (wgpu 27.0.4.0 + mesa 26.0.5        | Verified under Wine via host     | runnable on the Linux dev box).
-#         | lavapipe, LLVM 21.1.8): the known   | Vulkan: 679 = the known wgpu     |
-#         | fwidth+loop fragment JIT crash.     | baseline. WARP adapter           |
-#         | Recorded infeasible for now.        | selection: first-push item.      |
+#         | The Vulkan backend on lavapipe      | (pinned in shell.nix); D3D12 on  | <=2000 vs the GL reference.
+#         | SEGVs after adapter selection       | WARP (forceFallbackAdapter retry |
+#         | (wgpu 27.0.4.0 + mesa 26.0.5        | — WebGPU withholds software      |
+#         | lavapipe, LLVM 21.1.8): the known   | adapters by default) with        |
+#         | fwidth+loop fragment JIT crash.     | WGPU_DX12_COMPILER=dxc: naga's   |
+#         | Recorded infeasible for now.        | sampler heap is SM 5.1+, FXC     |
+#         |                                     | rejects it (E5017; repro'd under |
+#         |                                     | Wine). dxcompiler/dxil dlls ship |
+#         |                                     | in windows-gates.                |
 # D3D11   | GATE under Wine/Xvfb (wine 11.6     | GATE: the authoritative runtime  | infeasible: no D3D outside
 #         | vkd3d-shader compiles all nine      | (real d3dcompiler_47, WARP or    | windows/wine; wine is not
 #         | HLSL artifacts).                    | hardware).                       | packaged for aarch64-darwin in
@@ -338,6 +341,9 @@ jobs:
       - name: Render through WebGPU (wgpu D3D12)
         env:
           SNAIL_WGPU_LOG: "1"
+          # naga's D3D12 sampler heap needs SM 5.1+; FXC rejects it. The
+          # dxcompiler/dxil dlls ship in the windows-gates artifact.
+          WGPU_DX12_COMPILER: dxc
         run: .\snail-minimal-wgpu.exe
 
       - name: Gate the WebGPU render

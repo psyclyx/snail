@@ -126,7 +126,26 @@ const Gpu = struct {
             c.wgpuSetLogCallback(&onLog, null);
             c.wgpuSetLogLevel(c.WGPULogLevel_Info);
         }
-        const instance = c.wgpuCreateInstance(null) orelse return error.InstanceFailed;
+        // wgpu-native selects the D3D12 shader compiler via instance extras,
+        // not wgpu-rs's WGPU_DX12_COMPILER env var — honor the same name
+        // here. DXC is required in practice: naga's D3D12 output uses a
+        // sampler heap (SM 5.1+ resource array) that FXC rejects.
+        var instance_desc = std.mem.zeroes(c.WGPUInstanceDescriptor);
+        var instance_extras = std.mem.zeroInit(c.WGPUInstanceExtras, .{
+            .chain = .{ .next = null, .sType = c.WGPUSType_InstanceExtras },
+        });
+        if (getenv("WGPU_DX12_COMPILER")) |compiler| {
+            if (std.mem.eql(u8, compiler, "dxc")) {
+                instance_extras.dx12ShaderCompiler = c.WGPUDx12Compiler_Dxc;
+                // A zeroed dxcPath is the empty string in WGPUStringView
+                // semantics, which fails the load; name the dll so LoadLibrary
+                // resolves it next to the exe.
+                instance_extras.dxcPath = sv("dxcompiler.dll");
+            }
+            if (std.mem.eql(u8, compiler, "fxc")) instance_extras.dx12ShaderCompiler = c.WGPUDx12Compiler_Fxc;
+            instance_desc.nextInChain = &instance_extras.chain;
+        }
+        const instance = c.wgpuCreateInstance(&instance_desc) orelse return error.InstanceFailed;
         errdefer c.wgpuInstanceRelease(instance);
 
         var adapter_req = AdapterRequest{};
@@ -136,6 +155,7 @@ const Gpu = struct {
         if (getenv("SNAIL_WGPU_BACKEND")) |backend| {
             if (std.mem.eql(u8, backend, "vulkan")) adapter_options.backendType = c.WGPUBackendType_Vulkan;
             if (std.mem.eql(u8, backend, "gl")) adapter_options.backendType = c.WGPUBackendType_OpenGL;
+            if (std.mem.eql(u8, backend, "d3d12")) adapter_options.backendType = c.WGPUBackendType_D3D12;
         }
         _ = c.wgpuInstanceRequestAdapter(instance, &adapter_options, .{
             .nextInChain = null,

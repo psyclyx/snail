@@ -1143,6 +1143,17 @@ fn addMinimalD3d11Step(
     } else {
         gates_step.dependOn(&b.addFail("install-windows-gates needs SNAIL_WGPU_WINDOWS (enter nix-shell; see shell.nix)").step);
     }
+    // DXC next to the exe (SNAIL_DXC_WINDOWS, pinned in shell.nix): wgpu's
+    // D3D12 backend emits a naga sampler heap — an SM 5.1+ resource array
+    // that FXC-class compilers reject (vkd3d-shader E5017; the runner's FXC
+    // likewise fails the pipeline). The gate runs with
+    // WGPU_DX12_COMPILER=dxc so shaders go through these dlls instead.
+    if (b.graph.environ_map.get("SNAIL_DXC_WINDOWS")) |dxc_win| {
+        gates_step.dependOn(&b.addInstallFile(.{ .cwd_relative = b.pathJoin(&.{ dxc_win, "bin", "x64", "dxcompiler.dll" }) }, "windows-gates/dxcompiler.dll").step);
+        gates_step.dependOn(&b.addInstallFile(.{ .cwd_relative = b.pathJoin(&.{ dxc_win, "bin", "x64", "dxil.dll" }) }, "windows-gates/dxil.dll").step);
+    } else {
+        gates_step.dependOn(&b.addFail("install-windows-gates needs SNAIL_DXC_WINDOWS (enter nix-shell; see shell.nix)").step);
+    }
     const pixelgate_win = b.addExecutable(.{
         .name = "pixelgate",
         .root_module = b.createModule(.{
