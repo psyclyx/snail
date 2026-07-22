@@ -16,6 +16,7 @@ pkgs.mkShell {
     # WGSL catalog regeneration (`zig build gen-wgsl`):
     # spirv-opt + glslang + naga.
     spirv-tools
+    spirv-cross
     glslang
     wgpu-utils
     # Headless WebGPU reference example (`zig build run-minimal-wgpu`).

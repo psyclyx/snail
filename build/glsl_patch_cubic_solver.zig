@@ -67,9 +67,11 @@ pub fn main(init: std.process.Init) !void {
     composed = try std.mem.replaceOwned(u8, gpa, composed, "kCoordEps", "(1.0 / 65536.0)");
     if (std.mem.indexOf(u8, composed, "kParamEps") != null) fail("spec references an unexpected constant", .{});
 
-    // ── Locate the mangled generated solver ──
-    const gen_prefix = "bool solveMonotonicCubicRoot_";
-    const gen_start = std.mem.indexOf(u8, input, gen_prefix) orelse fail("generated function missing", .{});
+    // ── Locate the generated solver (naga mangles the name with a trailing
+    // underscore + counter; SPIRV-Cross keeps the plain OpName) ──
+    const gen_start = std.mem.indexOf(u8, input, "bool solveMonotonicCubicRoot_") orelse
+        std.mem.indexOf(u8, input, "bool solveMonotonicCubicRoot(") orelse
+        fail("generated function missing", .{});
     const paren_open = std.mem.indexOfScalarPos(u8, input, gen_start, '(') orelse fail("generated signature missing", .{});
     const paren_close = std.mem.indexOfScalarPos(u8, input, paren_open, ')') orelse fail("generated signature missing", .{});
     const gen_open = std.mem.indexOfScalarPos(u8, input, paren_close, '{') orelse fail("generated body missing", .{});

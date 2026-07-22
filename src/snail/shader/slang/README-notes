@@ -185,3 +185,99 @@ autohint, subpixel, text_sample, linear_resolve)
    paint-record families read u_layer_tex/u_image_tex with SAMPLING
    (not just Load) — declare SamplerState and check the split-sampler
    binding contract on WGSL (group 1) and the GL combined-sampler names.
+
+SPIRV-Cross GL legs — spike notes (2026-07-21, branch slang-cutover)
+====================================================================
+The glsl330/gles300 legs now go slangc direct SPIR-V → SPIRV-Cross
+(spirv-cross from nixpkgs, added to shell.nix); naga is out of gen-shaders
+entirely (it remains only in the legacy wgsl_shaders catalog path). Full
+gate suite green and EVERY image gate byte-identical (AE=0) to the clean
+156636c baselines: demo{cpu,gl,gles30}, banner{gl,gles30}, minimal-gl,
+game-{gl33,gl44,gles30}, iso/seam/gamma probe images, and backend-compare
+reproduces the baseline mismatch count exactly (4465/96000, outliers 0).
+
+Per-dialect flags (source of truth: build/slang_shaders.zig):
+  glsl330  spirv-cross <spv> --version 330 --no-420pack-extension
+  gles300  spirv-cross <spv> --version 300 --es, then
+           build/glsl_patch_es_highp.zig (default precision mediump→highp;
+           SPIRV-Cross only qualifies globals, locals inherit the default)
+  both     --rename-interface-variable {out|in} L snail_ioL for L=0..14
+           (vert renames "out", frag renames "in"; unknown locations are
+           ignored). Load-bearing: GLSL <4.10 links varyings BY NAME and
+           the two stages' SPIR-V carry different OpNames
+           (entryPointParam_vertexMain_* vs input_*).
+
+Loader contract changes (snail.shader.slang_generated):
+  - ONE uniform block name for both stages: SnailPushConstants_std140
+    (identical definition in vert+frag → the GL linker merges them; the
+    two-name lookup and the via-vertex fallback are gone).
+  - Combined samplers: SPIRV_Cross_Combined<tex>SPIRV_Cross_DummySampler
+    for Load-only textures, SPIRV_Cross_Combined<tex><sampler> for real
+    Sample sites. u_image_tex is both Loaded and Sampled, so TWO uniforms
+    exist for it — the loaders bind both to the image unit. The autohint
+    vertex layer read now shares the fragment's combined-sampler name
+    (one uniform after linking; the _vs/_fs naming split is gone).
+  - Artifacts are "#version 330" (no "core" suffix) and roughly half the
+    naga emission's size (generated/ diff: −33.8k/+18.3k lines).
+
+Traps DEAD with SPIRV-Cross:
+  2.  via-glsl for loop stages: SPIRV-Cross structurizes slang's direct
+      SPIR-V loops correctly (all loop-bearing families gate-exact). Every
+      GL leg is direct now; a stage can have loops AND spirv_asm.
+  10. spirv-opt ADCE between compile and translate: not needed (SPIRV-Cross
+      accepts the -O0 modules naga rejected, arrayed GetDimensions incl.).
+  13. base-vertex patch: dead. With every leg direct, the autohint vertex
+      uses the spirv_asm raw-VertexIndex load like all other families
+      (families/autohint.slang #if is now WGSL-vs-rest) and SPIRV-Cross
+      emits plain gl_VertexID. Do NOT reintroduce SV_VertexID on a GL leg:
+      BaseVertex is a hard error in SPIRV-Cross's ES backend ("BaseVertex
+      not supported in ES profile") and an ARB_shader_draw_parameters
+      dependency on the 330 leg. build/glsl_patch_base_vertex.zig is
+      unused (kept on disk for history).
+  15. (GL half) spv_patch_dual_source: dead. SPIRV-Cross emits
+      `layout(location = 0, index = 1)` on the blend output straight from
+      the [[vk::index(1)]] decoration and leaves index-0 implicit (the GL
+      default) — no explicit Index-0 patch, no
+      glBindFragDataLocationIndexed. The WGSL half (no @blend_src) stands.
+  17. (desktop half) texel-buffer rejection: dead. text_sample now has a
+      glsl330 artifact — plain `uniform usamplerBuffer
+      u_snail_text_records` + SnailTextSampleParams_std140 — which
+      glslangValidator accepts as-is. The GLES half of 17 STANDS in
+      stronger form: texel buffers do not exist in ES 3.0 at any extension
+      level (SPIRV-Cross emits GL_EXT_texture_buffer, but that extension
+      requires ES 3.1 — the output only validates rewritten to `#version
+      310 es`), so text_sample stays no_gles and the R32UI interface
+      remains the ES 3.0 answer.
+
+Traps SURVIVING:
+  1.  SV_VertexID lowering (see 13 above — now enforced by the ES leg).
+  11. cubic-solver fusion: SURVIVES the translator swap, confirming it is
+      a Mesa code-shape sensitivity, not a naga emission artifact. Without
+      the patch: demo-gl/gles30 AE=6/96000, banner-gl/gles30 AE=46/921600,
+      every diff 1 LSB (max_channel_delta=1), all in high-contrast AA edge
+      neighborhoods on cubic path panels; backend-compare drifts 4465→4462.
+      build/glsl_patch_cubic_solver.zig needed a one-line relax (SPIRV-Cross
+      keeps the un-mangled `solveMonotonicCubicRoot(` OpName; naga added
+      `_` + counter) and restores AE=0.
+  9.  gl_o0 is KEPT but measured NOT load-bearing anymore: with default -O
+      on every GL leg (cubic patch on) all nine screenshot gates were
+      still AE=0 — the direct-SPIR-V leg preserves the constant divisions
+      that the via-glsl (glslang) leg strength-reduced, and artifacts
+      shrink further. Candidate merge-time simplification: drop gl_o0,
+      which also collapses the painted GL vertex back into text.vert
+      (identical flags → identical compile) and kills gl_only. Left in
+      place for this spike to keep the shipped config the fully
+      suite-validated one. The Vulkan/WGSL default-O pinning of trap 9 is
+      untouched (their baselines are unchanged — no spirv/wgsl artifact
+      diffs).
+
+New tool: build/glsl_patch_es_highp.zig (ES default-precision promotion).
+Real-ES caveat: gates run on Mesa (fp32 regardless); on real ES hardware
+the highp default is required for the coverage math and is now explicit.
+
+Recommendation: KEEP. One translator (SPIRV-Cross) instead of naga +
+glslang-via-glsl + ADCE + two SPIR-V/GLSL patch tools, one leg shape for
+all stages, byte-exact gates without re-baselining, and the text_sample
+desktop GL artifact naga could not produce. Re-baselining is NOT required
+at merge (AE=0 everywhere); if gl_o0 is dropped later, re-run the full
+suite (only the screenshot gates were checked under default -O).

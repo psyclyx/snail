@@ -91,27 +91,25 @@ pub fn loadNativeProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_
         .image_tex_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_image_tex_name),
     };
 
-    // Direct-leg vertex stages and via-glsl vertex stages (autohint) name
-    // their block differently; accept either.
-    var vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_vertex_block_name);
-    if (vertex_block == gl.GL_INVALID_INDEX)
-        vertex_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_via_vertex_block_name);
-    const fragment_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_fragment_block_name);
-    if (vertex_block == gl.GL_INVALID_INDEX or fragment_block == gl.GL_INVALID_INDEX) {
+    // Both stages declare the identically-named, identically-shaped block,
+    // so the linker merges them into one block index.
+    const push_block = gl.glGetUniformBlockIndex(handle, slang_gen.glsl_vertex_block_name);
+    if (push_block == gl.GL_INVALID_INDEX) {
         gl.glDeleteProgram(handle);
         return error.ShaderLinkFailed;
     }
-    gl.glUniformBlockBinding(handle, vertex_block, gl_common.NATIVE_TEXT_UBO_BINDING);
-    gl.glUniformBlockBinding(handle, fragment_block, gl_common.NATIVE_TEXT_UBO_BINDING);
+    gl.glUniformBlockBinding(handle, push_block, gl_common.NATIVE_TEXT_UBO_BINDING);
 
     gl.glGenBuffers(1, &ps.ubo);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, ps.ubo);
     gl.glBufferData(gl.GL_UNIFORM_BUFFER, @sizeOf(gl_common.NativeTextPushBlock), null, gl.GL_DYNAMIC_DRAW);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
 
-    // The autohint vertex stage samples the layer-info texture too; pin its
-    // combined sampler to the same unit 2 the fragment uses.
-    const vert_layer_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_vert_layer_tex_name);
+    // u_image_tex is both Loaded and Sampled, so SPIRV-Cross emits a
+    // second combined uniform for the Sample sites; pin it to the same
+    // image unit. (The autohint vertex stage's layer read shares the
+    // fragment's combined-sampler name — the linker merged them above.)
+    const image_sampled_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_image_tex_sampled_name);
 
     var prev_program: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
@@ -120,7 +118,7 @@ pub fn loadNativeProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_
     if (ps.band_tex_loc >= 0) gl.glUniform1i(ps.band_tex_loc, 1);
     if (ps.layer_tex_loc >= 0) gl.glUniform1i(ps.layer_tex_loc, 2);
     if (ps.image_tex_loc >= 0) gl.glUniform1i(ps.image_tex_loc, 3);
-    if (vert_layer_loc >= 0) gl.glUniform1i(vert_layer_loc, 2);
+    if (image_sampled_loc >= 0) gl.glUniform1i(image_sampled_loc, 3);
     gl.glUseProgram(@intCast(prev_program));
     return ps;
 }

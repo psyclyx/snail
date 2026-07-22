@@ -7,8 +7,9 @@
 //!
 //!     zig build gen-shaders
 //!
-//! inside `nix-shell` (needs `slangc` + `naga`; see build/slang_shaders.zig
-//! for the per-target flag sets and the semantic traps they avoid).
+//! inside `nix-shell` (needs `slangc` + `spirv-cross`; see
+//! build/slang_shaders.zig for the per-target flag sets and the semantic
+//! traps they avoid).
 //!
 //! ## Interface contracts
 //!
@@ -25,42 +26,42 @@
 //!    `@group(0)` bindings 0/1 (the WGSL catalog's binding contract; no
 //!    samplers — the text family only `Load`s). Entry points keep their
 //!    Slang names: `vertexMain` / `fragmentMain`.
-//!  - `glsl330` / `gles300` (naga-translated): std140 uniform blocks named
-//!    `SnailPushConstants_std140_block_0Vertex` (vertex stage) and
-//!    `SnailPushConstants_std140_block_0Fragment` (fragment stage) — bind
-//!    both block indices to one binding point backed by a single 96-byte
-//!    UBO. Combined samplers `_group_0_binding_1_fs` (curve, rgba16f) and
-//!    `_group_0_binding_2_fs` (band, rg16ui). Vertex inputs keep locations
-//!    0..6 of the instance stream; entry point is `main`.
+//!  - `glsl330` / `gles300` (SPIRV-Cross-translated): every stage of every
+//!    family declares ONE std140 uniform block named
+//!    `SnailPushConstants_std140` (identical definition in both stages, so
+//!    the linker merges them — bind the single block index to one binding
+//!    point backed by a single 96-byte UBO). Texture access goes through
+//!    SPIRV-Cross's combined samplers: Load-only textures pair with the
+//!    generated dummy sampler (`SPIRV_Cross_Combined<tex>SPIRV_Cross_
+//!    DummySampler`), Sample sites with the real one
+//!    (`SPIRV_Cross_Combined<tex><sampler>`). Varyings are renamed to the
+//!    location-keyed `snail_io<N>` table at generation time (GLSL <4.10
+//!    links varyings by name). Vertex inputs keep locations 0..8 of the
+//!    instance stream; entry point is `main`.
 
 pub const Stage = enum { vertex, fragment };
 
-/// GLSL uniform-block names the GL hosts resolve with
-/// `glGetUniformBlockIndex` (one per stage; both wrap the same 96 bytes).
-/// The names differ because the two stages take different SPIR-V legs
-/// (vertex: slang-direct; fragment: -emit-spirv-via-glsl — see
-/// build/slang_shaders.zig for why).
-pub const glsl_vertex_block_name = "SnailPushConstants_std140_block_0Vertex";
-pub const glsl_fragment_block_name = "block_SnailPushConstants_0_block_0Fragment";
+/// GLSL uniform-block name the GL hosts resolve with
+/// `glGetUniformBlockIndex`. Both stages of every family declare the same
+/// block (SPIRV-Cross names it after the Slang struct + layout suffix), so
+/// one lookup covers the program.
+pub const glsl_vertex_block_name = "SnailPushConstants_std140";
+pub const glsl_fragment_block_name = "SnailPushConstants_std140";
 
-/// Vertex-stage block name for via-glsl vertex legs (autohint: its fitter
-/// loops force the vertex through -emit-spirv-via-glsl, and the glslang leg
-/// names the struct differently from the slang-direct leg above). GL hosts
-/// resolve whichever of the two the program declares.
-pub const glsl_via_vertex_block_name = "block_SnailPushConstants_0_block_0Vertex";
-
-/// GLSL combined-sampler uniform names. The fragment leg's binding numbers
-/// are assigned sequentially after the parameter block (binding 0), so
-/// curve/band land on 1/2 in every family; the paint-record families
-/// additionally get layer-info at 3 and the image array at 4 (slangc fuses
-/// the image Texture+SamplerState pair back into one combined sampler).
-pub const glsl_curve_tex_name = "_group_0_binding_1_fs";
-pub const glsl_band_tex_name = "_group_0_binding_2_fs";
-pub const glsl_layer_tex_name = "_group_0_binding_3_fs";
-pub const glsl_image_tex_name = "_group_0_binding_4_fs";
-/// The autohint VERTEX stage also samples the layer-info texture; its
-/// combined sampler gets the vertex-stage suffix.
-pub const glsl_vert_layer_tex_name = "_group_0_binding_3_vs";
+/// GLSL combined-sampler uniform names. SPIRV-Cross fuses each texture
+/// with the sampler it is used with: Load-only textures get the generated
+/// dummy sampler, Sample sites the real `u_image_sampler`. u_image_tex is
+/// both Loaded (GetDimensions/texelFetch) and Sampled, so TWO combined
+/// uniforms exist for it — bind both to the image texture unit.
+pub const glsl_curve_tex_name = "SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler";
+pub const glsl_band_tex_name = "SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler";
+pub const glsl_layer_tex_name = "SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler";
+pub const glsl_image_tex_name = "SPIRV_Cross_Combinedu_image_texSPIRV_Cross_DummySampler";
+pub const glsl_image_tex_sampled_name = "SPIRV_Cross_Combinedu_image_texu_image_sampler";
+/// The autohint VERTEX stage also reads the layer-info texture; its
+/// Load-only combined sampler carries the same name as the fragment's, so
+/// the linker merges them (one uniform, one unit).
+pub const glsl_vert_layer_tex_name = glsl_layer_tex_name;
 
 /// WGSL entry-point names (native Slang keeps the source names).
 pub const wgsl_vertex_entry = "vertexMain";
@@ -154,11 +155,11 @@ pub fn subpixelFragGlsl330() [:0]const u8 {
 // ── Linear resolve (GL hosts only: fullscreen seed/encode pass) ──
 
 /// Fragment parameter block: one std140 int (`mode`).
-pub const glsl_linear_resolve_block_name = "SnailLinearResolveParams_std140_block_0Fragment";
-/// Combined samplers (naga names them by the TEXTURE's binding slot; each
-/// texture is followed by its SamplerState in the family file).
-pub const glsl_linear_resolve_linear_tex_name = "_group_0_binding_1_fs";
-pub const glsl_linear_resolve_dst_tex_name = "_group_0_binding_3_fs";
+pub const glsl_linear_resolve_block_name = "SnailLinearResolveParams_std140";
+/// Combined samplers (SPIRV-Cross fuses each texture with the
+/// SamplerState it is sampled through).
+pub const glsl_linear_resolve_linear_tex_name = "SPIRV_Cross_Combinedu_linear_texu_linear_sampler";
+pub const glsl_linear_resolve_dst_tex_name = "SPIRV_Cross_Combinedu_dst_texu_dst_sampler";
 
 pub fn linearResolveGlsl330(comptime stage: Stage) [:0]const u8 {
     return switch (stage) {
@@ -177,11 +178,22 @@ pub fn linearResolveGles300(comptime stage: Stage) [:0]const u8 {
 // ── Text-as-material sampler (canonical artifacts; consumer migration is
 // stage C — the game keeps composing the GLSL catalog) ──
 //
-// No GL artifacts: naga's SPIR-V front end rejects texel buffers, and the
-// GL consumer composes GLSL directly anyway.
+// The desktop GL dialect exists since the SPIRV-Cross leg (naga's SPIR-V
+// front end rejected the texel buffer): the record buffer stays a plain
+// `usamplerBuffer u_snail_text_records`, the parameter block is
+// `SnailTextSampleParams_std140`. No GLES artifact: texel buffers are ES
+// 3.1+ (GL_EXT_texture_buffer itself requires ES 3.1), so ES 3.0 keeps
+// the R32UI-texture interface.
+
+pub const glsl_text_sample_block_name = "SnailTextSampleParams_std140";
+pub const glsl_text_sample_records_name = "u_snail_text_records";
 
 pub fn textSampleFragWgsl() [:0]const u8 {
     return @embedFile("generated/wgsl/text_sample.frag.wgsl");
+}
+
+pub fn textSampleFragGlsl330() [:0]const u8 {
+    return @embedFile("generated/glsl330/text_sample.frag.glsl");
 }
 
 // ── Autohint (own vertex stage: the knot fit runs per provoking vertex) ──
@@ -298,12 +310,14 @@ test "generated artifacts carry the documented interface names" {
     inline for (.{ colrFragSpv(), pathFragSpv(), ttHintedFragSpv(), autohintSpv(.vertex), autohintSpv(.fragment) }) |spv| {
         try std.testing.expect(std.mem.readInt(u32, spv[0..4], .little) == 0x0723_0203);
     }
-    // Autohint GL vertex: via-glsl block name, vertex-stage layer sampler,
-    // and the base-vertex patch (no GL 4.6 builtin may survive).
+    // Autohint GL vertex: shared block name, vertex-stage layer sampler,
+    // and the raw-VertexIndex load (no BaseVertex/DrawParameters path may
+    // survive — GL 4.6-only on desktop, a hard error in ES).
     inline for (.{ autohintGlsl330(.vertex), autohintGles300(.vertex) }) |src| {
-        try std.testing.expect(std.mem.indexOf(u8, src, glsl_via_vertex_block_name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_vertex_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_vert_layer_tex_name) != null);
-        try std.testing.expect(std.mem.indexOf(u8, src, "uint(gl_BaseVertex)") == null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "BaseVertex") == null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "gl_VertexID") != null);
     }
     inline for (.{ autohintGlsl330(.fragment), autohintGles300(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);
@@ -311,13 +325,19 @@ test "generated artifacts carry the documented interface names" {
     }
     try std.testing.expect(std.mem.indexOf(u8, autohintWgsl(.vertex), "fn " ++ wgsl_vertex_entry) != null);
     // Subpixel: dual-source output qualifiers must survive to the GL 3.3
-    // artifact, and the SPIR-V must exist.
-    try std.testing.expect(std.mem.indexOf(u8, subpixelFragGlsl330(), "layout(location = 0, index = 0) out") != null);
+    // artifact (SPIRV-Cross leaves the index-0 output implicit — the GL
+    // default — and qualifies only the blend output), and the SPIR-V must
+    // exist.
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragGlsl330(), "layout(location = 0) out") != null);
     try std.testing.expect(std.mem.indexOf(u8, subpixelFragGlsl330(), "layout(location = 0, index = 1) out") != null);
     try std.testing.expect(std.mem.readInt(u32, subpixelFragSpv()[0..4], .little) == 0x0723_0203);
     // Text-sample canonical artifacts (consumer migration is stage C).
     try std.testing.expect(std.mem.readInt(u32, textSampleFragSpv()[0..4], .little) == 0x0723_0203);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragWgsl(), "fn " ++ wgsl_fragment_entry) != null);
+    // Text-sample desktop GL dialect: the texel buffer must stay a plain
+    // named usamplerBuffer (a loader would bind it by name).
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), "usamplerBuffer " ++ glsl_text_sample_records_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), glsl_text_sample_block_name) != null);
     // Linear resolve: block + sampler names must survive.
     inline for (.{ linearResolveGlsl330(.fragment), linearResolveGles300(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_linear_resolve_block_name) != null);
@@ -328,7 +348,11 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, "void main") != null);
     }
     try std.testing.expect(std.mem.startsWith(u8, textGles300(.fragment), "#version 300 es"));
-    try std.testing.expect(std.mem.startsWith(u8, textGlsl330(.fragment), "#version 330 core"));
+    // The GLES default float precision must be highp (the es-highp patch;
+    // SPIRV-Cross emits mediump and locals inherit the default).
+    try std.testing.expect(std.mem.indexOf(u8, textGles300(.fragment), "precision highp float;") != null);
+    try std.testing.expect(std.mem.indexOf(u8, textGles300(.fragment), "precision mediump float;") == null);
+    try std.testing.expect(std.mem.startsWith(u8, textGlsl330(.fragment), "#version 330"));
     try std.testing.expect(std.mem.indexOf(u8, textWgsl(.vertex), "fn " ++ wgsl_vertex_entry) != null);
     try std.testing.expect(std.mem.indexOf(u8, textWgsl(.fragment), "fn " ++ wgsl_fragment_entry) != null);
     try std.testing.expect(std.mem.indexOf(u8, textWgsl(.fragment), "@group(2) var<uniform>") != null);

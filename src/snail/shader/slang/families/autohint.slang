@@ -15,13 +15,16 @@
 //
 // ── Vertex index ──
 //
-// The GL leg of this VERTEX stage must compile -emit-spirv-via-glsl (the
-// fitter has loops; slang's direct SPIR-V loop shape is the recorded naga
-// trap), and spirv_asm does not compile through the via-glsl backend — so
-// unlike families/text.slang the GL flavor uses SV_VertexID here and the
-// gen step verifies no BaseVertex/DrawParameters reference survives (the
-// via-glsl leg lowers it straight to gl_VertexIndex). Vulkan keeps the
-// spirv_asm raw-VertexIndex load; WGSL's vertex_index is already raw.
+// Every SPIR-V leg (Vulkan AND the SPIRV-Cross GL dialects) uses the
+// spirv_asm raw-VertexIndex load, exactly like families/text.slang:
+// SV_VertexID lowers to VertexIndex − BaseVertex (D3D semantics), which
+// needs the DrawParameters device feature on Vulkan and is a hard error in
+// SPIRV-Cross's ES backend ("BaseVertex not supported in ES profile").
+// The naga era compiled this stage -emit-spirv-via-glsl (its fitter loops
+// hit naga's structurizer trap, and spirv_asm cannot compile via glsl) and
+// patched gl_BaseVertex to 0 in the output; SPIRV-Cross structurizes
+// slang's direct loops correctly, so the whole detour is gone. WGSL's
+// vertex_index is already raw and keeps SV_VertexID.
 module autohint;
 
 import render_abi;
@@ -92,7 +95,15 @@ struct VsOutput {
     [[vk::location(14)]] nointerpolation uint4 y_sources;
 };
 
-#if defined(SNAIL_TARGET_VULKAN)
+#if defined(SNAIL_TARGET_WGSL)
+[shader("vertex")]
+VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
+    VsOutput o = vertexBody(input, vertex_index);
+    // WGSL clip space is y-up; flip like families/text.slang.
+    o.position.y = -o.position.y;
+    return o;
+}
+#else
 int snailRawVertexIndex() {
     return spirv_asm {
         result:$$int = OpLoad builtin(VertexIndex:int);
@@ -102,19 +113,6 @@ int snailRawVertexIndex() {
 [shader("vertex")]
 VsOutput vertexMain(VsInput input) {
     return vertexBody(input, uint(snailRawVertexIndex()));
-}
-#elif defined(SNAIL_TARGET_WGSL)
-[shader("vertex")]
-VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
-    VsOutput o = vertexBody(input, vertex_index);
-    // WGSL clip space is y-up; flip like families/text.slang.
-    o.position.y = -o.position.y;
-    return o;
-}
-#else
-[shader("vertex")]
-VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
-    return vertexBody(input, vertex_index);
 }
 #endif
 
