@@ -145,6 +145,22 @@ const Gpu = struct {
             .userdata2 = null,
         });
         while (!adapter_req.done) c.wgpuInstanceProcessEvents(instance);
+        if (adapter_req.adapter == null) {
+            // GPU-less machines (CI runners) expose only software adapters
+            // (WARP, lavapipe), which WebGPU treats as fallback adapters and
+            // withholds unless explicitly requested.
+            std.debug.print("no default adapter; retrying with forceFallbackAdapter\n", .{});
+            adapter_req = .{};
+            adapter_options.forceFallbackAdapter = @intFromBool(true);
+            _ = c.wgpuInstanceRequestAdapter(instance, &adapter_options, .{
+                .nextInChain = null,
+                .mode = c.WGPUCallbackMode_AllowProcessEvents,
+                .callback = &onAdapter,
+                .userdata1 = &adapter_req,
+                .userdata2 = null,
+            });
+            while (!adapter_req.done) c.wgpuInstanceProcessEvents(instance);
+        }
         const adapter = adapter_req.adapter orelse return error.NoAdapter;
         errdefer c.wgpuAdapterRelease(adapter);
         if (getenv("SNAIL_WGPU_LOG") != null) {
