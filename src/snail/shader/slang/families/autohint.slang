@@ -57,7 +57,7 @@ public struct SnailPushConstants {
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
 [[vk::binding(2, 0)]] Texture2D<float4> u_layer_tex;
-#else // GL family (desktop GLSL 330 / GLES 300 es)
+#else // GL family (desktop GLSL 330 / GLES 300 es) and D3D11 HLSL (registers b0/t0..t3/s0 in declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -65,41 +65,41 @@ Texture2D<float4> u_layer_tex;
 #endif
 
 struct VsInput {
-    [[vk::location(0)]] float4 rect;
-    [[vk::location(1)]] float4 xform;
-    [[vk::location(2)]] float2 origin;
-    [[vk::location(3)]] uint2 glyph;
-    [[vk::location(4)]] float4 bnd;
-    [[vk::location(5)]] float4 col;
-    [[vk::location(6)]] float4 tint;
-    [[vk::location(7)]] uint4 policy0;
-    [[vk::location(8)]] uint3 policy1;
+    [[vk::location(0)]] float4 rect : ATTRIB0;
+    [[vk::location(1)]] float4 xform : ATTRIB1;
+    [[vk::location(2)]] float2 origin : ATTRIB2;
+    [[vk::location(3)]] uint2 glyph : ATTRIB3;
+    [[vk::location(4)]] float4 bnd : ATTRIB4;
+    [[vk::location(5)]] float4 col : ATTRIB5;
+    [[vk::location(6)]] float4 tint : ATTRIB6;
+    [[vk::location(7)]] uint4 policy0 : ATTRIB7;
+    [[vk::location(8)]] uint3 policy1 : ATTRIB8;
 };
 
 struct VsOutput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float4 paint;
-    [[vk::location(1)]] float3 texcoord_layer;
-    [[vk::location(2)]] nointerpolation int2 info;
-    [[vk::location(3)]] nointerpolation uint4 policy0;
-    [[vk::location(4)]] nointerpolation uint3 policy1;
-    [[vk::location(5)]] nointerpolation float4 x_targets0;
-    [[vk::location(6)]] nointerpolation float4 x_targets1;
-    [[vk::location(7)]] nointerpolation float4 x_targets2;
-    [[vk::location(8)]] nointerpolation float4 x_targets3;
-    [[vk::location(9)]] nointerpolation float4 y_targets0;
-    [[vk::location(10)]] nointerpolation float4 y_targets1;
-    [[vk::location(11)]] nointerpolation float4 y_targets2;
-    [[vk::location(12)]] nointerpolation float4 y_targets3;
-    [[vk::location(13)]] nointerpolation uint4 x_sources;
-    [[vk::location(14)]] nointerpolation uint4 y_sources;
+    [[vk::location(0)]] float4 paint : TEXCOORD0;
+    [[vk::location(1)]] float3 texcoord_layer : TEXCOORD1;
+    [[vk::location(2)]] nointerpolation int2 info : TEXCOORD2;
+    [[vk::location(3)]] nointerpolation uint4 policy0 : TEXCOORD3;
+    [[vk::location(4)]] nointerpolation uint3 policy1 : TEXCOORD4;
+    [[vk::location(5)]] nointerpolation float4 x_targets0 : TEXCOORD5;
+    [[vk::location(6)]] nointerpolation float4 x_targets1 : TEXCOORD6;
+    [[vk::location(7)]] nointerpolation float4 x_targets2 : TEXCOORD7;
+    [[vk::location(8)]] nointerpolation float4 x_targets3 : TEXCOORD8;
+    [[vk::location(9)]] nointerpolation float4 y_targets0 : TEXCOORD9;
+    [[vk::location(10)]] nointerpolation float4 y_targets1 : TEXCOORD10;
+    [[vk::location(11)]] nointerpolation float4 y_targets2 : TEXCOORD11;
+    [[vk::location(12)]] nointerpolation float4 y_targets3 : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint4 x_sources : TEXCOORD13;
+    [[vk::location(14)]] nointerpolation uint4 y_sources : TEXCOORD14;
 };
 
-#if defined(SNAIL_TARGET_WGSL)
+#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);
-    // WGSL clip space is y-up; flip like families/text.slang.
+    // WGSL and D3D11 clip spaces are y-up; flip like families/text.slang.
     o.position.y = -o.position.y;
     return o;
 }

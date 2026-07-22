@@ -61,7 +61,7 @@ struct Records : ISnailTextRecords {
                                               linear_index / SNAIL_TEXT_RECORDS_TEX_WIDTH, 0)).x;
     }
 };
-#else // Desktop GL: R32UI texel buffer.
+#else // Desktop GL and D3D11: R32UI texel buffer.
 ConstantBuffer<SnailTextSampleParams> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -73,7 +73,7 @@ struct Records : ISnailTextRecords {
 
 struct FsInput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float2 scene_pos;
+    [[vk::location(0)]] float2 scene_pos : TEXCOORD0;
 };
 
 [shader("fragment")]

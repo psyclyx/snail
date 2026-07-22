@@ -61,6 +61,24 @@ void snailAhPackAxis(
         packedSources.x = (packedSources.x & 0xffffff00u) | SNAIL_AH_SOURCE_FALLBACK;
         return;
     }
+#if defined(SNAIL_TARGET_D3D11)
+    // Same packing, slang-side unrolled: vkd3d-shader (Wine's
+    // d3dcompiler_47 and its wined3d HLSL front end) has no dynamic
+    // vector-component STORES (E5017 "Non-constant vector addressing on
+    // store"; Wine 11.0's bundled copy crashes outright). [ForceUnroll]
+    // makes every subscript a compile-time constant; the `break` becomes
+    // an `if` guard (identical semantics — the loop is pure writes).
+    [ForceUnroll]
+    for (int i = 0; i < SNAIL_AH_VERTEX_KNOTS; ++i) {
+        if (i < count) {
+            packedTargets[i >> 2][i & 3] = targets[i];
+            int word = i >> 2;
+            int shift = (i & 3) * 8;
+            packedSources[word] = (packedSources[word] & ~(255u << uint(shift))) |
+                ((uint(sources[i]) & 255u) << uint(shift));
+        }
+    }
+#else
     for (int i = 0; i < SNAIL_AH_VERTEX_KNOTS; ++i) {
         if (i >= count) break;
         packedTargets[i >> 2][i & 3] = targets[i];
@@ -69,6 +87,7 @@ void snailAhPackAxis(
         packedSources[word] = (packedSources[word] & ~(255u << uint(shift))) |
             ((uint(sources[i]) & 255u) << uint(shift));
     }
+#endif
 }
 
 void snailAhMarkFallback(out float4 packedTargets[4], out uint4 packedSources) {

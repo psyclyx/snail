@@ -956,6 +956,70 @@ fn addMinimalGlStep(
     step.dependOn(&run.step);
 }
 
+/// Cross-compiled Windows demo: `zig build run-minimal-d3d11` builds
+/// src/demo/app/minimal_d3d11.zig for x86_64-windows-gnu (zig's bundled
+/// mingw provides d3d11.h/dxgi.h/d3dcompiler.h and the import libraries)
+/// and runs it headless under Wine with a hermetic prefix in zig-out.
+/// The one non-bundled dependency is HarfBuzz: the Windows snail module
+/// compiles the upstream single-file amalgam (`src/harfbuzz.cc`) from the
+/// nix-pinned source tree exported as `HARFBUZZ_SRC` (see shell.nix)
+/// instead of linking the host system library.
+fn addMinimalD3d11Step(
+    b: *std.Build,
+    modules: ProjectModules,
+) void {
+    const step = b.step("run-minimal-d3d11", "Render the one-file public-API D3D11 example under Wine to zig-out/minimal-d3d11.tga");
+    const hb_src = b.graph.environ_map.get("HARFBUZZ_SRC") orelse {
+        const fail = b.addFail("run-minimal-d3d11 needs HARFBUZZ_SRC (enter nix-shell; see shell.nix)");
+        step.dependOn(&fail.step);
+        return;
+    };
+    const win_target = b.resolveTargetQuery(.{ .cpu_arch = .x86_64, .os_tag = .windows, .abi = .gnu });
+
+    // The snail module for the Windows target: identical source, but
+    // HarfBuzz is compiled in from the amalgam rather than system-linked.
+    const snail_win = b.createModule(.{
+        .root_source_file = b.path("src/snail/root.zig"),
+        .target = win_target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .link_libcpp = true,
+    });
+    snail_win.addIncludePath(.{ .cwd_relative = b.pathJoin(&.{ hb_src, "src" }) });
+    snail_win.addCSourceFile(.{
+        .file = .{ .cwd_relative = b.pathJoin(&.{ hb_src, "src", "harfbuzz.cc" }) },
+        .flags = &.{ "-std=c++17", "-fno-exceptions", "-fno-rtti" },
+        .language = .cpp,
+    });
+
+    const mod = b.createModule(.{
+        .root_source_file = b.path("src/demo/app/minimal_d3d11.zig"),
+        .target = win_target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = snail_win },
+        },
+    });
+    mod.linkSystemLibrary("d3d11", .{ .use_pkg_config = .no });
+    mod.linkSystemLibrary("dxgi", .{ .use_pkg_config = .no });
+    mod.linkSystemLibrary("d3dcompiler_47", .{ .use_pkg_config = .no });
+    const exe = b.addExecutable(.{ .name = "snail-minimal-d3d11", .root_module = mod });
+
+    // Hermetic Wine prefix inside zig-out (first run pays one-time prefix
+    // setup); `wine` comes from the nix shell. The exe writes
+    // zig-out/minimal-d3d11.tga relative to the build root.
+    b.build_root.handle.createDirPath(b.graph.io, "zig-out") catch {};
+    const run = b.addSystemCommand(&.{"wine"});
+    run.addArtifactArg(exe);
+    run.setEnvironmentVariable("WINEPREFIX", b.pathFromRoot("zig-out/wineprefix"));
+    run.setEnvironmentVariable("WINEDEBUG", "-all");
+    // Rendering output changes with the shaders/scene, not just the exe.
+    run.has_side_effects = true;
+    step.dependOn(&run.step);
+}
+
 fn addMinimalWgpuStep(
     b: *std.Build,
     config: BuildConfig,
@@ -1016,6 +1080,7 @@ pub fn build(b: *std.Build) void {
     addGameDemoStep(b, config, modules);
     addMinimalGlStep(b, config, modules);
     addMinimalWgpuStep(b, config, modules);
+    addMinimalD3d11Step(b, modules);
     addPerfSteps(b, config, modules);
     slang_shaders.addGenShadersStep(b);
 }

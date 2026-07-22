@@ -61,29 +61,29 @@ public struct SnailPushConstants {
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-#else // GL family (desktop GLSL 330 / GLES 300 es)
+#else // GL family (desktop GLSL 330 / GLES 300 es) and D3D11 HLSL (registers b0/t0..t3/s0 in declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
 #endif
 
 struct VsInput {
-    [[vk::location(0)]] float4 rect;
-    [[vk::location(1)]] float4 xform;
-    [[vk::location(2)]] float2 origin;
-    [[vk::location(3)]] uint2 glyph;
-    [[vk::location(4)]] float4 bnd;
-    [[vk::location(5)]] float4 col;
-    [[vk::location(6)]] float4 tint;
+    [[vk::location(0)]] float4 rect : ATTRIB0;
+    [[vk::location(1)]] float4 xform : ATTRIB1;
+    [[vk::location(2)]] float2 origin : ATTRIB2;
+    [[vk::location(3)]] uint2 glyph : ATTRIB3;
+    [[vk::location(4)]] float4 bnd : ATTRIB4;
+    [[vk::location(5)]] float4 col : ATTRIB5;
+    [[vk::location(6)]] float4 tint : ATTRIB6;
 };
 
 struct VsOutput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float4 color;
-    [[vk::location(1)]] float2 texcoord;
-    [[vk::location(2)]] nointerpolation float4 banding;
-    [[vk::location(3)]] nointerpolation int4 glyph;
-    [[vk::location(4)]] float4 tint;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 texcoord : TEXCOORD1;
+    [[vk::location(2)]] nointerpolation float4 banding : TEXCOORD2;
+    [[vk::location(3)]] nointerpolation int4 glyph : TEXCOORD3;
+    [[vk::location(4)]] float4 tint : TEXCOORD4;
 };
 
 // ── Vertex index ──
@@ -95,16 +95,19 @@ struct VsOutput {
 // which does not exist in GLSL 330 / GLES 300. The raw SPIR-V VertexIndex
 // builtin (identical for our base-vertex-0 quad draws) is loaded through
 // inline SPIR-V instead. WGSL's @builtin(vertex_index) is already raw, so
-// the WGSL target keeps SV_VertexID.
-#if defined(SNAIL_TARGET_WGSL)
+// the WGSL target keeps SV_VertexID — and on the D3D11 HLSL target
+// SV_VertexID is simply the native semantic (spirv_asm cannot compile
+// there at all: "unexpected IR opcode during code emit").
+#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);
-    // WebGPU clip space is y-up while the CPU-side mvp follows the Vulkan
-    // y-down convention (shared with every other target). The old WGSL
-    // catalog got this flip injected by naga's SPIR-V front end; slangc's
-    // direct WGSL backend performs no coordinate-space conversion (and
-    // `-fvk-invert-y` is a no-op for -target wgsl), so flip here.
+    // WebGPU and D3D11 clip spaces are y-up while the CPU-side mvp
+    // follows the Vulkan y-down convention (shared with every other
+    // target). The old WGSL catalog got this flip injected by naga's
+    // SPIR-V front end; slangc's direct WGSL/HLSL backends perform no
+    // coordinate-space conversion (and `-fvk-invert-y` is a no-op for
+    // them), so flip here.
     o.position.y = -o.position.y;
     return o;
 }

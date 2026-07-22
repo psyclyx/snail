@@ -37,7 +37,7 @@ public struct SnailPushConstants {
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-#else // GL family (desktop GLSL 330; GLES 3.0 has no dual-source blending)
+#else // GL family (desktop GLSL 330; GLES 3.0 has no dual-source blending) and D3D11 HLSL
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -45,11 +45,11 @@ Texture2DArray<uint2> u_band_tex;
 
 struct VsOutput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float4 color;
-    [[vk::location(1)]] float2 texcoord;
-    [[vk::location(2)]] nointerpolation float4 banding;
-    [[vk::location(3)]] nointerpolation int4 glyph;
-    [[vk::location(4)]] float4 tint;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 texcoord : TEXCOORD1;
+    [[vk::location(2)]] nointerpolation float4 banding : TEXCOORD2;
+    [[vk::location(3)]] nointerpolation int4 glyph : TEXCOORD3;
+    [[vk::location(4)]] float4 tint : TEXCOORD4;
 };
 
 struct FsOutput {

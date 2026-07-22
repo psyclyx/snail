@@ -1,6 +1,7 @@
 //! Generated, complete per-target shaders from the native-Slang source
-//! (`src/snail/shader/slang/`) — every family, four targets: Vulkan SPIR-V
-//! (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), and GLES 300 (`gles300`).
+//! (`src/snail/shader/slang/`) — every family, five targets: Vulkan SPIR-V
+//! (`spirv`), WGSL (`wgsl`), GLSL 330 (`glsl330`), GLES 300 (`gles300`),
+//! and D3D11 HLSL SM 5.0 (`hlsl`).
 //! The hand-written GLSL fragment catalog (`shader.glsl`) remains available
 //! as the behavioral spec and the composition surface for GL hosts.
 //!
@@ -39,6 +40,14 @@
 //!    location-keyed `snail_io<N>` table at generation time (GLSL <4.10
 //!    links varyings by name). Vertex inputs keep locations 0..8 of the
 //!    instance stream; entry point is `main`.
+//!  - `hlsl` (D3D11, SM 5.0 / FXC class — compiles with d3dcompiler_47 and
+//!    dxc alike): the parameter block is `cbuffer` register b0; textures
+//!    sit on the Vulkan binding numbers as registers t0 curve, t1 band,
+//!    t2 layer-info, t3 image array, s0 image sampler (t2 = the records
+//!    buffer for text_sample). Vertex-input semantics are `ATTRIB0..8`
+//!    (instance-stream locations); entry points keep their Slang names
+//!    (`vertexMain` / `fragmentMain`). The subpixel fragment emits
+//!    SV_Target0/SV_Target1 — D3D11 dual-source (SRC1 blend factors).
 
 pub const Stage = enum { vertex, fragment };
 
@@ -67,6 +76,14 @@ pub const glsl_vert_layer_tex_name = glsl_layer_tex_name;
 /// WGSL entry-point names (native Slang keeps the source names).
 pub const wgsl_vertex_entry = "vertexMain";
 pub const wgsl_fragment_entry = "fragmentMain";
+
+/// HLSL entry-point names (like WGSL, the Slang function names survive) and
+/// the vertex-input semantic prefix: input-layout elements are
+/// `ATTRIB0..ATTRIB8`, one per instance-stream location of
+/// contract.zig:vertexInputAttributes.
+pub const hlsl_vertex_entry = "vertexMain";
+pub const hlsl_fragment_entry = "fragmentMain";
+pub const hlsl_attrib_semantic = "ATTRIB";
 
 pub fn textGlsl330(comptime stage: Stage) [:0]const u8 {
     return switch (stage) {
@@ -224,6 +241,44 @@ pub fn autohintWgsl(comptime stage: Stage) [:0]const u8 {
     };
 }
 
+// ── D3D11 HLSL (SM 5.0; runtime-compile with d3dcompiler_47 or offline
+// with dxc/fxc). Fragment-only families pair with `textHlsl(.vertex)`;
+// autohint uses its own vertex stage. ──
+
+pub fn textHlsl(comptime stage: Stage) [:0]const u8 {
+    return switch (stage) {
+        .vertex => @embedFile("generated/hlsl/text.vert.hlsl"),
+        .fragment => @embedFile("generated/hlsl/text.frag.hlsl"),
+    };
+}
+
+pub fn autohintHlsl(comptime stage: Stage) [:0]const u8 {
+    return switch (stage) {
+        .vertex => @embedFile("generated/hlsl/autohint.vert.hlsl"),
+        .fragment => @embedFile("generated/hlsl/autohint.frag.hlsl"),
+    };
+}
+
+pub fn colrFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/colr.frag.hlsl");
+}
+
+pub fn pathFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/path.frag.hlsl");
+}
+
+pub fn ttHintedFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/tt_hinted_text.frag.hlsl");
+}
+
+pub fn subpixelFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/text_subpixel.frag.hlsl");
+}
+
+pub fn textSampleFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/text_sample.frag.hlsl");
+}
+
 const raw_text_vert_spv = @embedFile("generated/spirv/text.vert.spv");
 const raw_text_frag_spv = @embedFile("generated/spirv/text.frag.spv");
 const aligned_text_vert_spv: [raw_text_vert_spv.len]u8 align(4) = raw_text_vert_spv.*;
@@ -352,6 +407,39 @@ test "generated artifacts carry the documented interface names" {
     }
     inline for (.{ linearResolveGlsl330(.vertex), linearResolveGles300(.vertex) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "void main") != null);
+    }
+    // HLSL artifacts: register contract (b0 cbuffer + Vulkan-numbered
+    // t registers), entry names, and the ATTRIB vertex-input semantics.
+    inline for (.{ textHlsl(.vertex), autohintHlsl(.vertex) }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(b0)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, hlsl_vertex_entry) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, hlsl_attrib_semantic ++ "0") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "SV_VertexID") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "pack_matrix(column_major)") != null);
+    }
+    // Autohint's vertex-stage layer read keeps the contract register even
+    // with curve/band stripped as unused.
+    try std.testing.expect(std.mem.indexOf(u8, autohintHlsl(.vertex), "register(t2)") != null);
+    inline for (.{ textHlsl(.fragment), autohintHlsl(.fragment), colrFragHlsl(), pathFragHlsl(), ttHintedFragHlsl(), subpixelFragHlsl(), textSampleFragHlsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(b0)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(t0)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(t1)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, hlsl_fragment_entry) != null);
+    }
+    inline for (.{ colrFragHlsl(), pathFragHlsl() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(t2)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(t3)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "register(s0)") != null);
+    }
+    // Subpixel: true D3D11 dual source (SV_Target0/1, SRC1 blend factors).
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragHlsl(), "SV_Target0") != null);
+    try std.testing.expect(std.mem.indexOf(u8, subpixelFragHlsl(), "SV_Target1") != null);
+    // Text-sample: the records texel buffer is Buffer<uint> at t2.
+    try std.testing.expect(std.mem.indexOf(u8, textSampleFragHlsl(), "register(t2)") != null);
+    // No absolute build paths may leak into the artifacts
+    // (-line-directive-mode none).
+    inline for (.{ textHlsl(.vertex), textHlsl(.fragment) }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
     }
     try std.testing.expect(std.mem.startsWith(u8, textGles300(.fragment), "#version 300 es"));
     // The GLES default float precision must be highp (the es-highp patch;

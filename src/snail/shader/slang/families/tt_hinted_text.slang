@@ -35,7 +35,7 @@ public struct SnailPushConstants {
 [[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
 [[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
 [[vk::binding(2, 0)]] Texture2D<float4> u_layer_tex;
-#else // GL family (desktop GLSL 330 / GLES 300 es)
+#else // GL family (desktop GLSL 330 / GLES 300 es) and D3D11 HLSL (registers b0/t0..t3/s0 in declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -44,11 +44,11 @@ Texture2D<float4> u_layer_tex;
 
 struct VsOutput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float4 color;
-    [[vk::location(1)]] float2 texcoord;
-    [[vk::location(2)]] nointerpolation float4 banding;
-    [[vk::location(3)]] nointerpolation int4 glyph;
-    [[vk::location(4)]] float4 tint;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 texcoord : TEXCOORD1;
+    [[vk::location(2)]] nointerpolation float4 banding : TEXCOORD2;
+    [[vk::location(3)]] nointerpolation int4 glyph : TEXCOORD3;
+    [[vk::location(4)]] float4 tint : TEXCOORD4;
 };
 
 [shader("fragment")]

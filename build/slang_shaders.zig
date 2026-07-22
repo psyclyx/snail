@@ -11,6 +11,8 @@
 //!               -profile spirv_1_3 -default-image-format-unknown     (also compiled directly by the
 //!                                                                    demo Vulkan build, see below)
 //!   WGSL        slangc -DSNAIL_TARGET_WGSL -target wgsl              generated/wgsl/<f>.*.wgsl
+//!   D3D11       slangc -DSNAIL_TARGET_D3D11 -target hlsl             generated/hlsl/<f>.*.hlsl
+//!               -profile sm_5_0 -line-directive-mode none            (see hlsl_args for the trap notes)
 //!   GLSL 330    slangc -DSNAIL_TARGET_GL -target spirv               generated/glsl330/<f>.*.glsl
 //!               -profile spirv_1_3, then
 //!               spirv-cross --version 330 --no-420pack-extension
@@ -130,6 +132,35 @@ pub const Family = struct {
     gles_define: bool = false,
 };
 
+/// slangc arguments for the D3D11 HLSL leg (SM 5.0, FXC/d3dcompiler_47
+/// class — slangc emits fxc-compatible HLSL: plain `cbuffer`, no
+/// ConstantBuffer<> syntax). Notes, all verified empirically (v2026.5.2):
+///
+///  - Matrix layout: like the SPIR-V legs, the DEFAULT layout is correct.
+///    The HLSL backend prints `#pragma pack_matrix(column_major)` and
+///    `mul(mvp, v)`: with column-major packing, HLSL's logical row i
+///    gathers the i-th component of each memory register, so the CPU's
+///    column-major GLSL bytes read with GLSL `M * v` semantics — the same
+///    convention every other target uses. No matrix flag is passed.
+///  - Registers are assigned in declaration order and land exactly on the
+///    Vulkan binding numbers: b0 = SnailPushConstants cbuffer, t0 curve,
+///    t1 band, t2 layer-info (t2 records for text_sample), t3 image array,
+///    s0 image sampler (`-fvk-*` flags do not apply to -target hlsl).
+///  - -DSNAIL_TARGET_D3D11 selects the SV_VertexID entry (native D3D
+///    semantics there; the spirv_asm raw-VertexIndex load is a hard error:
+///    "unexpected IR opcode during code emit") including the clip-space
+///    y-flip (D3D11 clip space is y-up like WebGPU's), and the plain
+///    resource-declaration branch shared with the GL family.
+///  - IO struct fields need HLSL semantics (ATTRIB0..8 vertex inputs,
+///    TEXCOORD0..14 varyings, declared in the family sources next to the
+///    [[vk::location]]s); without them dxc/fxc reject the entry point.
+///  - -line-directive-mode none keeps absolute build paths out of the
+///    checked-in artifacts.
+///  - Dual source: [[vk::index(1)]] emits SV_Target0/SV_Target1 — D3D11's
+///    dual-source form (blend factors SRC1_*) — so text_subpixel has a
+///    full-fidelity HLSL artifact.
+const hlsl_args: []const []const u8 = &.{ "-target", "hlsl", "-profile", "sm_5_0", "-line-directive-mode", "none" };
+
 /// The families gen-shaders produces. Vertex artifacts exist only where the
 /// stage differs from the shared text vertex (colr/path/tt_hinted reuse
 /// text.vert.* — identical source, identical interface).
@@ -168,6 +199,27 @@ fn findFamily(comptime name: []const u8) Family {
     @compileError("unknown slang shader family: " ++ name);
 }
 
+/// Register every `.slang` file under `dir_path` (recursively) as a cache
+/// input of the slangc invocation. Load-bearing: `addDirectoryArg` (the
+/// `-I` argument) hashes only the path STRING — without explicit file
+/// inputs, an edit to an imported module (anything that is not the family
+/// entry file) leaves the cached slangc output stale and `gen-shaders`
+/// silently rewrites old artifacts.
+fn addModuleInputs(b: *std.Build, cmd: *std.Build.Step.Run, dir_path: []const u8) void {
+    const io = b.graph.io;
+    var dir = b.build_root.handle.openDir(io, dir_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+    var it = dir.iterate();
+    while (it.next(io) catch null) |entry| {
+        const sub_path = b.pathJoin(&.{ dir_path, entry.name });
+        switch (entry.kind) {
+            .file => if (std.mem.endsWith(u8, entry.name, ".slang")) cmd.addFileInput(b.path(sub_path)),
+            .directory => addModuleInputs(b, cmd, sub_path),
+            else => {},
+        }
+    }
+}
+
 /// slangc invocation for one entry point of one family. `target_defines`
 /// select the per-target resource-binding flavor in the family source (the
 /// GLES leg of `gles_define` families passes SNAIL_TARGET_GL +
@@ -194,6 +246,8 @@ fn slangcFamily(
         "-I",
     });
     cmd.addDirectoryArg(b.path(module_dir));
+    addModuleInputs(b, cmd, module_dir);
+    if (comptime !std.mem.eql(u8, family.dir, module_dir)) addModuleInputs(b, cmd, family.dir);
     cmd.addFileArg(b.path(family.dir ++ "/" ++ family.source));
     cmd.addArgs(target_args);
     cmd.addArg("-o");
@@ -261,6 +315,10 @@ pub fn addGenShadersStep(b: *std.Build) void {
                 // WGSL — direct target.
                 const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
                 update.addCopyFileToSource(wgsl, "src/snail/shader/generated/wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
+
+                // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
+                const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
+                update.addCopyFileToSource(hlsl, "src/snail/shader/generated/hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl");
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both

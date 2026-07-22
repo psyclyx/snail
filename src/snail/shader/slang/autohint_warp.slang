@@ -35,7 +35,10 @@ public struct SnailAutohintPolicy {
     public float overshootMinPx;
 };
 
-#if defined(SNAIL_TARGET_WGSL)
+// WGSL has no isnan/isinf; Wine's d3dcompiler_47 (vkd3d-shader HLSL) does
+// not implement isnan either, so the D3D11 leg shares the magnitude test
+// (equivalent: NaN fails any comparison, |inf| exceeds FLT_MAX).
+#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11)
 public bool snailAhFinite(float v) { return abs(v) <= 3.402823e38; }
 #else
 public bool snailAhFinite(float v) { return !isnan(v) && !isinf(v); }

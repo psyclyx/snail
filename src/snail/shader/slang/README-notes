@@ -460,3 +460,101 @@ minimal-gl, autohint) byte-identical. Trap 11 is thereby RETIRED as a
 tool and demoted to a known 1-LSB Mesa fusion sensitivity; trap 9's
 Vulkan/WGSL default-O pinning is moot (those legs never changed).
 glsl_patch_es_highp is the one surviving patch tool.
+
+DirectX stage (2026-07-21): HLSL artifacts + minimal_d3d11 under Wine
+=====================================================================
+Fifth target: `hlsl` — D3D11 / SM 5.0, FXC-class. gen-shaders compiles
+every non-gl_only family with
+  slangc -DSNAIL_TARGET_D3D11 -target hlsl -profile sm_5_0
+         -line-directive-mode none
+into src/snail/shader/generated/hlsl/ (nine artifacts; linear_resolve and
+game_material are gl_only by design — D3D11 renders to an sRGB RTV and has
+no resolve pass). Exposed via snail.shader.generated (textHlsl/
+autohintHlsl/{colr,path,ttHinted,subpixel,textSample}FragHlsl + name/
+semantic constants), with artifact tests.
+
+Findings (all verified empirically):
+ - Matrix layout: the native-Slang finding CARRIES OVER — the default is
+   correct, no flag. The HLSL backend emits `#pragma
+   pack_matrix(column_major)` + `mul(mvp, v)`: with column-major packing
+   HLSL's logical row i gathers component i of each register, so the CPU's
+   column-major GLSL bytes read with GLSL `M * v` semantics. Confirmed by
+   the render gate (see below); D3D's "row_major default" folklore refers
+   to the fxc /Zpr flag, not what slang emits.
+ - Push-constant block lands as plain `cbuffer pc_0 : register(b0)` (fxc-
+   compatible; no ConstantBuffer<> syntax) with the exact 96-byte layout.
+ - Registers are assigned in declaration order and land on the Vulkan
+   binding numbers: t0 curve, t1 band, t2 layer-info (t2 = records buffer
+   for text_sample), t3 image array, s0 image sampler — even when earlier
+   textures are stripped as unused (autohint.vert keeps t2). -fvk-* flags
+   do not apply to -target hlsl.
+ - IO semantics: entry-point IO needs HLSL semantics or dxc/fxc reject it.
+   The family structs now carry `: ATTRIBn` (vertex inputs, n = the
+   instance-stream location) and `: TEXCOORDn` (varyings) next to the
+   [[vk::location(n)]]s. This is a NO-OP for every other target — all
+   spirv/wgsl/glsl330/gles300 artifacts stayed byte-identical.
+ - SV_VertexID is simply the native semantic on this target (and spirv_asm
+   is a hard error: "unexpected IR opcode during code emit"), so D3D11
+   shares the WGSL entry branch — including the clip-space y-flip: D3D11
+   clip space is y-up like WebGPU's, mvp = ortho(0, w, 0, h).
+ - Dual source: [[vk::index(1)]] emits SV_Target0/SV_Target1 (D3D11's
+   dual-source form, SRC1_* blend factors) — text_subpixel gets a
+   full-fidelity HLSL artifact, no family skipped on any count.
+
+Wine traps (Wine's d3dcompiler_47 is vkd3d-shader, not Microsoft FXC):
+ - isnan/isinf are not implemented (E5005). snailAhFinite's magnitude
+   test (`abs(v) <= 3.402823e38`, previously the WGSL branch) now covers
+   WGSL + D3D11; Vulkan/GL keep isnan — their artifacts are unchanged.
+ - Dynamic vector-component STORES are not implemented (E5017 in vkd3d
+   1.19; Wine 11.0's bundled copy crashes with a page fault instead of
+   erroring). snailAhPackAxis's packing loop
+   (`packedTargets[i>>2][i&3] = ...`, `packedSources[word] = ...`) gets a
+   SNAIL_TARGET_D3D11 [ForceUnroll] variant (break → `if (i < count)`
+   guard) so every subscript is a compile-time constant.
+ - Even with both fixed, stable wine 11.0 crashes in its HLSL front end on
+   autohint.vert; wine 11.6 (wine64Packages.unstable in shell.nix)
+   compiles all nine. Real Windows d3dcompiler_47 has none of these
+   limits, but Wine is the CI environment, so the artifacts stay inside
+   the vkd3d-supported subset.
+
+Validation (cheapest that genuinely validates, per artifact class):
+ 1. dxc (nix directx-shader-compiler) accepts -T vs_5_0/ps_5_0 and
+    compiles all nine — language/semantic validation at artifact time.
+ 2. vkd3d-compiler 1.19 (nix vkd3d) `-p {vs,ps}_5_0 -b dxbc-tpf` produces
+    real SM5 DXBC for all nine — bytecode-level validation.
+ 3. The demo runtime-compiles all nine through Wine's d3dcompiler_47: the
+    seven it draws with, plus text_subpixel/text_sample as compile-only
+    checks (validateRemainingArtifacts) since the scene has no subpixel or
+    material pass.
+
+minimal_d3d11 (src/demo/app/minimal_d3d11.zig): mirrors minimal_wgpu's
+structure and scene exactly (same fonts/atlas planner/emit stream/mvp).
+Headless D3D11CreateDevice (hardware, WARP fallback), RGBA8_UNORM_SRGB
+render-target texture, UpdateSubresource per planner region, the 92-byte
+instance layout as 9 per-instance input-layout elements (ATTRIB0..8, one
+input layout per vertex shader), premultiplied-over blend / cull-none /
+depth-off, DrawIndexedInstanced per batch, CopyResource + Map readback,
+TGA writer (D3D readback rows are already top-first, like wgpu).
+Cross-compile: zig's bundled mingw provides d3d11.h/d3dcompiler.h and the
+d3d11/dxgi/d3dcompiler_47 import libs; the one external dependency is
+HarfBuzz, compiled into the Windows snail module from the upstream
+single-file amalgam (src/harfbuzz.cc) out of the nix-pinned source
+(shell.nix exports HARFBUZZ_SRC; same pin as the host harfbuzz, so shaping
+matches). `zig build run-minimal-d3d11` runs the exe under `wine` with a
+hermetic WINEPREFIX=zig-out/wineprefix, WINEDEBUG=-all (first run pays
+one-time prefix setup; the syswow64 warnings from the 64-bit-only wine are
+harmless).
+
+Gate (vs zig-out/minimal-gl.tga, magick compare):
+  minimal-d3d11: AE @-fuzz 4% = 650/403200, raw AE = 875
+  minimal-wgpu:  AE @-fuzz 4% = 650/403200, raw AE = 878   (same class)
+  d3d11 vs wgpu directly: raw AE = 3, @-fuzz 4% = 0 — pixel-equivalent to
+  the WebGPU reference, as expected for the two y-flip targets sharing one
+  mvp. The GL delta is the known AA-edge class.
+
+Build-graph fix that this stage forced: Run steps hash a directory arg
+(`-I src/snail/shader/slang`) by PATH STRING only, so editing an imported
+module (not the family entry file) left every slangc output cached and
+gen-shaders silently rewrote stale artifacts. slangcFamily now registers
+every *.slang under the include dirs via addFileInput (see
+addModuleInputs in build/slang_shaders.zig).

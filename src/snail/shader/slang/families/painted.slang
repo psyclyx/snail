@@ -56,7 +56,7 @@ public struct SnailPushConstants {
 [[vk::binding(2, 0)]] Texture2D<float4> u_layer_tex;
 [[vk::binding(3, 0)]] Texture2DArray<float4> u_image_tex;
 [[vk::binding(3, 1)]] SamplerState u_image_sampler;
-#else // GL family (desktop GLSL 330 / GLES 300 es)
+#else // GL family (desktop GLSL 330 / GLES 300 es) and D3D11 HLSL (registers b0/t0..t3/s0 in declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 Texture2DArray<float4> u_curve_tex;
 Texture2DArray<uint2> u_band_tex;
@@ -66,31 +66,31 @@ SamplerState u_image_sampler;
 #endif
 
 struct VsInput {
-    [[vk::location(0)]] float4 rect;
-    [[vk::location(1)]] float4 xform;
-    [[vk::location(2)]] float2 origin;
-    [[vk::location(3)]] uint2 glyph;
-    [[vk::location(4)]] float4 bnd;
-    [[vk::location(5)]] float4 col;
-    [[vk::location(6)]] float4 tint;
+    [[vk::location(0)]] float4 rect : ATTRIB0;
+    [[vk::location(1)]] float4 xform : ATTRIB1;
+    [[vk::location(2)]] float2 origin : ATTRIB2;
+    [[vk::location(3)]] uint2 glyph : ATTRIB3;
+    [[vk::location(4)]] float4 bnd : ATTRIB4;
+    [[vk::location(5)]] float4 col : ATTRIB5;
+    [[vk::location(6)]] float4 tint : ATTRIB6;
 };
 
 struct VsOutput {
     float4 position : SV_Position;
-    [[vk::location(0)]] float4 color;
-    [[vk::location(1)]] float2 texcoord;
-    [[vk::location(2)]] nointerpolation float4 banding;
-    [[vk::location(3)]] nointerpolation int4 glyph;
-    [[vk::location(4)]] float4 tint;
+    [[vk::location(0)]] float4 color : TEXCOORD0;
+    [[vk::location(1)]] float2 texcoord : TEXCOORD1;
+    [[vk::location(2)]] nointerpolation float4 banding : TEXCOORD2;
+    [[vk::location(3)]] nointerpolation int4 glyph : TEXCOORD3;
+    [[vk::location(4)]] float4 tint : TEXCOORD4;
 };
 
 // Raw-VertexIndex loading: same trap and same workaround as
 // families/text.slang (SV_VertexID is D3D-semantics on SPIR-V targets).
-#if defined(SNAIL_TARGET_WGSL)
+#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);
-    // WGSL clip space is y-up; flip like families/text.slang.
+    // WGSL and D3D11 clip spaces are y-up; flip like families/text.slang.
     o.position.y = -o.position.y;
     return o;
 }
