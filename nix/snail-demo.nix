@@ -7,6 +7,7 @@
 , vulkan-loader
 , vulkan-headers
 , shader-slang
+, spirv-cross
 , wayland
 , wayland-protocols
 , src ? ../.
@@ -26,6 +27,7 @@ stdenv.mkDerivation {
     zig.hook
     pkg-config
     shader-slang
+    spirv-cross
   ];
 
   buildInputs = [

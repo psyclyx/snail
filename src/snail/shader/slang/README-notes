@@ -703,30 +703,46 @@ flags unchanged).
 
 Module mechanics: the accessor file (formerly src/snail/shader/generated.zig,
 now src/snail/shader/generated_root.zig, API IDENTICAL) is copied by a
-WriteFiles step into one cache directory as root.zig, with the artifacts
+WriteFiles step into a cache directory as root.zig, with the artifacts
 laid out under generated/<target>/ next to it — exactly the relative paths
-its @embedFile calls already used. That directory's root.zig is published
-as the PUBLIC `snail-shaders` module (b.addModule("snail-shaders", ...));
-snail.shader.generated is GONE from the `snail` module
-(public_renderer_api compile-errors if it returns). In-repo consumers
-import it as `@import("snail_shaders")` (demo GL renderers, minimal
-wgpu/d3d11/metal, perf glsl rows, windows-gates). The game material GL
-dialects are anonymous imports next to their consumer
+its @embedFile calls already used. One such directory exists PER TARGET
+SCOPE (slang_shaders.zig createGeneratedModule(b, name, artifacts,
+targets)), each published as its own module over the SAME accessor root:
+
+  snail-shaders          every target (public dependency surface + the
+                         artifact-contract/public-API test roots)
+  snail-shaders-gl       glsl330 + gles300 (embed_gl reference renderer →
+                         demo/screenshot/game GL hosts)
+  snail-shaders-glsl330  desktop GL only (perf glsl rows)
+  snail-shaders-wgsl     minimal_wgpu (native + windows-gates exe)
+  snail-shaders-hlsl     minimal_d3d11 (+ windows-gates exe)
+  snail-shaders-msl      minimal_metal / check-metal-demo
+
+Consumers keep importing whichever scope they are wired to as
+`@import("snail_shaders")` — Zig analyzes declarations lazily, so a scoped
+module's unreferenced accessors (whose generated/<target>/ files are
+absent) are never analyzed, and a consumer depends on exactly its own
+targets' generation Run steps. The GL demos no longer generate
+WGSL/HLSL/MSL; the WebGPU/D3D11/Metal demos never run spirv-cross. The
+game material GL dialects are anonymous imports next to their consumer
 (build.zig addGameShaderGl → @embedFile("game_material.vert.glsl330") etc.
 in gl_material.zig); its Vulkan leg stays a direct slangc compile
 (addGameShaderSpirv), as do the demo Vulkan family pipelines
-(build/vulkan_shaders.zig).
+(build/vulkan_shaders.zig) — neither drags in any aggregate.
 
 THE SCOPING RULE: Zig's build graph only executes steps that are depended
-on, and the generation steps are wired ONLY into the WriteFiles dir /
+on, and the generation steps are wired ONLY into the WriteFiles dirs /
 anonymous imports above. So a consumer that imports only `snail` +
 `snail-raster` (or composes shader.glsl) never runs slangc/spirv-cross and
 does not need them installed — verified by building an out-of-tree
-path-dependency consumer with both tools stripped from PATH. When a build
-DOES need them and they are missing, a preflight Fail step
-(slang_shaders.zig toolchainFail, mirroring the HARFBUZZ_SRC pattern)
-aborts with "generated shaders need slangc + spirv-cross; enter nix-shell
-or install shader-slang/SPIRV-Cross" instead of a raw exec error.
+path-dependency consumer with both tools stripped from PATH; likewise a
+WGSL/HLSL/MSL/SPIR-V consumer builds with spirv-cross stripped (verified
+for run-minimal-wgpu). When a build DOES need a missing tool, per-tool
+preflight Fail steps (slang_shaders.zig toolchainGates, mirroring the
+HARFBUZZ_SRC pattern) abort naming exactly what is missing for which
+targets: slangc → "generated shaders (all targets: ...) need slangc";
+spirv-cross → "the glsl330/gles300 generated-shader targets need
+spirv-cross ... (the spirv/wgsl/hlsl/msl targets need only slangc)".
 
 `zig build gen-shaders` remains as an OPTIONAL debugging step: it
 materializes the full artifact matrix into zig-out/shaders/ (library) and

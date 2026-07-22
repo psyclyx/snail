@@ -85,13 +85,19 @@
 //!
 //! Artifacts are NOT checked in: every compile is a lazy build-graph Run
 //! step whose output lands in the zig cache. `createGeneratedModule` lays
-//! the per-target artifacts out next to `src/snail/shader/generated_root.zig`
-//! (copied into one WriteFiles directory) and publishes the result as the
-//! `snail-shaders` module — only consumers that import that module (or the
-//! demo Vulkan/game SPIR-V legs) depend on the generation steps, so builds
-//! that never touch generated shaders never need slangc/spirv-cross on
-//! PATH. `zig build gen-shaders` optionally materializes the artifacts
-//! into zig-out/shaders/ for inspection.
+//! the artifacts of a REQUESTED TARGET SET out next to
+//! `src/snail/shader/generated_root.zig` (copied into one WriteFiles
+//! directory per module) and publishes the result as a module: the
+//! aggregate `snail-shaders` (every target) plus per-target scoped
+//! modules (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`; see
+//! build.zig). All modules share the one accessor root — Zig analyzes
+//! declarations lazily, so an accessor for a target absent from the
+//! module's WriteFiles dir is never analyzed and its `@embedFile` never
+//! fires, as long as the consumer doesn't call it. A module therefore
+//! depends on exactly its own targets' Run steps: a WGSL-only consumer
+//! runs slangc but never spirv-cross; builds that never touch generated
+//! shaders need neither. `zig build gen-shaders` optionally materializes
+//! the full matrix into zig-out/shaders/ for inspection.
 
 const std = @import("std");
 
@@ -278,31 +284,47 @@ fn addModuleInputs(b: *std.Build, cmd: *std.Build.Step.Run, dir_path: []const u8
     }
 }
 
-/// Preflight for the shader toolchain, mirroring the HARFBUZZ_SRC pattern
-/// in build.zig: when slangc/spirv-cross are missing from PATH, every
-/// generation Run step gets a Fail-step dependency so consumers abort with
-/// a clear message instead of a raw exec error. Consumers that never
-/// depend on generated shaders are untouched (the Fail step, like the Run
-/// steps, only executes when depended on). Cached per build graph.
-var toolchain_gate_cache: ?struct { owner: *std.Build, fail: ?*std.Build.Step } = null;
+/// Per-tool preflight for the shader toolchain, mirroring the
+/// HARFBUZZ_SRC pattern in build.zig: when a tool is missing from PATH,
+/// every generation Run step that would invoke it gets a Fail-step
+/// dependency so consumers abort with a message naming exactly what is
+/// missing for which targets, instead of a raw exec error. The gates are
+/// PER TOOL because the targets need different tools: every target's
+/// compile is slangc, but only the glsl330/gles300 dialects add a
+/// spirv-cross translation — a WGSL/HLSL/MSL/SPIR-V consumer must build
+/// with spirv-cross absent. Consumers that never depend on generated
+/// shaders are untouched (the Fail steps, like the Run steps, only
+/// execute when depended on). Cached per build graph.
+var toolchain_gate_cache: ?struct {
+    owner: *std.Build,
+    slangc_fail: ?*std.Build.Step,
+    spirv_cross_fail: ?*std.Build.Step,
+} = null;
 
-fn toolchainFail(b: *std.Build) ?*std.Build.Step {
-    if (toolchain_gate_cache) |g| if (g.owner == b) return g.fail;
-    const missing = check: {
-        _ = b.findProgram(&.{"slangc"}, &.{}) catch break :check true;
-        _ = b.findProgram(&.{"spirv-cross"}, &.{}) catch break :check true;
-        break :check false;
+fn toolchainGates(b: *std.Build) *@TypeOf(toolchain_gate_cache.?) {
+    if (toolchain_gate_cache) |*g| if (g.owner == b) return g;
+    const slangc_missing = if (b.findProgram(&.{"slangc"}, &.{})) |_| false else |_| true;
+    const spirv_cross_missing = if (b.findProgram(&.{"spirv-cross"}, &.{})) |_| false else |_| true;
+    toolchain_gate_cache = .{
+        .owner = b,
+        .slangc_fail = if (slangc_missing)
+            &b.addFail("generated shaders (all targets: spirv/wgsl/hlsl/msl/glsl330/gles300) need slangc; enter nix-shell or install shader-slang").step
+        else
+            null,
+        .spirv_cross_fail = if (spirv_cross_missing)
+            &b.addFail("the glsl330/gles300 generated-shader targets need spirv-cross; enter nix-shell or install SPIRV-Cross (the spirv/wgsl/hlsl/msl targets need only slangc)").step
+        else
+            null,
     };
-    const fail: ?*std.Build.Step = if (missing)
-        &b.addFail("generated shaders need slangc + spirv-cross; enter nix-shell or install shader-slang/SPIRV-Cross").step
-    else
-        null;
-    toolchain_gate_cache = .{ .owner = b, .fail = fail };
-    return fail;
+    return &toolchain_gate_cache.?;
 }
 
-fn attachToolchainGate(b: *std.Build, step: *std.Build.Step) void {
-    if (toolchainFail(b)) |fail| step.dependOn(fail);
+fn attachSlangcGate(b: *std.Build, step: *std.Build.Step) void {
+    if (toolchainGates(b).slangc_fail) |fail| step.dependOn(fail);
+}
+
+fn attachSpirvCrossGate(b: *std.Build, step: *std.Build.Step) void {
+    if (toolchainGates(b).spirv_cross_fail) |fail| step.dependOn(fail);
 }
 
 /// slangc invocation for one entry point of one family. `target_defines`
@@ -318,7 +340,7 @@ fn slangcFamily(
     output_name: []const u8,
 ) std.Build.LazyPath {
     const cmd = b.addSystemCommand(&.{"slangc"});
-    attachToolchainGate(b, &cmd.step);
+    attachSlangcGate(b, &cmd.step);
     for (target_defines) |d| cmd.addArg(b.fmt("-D{s}", .{d}));
     inline for (family.defines) |d| cmd.addArg("-D" ++ d);
     cmd.addArgs(&.{
@@ -378,9 +400,17 @@ pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, f
     };
 }
 
-/// One generated artifact: its path under the module's `generated/` tree
-/// (e.g. "spirv/text.vert.spv") and the build-graph file producing it.
+/// The generated-artifact targets. `createGeneratedModule` scopes a
+/// module to a subset so its consumers depend on (and run) exactly that
+/// subset's generation steps: all targets are compiled by slangc; the
+/// glsl330/gles300 dialects additionally run spirv-cross.
+pub const Target = enum { spirv, wgsl, hlsl, msl, glsl330, gles300 };
+
+/// One generated artifact: its target, its path under the module's
+/// `generated/` tree (e.g. "spirv/text.vert.spv"), and the build-graph
+/// file producing it.
 pub const Entry = struct {
+    target: Target,
     sub_path: []const u8,
     file: std.Build.LazyPath,
 };
@@ -394,8 +424,8 @@ pub const Artifacts = struct {
     game: []const Entry,
 };
 
-fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), sub_path: []const u8, file: std.Build.LazyPath) void {
-    list.append(b.allocator, .{ .sub_path = sub_path, .file = file }) catch @panic("OOM");
+fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), target: Target, sub_path: []const u8, file: std.Build.LazyPath) void {
+    list.append(b.allocator, .{ .target = target, .sub_path = sub_path, .file = file }) catch @panic("OOM");
 }
 
 /// Wire every slangc/spirv-cross invocation as lazy Run steps and return
@@ -425,21 +455,21 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 // compiles this leg itself so the running pipeline can never
                 // drift from the source).
                 const spv = vulkanStageSpv(b, family, stage);
-                appendEntry(b, list, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
+                appendEntry(b, list, .spirv, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
 
                 // WGSL — direct target.
                 const wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
-                appendEntry(b, list, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl);
+                appendEntry(b, list, .wgsl, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl);
 
                 // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
-                appendEntry(b, list, "hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl", hlsl);
+                appendEntry(b, list, .hlsl, "hlsl/" ++ family.name ++ "." ++ stage.short ++ ".hlsl", hlsl);
 
                 // Metal MSL — direct target, best-effort (see msl_args;
                 // no Metal compiler exists on this platform, validation
                 // is textual + deferred to a real Mac).
                 const msl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_METAL"}, msl_args, family.name ++ "." ++ stage.short ++ ".metal");
-                appendEntry(b, list, "msl/" ++ family.name ++ "." ++ stage.short ++ ".metal", msl);
+                appendEntry(b, list, .msl, "msl/" ++ family.name ++ "." ++ stage.short ++ ".metal", msl);
             }
 
             // GL family — one direct SPIR-V leg (loops and spirv_asm both
@@ -457,7 +487,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const skip_dialect = family.no_gles and es;
                 if (!skip_dialect) {
                     const cross = b.addSystemCommand(&.{"spirv-cross"});
-                    attachToolchainGate(b, &cross.step);
+                    attachSpirvCrossGate(b, &cross.step);
                     cross.addFileArg(if (es) gles_spv else gl_spv);
                     if (es) {
                         cross.addArgs(&.{ "--version", "300", "--es" });
@@ -482,7 +512,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                         patch.addFileArg(glsl);
                         glsl = patch.addOutputFileArg("highp-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
                     }
-                    appendEntry(b, list, out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl", glsl);
+                    appendEntry(b, list, if (es) .gles300 else .glsl330, out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl", glsl);
                 }
             }
         }
@@ -501,17 +531,29 @@ pub const GeneratedModule = struct {
     root: std.Build.LazyPath,
 };
 
-/// Build the public `snail-shaders` module: the in-tree accessor
-/// source (src/snail/shader/generated_root.zig) copied next to a
-/// `generated/` tree of build-time artifacts — the paths its `@embedFile`s
-/// expect — inside one WriteFiles output directory. Only consumers that
-/// import the module depend on (and therefore run) the shader toolchain.
-pub fn createGeneratedModule(b: *std.Build, artifacts: Artifacts) GeneratedModule {
+/// Build a published generated-shaders module scoped to `targets`: the
+/// in-tree accessor source (src/snail/shader/generated_root.zig) copied
+/// next to a `generated/` tree holding ONLY the requested targets'
+/// artifacts — the paths its `@embedFile`s expect — inside one WriteFiles
+/// output directory per module. Consumers depend on (and therefore run)
+/// exactly the requested targets' generation steps: Zig analyzes
+/// declarations lazily, so accessors for absent targets are never
+/// analyzed as long as the consumer doesn't reference them (calling one
+/// fails to compile with the missing generated/<target>/ path in the
+/// message). The accessor API is identical across every scope; in-repo
+/// consumers keep importing whichever module they are wired to as
+/// `snail_shaders`. build.zig publishes the aggregate `snail-shaders`
+/// (all targets — the artifact-contract test root and the public
+/// dependency surface) plus the per-target scopes.
+pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target) GeneratedModule {
     const wf = b.addWriteFiles();
     const root = wf.addCopyFile(b.path("src/snail/shader/generated_root.zig"), "root.zig");
-    for (artifacts.library) |e| _ = wf.addCopyFile(e.file, b.pathJoin(&.{ "generated", e.sub_path }));
+    for (artifacts.library) |e| {
+        if (std.mem.indexOfScalar(Target, targets, e.target) == null) continue;
+        _ = wf.addCopyFile(e.file, b.pathJoin(&.{ "generated", e.sub_path }));
+    }
     return .{
-        .module = b.addModule("snail-shaders", .{ .root_source_file = root }),
+        .module = b.addModule(name, .{ .root_source_file = root }),
         .root = root,
     };
 }

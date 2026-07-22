@@ -8,15 +8,22 @@
 //! The hand-written GLSL fragment catalog (`snail.shader.glsl`) remains
 //! available as the behavioral spec and the composition surface for GL hosts.
 //!
-//! This file is the root of the public `snail-shaders` module. The
+//! This file is the shared root of the generated-shaders modules: the
+//! aggregate `snail-shaders` (every target) and the per-target scopes
+//! (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`; see
+//! build.zig / build/slang_shaders.zig createGeneratedModule). The
 //! artifacts are NOT checked in: the build lays this file out next to a
-//! `generated/` tree of build-time compiler outputs (one WriteFiles
-//! directory in the zig cache; see build/slang_shaders.zig for the
-//! per-target flag sets and the semantic traps they avoid), and the
-//! `@embedFile`s below read from that tree. Only builds that import the
-//! `snail-shaders` module need `slangc` + `spirv-cross` on PATH (the nix
-//! shell provides both); `zig build gen-shaders` optionally materializes
-//! the artifacts into zig-out/shaders/ for inspection.
+//! `generated/` tree of build-time compiler outputs — only the module's
+//! requested targets — in one WriteFiles directory per module (see
+//! build/slang_shaders.zig for the per-target flag sets and the semantic
+//! traps they avoid), and the `@embedFile`s below read from that tree.
+//! Zig analyzes declarations lazily, so in a scoped module the accessors
+//! of absent targets are simply never analyzed; referencing one fails to
+//! compile with the missing `generated/<target>/` path. Each module
+//! depends on exactly its own targets' toolchain steps: every target
+//! needs `slangc`, only glsl330/gles300 add `spirv-cross` (the nix shell
+//! provides both). `zig build gen-shaders` optionally materializes the
+//! full matrix into zig-out/shaders/ for inspection.
 //!
 //! ## Interface contracts
 //!

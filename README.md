@@ -185,9 +185,12 @@ and target — Vulkan SPIR-V, WGSL, GLSL 330, GLES 300, D3D11 HLSL, and
 Metal MSL (best-effort: generated and cross-checked on Linux, not yet
 validated on a Mac) — plus the binding-name contracts loaders bind by.
 Artifacts are not checked in: they are generated at build time, in the zig
-cache, only for builds that actually import the module, so the toolchain
-(`slangc` + SPIRV-Cross; the nix shell provides both) is needed only then —
-consumers of `snail`/`snail-raster` alone never need it. Composition is
+cache, only for builds that actually import the module — and per-target
+scopes of the same API (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`,
+`-msl`) generate only their own targets, so e.g. a WebGPU consumer runs
+`slangc` alone while only the GL dialects add SPIRV-Cross (the nix shell
+provides both) — consumers of `snail`/`snail-raster` alone never need
+either. Composition is
 Slang-level too: a caller-authored family can `import text_sample` and
 sample glyph coverage inside its own material shader — the game demo's
 [`game_material.slang`](src/demo/game/slang/game_material.slang) is the
