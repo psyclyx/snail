@@ -347,8 +347,14 @@ jobs:
       # frontend (runtime newLibraryWithSource:) and a real GPU. No shader
       # toolchain is needed — the MSL is checked in and embedded. HarfBuzz
       # is compiled in from the amalgam (HARFBUZZ_SRC, set by shell.nix).
+      # SDKROOT: nix's hermetic zig doesn't autodetect the Apple SDK, and
+      # build.zig falls back to xcrun only if SDKROOT is unset — export it
+      # here so the framework search paths are explicit and logged.
       - name: Render through Metal
-        run: nix-shell --run "zig build run-minimal-metal -Dcpu=baseline"
+        run: |
+          export SDKROOT="$(/usr/bin/xcrun --show-sdk-path)"
+          echo "SDKROOT=$SDKROOT"
+          nix-shell --keep SDKROOT --run "zig build run-minimal-metal -Dcpu=baseline"
 
       # Reference is the GL render of the identical scene
       # (src/demo/app/minimal_reference.png, from zig-out/minimal-gl.tga).

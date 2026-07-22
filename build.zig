@@ -1188,6 +1188,22 @@ fn addMinimalMetalStep(
 
     if (b.graph.host.result.os.tag == .macos) {
         const mod = makeModule(b, modules, hb_src, b.resolveTargetQuery(.{}));
+        // nix's hermetic zig does not autodetect the Apple SDK ("unable to
+        // find framework ... searched paths: none"), so resolve it the way
+        // a system zig would: honor SDKROOT when the caller set it, else
+        // ask xcrun. Without either, linking fails with the same message
+        // as before — plus this comment to explain it.
+        const sdk: ?[]const u8 = b.graph.environ_map.get("SDKROOT") orelse blk: {
+            var code: u8 = 0;
+            const out = b.runAllowFail(&.{ "/usr/bin/xcrun", "--show-sdk-path" }, &code, .ignore) catch break :blk null;
+            if (code != 0) break :blk null;
+            const trimmed = std.mem.trim(u8, out, " \t\r\n");
+            break :blk if (trimmed.len == 0) null else trimmed;
+        };
+        if (sdk) |s| {
+            mod.addFrameworkPath(.{ .cwd_relative = b.pathJoin(&.{ s, "System", "Library", "Frameworks" }) });
+            mod.addLibraryPath(.{ .cwd_relative = b.pathJoin(&.{ s, "usr", "lib" }) });
+        }
         mod.linkFramework("Metal", .{});
         mod.linkFramework("Foundation", .{});
         mod.linkFramework("CoreGraphics", .{});
