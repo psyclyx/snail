@@ -20,11 +20,18 @@ concurrency:
 # and CI, no drift. The Windows runner installs nothing: it only executes
 # the prebuilt `windows-gates` artifacts cross-built inside that pin.
 #
+# The ubuntu coverage is split across parallel jobs — tests, linux-gl,
+# linux-vulkan, linux-wgpu-wine, consumer-builds, nix — each with the same
+# checkout + nix preamble. magic-nix-cache makes toolchain setup fast; the
+# shader generation re-runs per job (~1-2 min, accepted for the parallelism).
+#
 # Backend × platform coverage matrix
 # ==================================
 #   GATE  = rendered + pixel-gated in CI        smoke = rendered, crash/API gate only
 #   ubuntu = ubuntu-latest via nix-shell        windows = windows-2025, prebuilt artifacts only
 #   macos = macos-15 via nix-shell
+#   ubuntu GL rows run in the linux-gl job, Vulkan + game rows in
+#   linux-vulkan, and the wgpu + Wine D3D11 rows in linux-wgpu-wine.
 #
 # Backend | ubuntu                              | windows                          | macos
 # --------+-------------------------------------+----------------------------------+---------------------------------
@@ -62,10 +69,10 @@ concurrency:
 #         | (aarch64-macos codegen; no Metal    | Apple platforms.                 | (runtime newLibraryWithSource
 #         | compiler exists for Linux).         |                                  | + real GPU), magick <=2000.
 jobs:
-  zig:
-    name: Zig
+  tests:
+    name: Tests + artifact validation
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 
@@ -75,24 +82,23 @@ jobs:
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
 
-      # install-demo/install-game compile the native-Slang families to
-      # SPIR-V at build time, so they need slangc (from shell.nix).
-      - name: Build consumer entry points
-        run: |
-          nix-shell --run "zig build install-demo --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-game --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-perf --release=fast -Dcpu=baseline"
+  linux-gl:
+    name: GL / GLES / CPU gates (llvmpipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
       - name: Backend pixel comparison
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
 
       - name: Coverage regression probes
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: |
           nix-shell --run "zig build run-composite-probe -Dcpu=baseline"
           nix-shell --run "zig build run-coverage-probe -Dcpu=baseline"
@@ -104,16 +110,23 @@ jobs:
       # exactly against the analytic encode (the one GLES30 pixel gate that
       # needs no reference image or tolerance).
       - name: Gamma conformance probe (CPU/GL33/GLES30)
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: nix-shell --run "zig build run-gamma-probe -Dcpu=baseline"
 
       - name: Minimal GL example
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: nix-shell --run "zig build run-minimal-gl -Dcpu=baseline"
+
+  linux-vulkan:
+    name: Vulkan + game gates (lavapipe)
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
       # CPU-rasterizer demo + banner renders: the comparison base for the
       # Vulkan gates below, and the source of the checked-in Windows/macOS
@@ -151,9 +164,6 @@ jobs:
       # GL44/GLES30 (llvmpipe) + Vulkan (lavapipe) game-scene renders,
       # cross-gated against the gl33 render of the identical scene.
       - name: Game-scene screenshots (gl33/gl44/gles30/vulkan)
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: |
           nix-shell --run "zig build run-game-screenshot -Dcpu=baseline"
           nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-game-screenshot-vulkan -Dcpu=baseline'
@@ -172,14 +182,36 @@ jobs:
             test "$n" -le 4000
           done
 
+      - name: Upload renders
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: linux-vulkan-renders
+          path: |
+            zig-out/demo-screenshot-vulkan.tga
+            zig-out/banner-screenshot-vulkan.tga
+            zig-out/game-*.tga
+          if-no-files-found: ignore
+
+  linux-wgpu-wine:
+    name: wgpu + Wine D3D11 gates
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      GALLIUM_DRIVER: llvmpipe
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+
       # wgpu's GL backend over surfaceless-EGL llvmpipe. The Vulkan backend
       # is NOT used here: wgpu 27.0.4.0 on lavapipe (mesa 26.0.5, LLVM
       # 21.1.8) SEGVs after adapter selection — the known llvmpipe JIT crash
       # on fwidth+loop fragments (see the matrix above).
       - name: Minimal WebGPU example (wgpu GL backend on llvmpipe)
         env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
           SNAIL_WGPU_BACKEND: gl
         run: nix-shell --run "zig build run-minimal-wgpu -Dcpu=baseline"
 
@@ -202,9 +234,6 @@ jobs:
       # exe on real Windows: Wine is a real deployment target in its own
       # right; Windows is the authoritative runtime.
       - name: Minimal D3D11 example (Wine)
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
         run: nix-shell --run "xvfb-run -a zig build run-minimal-d3d11 -Dcpu=baseline"
 
       # Same gate as the Metal job below (see the comments there for the
@@ -242,26 +271,41 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: zig-job-renders
+          name: linux-wgpu-wine-renders
           path: |
             zig-out/minimal-d3d11.tga
             zig-out/minimal-d3d11-diff.png
             zig-out/minimal-wgpu.tga
-            zig-out/demo-screenshot-vulkan.tga
-            zig-out/banner-screenshot-vulkan.tga
-            zig-out/game-*.tga
           if-no-files-found: ignore
+
+  consumer-builds:
+    name: Release-mode consumer builds
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
+
+      # install-demo/install-game compile the native-Slang families to
+      # SPIR-V at build time, so they need slangc (from shell.nix).
+      - name: Build consumer entry points
+        run: |
+          nix-shell --run "zig build install-demo --release=fast -Dcpu=baseline"
+          nix-shell --run "zig build install-game --release=fast -Dcpu=baseline"
+          nix-shell --run "zig build install-perf --release=fast -Dcpu=baseline"
 
   # The same D3D11 exe the Wine gate ran, on the authoritative runtime: a
   # real Windows kernel, Microsoft's d3dcompiler_47 and D3D11 runtime
   # (hardware or WARP) — plus the CPU-rasterizer and WebGPU (wgpu D3D12)
   # gates. No Windows-side toolchain — the runner only executes the
-  # prebuilt `windows-gates` artifacts from the zig job, keeping shell.nix
-  # the single toolchain pin.
+  # prebuilt `windows-gates` artifacts from the linux-wgpu-wine job,
+  # keeping shell.nix the single toolchain pin.
   windows:
     name: Windows (D3D11 + CPU + wgpu)
     runs-on: windows-2025
-    needs: zig
+    needs: linux-wgpu-wine
     timeout-minutes: 15
     steps:
       - uses: actions/download-artifact@v4
@@ -421,9 +465,9 @@ jobs:
           if-no-files-found: ignore
 
   nix:
-    name: Nix
+    name: Nix package (snail-demo)
     runs-on: ubuntu-latest
-    timeout-minutes: 35
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@v4
 

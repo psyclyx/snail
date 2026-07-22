@@ -12,8 +12,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Releases ship NO binary artifacts, deliberately: snail is a source-first
+# Zig library — consumers fetch the repo (zig fetch / package manager) and
+# build against their own toolchain. The demo/game/perf entry points are
+# development tools, not distributables. Do not "fix" this by attaching
+# built binaries to the release.
+#
+# The tagged commit was already fully gated by CI (every backend pixel gate
+# runs on every push), so this workflow only re-runs the cheap test sanity
+# check before publishing the release notes.
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -32,20 +41,6 @@ jobs:
 
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
-
-      # install-demo/install-game compile the native-Slang families to
-      # SPIR-V at build time, so they need slangc (from shell.nix).
-      - name: Build consumer entry points
-        run: |
-          nix-shell --run "zig build install-demo --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-game --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-perf --release=fast -Dcpu=baseline"
-
-      - name: Backend pixel comparison
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
-        run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
 
       - name: Extract release notes for this tag
         id: release_notes
