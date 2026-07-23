@@ -181,8 +181,12 @@ pub const ProgramTables = struct {
     pub fn headInfo(self: ProgramTables) ParseError!Head {
         const bytes = try self.head.bytes(self.data);
         if (bytes.len < 54) return error.UnexpectedEof;
+        const units_per_em = try readU16(bytes, 18);
+        // Spec range (OpenType head.unitsPerEm); downstream FUnit→pixel
+        // scaling divides by this and assumes the result fits an i32.
+        if (units_per_em < 16 or units_per_em > 16_384) return error.InvalidFont;
         return .{
-            .units_per_em = try readU16(bytes, 18),
+            .units_per_em = units_per_em,
             .index_to_loc_format = try readI16(bytes, 50),
         };
     }
@@ -284,6 +288,24 @@ test "read TT program tables from bundled font" {
     try std.testing.expect(tables.loca != null);
     try std.testing.expect((try tables.tableBytes(tables.fpgm)).len > 0);
     try std.testing.expect((try tables.tableBytes(tables.prep)).len > 0);
+}
+
+test "head rejects units per em outside the spec range" {
+    var bytes = [_]u8{0} ** 54;
+    const tables = ProgramTables{
+        .data = &bytes,
+        .head = .{ .offset = 0, .length = bytes.len },
+        .maxp = .{ .offset = 0, .length = 0 },
+    };
+
+    std.mem.writeInt(u16, bytes[18..20], 15, .big);
+    try std.testing.expectError(error.InvalidFont, tables.headInfo());
+
+    std.mem.writeInt(u16, bytes[18..20], 16_385, .big);
+    try std.testing.expectError(error.InvalidFont, tables.headInfo());
+
+    std.mem.writeInt(u16, bytes[18..20], 1000, .big);
+    try std.testing.expectEqual(@as(u16, 1000), (try tables.headInfo()).units_per_em);
 }
 
 test "gasp behavior resolves ppem ranges" {

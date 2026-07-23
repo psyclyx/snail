@@ -782,12 +782,24 @@ fn scaleFUnitFloat(value: f32, ppem_26_6: u32, units_per_em: u16) i32 {
     const scaled = @as(f64, @floatCast(value)) *
         @as(f64, @floatFromInt(ppem_26_6)) /
         @as(f64, @floatFromInt(units_per_em));
-    return @intFromFloat(@round(scaled));
+    // Component coordinates come from the font and ppem from the caller;
+    // saturate rather than let @intFromFloat trap (UB in ReleaseFast).
+    const rounded = @round(scaled);
+    if (std.math.isNan(rounded)) return 0;
+    return @intFromFloat(std.math.clamp(rounded, min_i32_f64, max_i32_f64));
 }
 
+const min_i32_f64: f64 = @floatFromInt(std.math.minInt(i32));
+const max_i32_f64: f64 = @floatFromInt(std.math.maxInt(i32));
+
 fn round26Dot6(value: i32) i32 {
-    if (value >= 0) return @intCast(@divTrunc(@as(i64, value) + 32, 64) * 64);
-    return @intCast(-@divTrunc(@as(i64, -value) + 32, 64) * 64);
+    const wide: i64 = value;
+    if (value >= 0) {
+        const rounded = @divTrunc(wide + 32, 64) * 64;
+        return @intCast(@min(rounded, @as(i64, std.math.maxInt(i32))));
+    }
+    const rounded = -@divTrunc(-wide + 32, 64) * 64;
+    return @intCast(@max(rounded, @as(i64, std.math.minInt(i32))));
 }
 
 const addWrap = tt_graphics.addWrap;
@@ -955,4 +967,20 @@ test "hint machine rejects self-referential compound glyphs" {
     var cache = GlyphTopologyCache.initForProgram(allocator, &program);
     defer cache.deinit();
     try std.testing.expectError(error.InvalidFont, machine.hintCachedGlyph(allocator, &prepared, &cache, 1));
+}
+
+test "scaleFUnitFloat saturates instead of trapping on extreme scales" {
+    // Minimum valid units_per_em with a huge coordinate and ppem: the exact
+    // overflow window a malformed font could reach before head validation.
+    try std.testing.expectEqual(std.math.maxInt(i32), scaleFUnitFloat(1e30, std.math.maxInt(u32), 16));
+    try std.testing.expectEqual(std.math.minInt(i32), scaleFUnitFloat(-1e30, std.math.maxInt(u32), 16));
+    try std.testing.expectEqual(@as(i32, 0), scaleFUnitFloat(100, 12 * 64, 0));
+    try std.testing.expectEqual(@as(i32, 640), scaleFUnitFloat(1000, 10 * 64, 1000));
+}
+
+test "round26Dot6 handles values at the i32 edge" {
+    try std.testing.expectEqual(std.math.maxInt(i32), round26Dot6(std.math.maxInt(i32)));
+    try std.testing.expectEqual(std.math.minInt(i32), round26Dot6(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(i32, 64), round26Dot6(33));
+    try std.testing.expectEqual(@as(i32, -64), round26Dot6(-33));
 }
