@@ -329,6 +329,16 @@ fn validGlyphId(codepoint: hb.hb_codepoint_t) ?u16 {
     return @intCast(codepoint);
 }
 
+/// An extreme ppem against a large font advance can overflow the i32
+/// `hb_position_t` result; saturate instead of trapping on @intCast.
+fn saturatePosition(value: i64) hb.hb_position_t {
+    return @intCast(std.math.clamp(
+        value,
+        @as(i64, std.math.minInt(i32)),
+        @as(i64, std.math.maxInt(i32)),
+    ));
+}
+
 fn hbGetGlyphHAdvance(
     font: ?*hb.hb_font_t,
     font_data: ?*anyopaque,
@@ -349,7 +359,7 @@ fn hbGetGlyphHAdvance(
         const parent = hb.hb_font_get_parent(font);
         const em_adv: i64 = hb.hb_font_get_glyph_h_advance(parent, glyph);
         if (hooks.upem == 0) return 0;
-        return @intCast(@divTrunc(em_adv * @as(i64, hooks.ppem_x_26_6), @as(i64, hooks.upem)));
+        return saturatePosition(@divTrunc(em_adv * @as(i64, hooks.ppem_x_26_6), @as(i64, hooks.upem)));
     };
     return @intCast(adv);
 }
@@ -360,4 +370,17 @@ test "validGlyphId skips out-of-range ids from a malicious cmap" {
     try std.testing.expectEqual(@as(?u16, null), validGlyphId(0));
     try std.testing.expectEqual(@as(?u16, null), validGlyphId(0x10000));
     try std.testing.expectEqual(@as(?u16, null), validGlyphId(std.math.maxInt(hb.hb_codepoint_t)));
+}
+
+test "saturatePosition clamps extreme advance rescales to i32" {
+    try std.testing.expectEqual(@as(hb.hb_position_t, 500), saturatePosition(500));
+    try std.testing.expectEqual(@as(hb.hb_position_t, -500), saturatePosition(-500));
+    try std.testing.expectEqual(
+        @as(hb.hb_position_t, std.math.maxInt(i32)),
+        saturatePosition(@as(i64, std.math.maxInt(i32)) + 1),
+    );
+    try std.testing.expectEqual(
+        @as(hb.hb_position_t, std.math.minInt(i32)),
+        saturatePosition(@as(i64, std.math.minInt(i32)) - 1),
+    );
 }
