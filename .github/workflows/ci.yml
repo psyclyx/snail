@@ -22,7 +22,8 @@ concurrency:
 #
 # The ubuntu coverage is split across parallel jobs — tests, linux-gl,
 # linux-vulkan, linux-wgpu-wine, consumer-builds, nix — each with the same
-# checkout + nix preamble. magic-nix-cache makes toolchain setup fast; the
+# checkout + nix preamble. cache-nix-action restores the nix store from the
+# Actions cache (keyed on the npins pin) so toolchain setup is fast; the
 # shader generation re-runs per job (~1-2 min, accepted for the parallelism).
 #
 # Backend × platform coverage matrix
@@ -79,8 +80,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
@@ -95,8 +99,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Backend pixel comparison
         run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
@@ -128,8 +135,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       # CPU-rasterizer demo + banner renders: the comparison base for the
       # Vulkan gates below, and the source of the checked-in Windows/macOS
@@ -206,8 +216,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       # wgpu's GL backend over surfaceless-EGL llvmpipe. The Vulkan backend
       # is NOT used here: wgpu 27.0.4.0 on lavapipe (mesa 26.0.5, LLVM
@@ -288,8 +301,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       # install-demo/install-game compile the native-Slang families to
       # SPIR-V at build time, so they need slangc (from shell.nix).
@@ -368,8 +384,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
@@ -477,8 +496,11 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: DeterminateSystems/nix-installer-action@v22
-      - uses: DeterminateSystems/magic-nix-cache-action@v14
+      - uses: cachix/install-nix-action@v31
+      - uses: nix-community/cache-nix-action@v7
+        with:
+          primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
+          restore-prefixes-first-match: nix-${{ runner.os }}-
 
       - name: Build demo derivation
         run: nix-build default.nix --no-out-link -A demo
