@@ -100,6 +100,16 @@ fn printMessage(context: []const u8, message: c.WGPUStringView) void {
     }
 }
 
+/// Phase tracing for CI hangs: synchronous wgpu calls (device creation,
+/// pipeline compiles) can die inside the backend without ever reaching an
+/// event pump, so progress markers are the only diagnostics a runner log
+/// gets. Enabled by SNAIL_WGPU_LOG.
+var trace_enabled = false;
+
+fn trace(msg: []const u8) void {
+    if (trace_enabled) std.debug.print("trace: {s}\n", .{msg});
+}
+
 /// Monotonic clock in nanoseconds for pumpEvents' deadline. Zig 0.16 dropped
 /// `std.time.Timer`; mirror of snail-raster renderer.zig monotonicNanos —
 /// std.c.clock_gettime on POSIX, QueryPerformanceCounter on Windows.
@@ -148,8 +158,9 @@ const Gpu = struct {
 
     fn init() !Gpu {
         if (getenv("SNAIL_WGPU_LOG") != null) {
+            trace_enabled = true;
             c.wgpuSetLogCallback(&onLog, null);
-            c.wgpuSetLogLevel(c.WGPULogLevel_Info);
+            c.wgpuSetLogLevel(c.WGPULogLevel_Debug);
         }
         // wgpu-native selects the D3D12 shader compiler via instance extras,
         // not wgpu-rs's WGPU_DX12_COMPILER env var — honor the same name
@@ -232,6 +243,7 @@ const Gpu = struct {
             .userdata1 = null,
             .userdata2 = null,
         };
+        trace("requesting device");
         _ = c.wgpuAdapterRequestDevice(adapter, &device_desc, .{
             .nextInChain = null,
             .mode = c.WGPUCallbackMode_AllowProcessEvents,
@@ -241,6 +253,7 @@ const Gpu = struct {
         });
         try pumpEvents(instance, null, &device_req.done, "device request");
         const device = device_req.device orelse return error.NoDevice;
+        trace("device acquired");
         errdefer c.wgpuDeviceRelease(device);
 
         const queue = c.wgpuDeviceGetQueue(device) orelse return error.NoQueue;
@@ -795,8 +808,10 @@ pub fn main() !void {
     // them (validating the artifacts + @blend_src entries even on grayscale
     // frames); the frame only routes through them when SNAIL_WGPU_SUBPIXEL
     // selects an LCD stripe order.
+    trace("creating pipelines (synchronous shader compiles)");
     var pipelines = try Pipelines.init(gpu.device, layouts.pipeline, gpu.supports_dual_src);
     defer pipelines.deinit();
+    trace("pipelines created");
 
     const subpixel_order: i32 = blk: {
         const name = getenv("SNAIL_WGPU_SUBPIXEL") orelse break :blk 0;
@@ -996,12 +1011,14 @@ pub fn main() !void {
 
     const command = c.wgpuCommandEncoderFinish(encoder, null) orelse return error.CommandFailed;
     defer c.wgpuCommandBufferRelease(command);
+    trace("submitting frame");
     c.wgpuQueueSubmit(gpu.queue, 1, &command);
 
     // `AllowSpontaneous` is load-bearing: with `AllowProcessEvents` the
     // blocking `wgpuDevicePoll(wait = true)` deadlocks — it waits for the map
     // operation whose completion callback would only be delivered by a
     // `wgpuInstanceProcessEvents` call that never gets to run.
+    trace("mapping readback buffer");
     var map_req = MapRequest{};
     _ = c.wgpuBufferMapAsync(readback_buffer, c.WGPUMapMode_Read, 0, readback_size, .{
         .nextInChain = null,
