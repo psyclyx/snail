@@ -190,6 +190,7 @@ fn writeInstance(words: []u32, instance: Instance) void {
 }
 
 pub fn instanceAt(words: []const u32, glyph_index: usize) *const Instance {
+    std.debug.assert(glyph_index <= std.math.maxInt(usize) / WORDS_PER_INSTANCE);
     const base = glyph_index * WORDS_PER_INSTANCE;
     return constInstancePtr(words[base..][0..WORDS_PER_INSTANCE]);
 }
