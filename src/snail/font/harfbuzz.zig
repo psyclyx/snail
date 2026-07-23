@@ -297,8 +297,8 @@ pub const HarfBuzzShaper = struct {
         defer seen.deinit();
 
         for (0..shaped.count) |i| {
-            const gid: u16 = @intCast(shaped.infos[i].codepoint);
-            if (gid != 0) try seen.put(gid, {});
+            const gid = validGlyphId(shaped.infos[i].codepoint) orelse continue;
+            try seen.put(gid, {});
         }
 
         var result = try allocator.alloc(u16, seen.count());
@@ -317,6 +317,14 @@ pub const ShapedRaw = struct {
     infos: [*c]hb.hb_glyph_info_t,
     positions: [*c]hb.hb_glyph_position_t,
 };
+
+/// HB reports glyph ids as u32; a malicious cmap format 12 group can map
+/// codepoints to ids above 0xFFFF. Skip those (and .notdef) rather than
+/// trapping on a narrowing @intCast.
+fn validGlyphId(codepoint: hb.hb_codepoint_t) ?u16 {
+    if (codepoint == 0 or codepoint > std.math.maxInt(u16)) return null;
+    return @intCast(codepoint);
+}
 
 fn hbGetGlyphHAdvance(
     font: ?*hb.hb_font_t,
@@ -341,4 +349,12 @@ fn hbGetGlyphHAdvance(
         return @intCast(@divTrunc(em_adv * @as(i64, hooks.ppem_x_26_6), @as(i64, hooks.upem)));
     };
     return @intCast(adv);
+}
+
+test "validGlyphId skips out-of-range ids from a malicious cmap" {
+    try std.testing.expectEqual(@as(?u16, 1), validGlyphId(1));
+    try std.testing.expectEqual(@as(?u16, 0xFFFF), validGlyphId(0xFFFF));
+    try std.testing.expectEqual(@as(?u16, null), validGlyphId(0));
+    try std.testing.expectEqual(@as(?u16, null), validGlyphId(0x10000));
+    try std.testing.expectEqual(@as(?u16, null), validGlyphId(std.math.maxInt(hb.hb_codepoint_t)));
 }

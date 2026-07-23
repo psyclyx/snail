@@ -684,7 +684,7 @@ fn shapeWithHarfbuzz(
         const pos = shaped.positions[i];
         const cluster = @min(@as(u32, @intCast(info.cluster)), @as(u32, @intCast(text.len)));
         const cluster_end = nextClusterStart(cluster_starts, cluster, @intCast(text.len));
-        const raw_gid: u16 = @intCast(info.codepoint);
+        const raw_gid: u16 = glyphIdOrNotdef(info.codepoint);
         const glyph_id = replacementGlyphId(raw_gid, missing_replacement);
         const advance_x: f32 = if (raw_gid != 0 or glyph_id == 0)
             @floatFromInt(pos.x_advance)
@@ -723,6 +723,14 @@ fn nextClusterStart(sorted_starts: []const u32, cluster: u32, text_len: u32) u32
         }
     }
     return if (lo < sorted_starts.len) sorted_starts[lo] else text_len;
+}
+
+/// HarfBuzz reports glyph ids as u32; a malicious cmap format 12 group
+/// can map codepoints to ids above 0xFFFF. Treat those as .notdef so
+/// they flow through the missing-glyph replacement path instead of
+/// trapping on a narrowing @intCast.
+fn glyphIdOrNotdef(codepoint: u32) u16 {
+    return if (codepoint <= std.math.maxInt(u16)) @intCast(codepoint) else 0;
 }
 
 fn replacementGlyphId(glyph_id: u16, missing_replacement: ?u16) u16 {
@@ -1111,4 +1119,14 @@ test "HarfBuzz shaping uses variable font coordinates" {
     try testing.expectEqual(@as(usize, 1), light_text.glyphs.len);
     try testing.expectEqual(@as(usize, 1), heavy_text.glyphs.len);
     try testing.expect(light_text.glyphs[0].x_advance != heavy_text.glyphs[0].x_advance);
+}
+
+test "glyph ids above u16 from a malicious cmap degrade to .notdef" {
+    try testing.expectEqual(@as(u16, 0), glyphIdOrNotdef(0));
+    try testing.expectEqual(@as(u16, 3), glyphIdOrNotdef(3));
+    try testing.expectEqual(@as(u16, 0xFFFF), glyphIdOrNotdef(0xFFFF));
+    try testing.expectEqual(@as(u16, 0), glyphIdOrNotdef(0x10000));
+    try testing.expectEqual(@as(u16, 0), glyphIdOrNotdef(std.math.maxInt(u32)));
+    // Out-of-range ids take the missing-glyph replacement path.
+    try testing.expectEqual(@as(u16, 7), replacementGlyphId(glyphIdOrNotdef(0x10000), 7));
 }
