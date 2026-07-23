@@ -36,11 +36,13 @@ let
     stripRoot = false;
   };
 
-  # Microsoft DXC (dxcompiler.dll + dxil.dll) for the Windows WebGPU gate:
-  # wgpu's D3D12 backend generates a naga sampler heap (SM 5.1+ resource
-  # array) that FXC-class compilers reject, so the gate runs with
-  # WGPU_DX12_COMPILER=dxc and these dlls next to the exe. v1.8.2502 is the
-  # minimum wgpu documents for its dxc path.
+  # Microsoft DXC (dxcompiler.dll + dxil.dll), shipped in windows-gates for
+  # opt-in wgpu D3D12 shader compilation (WGPU_DX12_COMPILER=dxc). History:
+  # naga 27's SM 5.1 sampler-heap HLSL needed DXC (FXC rejects it, E5017);
+  # naga 29's default FXC path compiles the same shaders, and the DXC/dxil
+  # pair hangs device creation on the windows-2025 WARP runtime — so the
+  # Windows wgpu gate deliberately runs WITHOUT the env var. Kept pinned for
+  # hardware-Windows use, where DXC is the better compiler.
   dxcWindows = pkgs.fetchzip {
     url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2502/dxc_2025_02_20.zip";
     sha256 = "0dwyghlnx0fwmj6w2qc92gaz2x39a0qsb51a9ljcwsgpn70mr840";

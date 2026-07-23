@@ -55,16 +55,18 @@ concurrency:
 #         | rasterizer (baselines 0 / 280),     | a software ICD would break the   | wiring; recorded as future work.
 #         | game screenshot vs gl33 (1777).     | artifact-only rule.              |
 # WebGPU  | GATE: wgpu GL backend on llvmpipe   | GATE: cross-built exe + upstream | GATE: nixpkgs wgpu-native
-# (wgpu)  | (baseline 0 vs the GL reference).   | wgpu-native v27.0.4.0 gnu DLL    | 27.0.4.0, Metal backend; magick
+# (wgpu)  | (baseline 0 vs the GL reference).   | wgpu-native v29.0.1.1 gnu DLL    | 27.0.4.0, Metal backend; magick
 #         | The Vulkan backend on lavapipe      | (pinned in shell.nix); D3D12 on  | <=2000 vs the GL reference.
 #         | SEGVs after adapter selection       | WARP (forceFallbackAdapter retry |
 #         | (wgpu 27.0.4.0 + mesa 26.0.5        | — WebGPU withholds software      |
-#         | lavapipe, LLVM 21.1.8): the known   | adapters by default) with        |
-#         | fwidth+loop fragment JIT crash.     | WGPU_DX12_COMPILER=dxc: naga's   |
-#         | Recorded infeasible for now.        | sampler heap is SM 5.1+, FXC     |
-#         |                                     | rejects it (E5017; repro'd under |
-#         |                                     | Wine). dxcompiler/dxil dlls ship |
-#         |                                     | in windows-gates.                |
+#         | lavapipe, LLVM 21.1.8): the known   | adapters by default). naga 29's  |
+#         | fwidth+loop fragment JIT crash.     | default FXC path compiles the    |
+#         | Recorded infeasible for now.        | shaders fine (naga 27's SM 5.1   |
+#         |                                     | sampler heap needed DXC; naga    |
+#         |                                     | 29 changed the codegen). DXC     |
+#         |                                     | (dxcompiler/dxil) hangs WARP     |
+#         |                                     | device creation — do NOT set     |
+#         |                                     | WGPU_DX12_COMPILER here.         |
 # D3D11   | GATE under Wine/Xvfb (wine 11.6     | GATE: the authoritative runtime  | infeasible: no D3D outside
 #         | vkd3d-shader compiles all nine      | (real d3dcompiler_47, WARP or    | windows/wine; wine is not
 #         | HLSL artifacts).                    | hardware).                       | packaged for aarch64-darwin in
@@ -400,9 +402,12 @@ jobs:
         timeout-minutes: 5
         env:
           SNAIL_WGPU_LOG: "1"
-          # naga's D3D12 sampler heap needs SM 5.1+; FXC rejects it. The
-          # dxcompiler/dxil dlls ship in the windows-gates artifact.
-          WGPU_DX12_COMPILER: dxc
+          # No WGPU_DX12_COMPILER: naga 27's SM 5.1 sampler heap needed DXC
+          # (FXC rejected it, E5017), but naga 29's default FXC path accepts
+          # the same shaders (verified under Wine against Wine's
+          # d3dcompiler_47) — and the DXC/dxil pair hangs device creation on
+          # the windows-2025 WARP runtime. windows-2025 ships a real
+          # d3dcompiler_47, so the stock FXC path is the correct one here.
         run: .\snail-minimal-wgpu.exe
 
       - name: Gate the WebGPU render
