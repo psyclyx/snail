@@ -159,8 +159,16 @@ pub const Font = struct {
             if (offset + 16 > self.data.len) return error.UnexpectedEof;
             const tag = self.data[offset .. offset + 4];
             const table_offset = try readU32(self.data, offset + 8);
+            const table_len = try readU32(self.data, offset + 12);
             for (fields) |entry| {
                 if (std.mem.eql(u8, tag, entry.tag)) {
+                    // Sanity-check the recorded range up front (offset+length
+                    // must fit in the file) so truncated or overlapping
+                    // tables can't silently alias neighboring data.
+                    const start: usize = table_offset;
+                    const len: usize = table_len;
+                    if (start > self.data.len or len > self.data.len - start)
+                        return error.InvalidFont;
                     entry.dest.* = table_offset;
                     break;
                 }
@@ -843,6 +851,36 @@ test "COLR layer iterator with huge offsets fails cleanly" {
         .color_recs_off = 0xFFFFFFFF,
     };
     try std.testing.expect(it.next() == null);
+}
+
+test "table directory entries outside the file are rejected" {
+    const font_data = @import("assets").noto_sans_regular;
+    const valid = try Font.init(font_data);
+
+    var malformed = try std.testing.allocator.dupe(u8, font_data);
+    defer std.testing.allocator.free(malformed);
+
+    // Find the OS/2 record in the table directory.
+    const directory: usize = valid.directory_offset;
+    const num_tables = std.mem.readInt(u16, malformed[directory + 4 ..][0..2], .big);
+    var record: usize = 0;
+    for (0..num_tables) |i| {
+        const rec = directory + 12 + i * 16;
+        if (std.mem.eql(u8, malformed[rec .. rec + 4], "OS/2")) {
+            record = rec;
+            break;
+        }
+    }
+    try std.testing.expect(record != 0);
+
+    // A table length that reaches past EOF is rejected at init.
+    std.mem.writeInt(u32, malformed[record + 12 ..][0..4], 0xFFFFFFFF, .big);
+    try std.testing.expectError(error.InvalidFont, Font.init(malformed));
+
+    // A table offset near EOF whose range leaves the file is rejected.
+    @memcpy(malformed, font_data);
+    std.mem.writeInt(u32, malformed[record + 8 ..][0..4], @intCast(malformed.len - 4), .big);
+    try std.testing.expectError(error.InvalidFont, Font.init(malformed));
 }
 
 test "nested compound glyph amplification is bounded" {
