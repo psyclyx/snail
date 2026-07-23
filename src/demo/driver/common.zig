@@ -80,9 +80,8 @@ pub const ScratchBuf = struct {
     }
 };
 
-/// Per-pass view onto the shared scratch buffer. `instances` spans the full
-/// emitted range across every pass (batch `first_instance` values index it
-/// directly); `batches` is the pass's own sub-slice of batches.
+/// Per-pass view onto the shared scratch buffer. Both slices contain only this
+/// pass's records, and every batch `first_instance` is relative to `instances`.
 pub const PassRecords = struct {
     instances: []const snail.render.records.Instance,
     batches: []const snail.render.records.DrawBatch,
@@ -107,10 +106,9 @@ pub fn passesShapeBudget(passes: []const Pass) usize {
     return total;
 }
 
-/// Emit every pass into a contiguous scratch run. Every PassRecords shares the
-/// same `instances` slice (the full emitted extent) so batch `first_instance`
-/// values keep their absolute meaning; each pass owns only its batch
-/// sub-slice.
+/// Emit every pass into a contiguous scratch run. Each pass emits into tails
+/// of the shared buffers with fresh cursors, so its batch indices are local to
+/// the matching `PassRecords.instances` slice.
 pub fn emitPasses(
     scratch: *ScratchBuf,
     passes: []const Pass,
@@ -120,22 +118,25 @@ pub fn emitPasses(
     std.debug.assert(passes.len == out_records.len);
     const budget = passesShapeBudget(passes);
     try scratch.ensure(budget, budget);
-    var ilen: usize = 0;
-    var blen: usize = 0;
+    var instance_start: usize = 0;
+    var batch_start: usize = 0;
     for (passes, pass_states, 0..) |pass, state, i| {
         std.debug.assert(state.initialized);
         std.debug.assert(state.count == pass.atlases.len);
-        const batch_start = blen;
+        var ilen: usize = 0;
+        var blen: usize = 0;
+        const instance_tail = scratch.instances[instance_start..];
+        const batch_tail = scratch.batches[batch_start..];
         for (pass.atlases, pass.pictures, state.bindings[0..state.count]) |atlas, picture, binding| {
-            _ = try snail.emit.emit(scratch.instances, scratch.batches, &ilen, &blen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
+            _ = try snail.emit.emit(instance_tail, batch_tail, &ilen, &blen, binding, atlas, picture.shapes, .identity, .{ 1, 1, 1, 1 });
         }
         out_records[i] = .{
-            .instances = scratch.instances[0..0], // patched below once ilen is final
-            .batches = scratch.batches[batch_start..blen],
+            .instances = instance_tail[0..ilen],
+            .batches = batch_tail[0..blen],
         };
+        instance_start += ilen;
+        batch_start += blen;
     }
-    const full_instances = scratch.instances[0..ilen];
-    for (out_records) |*rec| rec.instances = full_instances;
 }
 
 /// Ensure each pass's bindings are live in `cache`. Releases stale bindings on
