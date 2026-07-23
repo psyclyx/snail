@@ -2042,6 +2042,26 @@ test "tt executor derives vectors from point lines" {
     try expectStack(&ctx, &.{ 0x4000, 0, 0, 0x4000 });
 }
 
+test "tt executor tolerates i32-min vectors from the stack" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ std.math.minInt(i32), std.math.minInt(i32) };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    // SPVFS normalizes (x, y) popped from the stack; (-2^31, -2^31) used to
+    // overflow the i64 length-squared accumulation. Values this extreme are
+    // synthesizable via PUSHW 32767 + repeated DUP;ADD (CVT injection here
+    // just keeps the program short).
+    try ctx.execute(&.{
+        0xB0, 0, 0x45, // RCVT x = minInt(i32)
+        0xB0, 1, 0x45, // RCVT y = minInt(i32)
+        0x0A, // SPVFS
+        0x0C, // GPV
+    });
+
+    try expectStack(&ctx, &.{ -11585, -11585 });
+}
+
 test "tt executor derives line vectors from popped zp2 point toward popped zp1 point" {
     var stack: [16]i32 = undefined;
     var storage: [1]i32 = .{0};

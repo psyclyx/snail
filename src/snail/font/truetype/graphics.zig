@@ -131,12 +131,12 @@ fn superRound(value: i32, s: RoundMode.SuperRound, compensation: i32) i32 {
         const shifted = @as(i64, value) - @as(i64, s.phase) + @as(i64, s.threshold) + @as(i64, compensation);
         var v = @as(i64, s.phase) + @divTrunc(shifted, s.period) * s.period;
         if (v < 0) v = @as(i64, s.phase);
-        return @intCast(v);
+        return @truncate(v);
     } else {
         const shifted = -@as(i64, value) - @as(i64, s.phase) + @as(i64, s.threshold) - @as(i64, compensation);
         var v = -@as(i64, s.phase) - @divTrunc(shifted, s.period) * s.period;
         if (v > 0) v = -@as(i64, s.phase);
-        return @intCast(v);
+        return @truncate(v);
     }
 }
 
@@ -252,7 +252,10 @@ pub fn axisVector(axis: Axis) Vector {
 }
 
 pub fn normalizeF2Dot14(x: i32, y: i32) Vector {
-    const len2 = @as(i64, x) * x + @as(i64, y) * y;
+    // Each square fits i64 (max 2^62), but the sum overflows when both
+    // inputs are near ±2^31 (reachable via SPVFS/SPVTL). Saturate: the
+    // clamped magnitude leaves the direction — and the result — unchanged.
+    const len2 = @as(i64, x) * x +| @as(i64, y) * y;
     if (len2 == 0) return Vector.x_axis;
 
     const len = std.math.sqrt(@as(f64, @floatFromInt(len2)));
@@ -291,12 +294,15 @@ fn roundPeriod(value: i32, period: i32, phase: i32, threshold: i32, compensation
         const shifted = @as(i64, value) - @as(i64, phase) + @as(i64, threshold) + @as(i64, compensation);
         var v = @as(i64, phase) + @divTrunc(shifted, period) * period;
         if (v < 0) v = @as(i64, phase);
-        return @intCast(v);
+        // Bytecode can synthesize inputs within a rounding period of the i32
+        // edges (PUSHW 32767 + repeated DUP;ADD), where the rounded result
+        // doesn't fit i32. Truncate like ADD/SUB/MUL wrap rather than trap.
+        return @truncate(v);
     }
     const shifted = -@as(i64, value) - @as(i64, phase) + @as(i64, threshold) + @as(i64, compensation);
     var v = -@as(i64, phase) - @divTrunc(shifted, period) * period;
     if (v > 0) v = -@as(i64, phase);
-    return @intCast(v);
+    return @truncate(v);
 }
 
 fn roundFloor(value: i32, compensation: i32) i32 {
@@ -304,12 +310,12 @@ fn roundFloor(value: i32, compensation: i32) i32 {
         const adjusted = @as(i64, value) + @as(i64, compensation);
         var v = adjusted & ~@as(i64, 63);
         if (v < 0) v = 0;
-        return @intCast(v);
+        return @truncate(v);
     }
     const adjusted = -@as(i64, value) + @as(i64, compensation);
     var v = -(adjusted & ~@as(i64, 63));
     if (v > 0) v = 0;
-    return @intCast(v);
+    return @truncate(v);
 }
 
 fn roundCeil(value: i32, compensation: i32) i32 {
@@ -317,23 +323,23 @@ fn roundCeil(value: i32, compensation: i32) i32 {
         const adjusted = @as(i64, value) + @as(i64, compensation) + 63;
         var v = adjusted & ~@as(i64, 63);
         if (v < 0) v = 0;
-        return @intCast(v);
+        return @truncate(v);
     }
     const adjusted = -@as(i64, value) + @as(i64, compensation) + 63;
     var v = -(adjusted & ~@as(i64, 63));
     if (v > 0) v = 0;
-    return @intCast(v);
+    return @truncate(v);
 }
 
 fn roundNone(value: i32, compensation: i32) i32 {
     if (value >= 0) {
         var v = @as(i64, value) + @as(i64, compensation);
         if (v < 0) v = 0;
-        return @intCast(v);
+        return @truncate(v);
     }
     var v = @as(i64, value) - @as(i64, compensation);
     if (v > 0) v = 0;
-    return @intCast(v);
+    return @truncate(v);
 }
 
 /// FUnit → 26.6 pixel scaling with round-to-nearest, truncated to i32. The
@@ -421,4 +427,39 @@ test "graphics environment scales font units" {
     try std.testing.expectEqual(@as(i32, 32), env.scaleFUnitsX(50));
     try std.testing.expectEqual(@as(i32, 38), env.scaleFUnitsY(50));
     try std.testing.expectEqual(@as(i32, -38), env.scaleFUnitsY(-50));
+}
+
+test "round modes tolerate values near the i32 edges" {
+    // Bytecode can synthesize stack values within a rounding period of the
+    // i32 limits (PUSHW 32767 + repeated DUP;ADD); the rounded result then
+    // doesn't fit i32 and must wrap like ADD/SUB/MUL, not trap.
+    const near_max = std.math.maxInt(i32) - 32;
+    const near_min = std.math.minInt(i32) + 32;
+    const modes = [_]RoundMode{ .grid, .half_grid, .double_grid, .down_grid, .up_grid, .off };
+    for (modes) |mode| {
+        _ = mode.apply(near_max, 64);
+        _ = mode.apply(near_max, -64);
+        _ = mode.apply(near_min, 64);
+        _ = mode.apply(near_min, -64);
+    }
+    // S45ROUND's period (sqrt(2) px in 26.6, doubled) is the largest the
+    // super modes can reach; phase/threshold are bounded by the period.
+    const super: RoundMode = .{ .super = .{ .period = 23170, .phase = 11585, .threshold = 11585 } };
+    _ = super.apply(near_max, 64);
+    _ = super.apply(near_min, 64);
+    // In-range behaviour is unchanged: rounding still snaps to the grid.
+    try std.testing.expectEqual(@as(i32, 64), (RoundMode{ .grid = {} }).apply(33, 0));
+    try std.testing.expectEqual(@as(i32, -64), (RoundMode{ .grid = {} }).apply(-33, 0));
+}
+
+test "normalizeF2Dot14 tolerates i32-min inputs" {
+    // (-2^31, -2^31): x² + y² = 2^63 overflows i64; saturation keeps the
+    // direction exact. Expected: (-1, -1)/sqrt(2) in 2.14 ≈ -11585.237.
+    const v = normalizeF2Dot14(std.math.minInt(i32), std.math.minInt(i32));
+    try std.testing.expectEqual(@as(i32, -11585), v.x);
+    try std.testing.expectEqual(@as(i32, -11585), v.y);
+    // Degenerate zero still falls back to the x axis.
+    try std.testing.expectEqual(Vector.x_axis, normalizeF2Dot14(0, 0));
+    // Ordinary F2DOT14 inputs are unaffected.
+    try std.testing.expectEqual(Vector.x_axis, normalizeF2Dot14(Vector.one, 0));
 }
