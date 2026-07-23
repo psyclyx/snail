@@ -75,11 +75,18 @@ pub const ResolvedLayerInfo = struct {
     local_y: u16,
 };
 
-pub fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, offset: u32) [4]f32 {
-    const texel = @as(u32, info_x) + offset;
-    const x = texel % width;
-    const y = @as(u32, info_y) + texel / width;
-    const base = (y * width + x) * 4;
+/// Fetch one texel from a layer-info slab. Returns null when the computed
+/// texel falls outside `data`: special draw records carry caller-chosen
+/// (info_x, info_y) coordinates, and the malformed-records contract requires
+/// treating an out-of-range fetch like any other invalid record rather than
+/// reading out of bounds.
+pub fn fetchLayerInfoTexel(data: []const f32, width: u32, info_x: u16, info_y: u16, offset: u32) ?[4]f32 {
+    if (width == 0) return null;
+    const texel = @as(usize, info_x) + @as(usize, offset);
+    const x = texel % @as(usize, width);
+    const y = @as(usize, info_y) + texel / @as(usize, width);
+    const base = (y * @as(usize, width) + x) * 4;
+    if (base > data.len or data.len - base < 4) return null;
     return .{ data[base + 0], data[base + 1], data[base + 2], data[base + 3] };
 }
 
@@ -694,6 +701,16 @@ test "path layer-info preparation validates before allocation and cleans up fail
         error.InvalidLayerInfo,
         preparePathLayerInfoRecords(failing.allocator(), &malformed, 6, 1, &test_simple_descriptors),
     );
+}
+
+test "layer-info texel fetch is bounds-checked against the slab" {
+    const slab = [_]f32{ 1, 2, 3, 4, 5, 6, 7, 8 };
+    try testing.expectEqual([4]f32{ 1, 2, 3, 4 }, fetchLayerInfoTexel(&slab, 2, 0, 0, 0).?);
+    try testing.expectEqual([4]f32{ 5, 6, 7, 8 }, fetchLayerInfoTexel(&slab, 2, 1, 0, 0).?);
+    try testing.expectEqual(@as(?[4]f32, null), fetchLayerInfoTexel(&slab, 2, 0, 1, 0));
+    // A caller-chosen info_x far outside the slab must not read out of bounds.
+    try testing.expectEqual(@as(?[4]f32, null), fetchLayerInfoTexel(&slab, 2, 65535, 0, 0));
+    try testing.expectEqual(@as(?[4]f32, null), fetchLayerInfoTexel(&slab, 0, 0, 0, 0));
 }
 
 test "path layer-info preparation rejects malformed dimensions and records without traps" {

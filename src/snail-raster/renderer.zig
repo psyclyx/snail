@@ -770,7 +770,7 @@ pub const Renderer = struct {
             return;
         }
 
-        const first_tag = fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0)[3];
+        const first_tag = (fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0) orelse return)[3];
         if ((special_kind == .path or special_kind == .colr) and first_tag < 0.0) {
             const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
             self.renderPathBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.tint, atlas_layer, entry, record, false);
@@ -788,8 +788,8 @@ pub const Renderer = struct {
         allow_subpixel: bool,
     ) void {
         const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
-        const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0);
-        const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1);
+        const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0) orelse return;
+        const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1) orelse return;
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2])) orelse return;
         const be = GlyphBandEntry{
             .glyph_x = @intFromFloat(header[0]),
@@ -2188,6 +2188,57 @@ test "drawBatch rejects malformed instances before mutation" {
         renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null),
     );
     try testing.expectEqualSlices(u8, &.{ 11, 22, 33, 44 }, &pixels);
+}
+
+test "drawBatch skips special instances whose info coordinates fall outside the layer-info slab" {
+    var pixels: [4]u8 = .{ 11, 22, 33, 44 };
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+
+    // A minimal 2x1 layer-info slab with no valid records, plus one empty
+    // atlas page so the hinted-text path passes its page lookup before
+    // fetching the header texel.
+    const slab = [_]f32{0} ** 8;
+    var infos = [_]LayerInfoEntry{.{ .data = &slab, .width = 2, .height = 1 }};
+    var pages = [_]?PreparedAtlasPage{
+        try PreparedAtlasPage.initFromView(testing.allocator, .{
+            .curve_data = &[_]u16{},
+            .band_data = &[_]u16{},
+            .curve_width = @as(u32, 0),
+            .curve_height = @as(u32, 0),
+            .band_width = @as(u32, 0),
+            .band_height = @as(u32, 0),
+        }),
+    };
+    defer if (pages[0]) |*page| page.deinit(testing.allocator);
+    var prepared = PreparedResources{
+        .allocator = testing.allocator,
+        .atlas_pages = &pages,
+        .layer_infos = &infos,
+        .layer_info_count = 1,
+    };
+    const state = render_state.DrawState{
+        .mvp = snail.Mat4.identity,
+        .surface = .{ .pixel_width = 1, .pixel_height = 1, .encoding = .linear },
+    };
+
+    // info_x = 65535 points far outside the 2x1 slab; both special kinds
+    // must skip the instance rather than read out of bounds.
+    var instance = std.mem.zeroes(vertex.Instance);
+    instance.xform = .{ 1, 0, 0, 1 };
+    instance.glyph[0] = @as(u32, 65535); // info_x = 65535, info_y = 0
+    instance.glyph[1] = testSpecialGlyphWord(1, .path);
+    try renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null);
+
+    instance.glyph[1] = testSpecialGlyphWord(1, .tt_hinted_text);
+    try renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null);
+
+    try testing.expectEqualSlices(u8, &.{ 11, 22, 33, 44 }, &pixels);
+}
+
+fn testSpecialGlyphWord(layer_count: u16, kind: render_abi.SpecialLayerKind) u32 {
+    // Same packing as the private abi special-word constructor, which is not
+    // re-exported through render.records: count | kind << 16 | marker bit 31.
+    return @as(u32, layer_count) | (@as(u32, @intFromEnum(kind)) << 16) | (@as(u32, 1) << 31);
 }
 
 test "linear resolve clear honors target pixel format" {
