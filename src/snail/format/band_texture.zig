@@ -38,6 +38,18 @@ pub fn unpackBlockPrefix(words: [4]u16) ?BlockPrefix {
     };
 }
 
+/// Total float→band-index conversion. Extreme-but-finite geometry (e.g. a
+/// nonzero extent smaller than ~1e-9, where `*_inv` overflows toward Inf)
+/// yields out-of-range or NaN band coordinates; saturate them into the band
+/// range instead of trapping in `@intFromFloat`. For in-range values this is
+/// identical to floor-then-clamp: clamping an integer-valued ceiling before
+/// the floor cannot change the result.
+fn bandIndexFloor(value: f32, max_band: i32) i32 {
+    if (std.math.isNan(value)) return 0;
+    const clamped = std.math.clamp(value, 0, @as(f32, @floatFromInt(max_band)));
+    return @intFromFloat(@floor(clamped));
+}
+
 /// Per-band curve index lists, backed by a single flat slab per axis
 /// instead of `max_band_count` separate `ArrayList`s. Each band's slot
 /// in the slab is fixed-size `curve_count`; the per-band length counter
@@ -149,8 +161,8 @@ const BandLists = struct {
             // overlap bands where `bi * height/n` falls in that range.
             const hf_lo: f32 = (cb.min.y - eps - y_origin) * h_inv;
             const hf_hi: f32 = (cb.max.y + eps - y_origin) * h_inv;
-            const h_first = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_lo))), 0, h_max_band);
-            const h_last = std.math.clamp(@as(i32, @intFromFloat(@floor(hf_hi))), 0, h_max_band);
+            const h_first = bandIndexFloor(hf_lo, h_max_band);
+            const h_last = bandIndexFloor(hf_hi, h_max_band);
             // Each ci writes its `_first_member` slot exactly once; no
             // pre-fill or sentinel guard required.
             self.h_first_member[ci] = @intCast(h_first);
@@ -165,8 +177,8 @@ const BandLists = struct {
             // V-band range.
             const vf_lo: f32 = (cb.min.x - eps - x_origin) * v_inv;
             const vf_hi: f32 = (cb.max.x + eps - x_origin) * v_inv;
-            const v_first = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_lo))), 0, v_max_band);
-            const v_last = std.math.clamp(@as(i32, @intFromFloat(@floor(vf_hi))), 0, v_max_band);
+            const v_first = bandIndexFloor(vf_lo, v_max_band);
+            const v_last = bandIndexFloor(vf_hi, v_max_band);
             self.v_first_member[ci] = @intCast(v_first);
             bi = v_first;
             while (bi <= v_last) : (bi += 1) {
@@ -766,6 +778,24 @@ test "finite extreme geometry is rejected before band-index conversion" {
         &curves,
         null,
     ));
+}
+
+test "tiny nonzero extents saturate band indices without trapping" {
+    // A nonzero height below ~1e-9 makes h_inv overflow toward Inf, pushing
+    // the float band coordinates far outside i32 range. Membership must
+    // saturate them into the band range instead of trapping.
+    const tiny = 1e-20;
+    const curves = [_]CurveSegment{.{
+        .kind = .quadratic,
+        .p0 = Vec2.new(0, 0),
+        .p1 = Vec2.new(tiny, tiny),
+        .p2 = Vec2.new(tiny, 0),
+    }};
+    const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(tiny, tiny) };
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = 0 };
+    var bd = try buildGlyphBandData(std.testing.allocator, std.testing.allocator, &curves, 1, bbox, entry, .zero, true);
+    defer freeGlyphBandData(std.testing.allocator, &bd);
+    try std.testing.expect(bd.texel_count > 0);
 }
 
 test "band texture rejects inconsistent caller-authored block sizes" {
