@@ -231,12 +231,20 @@ pub const HintMachine = struct {
         };
     }
 
-    /// Bind the `Prepared` to hint from and make sure the reusable CVT work
-    /// buffer covers its CVT (for the COW). Called at every entry point.
+    /// Bind the `Prepared` to hint from and make sure the reusable work
+    /// buffers cover its CVT/storage/function tables (for the COW). Called
+    /// at every entry point. A `Prepared` built by a machine with larger
+    /// buffers grows the scratch instead of slicing out of bounds.
     fn bind(self: *HintMachine, prepared: *const Prepared) !void {
         self.prepared = prepared;
         if (self.cvt_work.len < prepared.size.cvt.len)
             self.cvt_work = try self.allocator.realloc(self.cvt_work, prepared.size.cvt.len);
+        if (self.storage_work.len < prepared.storage.len)
+            self.storage_work = try self.allocator.realloc(self.storage_work, prepared.storage.len);
+        if (self.function_entries_work.len < prepared.function_entries.len)
+            self.function_entries_work = try self.allocator.realloc(self.function_entries_work, prepared.function_entries.len);
+        if (self.function_lookup_work.len < prepared.function_lookup.len)
+            self.function_lookup_work = try self.allocator.realloc(self.function_lookup_work, prepared.function_lookup.len);
     }
 
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, prepared: *const Prepared, glyph_id: u16) !GlyphHint {
@@ -545,7 +553,8 @@ fn allocateMachine(allocator: Allocator, program: *const Program) !HintMachine {
 
     const stack = try allocator.alloc(i32, sizes.stack);
     errdefer allocator.free(stack);
-    // COW targets; `prepare`/`bind` grow cvt_work to the size's CVT length.
+    // COW targets; `prepare`/`bind` grow them to cover the bound size's
+    // CVT/storage/function tables.
     const storage_work = try allocator.alloc(i32, @max(sizes.storage, 1));
     errdefer allocator.free(storage_work);
     const cvt_work = try allocator.alloc(i32, 0);
@@ -983,4 +992,25 @@ test "round26Dot6 handles values at the i32 edge" {
     try std.testing.expectEqual(std.math.minInt(i32), round26Dot6(std.math.minInt(i32)));
     try std.testing.expectEqual(@as(i32, 64), round26Dot6(33));
     try std.testing.expectEqual(@as(i32, -64), round26Dot6(-33));
+}
+
+test "bind grows work buffers for a larger foreign prepared" {
+    const allocator = std.testing.allocator;
+    var data_big: [synthetic_font_len]u8 = undefined;
+    var data_small: [synthetic_font_len]u8 = undefined;
+    const program_big = try Program.init(buildSyntheticFont(&data_big, 64, 8));
+    const program_small = try Program.init(buildSyntheticFont(&data_small, 0, 8));
+
+    var machine_big = try HintMachine.initForProgram(allocator, &program_big);
+    defer machine_big.deinit();
+    var machine_small = try HintMachine.initForProgram(allocator, &program_small);
+    defer machine_small.deinit();
+    var prepared = try machine_big.prepare(allocator, HintPpem.uniform(12 * 64), .{});
+    defer prepared.deinit();
+
+    // machine_small's scratch was sized for max_storage 0; binding the
+    // 64-slot prepared must grow it, not slice out of bounds in makeContext.
+    try machine_small.bind(&prepared);
+    const context = machine_small.makeContext();
+    try std.testing.expectEqual(prepared.storage.len, context.storage_work.len);
 }
