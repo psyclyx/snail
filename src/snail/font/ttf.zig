@@ -465,10 +465,18 @@ pub const Font = struct {
     pub fn parseGlyph(self: *const Font, scratch: std.mem.Allocator, glyph_id: u16) ParseError!Glyph {
         var cache = std.AutoHashMap(u16, Glyph).init(scratch);
         defer cache.deinit();
-        return self.parseGlyphInner(scratch, &cache, glyph_id, 0);
+        var curve_budget: usize = max_glyph_total_curves;
+        return self.parseGlyphInner(scratch, &cache, glyph_id, 0, &curve_budget);
     }
 
     const max_compound_depth: u8 = 64;
+
+    /// Total Bézier curves a single top-level `parseGlyph` may materialize
+    /// across all transitive compound components. Far above anything real
+    /// fonts need (a complex glyph has hundreds of curves), but stops the
+    /// exponential blowup from nested compounds that each duplicate every
+    /// descendant's contours.
+    const max_glyph_total_curves: usize = 1 << 20;
 
     fn parseGlyphInner(
         self: *const Font,
@@ -476,6 +484,7 @@ pub const Font = struct {
         cache: *std.AutoHashMap(u16, Glyph),
         glyph_id: u16,
         depth: u8,
+        curve_budget: *usize,
     ) ParseError!Glyph {
         // A malformed compound can reference itself (directly or through a
         // cycle). The completed-glyph cache cannot break that cycle because a
@@ -496,7 +505,7 @@ pub const Font = struct {
         const num_contours = try readI16(self.data, base);
 
         if (num_contours < 0) {
-            return self.parseCompoundGlyph(scratch, cache, glyph_id, base, metrics, depth);
+            return self.parseCompoundGlyph(scratch, cache, glyph_id, base, metrics, depth, curve_budget);
         }
         return self.parseSimpleGlyph(scratch, cache, glyph_id, base, @intCast(num_contours), metrics);
     }
@@ -552,6 +561,7 @@ pub const Font = struct {
         base: usize,
         metrics: GlyphMetrics,
         depth: u8,
+        curve_budget: *usize,
     ) ParseError!Glyph {
         var all_contours: std.ArrayList(Contour) = .empty;
 
@@ -560,8 +570,13 @@ pub const Font = struct {
         defer compound.deinit();
 
         for (compound.components) |component_ref| {
-            const component = try self.parseGlyphInner(scratch, cache, component_ref.glyph_id, depth + 1);
+            const component = try self.parseGlyphInner(scratch, cache, component_ref.glyph_id, depth + 1, curve_budget);
             for (component.contours) |contour| {
+                // Every component reference materializes a fresh copy of the
+                // descendant's contours; charge the copies against the shared
+                // budget so nested compounds can't grow exponentially.
+                if (contour.curves.len > curve_budget.*) return error.InvalidFont;
+                curve_budget.* -= contour.curves.len;
                 var transformed = try scratch.alloc(QuadBezier, contour.curves.len);
                 const d = Vec2.new(component_ref.dx, component_ref.dy);
                 for (contour.curves, 0..) |curve, ci| {
@@ -828,6 +843,61 @@ test "COLR layer iterator with huge offsets fails cleanly" {
         .color_recs_off = 0xFFFFFFFF,
     };
     try std.testing.expect(it.next() == null);
+}
+
+test "nested compound glyph amplification is bounded" {
+    // Chain of `depth` compound glyphs where glyph i references glyph i+1
+    // twice; the leaf is a simple 3-point glyph. Copying every descendant's
+    // contours per reference would materialize ~2^depth curves.
+    const depth = 27;
+    const num_glyphs = depth + 1;
+    const compound_len = 22;
+    const simple_len = 18;
+    const glyf_off = 2 * (num_glyphs + 1);
+    const hmtx_off = glyf_off + depth * compound_len + simple_len;
+    var data = [_]u8{0} ** (hmtx_off + 4 + 2 * (num_glyphs - 1));
+
+    // loca (short format): glyf-relative glyph offsets divided by two.
+    for (0..num_glyphs) |i| {
+        std.mem.writeInt(u16, data[i * 2 ..][0..2], @intCast(i * compound_len / 2), .big);
+    }
+    std.mem.writeInt(u16, data[num_glyphs * 2 ..][0..2], @intCast((depth * compound_len + simple_len) / 2), .big);
+
+    // Compound glyphs: two component records with byte xy args referencing
+    // the next glyph.
+    for (0..depth) |i| {
+        const g = glyf_off + i * compound_len;
+        std.mem.writeInt(i16, data[g..][0..2], -1, .big);
+        std.mem.writeInt(u16, data[g + 10 ..][0..2], 0x22, .big); // xy args, more components
+        std.mem.writeInt(u16, data[g + 12 ..][0..2], @intCast(i + 1), .big);
+        std.mem.writeInt(u16, data[g + 16 ..][0..2], 0x02, .big); // xy args
+        std.mem.writeInt(u16, data[g + 18 ..][0..2], @intCast(i + 1), .big);
+    }
+
+    // Leaf simple glyph: one contour of 3 on-curve points with zero-length
+    // coordinate streams.
+    const s = glyf_off + depth * compound_len;
+    std.mem.writeInt(i16, data[s..][0..2], 1, .big);
+    std.mem.writeInt(u16, data[s + 10 ..][0..2], 2, .big); // endPts[0]
+    data[s + 14] = 0x31; // on-curve, x/y unchanged
+    data[s + 15] = 0x31;
+    data[s + 16] = 0x31;
+
+    // One long horizontal metric; lsb entries for the rest.
+    std.mem.writeInt(u16, data[hmtx_off..][0..2], 500, .big);
+
+    const font = Font{
+        .data = &data,
+        .units_per_em = 1000,
+        .num_glyphs = num_glyphs,
+        .glyf_offset = glyf_off,
+        .loca_offset = 0,
+        .hmtx_offset = hmtx_off,
+        .num_h_metrics = 1,
+    };
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    try std.testing.expectError(error.InvalidFont, font.parseGlyph(arena.allocator(), 0));
 }
 
 test "parse real font" {
