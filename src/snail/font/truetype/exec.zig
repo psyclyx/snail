@@ -130,16 +130,22 @@ pub const SkipCache = struct {
         self.map.clearRetainingCapacity();
     }
 
-    fn keyFor(code: []const u8, pc: usize, stop_at_else: bool) Key {
-        return .{ .code_ptr = @intFromPtr(code.ptr), .pc = @intCast(pc), .stop_at_else = stop_at_else };
+    fn keyFor(code: []const u8, pc: usize, stop_at_else: bool) ?Key {
+        return .{
+            .code_ptr = @intFromPtr(code.ptr),
+            .pc = std.math.cast(u32, pc) orelse return null,
+            .stop_at_else = stop_at_else,
+        };
     }
 
     fn get(self: *const SkipCache, code: []const u8, pc: usize, stop_at_else: bool) ?u32 {
-        return self.map.get(keyFor(code, pc, stop_at_else));
+        return self.map.get(keyFor(code, pc, stop_at_else) orelse return null);
     }
 
-    fn put(self: *SkipCache, code: []const u8, pc: usize, stop_at_else: bool, target: u32) !void {
-        try self.map.put(keyFor(code, pc, stop_at_else), target);
+    fn put(self: *SkipCache, code: []const u8, pc: usize, stop_at_else: bool, target: usize) !void {
+        const key = keyFor(code, pc, stop_at_else) orelse return;
+        const target_u32 = std.math.cast(u32, target) orelse return;
+        try self.map.put(key, target_u32);
     }
 };
 
@@ -303,6 +309,11 @@ pub const Context = struct {
                 const count = try self.popU32();
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
+                    // Charge every iteration, not just every instruction: an
+                    // empty FDEF body is legal and consumes zero steps, so a
+                    // hostile font could otherwise LOOPCALL 2^31-1 times
+                    // inside the step budget and hang the VM.
+                    try self.countStep(steps);
                     try self.callFunction(function_id, steps);
                 }
             },
@@ -618,7 +629,7 @@ pub const Context = struct {
             if (cache.get(code, pc, stop_at_else)) |target| return @intCast(target);
             const target = try skipStructured(code, pc, stop_at_else);
             // Best-effort cache: an OOM here just means we'll re-scan next time.
-            cache.put(code, pc, stop_at_else, @intCast(target)) catch {};
+            cache.put(code, pc, stop_at_else, target) catch {};
             return target;
         }
         return skipStructured(code, pc, stop_at_else);
@@ -747,7 +758,10 @@ pub const Context = struct {
         if (arg < 0) return null;
         const encoded: u8 = @truncate(@as(u32, @intCast(arg)));
         const ppem = self.projectionPpem26Dot6() / 64;
-        const target_ppem = self.graphics.delta_base + base_offset + @as(i32, encoded >> 4);
+        // Wrap like the rest of the VM's i32 arithmetic: delta_base comes
+        // from SDB and can sit near the i32 edge, where the plain sum would
+        // overflow; the ppem comparison then just fails and no delta fires.
+        const target_ppem = addWrap(addWrap(self.graphics.delta_base, base_offset), @as(i32, encoded >> 4));
         if (@as(i32, @intCast(ppem)) != target_ppem) return null;
 
         // Per TrueType spec: low 4 bits encode magnitude with a forbidden 0:
@@ -1211,7 +1225,8 @@ pub const Context = struct {
         const dx = subWrap(p2_x, p1_x);
         const dy = subWrap(p2_y, p1_y);
         return if (perpendicular)
-            tt_graphics.normalizeF2Dot14(-dy, dx)
+            // negWrap: dy can be minInt(i32) via SCFS + SPVTL[1]/SFVTL[1].
+            tt_graphics.normalizeF2Dot14(negWrap(dy), dx)
         else
             tt_graphics.normalizeF2Dot14(dx, dy);
     }
@@ -1282,7 +1297,6 @@ pub const Context = struct {
         return absI32(self.graphics.projection.x) >= absI32(self.graphics.projection.y);
     }
 };
-
 
 const Pair = struct {
     lhs: i32,
@@ -1474,10 +1488,9 @@ const tail_dispatch: [256]TailHandler = blk: {
     // zone setters, loop count, round mode bases, cut-in values.
     for ([_]u8{
         0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
-        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E,
-        0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
-        0x18, 0x19, 0x1A, 0x1D, 0x1E, 0x1F,
-        0x86, 0x87,
+        0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D, 0x0E, 0x10,
+        0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17, 0x18,
+        0x19, 0x1A, 0x1D, 0x1E, 0x1F, 0x86, 0x87,
     }) |op| t[op] = handleSimple(Context.executeGraphicsOp, op);
 
     // Stack: DUP, POP, CLEAR, SWAP, DEPTH, CINDEX, MINDEX.
@@ -1493,9 +1506,11 @@ const tail_dispatch: [256]TailHandler = blk: {
     for ([_]u8{
         0x4B, 0x4C, 0x4D, 0x4E,
         0x56, 0x57, 0x5E, 0x5F,
-        0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D, 0x6E, 0x6F,
-        0x76, 0x77,
-        0x7A, 0x7C, 0x7D, 0x85, 0x88, 0x8A, 0x8D, 0x8E,
+        0x68, 0x69, 0x6A, 0x6B,
+        0x6C, 0x6D, 0x6E, 0x6F,
+        0x76, 0x77, 0x7A, 0x7C,
+        0x7D, 0x85, 0x88, 0x8A,
+        0x8D, 0x8E,
     }) |op| t[op] = handleSimple(Context.executeStateOp, op);
 
     // RTDG (0x3D) — round to double grid. Wired through the slow path since
@@ -1521,9 +1536,17 @@ const tail_dispatch: [256]TailHandler = blk: {
     // is a real win — `relativeFlags(op, base)` becomes a comptime constant.
     for ([_]u8{
         0x27, 0x29,
-        0x2E, 0x2F, 0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
-        0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3E, 0x3F,
-        0x46, 0x47, 0x48, 0x49, 0x4A,
+        0x2E, 0x2F,
+        0x30, 0x31,
+        0x32, 0x33,
+        0x34, 0x35,
+        0x36, 0x37,
+        0x38, 0x39,
+        0x3A, 0x3B,
+        0x3C, 0x3E,
+        0x3F, 0x46,
+        0x47, 0x48,
+        0x49, 0x4A,
     }) |op| t[op] = handleSimple(Context.executePointOp, op);
     for (0xC0..0x100) |op| t[op] = handleSimple(Context.executePointOp, @intCast(op));
 
@@ -1683,6 +1706,16 @@ fn jumpTarget(code_len: usize, op_pc: usize, offset: i32) Error!usize {
 const OP_OPERAND_NPUSHB: i16 = -1; // 0x40: next u8 = count, then `count` bytes
 const OP_OPERAND_NPUSHW: i16 = -2; // 0x41: next u8 = count, then `count*2` bytes
 const OP_OPERAND_FDEF: i16 = -3; // 0x2C: scan to ENDF (0x2D)
+
+test "skip cache bypasses offsets outside its compact key" {
+    if (@bitSizeOf(usize) <= 32) return;
+    var cache = SkipCache.init(std.testing.allocator);
+    defer cache.deinit();
+    const too_large = @as(usize, std.math.maxInt(u32)) + 1;
+    try cache.put(&.{}, too_large, false, too_large);
+    try std.testing.expectEqual(@as(usize, 0), cache.map.count());
+    try std.testing.expectEqual(@as(?u32, null), cache.get(&.{}, too_large, false));
+}
 
 const skip_operand_table: [256]i16 = blk: {
     var t: [256]i16 = @splat(0);
@@ -2013,6 +2046,51 @@ test "tt executor derives vectors from point lines" {
     try expectStack(&ctx, &.{ 0x4000, 0, 0, 0x4000 });
 }
 
+test "tt executor tolerates i32-min vectors from the stack" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [2]i32 = .{ std.math.minInt(i32), std.math.minInt(i32) };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+
+    // SPVFS normalizes (x, y) popped from the stack; (-2^31, -2^31) used to
+    // overflow the i64 length-squared accumulation. Values this extreme are
+    // synthesizable via PUSHW 32767 + repeated DUP;ADD (CVT injection here
+    // just keeps the program short).
+    try ctx.execute(&.{
+        0xB0, 0, 0x45, // RCVT x = minInt(i32)
+        0xB0, 1, 0x45, // RCVT y = minInt(i32)
+        0x0A, // SPVFS
+        0x0C, // GPV
+    });
+
+    try expectStack(&ctx, &.{ -11585, -11585 });
+}
+
+test "tt executor derives perpendicular vectors without negation overflow" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [2]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        // y = minInt(i32), as SCFS can leave it; SPVTL[1] negates dy for the
+        // perpendicular and plain `-dy` would overflow.
+        .{ .x = 0, .y = std.math.minInt(i32), .ox = 0, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB1, 1, 0, 0x07, 0x0C, // SPVTL[1], GPV
+    });
+
+    try expectStack(&ctx, &.{ -0x4000, 0 });
+}
+
 test "tt executor derives line vectors from popped zp2 point toward popped zp1 point" {
     var stack: [16]i32 = undefined;
     var storage: [1]i32 = .{0};
@@ -2076,7 +2154,7 @@ test "tt executor resets dual projection except for SDPVTL" {
         0xB0, 0, 0x47, // GC[1] now measures y, not the stale SDPVTL dual vector.
     });
 
-    try expectStack(&ctx, &.{ 0 });
+    try expectStack(&ctx, &.{0});
 }
 
 test "tt executor scales WCVTF and RCVT through the projection-relative ratio" {
@@ -2103,10 +2181,10 @@ test "tt executor scales WCVTF and RCVT through the projection-relative ratio" {
         0x01, // SVTCA[x]
         0xB0, 0, 0x45, // RCVT cvt[0] → 32 (x-axis)
         0x00, // SVTCA[y]
-        0xB0, 1, 0x45, // RCVT cvt[1] → 38 (y-axis)
+        0xB0, 1,    0x45, // RCVT cvt[1] → 38 (y-axis)
         // And cross-read: cvt[1] in x-axis projection should rescale down to ~32.
-        0x01,
-        0xB0, 1, 0x45,
+        0x01, 0xB0, 1,
+        0x45,
     });
 
     // Both cells canonical-stored at base ppem=12 → 38, regardless of write axis.
@@ -2398,14 +2476,48 @@ test "tt executor applies delta point and cvt exceptions" {
         // DELTAC1: ppem 12, low=6 → -2 steps × 8 = -16/64 px, cvt 0
         0xB2, 0x36, 0, 1, 0x73,
         0xB0, 10, 0x5E, // SDB 10
-        0xB0, 4, 0x5F, // SDS 4
+        0xB0, 4,    0x5F, // SDS 4
         // DELTAP1: ppem 12, low=9 → +2 steps × quantum(delta_shift=4 → 4) = +8/64 px, point 1
-        0xB2, 0x29, 1, 1, 0x5D,
+        0xB2, 0x29, 1,
+        1,    0x5D,
     });
 
     try std.testing.expectEqual(@as(i32, 16), glyph_points[0].x);
     try std.testing.expectEqual(@as(i32, 108), glyph_points[1].x);
     try std.testing.expectEqual(@as(i32, 84), cvt[0]);
+}
+
+test "tt executor wraps delta target ppem arithmetic" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{std.math.maxInt(i32)};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setEnvironment(.{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .units_per_em = 1000,
+    });
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [1]Point = .{
+        .{ .x = 100, .y = 0, .ox = 100, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    // SDB accepts any i32; a hostile font can put delta_base at the i32 edge
+    // so `delta_base + base_offset + ppem_nibble` overflows. Wrapping makes
+    // the ppem comparison fail and no delta fires (CVT injection keeps the
+    // program short; the value is equally synthesizable via DUP;ADD).
+    try ctx.execute(&.{
+        0xB0, 0, 0x45, 0x5E, // SDB = maxInt(i32)
+        0xB2, 0x19, 0, 1, 0x5D, // DELTAP1: ppem nibble 1, point 0
+    });
+
+    try std.testing.expectEqual(@as(i32, 100), glyph_points[0].x);
 }
 
 test "tt executor records and calls function definitions" {
@@ -2456,6 +2568,26 @@ test "tt executor loop-calls functions and enforces call depth" {
         0x2D,
     });
     try std.testing.expectError(Error.CallDepthExceeded, ctx.execute(&.{ 0xB0, 5, 0x2B }));
+}
+
+test "tt executor counts LOOPCALL iterations against the step budget" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var entries: [4]Function = undefined;
+    var functions: FunctionDefs = .{ .entries = &entries };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{ .max_steps = 8 });
+    ctx.setFunctions(&functions);
+
+    // An empty FDEF body is legal and consumes zero steps per call. If
+    // iterations were free, a count of 32767 (or 2^31-1 via synthesized
+    // stack values) would run inside the budget; each iteration must cost a
+    // step so the limit trips instead.
+    try std.testing.expectError(Error.ExecutionLimitExceeded, ctx.execute(&.{
+        0xB0, 4, 0x2C, 0x2D, // FDEF 4 with an empty body
+        0xB8, 0x7F, 0xFF, // count = 32767
+        0xB0, 4, 0x2A, // LOOPCALL 4
+    }));
 }
 
 test "tt executor handles SROUND, S45ROUND and RTDG" {

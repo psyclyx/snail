@@ -6,69 +6,44 @@
 , harfbuzz
 , vulkan-loader
 , vulkan-headers
-, shaderc
+, shader-slang
+, spirv-cross
 , wayland
 , wayland-protocols
 , src ? ../.
 , pname ? "snail-demo"
 , version ? "0.12.1"
-, enableGL33 ? true
-, enableGL44 ? true
-, enableGLES30 ? true
-, enableVulkan ? true
-, enableCpu ? true
-, enableHarfBuzz ? true
 , optimize ? "fast"
 , cpu ? "baseline"
 }:
 
 let
   zig = zig_0_16;
-  backendOptions = import ./backend-options.nix { inherit lib; } {
-    inherit
-      enableGL33
-      enableGL44
-      enableGLES30
-      enableVulkan
-      enableCpu
-      enableHarfBuzz
-      optimize
-      cpu;
-    enableCApi = false;
-    cApiShared = false;
-    cApiStatic = false;
-  };
 in
-assert enableGL33 || enableGL44 || enableGLES30 || enableVulkan || enableCpu;
 stdenv.mkDerivation {
   inherit pname version src;
 
   nativeBuildInputs = [
     zig.hook
     pkg-config
-  ] ++ lib.optionals enableVulkan [
-    shaderc
+    shader-slang
+    spirv-cross
   ];
 
-  buildInputs =
-    lib.optionals (enableGL33 || enableGL44 || enableGLES30) [
-      libGL
-    ]
-    ++ lib.optionals enableHarfBuzz [
-      harfbuzz
-    ]
-    ++ lib.optionals enableVulkan [
-      vulkan-loader
-      vulkan-headers
-    ]
-    ++ [
-      wayland
-      wayland-protocols
-    ];
+  buildInputs = [
+    harfbuzz
+    libGL
+    vulkan-loader
+    vulkan-headers
+    wayland
+    wayland-protocols
+  ];
 
   zigBuildFlags = [
-    "demo"
-  ] ++ backendOptions.zigBuildFlags;
+    "install-demo"
+    "--release=${optimize}"
+    "-Dcpu=${cpu}"
+  ];
 
   dontUseZigCheck = true;
   dontSetZigDefaultFlags = true;

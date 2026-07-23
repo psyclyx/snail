@@ -1,9 +1,18 @@
-//! Fixed-capacity bag of pages.
+//! Fixed-capacity bag of pages — the caller's residency budget.
 //!
 //! The pool owns its pages for its whole lifetime. Pages move between two
 //! states: "in the free list" and "checked out (refcount >= 1)". Acquiring
 //! a page pulls one off the free list; releasing one (refcount → 0) pushes
 //! it back. The pool never deallocates a page; it just shuffles ownership.
+//!
+//! `max_layers` bounds the *resident* record set, not the total glyphs an
+//! app may ever touch: `error.OutOfLayers` from a record call is the
+//! signal to evict via `Atlas.compact` with a `RecordFilter` (see the
+//! capacity model notes on `Atlas`). `free_count` is the headroom gauge —
+//! evict while it is still above the expected compacted page count, since
+//! compaction acquires its pages before the old atlas releases any. The
+//! pool's `max_layers` also fixes the depth of the backend's curve/band
+//! texture arrays, so growing the budget means recreating those textures.
 //!
 //! The pool does *not* own GPU resources — that lives in the backend-side
 //! `Binding` returned by `upload`. This file is pure CPU-side bookkeeping.
@@ -17,8 +26,10 @@
 
 const std = @import("std");
 const page_mod = @import("page.zig");
+const render_abi = @import("../format/abi.zig");
+const band_tex = @import("../format/band_texture.zig");
 
-pub const AtlasPage = page_mod.AtlasPage;
+const AtlasPage = page_mod.AtlasPage;
 
 /// Minimal test-and-set spinlock. The pool is only touched at acquire/release
 /// boundaries (not on the per-record append path), so contention is rare;
@@ -40,10 +51,13 @@ const Spinlock = struct {
 
 pub const Options = struct {
     /// Maximum number of pages (equal to the GPU texture array layer count).
+    /// Must be between 1 and `max_atlas_layers` inclusive (currently 256).
     max_layers: u32,
-    /// Capacity in u16 words for the curve buffer of each page.
+    /// Capacity in u16 words for the curve buffer of each page. Must be
+    /// nonzero, segment-aligned, and representable by packed band refs.
     curve_words_per_page: u32,
-    /// Capacity in u16 words for the band buffer of each page.
+    /// Capacity in u16 words for the band buffer of each page. Must be
+    /// nonzero, texel-aligned, and addressable by `GlyphBandEntry`.
     band_words_per_page: u32,
 };
 
@@ -57,7 +71,43 @@ pub const Stats = struct {
     band_bytes_used: u64,
 };
 
-pub const PagePool = struct {
+const OptionsType = Options;
+const StatsType = Stats;
+
+/// Opaque, fixed-capacity atlas residency budget.
+///
+/// Page allocation, reference counting, publication, and generation identity
+/// are implementation details shared by `Atlas`, `atlas_upload`, and the draw
+/// encoder. Callers configure the budget, query aggregate statistics, and keep
+/// the handle alive; raw mutable pages are intentionally unreachable.
+pub const PagePool = opaque {
+    pub const Options = OptionsType;
+    pub const Stats = StatsType;
+    pub const InitError = std.mem.Allocator.Error || error{InvalidOptions};
+    pub const IdentityError = error{IdentityExhausted};
+    pub const AcquireError = error{OutOfLayers};
+
+    pub fn init(allocator: std.mem.Allocator, options: OptionsType) InitError!*PagePool {
+        return @ptrCast(try Pool.init(allocator, options));
+    }
+
+    /// Destroy the pool and every page it owns. The pool must outlive all
+    /// atlases, upload planners, device caches, and bindings created from it.
+    pub fn deinit(self: *PagePool) void {
+        poolImpl(self).deinit();
+    }
+
+    /// Return the immutable capacity configuration supplied to `init`.
+    pub fn config(self: *const PagePool) OptionsType {
+        return poolImplConst(self).options;
+    }
+
+    pub fn stats(self: *PagePool) StatsType {
+        return poolImpl(self).stats();
+    }
+};
+
+const Pool = struct {
     allocator: std.mem.Allocator,
     options: Options,
     pages: []*AtlasPage,
@@ -66,11 +116,33 @@ pub const PagePool = struct {
     free_stack: []u16,
     free_count: u32,
     mutex: Spinlock = .{},
+    /// Monotonic identity source for Atlas snapshots backed by this pool.
+    /// Zero is reserved for pool-less `Atlas.empty` values.
+    next_atlas_snapshot_id: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
+    /// Unique namespace for each upload planner/cache attached to this pool.
+    next_binding_source_id: std.atomic.Value(u64) = std.atomic.Value(u64).init(1),
 
-    pub fn init(allocator: std.mem.Allocator, options: Options) !*PagePool {
-        std.debug.assert(options.max_layers > 0);
+    fn init(allocator: std.mem.Allocator, options: OptionsType) PagePool.InitError!*Pool {
+        // Page indices are encoded in one byte, so a pool may expose all
+        // layers 0..255.
+        const max_curve_words = @as(u64, page_mod.CURVE_TEX_WIDTH) *
+            (@as(u64, 1) << band_tex.curve_loc_y_bits) *
+            page_mod.SEGMENT_WORDS_PER_TEXEL;
+        const max_band_words = @as(u64, page_mod.BAND_TEX_WIDTH) *
+            (@as(u64, std.math.maxInt(u16)) + 1) * 2;
+        if (options.max_layers == 0 or
+            options.max_layers > render_abi.max_atlas_layers or
+            options.curve_words_per_page == 0 or
+            options.curve_words_per_page % page_mod.CURVE_SEGMENT_WORDS != 0 or
+            options.curve_words_per_page > max_curve_words or
+            options.band_words_per_page == 0 or
+            options.band_words_per_page % 2 != 0 or
+            options.band_words_per_page > max_band_words)
+        {
+            return error.InvalidOptions;
+        }
 
-        const pool = try allocator.create(PagePool);
+        const pool = try allocator.create(Pool);
         errdefer allocator.destroy(pool);
 
         const pages = try allocator.alloc(*AtlasPage, options.max_layers);
@@ -82,11 +154,11 @@ pub const PagePool = struct {
         var built: u32 = 0;
         errdefer {
             var i: u32 = 0;
-            while (i < built) : (i += 1) pages[i].deinit();
+            while (i < built) : (i += 1) page_mod.deinit(pages[i]);
         }
 
         while (built < options.max_layers) : (built += 1) {
-            pages[built] = try AtlasPage.init(
+            pages[built] = try page_mod.init(
                 allocator,
                 @intCast(built),
                 options.curve_words_per_page,
@@ -107,55 +179,76 @@ pub const PagePool = struct {
         return pool;
     }
 
-    pub fn deinit(self: *PagePool) void {
-        for (self.pages) |p| p.deinit();
+    fn deinit(self: *Pool) void {
+        for (self.pages) |p| {
+            std.debug.assert(page_mod.isFree(p));
+            page_mod.deinit(p);
+        }
         self.allocator.free(self.pages);
         self.allocator.free(self.free_stack);
         const a = self.allocator;
         a.destroy(self);
     }
 
-    pub const AcquireError = error{OutOfLayers};
+    fn nextIdentity(counter: *std.atomic.Value(u64)) PagePool.IdentityError!u64 {
+        while (true) {
+            const id = counter.load(.monotonic);
+            // Zero is reserved and max cannot be incremented without wrap.
+            if (id == 0 or id == std.math.maxInt(u64)) return error.IdentityExhausted;
+            if (counter.cmpxchgWeak(id, id + 1, .monotonic, .monotonic) == null) return id;
+        }
+    }
+
+    /// Mint an identity that is unique for this pool's lifetime.
+    fn nextAtlasSnapshotId(self: *Pool) PagePool.IdentityError!u64 {
+        return nextIdentity(&self.next_atlas_snapshot_id);
+    }
+
+    /// Mint a nonzero identity for one upload planner/cache. Binding-local
+    /// generations are meaningful only together with this source identity.
+    fn nextBindingSourceId(self: *Pool) PagePool.IdentityError!u64 {
+        return nextIdentity(&self.next_binding_source_id);
+    }
 
     /// Pull a fresh page off the free list. Caller takes one ref (refcount
     /// transitions from 0 to 1). Returns `error.OutOfLayers` if the pool is
-    /// exhausted; callers should oversize the pool at construction or
-    /// recover by rebuilding it (see `docs/rewrite/12-open-questions.md`).
-    pub fn acquire(self: *PagePool) AcquireError!*AtlasPage {
+    /// exhausted; callers should preserve compaction headroom or recover by
+    /// rebuilding the pool at a larger capacity.
+    fn acquire(self: *Pool) PagePool.AcquireError!*AtlasPage {
         self.mutex.lock();
         defer self.mutex.unlock();
         if (self.free_count == 0) return error.OutOfLayers;
         self.free_count -= 1;
         const layer = self.free_stack[self.free_count];
         const page = self.pages[layer];
-        std.debug.assert(page.refcount.load(.acquire) == 0);
-        page.refcount.store(1, .release);
+        page_mod.activate(page);
         return page;
     }
 
     /// Decrement a page's refcount; on transition to zero, recycle it back
     /// to the free list. Safe to call any number of times for releases that
-    /// were retained earlier via `page.retain()` or `acquire`.
-    pub fn release(self: *PagePool, page: *AtlasPage) void {
-        if (!page.release()) return;
+    /// were retained earlier by an atlas snapshot or `acquire`.
+    fn release(self: *Pool, page: *AtlasPage) void {
+        if (!page_mod.release(page)) return;
         // refcount hit zero: recycle.
-        page.recycle();
+        page_mod.recycle(page);
         self.mutex.lock();
         defer self.mutex.unlock();
         std.debug.assert(self.free_count < self.pages.len);
-        self.free_stack[self.free_count] = page.layer_index;
+        self.free_stack[self.free_count] = page_mod.layerIndex(page);
         self.free_count += 1;
     }
 
-    pub fn stats(self: *PagePool) Stats {
+    fn stats(self: *Pool) StatsType {
         self.mutex.lock();
         defer self.mutex.unlock();
 
         var curve_used: u64 = 0;
         var band_used: u64 = 0;
         for (self.pages) |p| {
-            curve_used += @as(u64, p.curve.usedWords()) * @sizeOf(page_mod.Word);
-            band_used += @as(u64, p.band.usedWords()) * @sizeOf(page_mod.Word);
+            const published = page_mod.publishedWords(p);
+            curve_used += @as(u64, published.curve) * @sizeOf(page_mod.Word);
+            band_used += @as(u64, published.band) * @sizeOf(page_mod.Word);
         }
         const pages_total: u32 = @intCast(self.pages.len);
         const pages_free = self.free_count;
@@ -171,6 +264,38 @@ pub const PagePool = struct {
     }
 };
 
+fn poolImpl(pool: *PagePool) *Pool {
+    return @ptrCast(@alignCast(pool));
+}
+
+fn poolImplConst(pool: *const PagePool) *const Pool {
+    return @ptrCast(@alignCast(pool));
+}
+
+/// Internal atlas allocation bridge. The module is not exported by the public
+/// root, so these functions remain available to sibling implementation files
+/// without becoming methods on the opaque caller handle.
+pub fn acquire(pool: *PagePool) PagePool.AcquireError!*AtlasPage {
+    return poolImpl(pool).acquire();
+}
+
+pub fn release(pool: *PagePool, page: *AtlasPage) void {
+    poolImpl(pool).release(page);
+}
+
+pub fn nextAtlasSnapshotId(pool: *PagePool) PagePool.IdentityError!u64 {
+    return poolImpl(pool).nextAtlasSnapshotId();
+}
+
+pub fn nextBindingSourceId(pool: *PagePool) PagePool.IdentityError!u64 {
+    return poolImpl(pool).nextBindingSourceId();
+}
+
+pub fn ownsPage(pool: *const PagePool, layer: u32, page: *const AtlasPage) bool {
+    const impl = poolImplConst(pool);
+    return layer < impl.pages.len and impl.pages[layer] == page;
+}
+
 test "pool acquire and release round-trip" {
     var pool = try PagePool.init(std.testing.allocator, .{
         .max_layers = 4,
@@ -179,21 +304,21 @@ test "pool acquire and release round-trip" {
     });
     defer pool.deinit();
 
-    const a = try pool.acquire();
-    const b = try pool.acquire();
+    const a = try acquire(pool);
+    const b = try acquire(pool);
     try std.testing.expect(a != b);
-    try std.testing.expect(a.layer_index != b.layer_index);
-    try std.testing.expectEqual(@as(u32, 1), a.refcount.load(.acquire));
+    try std.testing.expect(page_mod.layerIndex(a) != page_mod.layerIndex(b));
+    try std.testing.expectEqual(@as(u32, 1), page_mod.refCount(a));
 
-    pool.release(a);
-    try std.testing.expectEqual(@as(u32, 0), a.refcount.load(.acquire));
+    release(pool, a);
+    try std.testing.expectEqual(@as(u32, 0), page_mod.refCount(a));
 
-    const c = try pool.acquire();
+    const c = try acquire(pool);
     // `a` was the most recently freed (LIFO) so it should come back first.
-    try std.testing.expectEqual(a.layer_index, c.layer_index);
+    try std.testing.expectEqual(page_mod.layerIndex(a), page_mod.layerIndex(c));
 
-    pool.release(b);
-    pool.release(c);
+    release(pool, b);
+    release(pool, c);
 }
 
 test "pool exhausts at capacity" {
@@ -204,12 +329,69 @@ test "pool exhausts at capacity" {
     });
     defer pool.deinit();
 
-    const p0 = try pool.acquire();
-    const p1 = try pool.acquire();
-    try std.testing.expectError(error.OutOfLayers, pool.acquire());
+    const p0 = try acquire(pool);
+    const p1 = try acquire(pool);
+    try std.testing.expectError(error.OutOfLayers, acquire(pool));
 
-    pool.release(p0);
-    pool.release(p1);
+    release(pool, p0);
+    release(pool, p1);
+}
+
+test "pool rejects options that cannot be represented by the atlas ABI" {
+    const allocator = std.testing.allocator;
+    const valid = Options{
+        .max_layers = 1,
+        .curve_words_per_page = page_mod.CURVE_SEGMENT_WORDS,
+        .band_words_per_page = 2,
+    };
+
+    var opts = valid;
+    opts.max_layers = 0;
+    try std.testing.expectError(error.InvalidOptions, PagePool.init(allocator, opts));
+
+    opts = valid;
+    opts.max_layers = render_abi.max_atlas_layers + 1;
+    try std.testing.expectError(error.InvalidOptions, PagePool.init(allocator, opts));
+
+    opts = valid;
+    opts.curve_words_per_page -= 1;
+    try std.testing.expectError(error.InvalidOptions, PagePool.init(allocator, opts));
+
+    opts = valid;
+    opts.band_words_per_page += 1;
+    try std.testing.expectError(error.InvalidOptions, PagePool.init(allocator, opts));
+}
+
+test "pool mints distinct nonzero binding source identities" {
+    var pool = try PagePool.init(std.testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = page_mod.CURVE_SEGMENT_WORDS,
+        .band_words_per_page = 2,
+    });
+    defer pool.deinit();
+
+    const a = try nextBindingSourceId(pool);
+    const b = try nextBindingSourceId(pool);
+    try std.testing.expect(a != 0);
+    try std.testing.expect(b != 0);
+    try std.testing.expect(a != b);
+}
+
+test "identity sources fail without wrapping their reserved value" {
+    var pool = try PagePool.init(std.testing.allocator, .{
+        .max_layers = 1,
+        .curve_words_per_page = page_mod.CURVE_SEGMENT_WORDS,
+        .band_words_per_page = 2,
+    });
+    defer pool.deinit();
+
+    poolImpl(pool).next_atlas_snapshot_id.store(std.math.maxInt(u64), .monotonic);
+    try std.testing.expectError(error.IdentityExhausted, nextAtlasSnapshotId(pool));
+    try std.testing.expectEqual(std.math.maxInt(u64), poolImpl(pool).next_atlas_snapshot_id.load(.monotonic));
+
+    poolImpl(pool).next_binding_source_id.store(std.math.maxInt(u64), .monotonic);
+    try std.testing.expectError(error.IdentityExhausted, nextBindingSourceId(pool));
+    try std.testing.expectEqual(std.math.maxInt(u64), poolImpl(pool).next_binding_source_id.load(.monotonic));
 }
 
 test "release recycles on refcount transition to zero" {
@@ -220,23 +402,23 @@ test "release recycles on refcount transition to zero" {
     });
     defer pool.deinit();
 
-    const p = try pool.acquire();
-    p.retain();
-    _ = p.curve.reserve(4);
-    const g0 = p.currentGeneration();
+    const p = try acquire(pool);
+    try page_mod.retain(p);
+    page_mod.discard(p, page_mod.reserve(p, 4, 2).?);
+    const g0 = page_mod.currentGeneration(p);
 
-    pool.release(p); // still refcount 1
-    try std.testing.expect(p.refcount.load(.acquire) == 1);
-    try std.testing.expectError(error.OutOfLayers, pool.acquire());
+    release(pool, p); // still refcount 1
+    try std.testing.expectEqual(@as(u32, 1), page_mod.refCount(p));
+    try std.testing.expectError(error.OutOfLayers, acquire(pool));
 
-    pool.release(p); // refcount 0 → recycled
-    try std.testing.expect(p.refcount.load(.acquire) == 0);
-    try std.testing.expect(p.currentGeneration() != g0);
-    try std.testing.expect(p.curve.usedWords() == 0);
+    release(pool, p); // refcount 0 → recycled
+    try std.testing.expectEqual(@as(u32, 0), page_mod.refCount(p));
+    try std.testing.expect(page_mod.currentGeneration(p) != g0);
+    try std.testing.expectEqual(page_mod.PublishedWords{ .curve = 0, .band = 0 }, page_mod.publishedWords(p));
 
-    const reused = try pool.acquire();
-    try std.testing.expectEqual(p.layer_index, reused.layer_index);
-    pool.release(reused);
+    const reused = try acquire(pool);
+    try std.testing.expectEqual(page_mod.layerIndex(p), page_mod.layerIndex(reused));
+    release(pool, reused);
 }
 
 test "pool stats track used watermarks" {
@@ -247,9 +429,8 @@ test "pool stats track used watermarks" {
     });
     defer pool.deinit();
 
-    const p = try pool.acquire();
-    _ = p.curve.reserve(8);
-    _ = p.band.reserve(4);
+    const p = try acquire(pool);
+    page_mod.discard(p, page_mod.reserve(p, 8, 4).?);
 
     const s = pool.stats();
     try std.testing.expectEqual(@as(u32, 2), s.pages_total);
@@ -257,5 +438,5 @@ test "pool stats track used watermarks" {
     try std.testing.expectEqual(@as(u64, 8 * @sizeOf(page_mod.Word)), s.curve_bytes_used);
     try std.testing.expectEqual(@as(u64, 4 * @sizeOf(page_mod.Word)), s.band_bytes_used);
 
-    pool.release(p);
+    release(pool, p);
 }

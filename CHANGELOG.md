@@ -2,81 +2,257 @@
 
 ## Unreleased
 
-The public API was rewritten end-to-end. Every previously-exposed noun
-(`TextBlobBundle`, `TrueTypeHintContext`, `GlyphHintSnapshot`, `ResourceManifest`,
-`Shaper`, `Hinter`, `PreparedPages`, the C-API surface around them) has been
-replaced. See `docs/plan.md` for the design rationale and the new layer
-breakdown. Callers should treat this as a from-scratch migration rather than
-diff-by-diff.
+The public API was rewritten end-to-end around an embeddable-only design.
+Every previously exposed noun (`TextBlobBundle`, `TrueTypeHintContext`,
+`GlyphHintSnapshot`, `ResourceManifest`, `Shaper`, `Hinter`, `PreparedPages`,
+the all-in-one `*Renderer`s, and the C API built on them) has been replaced.
+Treat this as a from-scratch migration.
 
-### Added — core primitives
+### Hardening and migration notes
 
-- `Faces` + free-function `shape(alloc, *const Faces, text, ShapeOptions) →
-  ShapedText`. Replaces `Shaper`. Per-face HB shaper state, OpenType reader,
-  fallback chain, and `face_index → font_id` dedup all live on `Faces`; no
-  hidden parsed-font cache. `ShapedText` carries the resolved `font_id` per
-  glyph so downstream picture builders no longer take a `face_to_font_id`
-  parameter.
-- `HintVm` (`font/hint_vm.zig`). Replaces `Hinter`. Tight `HintError` set
-  (no `|| anyerror` laundering). Per-ppem machine state is the one
-  documented internal cache, with `evictPpem` / `clear` / `stats` /
-  `warmPpem` on the public surface. Output memoization (hinted curves +
-  advances) moved out to `helpers.HintedGlyphCache`.
-- `AdvanceProvider` closure threaded through `ShapeOptions` — wires
-  HarfBuzz's hinted-advance callback to caller-owned cache state per shape
-  call. `helpers.HintedGlyphCache.asAdvanceProvider()` is the typical
-  binding.
-- `BackendCache` (replaces `PreparedPages` across CPU / GL33 / GL44 /
-  GLES30 / Vulkan). Each backend owns one. `upload(scratch, atlases) →
-  []Binding` for full uploads; `uploadDelta(scratch, prev_binding, atlas)
-  → Binding` for the terminal hot path — uploads only the new bytes a
-  per-page watermark says have been written since the prior binding.
-- Custom-shader resource primitives: `Renderer.curveTexHandle()` /
-  `bandTexHandle()` / `layerInfoTexHandle()` / `imageArrayHandle()`,
-  `vertex.DecodedInstance`, `decodeInstance`, `bindingTexels`,
-  `WORDS_PER_INSTANCE`, `WORDS_PER_OVERRIDE`. The game demo's
-  surface-text pass uses `snail.coverage` to embed snail's GLSL into a
-  caller-owned material shader.
-- Persistent HAMT-backed `Atlas.lookup` and `Atlas.paint_lookup`:
-  `Atlas.extend(alloc, entries)` is now O(log N) per inserted entry
-  instead of O(N) full-hashmap copy.
-- `snail.snap.*`: pure pixel-grid snapping helpers on `Transform2D`s.
-  Decoupled from Picture/Shape so any caller — Picture-based, custom
-  scene graph, or direct-emit — can pixel-align baselines, icon origins,
-  or rect edges via `snap.baseline` / `snap.origin` / `snap.gridRect`.
+- This unreleased work prepares the next breaking API migration. Raw mutable
+  `AtlasPage` storage is now genuinely opaque, including through inferred
+  `Atlas.pages` element types; renderer integrations consume immutable
+  `atlas_upload.Region` copies and `render.geometry` decoders. The software
+  renderer now reconstructs its prepared device pages by applying those same
+  regions instead of reaching into CPU atlas storage.
+  Upload planners now live only under `snail.atlas_upload` (`Planner` and
+  `OwnedPlanner`) instead of duplicate top-level aliases.
+- `snail.autohint` is now the durable authoring surface: analyzer, policy,
+  immutable feature values, and `max_features_per_axis`. The implementation
+  namespaces (`analysis`, `blue`, `producer`, and runtime `warp`) are private;
+  `snail-raster` receives its CPU fitter through an unpublished build-wired
+  support module.
+- `zig build test-core` runs the library, software renderer, support code, and
+  public source-API gate without shader-generation tools. `zig build test`
+  additionally runs the generated-shader API/contracts and requires `slangc`,
+  `spirv-cross`, and `naga`.
+- Construction and sizing that can fail are now explicitly fallible:
+  `PagePool.init`, `Atlas.init`, `atlas_upload.sizes`/planner initialization,
+  and `snail-raster.Renderer.init`/`reinitBuffer` (which now take length-owned
+  `[]u8` buffers). Invalid capacities, exhausted identities, malformed
+  buffers, incompatible strides, and target mismatches return typed errors
+  rather than trapping or silently accepting a partial configuration.
+- `Faces.build` rejects a face set that cannot be represented by `FaceIndex`.
+  `Faces.fontForFace` and `Faces.fontIdForFace` return `null` for an
+  out-of-range index instead of indexing unchecked. Internal `FaceState`,
+  fallback chains, HarfBuzz handles, identity maps, and the misleading
+  distinct-font counter now live behind type-erased storage and are no longer
+  inferable or exposed.
+- `Binding` identity is now complete and non-wrapping in practical use:
+  `source_id` and `generation` are `u64`, and equality/cache validation covers
+  the pool, issuing planner/device cache, generation, layer-info row, and image
+  layer. Bindings from another cache, retired slots, and forged offsets are
+  rejected.
+- Shaping accepts explicit `ShapeOptions.direction`, `.script`, and
+  `.language`; feature lists are no longer capped at the 32-entry stack fast
+  path. Each glyph's `source_start..source_end` now records a complete
+  half-open UTF-8 byte range for both LTR and RTL clusters, and fallback
+  itemization preserves its supported font-sensitive combining, emoji, and
+  Indic sequences. Invalid UTF-8, feature ranges, empty/oversized language
+  strings, ppem values, missing provider ppem, excessive text/features, and
+  excessive face counts are observable errors. Shaping-cache identity includes
+  every shaping input.
+- Path construction and preparation reject non-finite/unrepresentable
+  geometry, non-positive rational-conic weights, and counter/size overflow
+  with `InvalidGeometry` or `ShapeTooComplex`. Failed appends no longer consume
+  logical curve counts. Large finite f32 coordinate ranges normalize through
+  f64 intermediates instead of overflowing.
+- Atlas insertion validates structural curve/band payloads and keeps paired
+  curve/band reservations atomic. `emit` preflights bindings, records,
+  transforms, colors, policies, cursors, and output capacity; failures leave
+  both output cursors and buffers logically uncommitted.
+- The private physical band-block format now carries a two-texel structural
+  prefix (draw-record `glyphLoc` still points at the following headers). This
+  lets the CPU device walk shared-page and discarded-reservation boundaries
+  without snapshot metadata: it ignores prefixes/headers, prepares each H/V
+  reference only for its actual axis, and stores one coefficient array instead
+  of duplicate horizontal and vertical arrays. Custom producers must rebuild
+  `GlyphCurves` with the current packer rather than reusing older raw band bytes.
+- `snail-raster` validates image sizes/formats, render-target dimensions,
+  pixel format, stride, and backing byte length. Failed multi-atlas uploads
+  release every binding they planned; resize and renderer buffer replacement
+  are failure-atomic. Unsupported resolve/format combinations are reported
+  rather than reinterpreted.
+- The renderer record ABI is now version 2: one instance is 72 bytes / 18
+  words (down from 92 / 23), with outward-rounded f16 bounds, linear-f16
+  color/tint, a canonical four-word autohint policy, and direct encoding for
+  all 256 atlas layers. CPU and GPU entry points validate packed records before
+  consuming them; malformed/reserved encodings return typed errors without
+  mutating targets. Public autohint slab access is now one allocation-free
+  `render.geometry.autohint.decode` call returning a validated borrowed record;
+  the old unchecked per-field slicing helpers were removed. Packed band-count
+  decoding returns `null` for unrepresentable lanes instead of trapping.
+- Root exports add `TextDirection` and `ConicGradient`. The internal
+  `snail.tt` namespace is no longer public; use the focused `TtHintVm`,
+  `TtHintPpem`, `TtHintVmStats`, and `TtHintError` exports.
 
-### Added — helpers (`snail-helpers`)
+### Correctness and performance
 
-- `Picture` (immutable shape array + bbox), `concat` / `append` /
-  `transformed` / `tinted` composition ops, `from` / `fromOwnedSlice`
-  constructors.
-- `shapedRunPicture` / `hintedShapedRunPicture`: build a `Picture` from
-  a `ShapedText` run. COLR fanout, hinted-glyph scaling, and caller-snapped
-  baselines all happen at this layer.
-- `UnhintedGlyphCache` (memoizes `Font.extractCurves`) and
-  `HintedGlyphCache` (memoizes per-(ppem, gid) hinted curves + advances,
-  wraps a `HintVm`).
-- `ShapedRunCache`: memoize repeat shapings keyed by `(text, FontStyle,
-  features, ppem, advance_provider_id)`.
+- Upload planning distinguishes exact snapshots, direct append-only children,
+  branches, and unrelated atlases using full snapshot lineage. Delta plans
+  copy only changed page spans for direct growth; branches/unrelated snapshots
+  conservatively replace side data. Changed side data must fit the binding's
+  fixed initial row/image reservation; callers release and plan a fresh binding
+  after outgrowing it. Image records are validated for exact dimensions and
+  bytes per texel and are not redundantly uploaded for an exact snapshot or
+  direct child.
+- If applying a returned upload plan fails, `invalidateUploads()` now clears
+  both page watermarks and snapshot identity, so the next retry re-emits all
+  referenced pages, layer-info rows, and images instead of skipping bytes that
+  never reached the device.
+- Atlas growth can consume several producer slices through
+  `extendBatchesInPlace`, avoiding a flattened temporary and repeated
+  persistent-side-data copies. Raster page preparation decodes only appended
+  curve/band tails, image discovery is linear, and adaptive raster tile work
+  is bounded.
+- Draw batches describe one draw call over a contiguous run of instances:
+  there is one bounding quad per instance, not one quad per batch.
+
+### Design
+
+- **Embeddable-only.** snail owns no GPU objects, command submission,
+  threads, caches, or eviction policy. The `snail` module is CPU-side
+  preparation plus entry-point-free shader fragments and byte-layout
+  contracts; the host engine owns textures, uploads, pipelines, and draws.
+  The GL/Vulkan all-in-one renderers were removed from the shipped surface
+  (reference callers live in the demo tree); the optional software renderer
+  is the separate `snail-raster` module.
+- **The atlas is the store.** The pipeline is prepare → record → upload →
+  draw. Producers (`Faces`, `AutohintAnalyzer`, `TtHintVm`) are pure;
+  `record*Run` verbs commit prepared records into a value-typed, persistent
+  `Atlas`; nothing in the shipped API is a cache.
+
+### Added
+
+- `Faces` + free-function `shape()` → `ShapedText` (HarfBuzz shaping,
+  fallback chains, style selection, `AdvanceProvider` hook for hinted
+  advances).
+- `placeRun` / `placeRunAlloc`: shaped run → `Shape`s, with `HintMode`
+  (unhinted / autohint / tt_hint), `RunSnap` device-pixel origin snapping,
+  optional COLR fanout, and a `y_axis` option (`.down` default, `.up` for
+  y-up hosts — coverage is orientation-independent).
+- `Atlas` store: `recordUnhintedRun` (with `ColrHandling`: composite /
+  layers / outline_only), `recordAutohintRun`, `recordTtHintRun`,
+  `recordTtAdvanceRun` (measurement-only advances; `TtAdvanceSource` is the
+  read-side `AdvanceProvider` with observable fallback state). Capacity is
+  the caller-owned `PagePool`; `error.OutOfLayers` is the eviction moment;
+  `compact(filter)` is defragmentation and eviction in one full-fidelity
+  operation (`RecordFilter` keeps the working set).
+- `atlas_upload.Planner`: allocation-free, caller-owned
+  planner producing backend-neutral upload `Region`s; for a direct
+  append-only child, `planDelta` uploads only grown sub-row spans and changed
+  side data that fits the binding's fixed initial reservation. Branches and
+  unrelated snapshots use conservative replacement within that same limit.
+- `emit`: typed `Instance` / `DrawBatch` records (stable byte layout in
+  `render`), batch coalescing, typed errors.
+- `shader.glsl`: entry-point-free GLSL fragments + resource contracts for
+  GL / GLES 3.0 / Vulkan, composed into host-owned shaders.
+- `TtHintVm`: pure TrueType hinting VM (`prepare` → caller-owned
+  `PreparedPpem`; `hintGlyph` / `hintedAdvance`), plus the
+  resolution-independent autohinter (`autohint`: analyzer, policies, and
+  immutable feature values).
+- `snail.color`: boundary conversions (`srgbToLinearColor` /
+  `linearToSrgbColor` and the scalar transfer functions).
+- `snail-raster`: optional software renderer (`Renderer`, `DeviceAtlas`,
+  `draw`), with explicit target encodings and linear-light blending. Runtime
+  autohint fitting is package-private build support, not a public snail
+  namespace.
+- `snail-shaders` (separate module, `@import("snail_shaders")`): complete
+  shaders for every supported family/target combination across Vulkan SPIR-V,
+  WGSL (dual-source subpixel included), GLSL 330, GLES 300, D3D11 HLSL, and
+  Metal MSL, generated from the native Slang modules in
+  `src/snail/shader/slang/` (the shader source of truth), with their
+  binding-name contracts.
+  Artifacts are not checked in: they are produced at build time into the
+  zig cache, only for builds that import the module, so the Slang
+  toolchain (slangc + SPIRV-Cross) is needed exactly then and consumers
+  of `snail`/`snail-raster` alone never need it (`zig build gen-shaders`
+  optionally materializes the artifacts into `zig-out/shaders/` for
+  inspection). Callers can also compose at the Slang level:
+  `import text_sample` from a caller-authored family samples glyph
+  coverage inside an engine-owned material shader (the game demo's
+  `game_material.slang` is the worked example). The GLSL fragment
+  catalog (`shader.glsl`) stays as the behavioral spec and the GL
+  source-injection surface. Validated by the headless GL, GLES, Vulkan,
+  and wgpu-native (`run-minimal-wgpu`) examples and gates.
+- **LCD subpixel AA for hinted text, on every dual-source backend.** AA
+  policy (`RasterOptions.subpixel_order`) and hinting mode now compose:
+  new `tt_hinted_text_subpixel` and `autohint_subpixel` shader families
+  (dual-source blended, fragment-only — they pair with the text/autohint
+  vertex stages) plus the matching CPU raster paths. The autohint variant
+  linearizes the warp around the pixel center — the 7-tap lane step and
+  AA footprint scale by the per-axis inverse-warp slope, the same
+  approximation the grayscale path has always used for its footprint —
+  and the CPU rasterizer mirrors it exactly. Backends without
+  dual-source blending (GLES 3.0; devices lacking the feature) keep the
+  silent grayscale fallback.
+- **wgpu dual-source subpixel path enabled.** The WGSL subpixel
+  artifacts carry a dual-source entry (`fragmentDualMain`, `@blend_src`)
+  synthesized post-generation by `build/wgsl_gen_dual_entry.zig` — a
+  mechanical clone of the emitted `fragmentMain`, replacing the earlier
+  mangled-name `__requirePrelude` interop; naga-validated at generation.
+  Exposed through `snail-shaders` accessors and wired in `minimal_wgpu`
+  behind `WGPUFeatureName_DualSourceBlending` with grayscale fallback
+  (`SNAIL_WGPU_SUBPIXEL=rgb|bgr|vrgb|vbgr` selects the stripe order).
+  wgpu-native is pinned to v29.0.1.1 (upstream release zips, Linux +
+  Windows legs matched): naga < 29 rejected modules carrying both a
+  plain-MRT entry and a `@blend_src` entry.
+- **Reflection IS the parameter ABI.** snail ships Slang source plus the
+  machinery to make it work; the parameter-passing ABI (block layout,
+  binding slots) is no longer a hand-pinned promise. A generated
+  `reflection.zig` (from `slangc -reflection-json`, via
+  `build/gen_shader_reflection_zig.zig`; uniformity across families
+  asserted) ships in every `snail-shaders` scope — plus the
+  artifact-free `snail-shaders-reflection` scope — exposing the
+  `PushConstants` CPU struct (reflected-offset comptime asserts) and the
+  `binding` slot numbers. The reference renderers' hand-mirrored copies
+  (Vulkan contract, GL UBO block, wgpu/D3D11/Metal demos) are deleted in
+  favor of it. snail still owns the data ABI — instance-stream
+  semantics, atlas texel layouts, blend semantics — which reflection
+  cannot describe. The SPIRV-Cross-minted GL names stay guarded by the
+  textual artifact tests; reflection cannot reach them either.
+- **Slang module catalog is caller API.** build.zig exports the catalog
+  path as the named lazy path `snail_slang`
+  (`dependency.namedLazyPath("snail_slang")` → slangc `-I`); the
+  caller-facing module list is pinned in the "Caller integration"
+  section of `src/snail/shader/slang/README-notes`.
+
+### Changed
+
+- **Linear color boundary.** Every `[4]f32` color crossing the API is
+  linear light with straight alpha; snail no longer interprets host colors
+  as sRGB. CPAL palette colors (spec-defined sRGB) are converted once at
+  font extraction. Fragment output is premultiplied linear; sRGB encode
+  belongs to the host (framebuffer format or own resolve pass).
+- **Opaque image texels.** `Image` carries opaque texel bytes (`init`
+  validates a whole number of bytes per texel); there is no format enum.
+  The contract is "sampling must yield linear"; the host picks the GPU
+  texture format. `snail-raster` documents its own device format (sRGBA8).
+- `AdvanceProvider.get_advance` returns `?i32`; `null` falls back to the
+  font's native advance during shaping instead of silently collapsing the
+  glyph to zero width.
+- Typed errors replace asserts on caller-reachable paths:
+  `error.AnisotropicPpem` (`recordTtHintRun`), `error.CorruptPaintRecord`
+  (`compact` over image-paint layers).
+- HarfBuzz is required; the `-Dharfbuzz` flag and the built-in fallback
+  shaper are gone, as are all backend build flags (`-Dgl33`, `-Dgl44`,
+  `-Dgles30`, `-Dvulkan`, `-Dcpu-renderer`, `-Dc-api*`).
 
 ### Removed
 
-- `TextBlobBundle`, `TrueTypeHintContext`, `GlyphHintSnapshot`,
-  `ResourceManifest`, `TextAtlas`, `Shaper`, `Hinter`, the `GlyphCache`
-  compound-component cache, and all of the `appendHintedGlyph*` /
-  `bindHintSnapshot` / `bindHintContext` / `materialiseHintSnapshot`
-  surface. Callers build a `Faces`, call `shape()`, optionally compose
-  through a helper `Picture` builder, and feed the result to `emit` +
-  backend draw.
-- The entire C API of the prior surface. C bindings will be re-cut
-  against the new primitives in a separate release.
-- `Shape.local_paint` (paint comes from the atlas via `shape.key`).
-- `EmitResult.failed_shape_index` (`error.MissingRecord` is sufficient).
-- `Font.deinit` (empty body — `Font` holds caller-owned bytes; let it go
-  out of scope).
-- `AtlasPage.writeCurve` / `writeBand` from the public surface (only the
-  builder writes; custom-shader users read via `curveBytesUsed` /
-  `bandBytesUsed`).
+- The all-in-one renderers (`Gl33Renderer`, `Gl44Renderer`,
+  `Gles30Renderer`, `VulkanRenderer`, the type-erased `Renderer`) and the
+  upload/draw orchestration around them (`ResourceManifest`,
+  `PreparedResources`, `uploadResourcesBlocking`, `Scene`/`DrawList`).
+- The entire C API. C bindings will be re-cut against the new primitives
+  in a separate release.
+- All library-side caches (glyph caches, shaped-run caches, backend
+  caches). Demo-only conveniences (`Picture`, `ShapedRunCache`,
+  `WorkingSet`) live in the internal `src/support` module and are not part
+  of the published API.
+- `TextBlobBundle`, `TrueTypeHintContext`, `GlyphHintSnapshot`, `Shaper`,
+  `Hinter`, `TextAtlas`, and the rest of the 0.12 surface.
 
 ## 0.12.1 - 2026-05-23
 

@@ -5,53 +5,40 @@ const BBox = @import("../math/bezier.zig").BBox;
 const band_tex = @import("band_texture.zig");
 const curve_tex = @import("curve_texture.zig");
 const render_abi = @import("abi.zig");
-
-/// Per-instance data: 92 bytes = 23 u32 words per glyph.
+const autohint_policy = @import("../font/autohint/policy.zig");
+/// Per-instance data: 72 bytes = 18 u32 words per glyph.
 ///   rect:  4x f16 — bbox in em-space
 ///   xform: 4x f32 — linear part of 2D transform
 ///   org:   2x f32 — translation
 ///   glyph: 2x u32 — packed glyph data
-///   bnd:   4x f32 — band transform
-///   col:   4x u8 normalized sRGBA base color
-///   tint:  4x u8 normalized sRGBA instance tint
-///   policy: 7x u32 packed draw-time autohint policy (zero for other kinds)
+///   payload: 4x u32 — regular band-transform f32 bits or compact autohint policy
+///   col:   4x f16 linear-light base color
+///   tint:  4x f16 linear-light instance tint
 pub const Instance = extern struct {
     rect: [4]u16,
     xform: [4]f32,
     origin: [2]f32,
     glyph: [2]u32,
-    band: [4]f32,
-    color: [4]u8,
-    tint: [4]u8,
-    policy: [7]u32 = [_]u32{0} ** 7,
+    payload: [4]u32,
+    color: [4]u16,
+    tint: [4]u16,
 };
 
 pub const BYTES_PER_INSTANCE: usize = @sizeOf(Instance);
 pub const WORDS_PER_INSTANCE: usize = @divExact(BYTES_PER_INSTANCE, @sizeOf(u32));
-/// One override block (used by `emitInstanced`): 6 f32 transform fields
-/// + a packed u8x4 tint + one reserved word, = 8 u32 words = 32 bytes.
-pub const WORDS_PER_OVERRIDE: usize = 8;
 
-/// One instance per glyph quad (instanced rendering).
-pub const INSTANCES_PER_GLYPH: usize = 1;
-
-pub const BYTES_PER_VERTEX = BYTES_PER_INSTANCE;
-pub const WORDS_PER_VERTEX = WORDS_PER_INSTANCE;
-pub const VERTICES_PER_GLYPH = INSTANCES_PER_GLYPH;
-
-pub const SpecialLayerKind = render_abi.SpecialLayerKind;
+const SpecialLayerKind = render_abi.SpecialLayerKind;
 
 comptime {
-    std.debug.assert(BYTES_PER_INSTANCE == 92);
-    std.debug.assert(WORDS_PER_INSTANCE == 23);
+    std.debug.assert(BYTES_PER_INSTANCE == 72);
+    std.debug.assert(WORDS_PER_INSTANCE == 18);
     std.debug.assert(@offsetOf(Instance, "rect") == 0);
     std.debug.assert(@offsetOf(Instance, "xform") == 8);
     std.debug.assert(@offsetOf(Instance, "origin") == 24);
     std.debug.assert(@offsetOf(Instance, "glyph") == 32);
-    std.debug.assert(@offsetOf(Instance, "band") == 40);
+    std.debug.assert(@offsetOf(Instance, "payload") == 40);
     std.debug.assert(@offsetOf(Instance, "color") == 56);
-    std.debug.assert(@offsetOf(Instance, "tint") == 60);
-    std.debug.assert(@offsetOf(Instance, "policy") == 64);
+    std.debug.assert(@offsetOf(Instance, "tint") == 64);
 }
 
 pub const DecodedInstance = struct {
@@ -62,10 +49,57 @@ pub const DecodedInstance = struct {
     band: [4]f32,
     color: [4]f32,
     tint: [4]f32,
-    policy: [7]u32,
+    policy: [4]u32,
+};
+
+pub const ValidationError = error{
+    InvalidRect,
+    InvalidTransform,
+    InvalidGlyphWord,
+    InvalidPayload,
+    InvalidColor,
 };
 
 const identity_tint = [4]f32{ 1, 1, 1, 1 };
+
+fn allFinite(values: anytype) bool {
+    inline for (values) |value| {
+        if (!std.math.isFinite(value)) return false;
+    }
+    return true;
+}
+
+fn validTransform(transform: vec.Transform2D) bool {
+    return transform.inverse() != null;
+}
+
+fn validBBox(bbox: BBox) bool {
+    const values = .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y };
+    if (!allFinite(values)) return false;
+    if (bbox.min.x > bbox.max.x or bbox.min.y > bbox.max.y) return false;
+    const f16_max: f32 = std.math.floatMax(f16);
+    inline for (values) |value| {
+        if (@abs(value) > f16_max) return false;
+    }
+    return true;
+}
+
+fn validColor(color: [4]f32) bool {
+    if (!allFinite(color)) return false;
+    const limit: f32 = std.math.floatMax(f16);
+    inline for (color[0..3]) |component| {
+        if (@abs(component) > limit) return false;
+    }
+    return color[3] >= 0 and color[3] <= 1;
+}
+
+fn validBandEntry(entry: band_tex.GlyphBandEntry) bool {
+    return entry.h_band_count != 0 and
+        entry.v_band_count != 0 and
+        entry.h_band_count <= 16 and
+        entry.v_band_count <= 16 and
+        allFinite(.{ entry.band_scale_x, entry.band_scale_y, entry.band_offset_x, entry.band_offset_y });
+}
 
 fn f16BitsToF32(bits: u16) f32 {
     return @floatCast(@as(f16, @bitCast(bits)));
@@ -119,29 +153,6 @@ fn rectHalf4(values: [4]f32) [4]u16 {
     };
 }
 
-fn specialRectHalf4(kind: SpecialLayerKind, values: [4]f32) [4]u16 {
-    return switch (kind) {
-        .path => rectHalf4(values),
-        .hinted_text => rectHalf4(values),
-        .autohint => rectHalf4(values),
-        .colr => half4(values),
-    };
-}
-
-fn unorm8(value: f32) u8 {
-    const clamped = std.math.clamp(value, 0.0, 1.0);
-    return @intFromFloat(@round(clamped * 255.0));
-}
-
-fn color4(color: [4]f32) [4]u8 {
-    return .{
-        unorm8(color[0]),
-        unorm8(color[1]),
-        unorm8(color[2]),
-        unorm8(color[3]),
-    };
-}
-
 fn decodeHalf4(values: [4]u16) [4]f32 {
     return .{
         f16BitsToF32(values[0]),
@@ -151,17 +162,17 @@ fn decodeHalf4(values: [4]u16) [4]f32 {
     };
 }
 
-fn decodeColor4(color: [4]u8) [4]f32 {
+fn bandPayload(values: [4]f32) [4]u32 {
     return .{
-        @as(f32, @floatFromInt(color[0])) / 255.0,
-        @as(f32, @floatFromInt(color[1])) / 255.0,
-        @as(f32, @floatFromInt(color[2])) / 255.0,
-        @as(f32, @floatFromInt(color[3])) / 255.0,
+        @bitCast(values[0]),
+        @bitCast(values[1]),
+        @bitCast(values[2]),
+        @bitCast(values[3]),
     };
 }
 
-fn specialGlyphWord(layer_count: u16, kind: SpecialLayerKind) u32 {
-    return render_abi.specialGlyphWord(layer_count, kind);
+fn decodeBandPayload(values: [4]u32) [4]f32 {
+    return .{ @bitCast(values[0]), @bitCast(values[1]), @bitCast(values[2]), @bitCast(values[3]) };
 }
 
 fn instancePtr(words: []u32) *Instance {
@@ -179,64 +190,9 @@ fn writeInstance(words: []u32, instance: Instance) void {
 }
 
 pub fn instanceAt(words: []const u32, glyph_index: usize) *const Instance {
+    std.debug.assert(glyph_index <= std.math.maxInt(usize) / WORDS_PER_INSTANCE);
     const base = glyph_index * WORDS_PER_INSTANCE;
     return constInstancePtr(words[base..][0..WORDS_PER_INSTANCE]);
-}
-
-pub fn instanceAtMut(words: []u32, glyph_index: usize) *Instance {
-    const base = glyph_index * WORDS_PER_INSTANCE;
-    return instancePtr(words[base..][0..WORDS_PER_INSTANCE]);
-}
-
-pub fn instanceBytes(words: []const u32) []const u8 {
-    return std.mem.sliceAsBytes(words);
-}
-
-pub const BindingTexels = struct {
-    /// Texel column inside the layer-info texture.
-    info_x: u16,
-    /// Absolute texel row inside the layer-info texture
-    /// (i.e. `binding.info_row_base + record.info_y`).
-    info_y: u16,
-    /// Texture-array layer holding the record's page.
-    layer: u16,
-    /// Number of paint layers under this record (1 for unpainted /
-    /// solid; >1 for COLR/composite groups).
-    layer_count: u16,
-};
-
-/// Resolve `record_key`'s texel addresses against `binding` and the
-/// uploaded `atlas`. Returns `null` when the key isn't in the atlas.
-///
-/// Custom-shader users: this is the bridge from `RecordKey` →
-/// (layer-info texel, atlas-layer) you need to sample the per-record
-/// data inside your fragment shader. For records with no associated
-/// paint (default solid path), `info_x/info_y` are zero and
-/// `layer_count = 1`.
-pub fn bindingTexels(
-    binding: anytype,
-    atlas: anytype,
-    record_key: anytype,
-) ?BindingTexels {
-    const rec = atlas.lookupRecord(record_key) orelse return null;
-    const page = atlas.pages[rec.page_index];
-
-    var info_x: u16 = 0;
-    var info_y: u16 = 0;
-    var layer_count: u16 = 1;
-    if (atlas.lookupPaintRecord(record_key)) |paint_info| {
-        info_x = paint_info.info_x;
-        const sum = @as(u32, paint_info.info_y) + binding.info_row_base;
-        info_y = @intCast(sum);
-        layer_count = paint_info.layer_count;
-    }
-
-    return .{
-        .info_x = info_x,
-        .info_y = info_y,
-        .layer = @intCast(page.layer_index),
-        .layer_count = layer_count,
-    };
 }
 
 pub fn decodeInstance(words: []const u32) DecodedInstance {
@@ -246,53 +202,51 @@ pub fn decodeInstance(words: []const u32) DecodedInstance {
         .xform = instance.xform,
         .origin = instance.origin,
         .glyph = instance.glyph,
-        .band = instance.band,
-        .color = decodeColor4(instance.color),
-        .tint = decodeColor4(instance.tint),
-        .policy = instance.policy,
+        .band = decodeBandPayload(instance.payload),
+        .color = decodeHalf4(instance.color),
+        .tint = decodeHalf4(instance.tint),
+        .policy = instance.payload,
     };
 }
 
-/// Generate instance data for a glyph quad (non-transformed).
-pub fn generateGlyphVertices(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    bbox: BBox,
-    band_entry: band_tex.GlyphBandEntry,
-    color: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateGlyphVerticesTinted(buf, x, y, font_size, bbox, band_entry, color, identity_tint, atlas_layer);
+fn validateEncodedColor(encoded: [4]u16) bool {
+    const decoded = decodeHalf4(encoded);
+    return allFinite(decoded) and decoded[3] >= 0 and decoded[3] <= 1;
 }
 
-/// Generate instance data for a tinted glyph quad (non-transformed).
-pub fn generateGlyphVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    bbox: BBox,
-    band_entry: band_tex.GlyphBandEntry,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
-    const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
-        (@as(u32, band_entry.v_band_count - 1) << 16) |
-        (@as(u32, atlas_layer) << 24);
+/// Validate a caller-authored packed instance before any CPU or GPU backend
+/// consumes it. This is intentionally total over all bit patterns.
+pub fn validateInstance(instance: *const Instance) ValidationError!void {
+    const rect = decodeHalf4(instance.rect);
+    if (!allFinite(rect) or rect[0] > rect[2] or rect[1] > rect[3]) return error.InvalidRect;
 
-    writeInstance(buf, .{
-        .rect = half4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
-        .xform = .{ font_size, 0, 0, -font_size },
-        .origin = .{ x, y },
-        .glyph = .{ gz, gw },
-        .band = .{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y },
-        .color = color4(color),
-        .tint = color4(tint),
-    });
+    const transform = vec.Transform2D{
+        .xx = instance.xform[0],
+        .xy = instance.xform[1],
+        .tx = instance.origin[0],
+        .yx = instance.xform[2],
+        .yy = instance.xform[3],
+        .ty = instance.origin[1],
+    };
+    if (!validTransform(transform)) return error.InvalidTransform;
+    if (!validateEncodedColor(instance.color) or !validateEncodedColor(instance.tint)) return error.InvalidColor;
+
+    const word = instance.glyph[1];
+    if (render_abi.glyphWordIsSpecial(word)) {
+        const kind = render_abi.specialGlyphWordKind(word) orelse return error.InvalidGlyphWord;
+        if (render_abi.specialGlyphWordLayerCount(word) == 0) return error.InvalidGlyphWord;
+        if (kind == .autohint) {
+            _ = autohint_policy.AutohintPolicy.unpack(instance.payload) catch return error.InvalidPayload;
+        } else if (!std.mem.allEqual(u32, &instance.payload, 0)) {
+            return error.InvalidPayload;
+        }
+    } else {
+        // Ordinary words use exactly four h-count bits, four v-count bits,
+        // and one layer byte. Reject alternate/non-canonical encodings.
+        if (word & 0xffff0000 != 0) return error.InvalidGlyphWord;
+        const bands = decodeBandPayload(instance.payload);
+        if (!allFinite(bands)) return error.InvalidPayload;
+    }
 }
 
 /// Generate instance data for a glyph quad under a full 2D affine transform.
@@ -317,119 +271,31 @@ pub fn generateGlyphVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    if (@abs(det) < 1e-10) return false;
+    // A zero band count would underflow the count-minus-one representation.
+    // Keep the low-level custom-shader helper safe when bypassing Atlas.
+    if (buf.len < WORDS_PER_INSTANCE or
+        !validBBox(bbox) or
+        !validBandEntry(band_entry) or
+        !validColor(color) or
+        !validColor(tint) or
+        !validTransform(transform))
+    {
+        return false;
+    }
 
     const gz: u32 = @as(u32, band_entry.glyph_x) | (@as(u32, band_entry.glyph_y) << 16);
-    const gw: u32 = @as(u32, band_entry.h_band_count - 1) |
-        (@as(u32, band_entry.v_band_count - 1) << 16) |
-        (@as(u32, atlas_layer) << 24);
+    const gw = render_abi.regularGlyphWord(band_entry.h_band_count, band_entry.v_band_count, atlas_layer).?;
 
     writeInstance(buf, .{
-        .rect = half4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
+        .rect = rectHalf4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
         .xform = .{ transform.xx, transform.xy, transform.yx, transform.yy },
         .origin = .{ transform.tx, transform.ty },
         .glyph = .{ gz, gw },
-        .band = .{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y },
-        .color = color4(color),
-        .tint = color4(tint),
+        .payload = bandPayload(.{ band_entry.band_scale_x, band_entry.band_scale_y, band_entry.band_offset_x, band_entry.band_offset_y }),
+        .color = half4(color),
+        .tint = half4(tint),
     });
     return true;
-}
-
-/// Generate instance data for a multi-layer COLR glyph (single quad, all layers).
-pub fn generateMultiLayerGlyphVertices(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateMultiLayerGlyphVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, identity_tint, atlas_layer);
-}
-
-/// Generate instance data for a tinted multi-layer COLR glyph.
-pub fn generateMultiLayerGlyphVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .colr);
-}
-
-/// Generate instance data for a tinted path layer-info record.
-pub fn generatePathRecordVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .path);
-}
-
-/// Generate instance data for a tinted hinted text layer-info record.
-pub fn generateHintedTextVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-) void {
-    generateSpecialLayerVerticesTinted(buf, x, y, font_size, union_bbox, info_x, info_y, layer_count, color, tint, atlas_layer, .hinted_text);
-}
-
-fn generateSpecialLayerVerticesTinted(
-    buf: []u32,
-    x: f32,
-    y: f32,
-    font_size: f32,
-    union_bbox: BBox,
-    info_x: u16,
-    info_y: u16,
-    layer_count: u16,
-    color: [4]f32,
-    tint: [4]f32,
-    atlas_layer: u8,
-    kind: SpecialLayerKind,
-) void {
-    const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
-    const gw = specialGlyphWord(layer_count, kind);
-
-    writeInstance(buf, .{
-        .rect = specialRectHalf4(kind, .{ union_bbox.min.x, union_bbox.min.y, union_bbox.max.x, union_bbox.max.y }),
-        .xform = .{ font_size, 0, 0, -font_size },
-        .origin = .{ x, y },
-        .glyph = .{ gz, gw },
-        .band = .{ 0, 0, 0, @floatFromInt(atlas_layer) },
-        .color = color4(color),
-        .tint = color4(tint),
-    });
 }
 
 /// Generate instance data for a transformed multi-layer COLR glyph.
@@ -477,7 +343,7 @@ pub fn generatePathRecordVerticesTransformedTinted(
 }
 
 /// Generate instance data for a tinted transformed hinted text layer-info record.
-pub fn generateHintedTextVerticesTransformedTinted(
+pub fn generateTtHintedTextVerticesTransformedTinted(
     buf: []u32,
     bbox: BBox,
     info_x: u16,
@@ -488,7 +354,7 @@ pub fn generateHintedTextVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
-    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .hinted_text);
+    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .tt_hinted_text);
 }
 
 pub fn generateAutohintVerticesTransformedTinted(
@@ -501,10 +367,11 @@ pub fn generateAutohintVerticesTransformedTinted(
     tint: [4]f32,
     atlas_layer: u8,
     transform: vec.Transform2D,
-    policy: [7]u32,
+    policy: [4]u32,
 ) bool {
+    _ = autohint_policy.unpack(policy) catch return false;
     if (!generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .autohint)) return false;
-    instancePtr(buf).policy = policy;
+    instancePtr(buf).payload = policy;
     return true;
 }
 
@@ -520,20 +387,27 @@ fn generateSpecialLayerVerticesTransformedTinted(
     transform: vec.Transform2D,
     kind: SpecialLayerKind,
 ) bool {
-    const det = transform.xx * transform.yy - transform.xy * transform.yx;
-    if (@abs(det) < 1e-10) return false;
+    if (buf.len < WORDS_PER_INSTANCE or
+        layer_count == 0 or
+        !validBBox(bbox) or
+        !validColor(color) or
+        !validColor(tint) or
+        !validTransform(transform))
+    {
+        return false;
+    }
 
     const gz: u32 = @as(u32, info_x) | (@as(u32, info_y) << 16);
-    const gw = specialGlyphWord(layer_count, kind);
+    const gw = render_abi.specialGlyphWord(layer_count, kind, atlas_layer).?;
 
     writeInstance(buf, .{
-        .rect = specialRectHalf4(kind, .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
+        .rect = rectHalf4(.{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y }),
         .xform = .{ transform.xx, transform.xy, transform.yx, transform.yy },
         .origin = .{ transform.tx, transform.ty },
         .glyph = .{ gz, gw },
-        .band = .{ 0, 0, 0, @floatFromInt(atlas_layer) },
-        .color = color4(color),
-        .tint = color4(tint),
+        .payload = .{ 0, 0, 0, 0 },
+        .color = half4(color),
+        .tint = half4(tint),
     });
     return true;
 }
@@ -558,7 +432,20 @@ test "instance data produces correct layout" {
     };
     const color = [4]f32{ 1.0, 0.5, 0.0, 1.0 };
 
-    generateGlyphVertices(&buf, 100.0, 200.0, 24.0, bbox, band_entry, color, 0);
+    const transform = vec.Transform2D{ .xx = 24.0, .xy = 0, .tx = 100.0, .yx = 0, .yy = -24.0, .ty = 200.0 };
+    try std.testing.expect(generateGlyphVerticesTransformedTinted(&buf, bbox, band_entry, color, identity_tint, 0, transform));
+    try std.testing.expect(generateGlyphVerticesTransformedTinted(
+        &buf,
+        bbox,
+        band_entry,
+        color,
+        identity_tint,
+        std.math.maxInt(u8),
+        transform,
+    ));
+    var invalid_bands = band_entry;
+    invalid_bands.h_band_count = 0;
+    try std.testing.expect(!generateGlyphVerticesTransformedTinted(&buf, bbox, invalid_bands, color, identity_tint, 0, transform));
     const decoded = decodeInstance(&buf);
 
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), decoded.rect[0], 0.001);
@@ -572,13 +459,93 @@ test "instance data produces correct layout" {
     try std.testing.expectApproxEqAbs(@as(f32, 100.0), decoded.origin[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 200.0), decoded.origin[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.color[0], 0.001);
-    try std.testing.expectApproxEqAbs(@as(f32, 0.5), decoded.color[1], 1.0 / 255.0);
+    try std.testing.expectApproxEqAbs(@as(f32, 0.5), decoded.color[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 0.0), decoded.color[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.color[3], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[0], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[1], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[2], 0.001);
     try std.testing.expectApproxEqAbs(@as(f32, 1.0), decoded.tint[3], 0.001);
+}
+
+test "instance generators reject non-finite and unrepresentable inputs" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .zero, .max = .{ .x = 1, .y = 1 } };
+    const band_entry = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const color = [4]f32{ 1, 1, 1, 1 };
+
+    var transform = vec.Transform2D.identity;
+    transform.tx = std.math.nan(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, band_entry, color, 0, transform));
+
+    var invalid_color = color;
+    invalid_color[0] = std.math.inf(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, band_entry, invalid_color, 0, .identity));
+
+    var invalid_band = band_entry;
+    invalid_band.band_scale_x = std.math.nan(f32);
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+
+    invalid_band = band_entry;
+    invalid_band.h_band_count = 17;
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+    invalid_band = band_entry;
+    invalid_band.v_band_count = 17;
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, bbox, invalid_band, color, 0, .identity));
+
+    const invalid_bbox = BBox{ .min = .zero, .max = .{ .x = std.math.inf(f32), .y = 1 } };
+    try std.testing.expect(!generateGlyphVerticesTransformed(&buf, invalid_bbox, band_entry, color, 0, .identity));
+    try std.testing.expect(!generateGlyphVerticesTransformed(buf[0 .. WORDS_PER_INSTANCE - 1], bbox, band_entry, color, 0, .identity));
+
+    try std.testing.expect(!generatePathRecordVerticesTransformedTinted(
+        &buf,
+        bbox,
+        0,
+        0,
+        0,
+        color,
+        color,
+        0,
+        .identity,
+    ));
+    try std.testing.expect(!generatePathRecordVerticesTransformedTinted(
+        &buf,
+        bbox,
+        0,
+        0,
+        1,
+        invalid_color,
+        color,
+        0,
+        .identity,
+    ));
+}
+
+test "instance transform validation does not underflow or overflow its determinant" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .zero, .max = .{ .x = 1, .y = 1 } };
+    const bands = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const white = [4]f32{ 1, 1, 1, 1 };
+    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, bands, white, 0, .{ .xx = 1e-30, .yy = 1e-30 }));
+    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, bands, white, 0, .{ .xx = 1e30, .yy = 1e30 }));
 }
 
 test "instance rect half encoding encloses source bbox" {
@@ -591,6 +558,40 @@ test "instance rect half encoding encloses source bbox" {
     try std.testing.expect(decoded[3] >= 67.49);
 }
 
+fn expectEncodedRectEncloses(buf: []const u32, bbox: BBox) !void {
+    const rect = decodeInstance(buf).rect;
+    try std.testing.expect(rect[0] <= bbox.min.x);
+    try std.testing.expect(rect[1] <= bbox.min.y);
+    try std.testing.expect(rect[2] >= bbox.max.x);
+    try std.testing.expect(rect[3] >= bbox.max.y);
+}
+
+test "every instance family encodes an outward-rounded bbox" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .{ .x = -18.37, .y = -0.213 }, .max = .{ .x = 142.91, .y = 67.49 } };
+    const bands = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const white = [4]f32{ 1, 1, 1, 1 };
+    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, bands, white, 0, .identity));
+    try expectEncodedRectEncloses(&buf, bbox);
+    try std.testing.expect(generateMultiLayerGlyphVerticesTransformedTinted(&buf, bbox, 0, 0, 1, white, white, 0, .identity));
+    try expectEncodedRectEncloses(&buf, bbox);
+    try std.testing.expect(generatePathRecordVerticesTransformedTinted(&buf, bbox, 0, 0, 1, white, white, 0, .identity));
+    try expectEncodedRectEncloses(&buf, bbox);
+    try std.testing.expect(generateTtHintedTextVerticesTransformedTinted(&buf, bbox, 0, 0, 1, white, white, 0, .identity));
+    try expectEncodedRectEncloses(&buf, bbox);
+    try std.testing.expect(generateAutohintVerticesTransformedTinted(&buf, bbox, 0, 0, 1, white, white, 0, .identity, .{ 0, 0, 0, 0 }));
+    try expectEncodedRectEncloses(&buf, bbox);
+}
+
 test "multi-layer glyph instance preserves wide layer counts" {
     const bezier_mod = @import("../math/bezier.zig");
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
@@ -601,11 +602,12 @@ test "multi-layer glyph instance preserves wide layer counts" {
     };
     const color = [4]f32{ 1.0, 1.0, 1.0, 1.0 };
 
-    generateMultiLayerGlyphVertices(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 300, color, 7);
+    try std.testing.expect(generateMultiLayerGlyphVerticesTransformedTinted(&buf, bbox, 12, 34, 300, color, identity_tint, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 300), render_abi.specialGlyphWordLayerCount(packed_gw));
     try std.testing.expectEqual(SpecialLayerKind.colr, render_abi.specialGlyphWordKind(packed_gw).?);
+    try std.testing.expectEqual(@as(u8, 7), render_abi.glyphWordAtlasLayer(packed_gw));
 }
 
 test "path record instance uses path special kind" {
@@ -615,7 +617,7 @@ test "path record instance uses path special kind" {
         .max = Vec2.new(0.5, 0.8),
     };
 
-    generatePathRecordVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+    try std.testing.expect(generatePathRecordVerticesTransformedTinted(&buf, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
@@ -629,17 +631,19 @@ test "hinted text instance uses hinted special kind" {
         .max = Vec2.new(0.6, 0.8),
     };
 
-    generateHintedTextVerticesTinted(&buf, 10.0, 20.0, 24.0, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7);
+    try std.testing.expect(generateTtHintedTextVerticesTransformedTinted(&buf, bbox, 12, 34, 1, .{ 1, 1, 1, 1 }, .{ 1, 1, 1, 1 }, 7, .identity));
 
     const packed_gw = decodeInstance(&buf).glyph[1];
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
-    try std.testing.expectEqual(SpecialLayerKind.hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
+    try std.testing.expectEqual(SpecialLayerKind.tt_hinted_text, render_abi.specialGlyphWordKind(packed_gw).?);
 }
 
-test "autohint instance carries all seven policy words" {
+test "autohint instance carries the compact policy payload" {
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
     const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(1, 1) };
-    const words = [7]u32{ 1, 2, 3, 4, 5, 6, 7 };
+    const words = try (autohint_policy.AutohintPolicy{
+        .fade = .{ .ppem_range = .{ .start_px = 18, .full_px = 30 } },
+    }).pack();
 
     try std.testing.expect(generateAutohintVerticesTransformedTinted(
         &buf,
@@ -657,6 +661,94 @@ test "autohint instance carries all seven policy words" {
     const decoded = decodeInstance(&buf);
     try std.testing.expectEqual(SpecialLayerKind.autohint, render_abi.specialGlyphWordKind(decoded.glyph[1]).?);
     try std.testing.expectEqualSlices(u32, &words, &decoded.policy);
+}
+
+test "autohint generator rejects an invalid policy without writing" {
+    var buf = [_]u32{0xa5a5a5a5} ** WORDS_PER_INSTANCE;
+    const before = buf;
+    const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(1, 1) };
+    const invalid_policy = [4]u32{ @as(u32, 1) << 31, 0, 0, 0 };
+
+    try std.testing.expect(!generateAutohintVerticesTransformedTinted(
+        &buf,
+        bbox,
+        12,
+        34,
+        1,
+        .{ 1, 1, 1, 1 },
+        .{ 1, 1, 1, 1 },
+        7,
+        .identity,
+        invalid_policy,
+    ));
+    try std.testing.expectEqualSlices(u32, &before, &buf);
+}
+
+test "instance colors preserve linear HDR and negative components" {
+    var buf: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .zero, .max = .{ .x = 1, .y = 1 } };
+    const bands = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const color = [4]f32{ 4.5, -0.25, 1.125, 0.75 };
+    try std.testing.expect(generateGlyphVerticesTransformed(&buf, bbox, bands, color, 255, .identity));
+    const decoded = decodeInstance(&buf);
+    inline for (color, 0..) |expected, i| {
+        try std.testing.expectApproxEqAbs(expected, decoded.color[i], @max(@abs(expected) / 1024.0, 0x1p-24));
+    }
+    try std.testing.expectEqual(@as(u8, 255), render_abi.glyphWordAtlasLayer(decoded.glyph[1]));
+}
+
+test "packed instance validation is total over malformed boundary data" {
+    var storage: [WORDS_PER_INSTANCE]u32 = undefined;
+    const bbox = BBox{ .min = .zero, .max = .{ .x = 1, .y = 1 } };
+    const bands = band_tex.GlyphBandEntry{
+        .glyph_x = 0,
+        .glyph_y = 0,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+    };
+    const white = [4]f32{ 1, 1, 1, 1 };
+    try std.testing.expect(generateGlyphVerticesTransformed(&storage, bbox, bands, white, 255, .identity));
+    const instance = instancePtr(&storage);
+    try validateInstance(instance);
+
+    const good = instance.*;
+    instance.glyph[1] |= @as(u32, 1) << 20;
+    try std.testing.expectError(error.InvalidGlyphWord, validateInstance(instance));
+    instance.* = good;
+    instance.payload[0] = @bitCast(std.math.nan(f32));
+    try std.testing.expectError(error.InvalidPayload, validateInstance(instance));
+    instance.* = good;
+    instance.rect[0] = 0x7e00;
+    try std.testing.expectError(error.InvalidRect, validateInstance(instance));
+    instance.* = good;
+    instance.xform = .{ 1, 0, 0, 0 };
+    try std.testing.expectError(error.InvalidTransform, validateInstance(instance));
+    instance.* = good;
+    instance.color[3] = f32ToF16Bits(2);
+    try std.testing.expectError(error.InvalidColor, validateInstance(instance));
+
+    try std.testing.expect(generatePathRecordVerticesTransformedTinted(&storage, bbox, 0, 0, 1, white, white, 0, .identity));
+    const special = instancePtr(&storage);
+    special.glyph[1] &= 0xffff0000;
+    try std.testing.expectError(error.InvalidGlyphWord, validateInstance(special));
+
+    try std.testing.expect(generateAutohintVerticesTransformedTinted(&storage, bbox, 0, 0, 1, white, white, 0, .identity, .{ 0, 0, 0, 0 }));
+    const hinted = instancePtr(&storage);
+    hinted.payload[0] |= @as(u32, 1) << 31;
+    try std.testing.expectError(error.InvalidPayload, validateInstance(hinted));
 }
 
 test "transformed glyph instance stores affine transform" {
@@ -701,7 +793,7 @@ test "transformed glyph instance stores affine transform" {
     try std.testing.expectApproxEqAbs(@as(f32, -4.0), decoded.origin[1], 0.001);
 }
 
-test "transformed multi-layer glyph instance preserves info pointer and atlas sentinel" {
+test "transformed multi-layer glyph instance preserves info pointer and atlas layer" {
     var buf: [WORDS_PER_INSTANCE]u32 = undefined;
     const bbox = BBox{
         .min = Vec2.new(-2.0, 1.0),
@@ -724,5 +816,5 @@ test "transformed multi-layer glyph instance preserves info pointer and atlas se
     try std.testing.expectEqual(@as(u16, 34), render_abi.glyphLocationY(packed_gz));
     try std.testing.expectEqual(@as(u16, 1), render_abi.specialGlyphWordLayerCount(packed_gw));
     try std.testing.expectEqual(SpecialLayerKind.colr, render_abi.specialGlyphWordKind(packed_gw).?);
-    try std.testing.expectApproxEqAbs(@as(f32, 9), decoded.band[3], 0.001);
+    try std.testing.expectEqual(@as(u8, 9), render_abi.glyphWordAtlasLayer(packed_gw));
 }

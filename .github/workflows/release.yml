@@ -12,8 +12,17 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: false
 
+# Releases ship NO binary artifacts, deliberately: snail is a source-first
+# Zig library — consumers fetch the repo (zig fetch / package manager) and
+# build against their own toolchain. The demo/game/perf entry points are
+# development tools, not distributables. Do not "fix" this by attaching
+# built binaries to the release.
+#
+# The tagged commit was already fully gated by CI (every backend pixel gate
+# runs on every push), so this workflow only re-runs the cheap test sanity
+# check before publishing the release notes.
 jobs:
-  build:
+  release:
     runs-on: ubuntu-latest
     timeout-minutes: 35
     steps:
@@ -25,57 +34,13 @@ jobs:
           echo "Release workflow must run from a tag ref." >&2
           exit 1
 
-      - uses: mlugg/setup-zig@v2
-        with:
-          version: "0.16.0"
+      # Toolchain (zig, harfbuzz, slangc, mesa/llvmpipe, ...) comes from
+      # shell.nix via the npins-pinned nixpkgs — same pin as local dev/CI.
+      - uses: DeterminateSystems/nix-installer-action@v22
+      - uses: DeterminateSystems/magic-nix-cache-action@v14
 
-      - name: Install dependencies
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            pkg-config \
-            glslc \
-            libegl1-mesa-dev \
-            libfreetype-dev \
-            libgl1-mesa-dri \
-            libglvnd-dev \
-            libharfbuzz-dev \
-            libvulkan-dev \
-            libwayland-dev \
-            mesa-vulkan-drivers \
-            vulkan-validationlayers \
-            wayland-protocols
-
-      - name: Check generated C API
-        run: zig build check-c-api -Dcpu=baseline
-
-      - name: Run tests
-        run: zig build test -Dcpu=baseline
-
-      - name: Build library
-        run: zig build --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
-
-      - name: Build demo
-        run: zig build install-demo --release=fast -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
-
-      - name: Backend pixel comparison
-        env:
-          LIBGL_ALWAYS_SOFTWARE: "1"
-          GALLIUM_DRIVER: llvmpipe
-        run: zig build run-backend-compare -Dcpu=baseline -Dgl33=true -Dgl44=true -Dvulkan=true -Dcpu-renderer=true -Dharfbuzz=true
-
-      - name: Package artifacts
-        run: |
-          mkdir -p snail-${GITHUB_REF_NAME}
-          mkdir -p snail-${GITHUB_REF_NAME}/include
-          mkdir -p snail-${GITHUB_REF_NAME}/lib/pkgconfig
-          cp zig-out/lib/libsnail.a snail-${GITHUB_REF_NAME}/lib/
-          cp zig-out/lib/libsnail.so snail-${GITHUB_REF_NAME}/lib/
-          cp zig-out/lib/pkgconfig/snail.pc snail-${GITHUB_REF_NAME}/lib/pkgconfig/
-          cp zig-out/include/snail*.h snail-${GITHUB_REF_NAME}/include/
-          cp LICENSE CHANGELOG.md README.md snail-${GITHUB_REF_NAME}/
-          tar czf snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz snail-${GITHUB_REF_NAME}/
-          sha256sum snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz > snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+      - name: Test public modules
+        run: nix-shell --run "zig build test -Dcpu=baseline"
 
       - name: Extract release notes for this tag
         id: release_notes
@@ -97,15 +62,11 @@ jobs:
           if [ -s release_notes.md ]; then
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
-              --notes-file release_notes.md \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+              --notes-file release_notes.md
           else
             gh release create "$GITHUB_REF_NAME" \
               --title "$GITHUB_REF_NAME" \
-              --generate-notes \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz \
-              snail-${GITHUB_REF_NAME}-linux-x86_64.tar.gz.sha256
+              --generate-notes
           fi
         env:
           GH_TOKEN: ${{ github.token }}

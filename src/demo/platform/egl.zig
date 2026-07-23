@@ -1,4 +1,7 @@
-pub fn chooseConfig(egl_mod: anytype, display: anytype, surface_bit: anytype, api: GlApi, out: anytype) !void {
+/// `depth_size` is the minimum depth-buffer bits the default framebuffer must
+/// provide; pass 0 for a color-only surface (the 2D demo) or e.g. 24 when the
+/// scene needs depth testing (the game demo).
+pub fn chooseConfig(egl_mod: anytype, display: anytype, surface_bit: anytype, api: GlApi, depth_size: i32, out: anytype) !void {
     const Int = @TypeOf(surface_bit);
     const attrs = [_]Int{
         egl_mod.EGL_SURFACE_TYPE,    surface_bit,
@@ -7,6 +10,7 @@ pub fn chooseConfig(egl_mod: anytype, display: anytype, surface_bit: anytype, ap
         egl_mod.EGL_GREEN_SIZE,      8,
         egl_mod.EGL_BLUE_SIZE,       8,
         egl_mod.EGL_ALPHA_SIZE,      8,
+        egl_mod.EGL_DEPTH_SIZE,      @intCast(depth_size),
         egl_mod.EGL_NONE,
     };
 

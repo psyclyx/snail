@@ -74,7 +74,11 @@ pub const Program = struct {
     hhea: tt_tables.HorizontalHeader,
 
     pub fn init(data: []const u8) !Program {
-        const tables = try tt_tables.ProgramTables.init(data);
+        return initFace(data, 0);
+    }
+
+    pub fn initFace(data: []const u8, face_index: u32) !Program {
+        const tables = try tt_tables.ProgramTables.initFace(data, face_index);
         return .{
             .data = data,
             .tables = tables,

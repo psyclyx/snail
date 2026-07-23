@@ -87,6 +87,10 @@ pub const GlyphTopologyCache = struct {
     pub fn get(self: *GlyphTopologyCache, glyph_id: u16) !*tt_vm.GlyphTopology {
         const gop = try self.map.getOrPut(glyph_id);
         if (!gop.found_existing) {
+            // `getOrPut` publishes a slot before the fallible parse. Remove
+            // that uninitialized slot on failure so retries do not read it and
+            // `deinit` never switches on undefined union storage.
+            errdefer _ = self.map.remove(glyph_id);
             gop.value_ptr.* = try self.program.loadGlyphTopology(self.allocator, glyph_id);
         }
         return gop.value_ptr;
@@ -227,12 +231,20 @@ pub const HintMachine = struct {
         };
     }
 
-    /// Bind the `Prepared` to hint from and make sure the reusable CVT work
-    /// buffer covers its CVT (for the COW). Called at every entry point.
+    /// Bind the `Prepared` to hint from and make sure the reusable work
+    /// buffers cover its CVT/storage/function tables (for the COW). Called
+    /// at every entry point. A `Prepared` built by a machine with larger
+    /// buffers grows the scratch instead of slicing out of bounds.
     fn bind(self: *HintMachine, prepared: *const Prepared) !void {
         self.prepared = prepared;
         if (self.cvt_work.len < prepared.size.cvt.len)
             self.cvt_work = try self.allocator.realloc(self.cvt_work, prepared.size.cvt.len);
+        if (self.storage_work.len < prepared.storage.len)
+            self.storage_work = try self.allocator.realloc(self.storage_work, prepared.storage.len);
+        if (self.function_entries_work.len < prepared.function_entries.len)
+            self.function_entries_work = try self.allocator.realloc(self.function_entries_work, prepared.function_entries.len);
+        if (self.function_lookup_work.len < prepared.function_lookup.len)
+            self.function_lookup_work = try self.allocator.realloc(self.function_lookup_work, prepared.function_lookup.len);
     }
 
     pub fn hintGlyph(self: *HintMachine, allocator: Allocator, prepared: *const Prepared, glyph_id: u16) !GlyphHint {
@@ -391,7 +403,7 @@ pub const HintMachine = struct {
             self.glyph_points,
             self.compound_contours,
         );
-        try self.appendCompoundGlyph(&builder, components, .{}, .zero, cache);
+        try self.appendCompoundGlyph(&builder, components, .{}, .zero, cache, 1);
         const metrics_id = compoundMetricsGlyphId(glyph_id, components);
         const phantom_start = try builder.appendPhantoms(try self.program.glyphPhantomMetrics(metrics_id));
 
@@ -415,9 +427,10 @@ pub const HintMachine = struct {
         transform: tt_outline.ComponentTransform,
         offset: Vec2,
         cache: ?*GlyphTopologyCache,
+        depth: u16,
     ) CompoundBuildError!void {
         for (components) |component| {
-            try self.appendCompoundComponent(builder, component, transform, offset, cache);
+            try self.appendCompoundComponent(builder, component, transform, offset, cache, depth);
         }
     }
 
@@ -428,11 +441,12 @@ pub const HintMachine = struct {
         parent_transform: tt_outline.ComponentTransform,
         parent_offset: Vec2,
         cache: ?*GlyphTopologyCache,
+        depth: u16,
     ) CompoundBuildError!void {
         const point_start = builder.point_count;
         const transform = parent_transform.concat(component.transform);
         const offset = componentOffset(parent_transform, parent_offset, component);
-        try self.appendComponentTopology(builder, component.glyph_id, transform, offset, cache);
+        try self.appendComponentTopology(builder, component.glyph_id, transform, offset, cache, depth);
         if (component.args_are_xy) {
             if (component.roundXYToGrid()) builder.roundOffset(point_start, parent_transform.apply(componentRawOffset(component)));
             return;
@@ -447,6 +461,7 @@ pub const HintMachine = struct {
         transform: tt_outline.ComponentTransform,
         offset: Vec2,
         cache: ?*GlyphTopologyCache,
+        depth: u16,
     ) CompoundBuildError!void {
         var owned: ?tt_vm.GlyphTopology = null;
         defer if (owned) |*topology| topology.deinit();
@@ -462,10 +477,14 @@ pub const HintMachine = struct {
             .empty => {},
             .simple => |*simple| builder.appendSimple(simple, transform, offset),
             .compound => |*compound| {
+                // A malformed compound can reference itself (directly or
+                // through a cycle); nothing else bounds this recursion, so
+                // enforce maxp's declared component depth here.
+                if (depth >= componentDepthLimit(self.program)) return error.InvalidFont;
                 // Same hash-map relocation hazard as in executeCompoundGlyph:
                 // snapshot the components slice header before recursing.
                 const components = compound.components;
-                return self.appendCompoundGlyph(builder, components, transform, offset, cache);
+                return self.appendCompoundGlyph(builder, components, transform, offset, cache, depth + 1);
             },
         };
     }
@@ -534,7 +553,8 @@ fn allocateMachine(allocator: Allocator, program: *const Program) !HintMachine {
 
     const stack = try allocator.alloc(i32, sizes.stack);
     errdefer allocator.free(stack);
-    // COW targets; `prepare`/`bind` grow cvt_work to the size's CVT length.
+    // COW targets; `prepare`/`bind` grow them to cover the bound size's
+    // CVT/storage/function tables.
     const storage_work = try allocator.alloc(i32, @max(sizes.storage, 1));
     errdefer allocator.free(storage_work);
     const cvt_work = try allocator.alloc(i32, 0);
@@ -742,6 +762,18 @@ fn compoundMetricsGlyphId(glyph_id: u16, components: []const tt_outline.Compound
     return glyph_id;
 }
 
+/// Fallback when maxp declares no `max_component_depth`, and hard ceiling
+/// when it declares a huge one: a self-referential compound must not turn a
+/// trusting maxp value into native stack exhaustion. Matches the fixed cap
+/// `ttf.zig` uses for its own compound walk.
+const default_max_component_depth: u16 = 64;
+
+fn componentDepthLimit(program: *const Program) u16 {
+    const declared = program.maxp.max_component_depth;
+    if (declared == 0) return default_max_component_depth;
+    return @min(declared, default_max_component_depth);
+}
+
 fn compoundContourCapacity(program: *const Program) usize {
     return @max(
         @as(usize, program.maxp.max_composite_contours),
@@ -759,12 +791,24 @@ fn scaleFUnitFloat(value: f32, ppem_26_6: u32, units_per_em: u16) i32 {
     const scaled = @as(f64, @floatCast(value)) *
         @as(f64, @floatFromInt(ppem_26_6)) /
         @as(f64, @floatFromInt(units_per_em));
-    return @intFromFloat(@round(scaled));
+    // Component coordinates come from the font and ppem from the caller;
+    // saturate rather than let @intFromFloat trap (UB in ReleaseFast).
+    const rounded = @round(scaled);
+    if (std.math.isNan(rounded)) return 0;
+    return @intFromFloat(std.math.clamp(rounded, min_i32_f64, max_i32_f64));
 }
 
+const min_i32_f64: f64 = @floatFromInt(std.math.minInt(i32));
+const max_i32_f64: f64 = @floatFromInt(std.math.maxInt(i32));
+
 fn round26Dot6(value: i32) i32 {
-    if (value >= 0) return @intCast(@divTrunc(@as(i64, value) + 32, 64) * 64);
-    return @intCast(-@divTrunc(@as(i64, -value) + 32, 64) * 64);
+    const wide: i64 = value;
+    if (value >= 0) {
+        const rounded = @divTrunc(wide + 32, 64) * 64;
+        return @intCast(@min(rounded, @as(i64, std.math.maxInt(i32))));
+    }
+    const rounded = -@divTrunc(-wide + 32, 64) * 64;
+    return @intCast(@max(rounded, @as(i64, std.math.minInt(i32))));
 }
 
 const addWrap = tt_graphics.addWrap;
@@ -861,4 +905,112 @@ test "hint machine flattens compound glyphs" {
     }
 
     return error.SkipZigTest;
+}
+
+const synthetic_font_len = 260;
+
+/// Minimal synthetic sfnt for hint tests: glyph 0 empty, glyph 1 a compound
+/// whose only component is glyph 1 itself. `max_storage` and
+/// `max_component_depth` fill the maxp fields the tests exercise.
+fn buildSyntheticFont(data: []u8, max_storage: u16, max_component_depth: u16) []const u8 {
+    std.debug.assert(data.len >= synthetic_font_len);
+    @memset(data, 0);
+
+    std.mem.writeInt(u32, data[0..4], 0x00010000, .big);
+    std.mem.writeInt(u16, data[4..6], 6, .big); // numTables
+
+    const records = [_]struct { tag: *const [4]u8, offset: u32, length: u32 }{
+        .{ .tag = "head", .offset = 108, .length = 54 },
+        .{ .tag = "maxp", .offset = 162, .length = 32 },
+        .{ .tag = "hhea", .offset = 194, .length = 36 },
+        .{ .tag = "hmtx", .offset = 230, .length = 6 },
+        .{ .tag = "loca", .offset = 236, .length = 6 },
+        .{ .tag = "glyf", .offset = 242, .length = 18 },
+    };
+    for (records, 0..) |record, i| {
+        const base = 12 + i * 16;
+        @memcpy(data[base..][0..4], record.tag);
+        std.mem.writeInt(u32, data[base + 8 ..][0..4], record.offset, .big);
+        std.mem.writeInt(u32, data[base + 12 ..][0..4], record.length, .big);
+    }
+
+    std.mem.writeInt(u16, data[108 + 18 ..][0..2], 1000, .big); // units_per_em
+    // index_to_loc_format = 0 (short loca) — already zero.
+
+    std.mem.writeInt(u16, data[162 + 4 ..][0..2], 2, .big); // num_glyphs
+    std.mem.writeInt(u16, data[162 + 18 ..][0..2], max_storage, .big);
+    std.mem.writeInt(u16, data[162 + 30 ..][0..2], max_component_depth, .big);
+
+    std.mem.writeInt(u16, data[194 + 34 ..][0..2], 1, .big); // number_of_h_metrics
+
+    std.mem.writeInt(u16, data[230..][0..2], 500, .big); // advance_width
+
+    std.mem.writeInt(u16, data[236 + 4 ..][0..2], 9, .big); // loca[2] = 18 / 2
+
+    // Glyph 1: compound header + one XY-words component referencing itself.
+    std.mem.writeInt(i16, data[242..][0..2], -1, .big);
+    std.mem.writeInt(u16, data[242 + 10 ..][0..2], 0x0003, .big); // words | xy
+    std.mem.writeInt(u16, data[242 + 12 ..][0..2], 1, .big); // component glyph id
+
+    return data[0..synthetic_font_len];
+}
+
+test "hint machine rejects self-referential compound glyphs" {
+    const allocator = std.testing.allocator;
+    var data: [synthetic_font_len]u8 = undefined;
+    const program = try Program.init(buildSyntheticFont(&data, 0, 8));
+    var machine = try HintMachine.initForProgram(allocator, &program);
+    defer machine.deinit();
+    var prepared = try machine.prepare(allocator, HintPpem.uniform(12 * 64), .{});
+    defer prepared.deinit();
+
+    // The glyph itself parses fine; only the cyclic expansion is rejected.
+    var topology = try program.loadGlyphTopology(allocator, 1);
+    defer topology.deinit();
+    try std.testing.expect(std.meta.activeTag(topology) == .compound);
+
+    // Uncached path: each nesting level reloads the component's topology.
+    try std.testing.expectError(error.InvalidFont, machine.hintGlyph(allocator, &prepared, 1));
+
+    // Cached path recurses through GlyphTopologyCache the same way.
+    var cache = GlyphTopologyCache.initForProgram(allocator, &program);
+    defer cache.deinit();
+    try std.testing.expectError(error.InvalidFont, machine.hintCachedGlyph(allocator, &prepared, &cache, 1));
+}
+
+test "scaleFUnitFloat saturates instead of trapping on extreme scales" {
+    // Minimum valid units_per_em with a huge coordinate and ppem: the exact
+    // overflow window a malformed font could reach before head validation.
+    try std.testing.expectEqual(std.math.maxInt(i32), scaleFUnitFloat(1e30, std.math.maxInt(u32), 16));
+    try std.testing.expectEqual(std.math.minInt(i32), scaleFUnitFloat(-1e30, std.math.maxInt(u32), 16));
+    try std.testing.expectEqual(@as(i32, 0), scaleFUnitFloat(100, 12 * 64, 0));
+    try std.testing.expectEqual(@as(i32, 640), scaleFUnitFloat(1000, 10 * 64, 1000));
+}
+
+test "round26Dot6 handles values at the i32 edge" {
+    try std.testing.expectEqual(std.math.maxInt(i32), round26Dot6(std.math.maxInt(i32)));
+    try std.testing.expectEqual(std.math.minInt(i32), round26Dot6(std.math.minInt(i32)));
+    try std.testing.expectEqual(@as(i32, 64), round26Dot6(33));
+    try std.testing.expectEqual(@as(i32, -64), round26Dot6(-33));
+}
+
+test "bind grows work buffers for a larger foreign prepared" {
+    const allocator = std.testing.allocator;
+    var data_big: [synthetic_font_len]u8 = undefined;
+    var data_small: [synthetic_font_len]u8 = undefined;
+    const program_big = try Program.init(buildSyntheticFont(&data_big, 64, 8));
+    const program_small = try Program.init(buildSyntheticFont(&data_small, 0, 8));
+
+    var machine_big = try HintMachine.initForProgram(allocator, &program_big);
+    defer machine_big.deinit();
+    var machine_small = try HintMachine.initForProgram(allocator, &program_small);
+    defer machine_small.deinit();
+    var prepared = try machine_big.prepare(allocator, HintPpem.uniform(12 * 64), .{});
+    defer prepared.deinit();
+
+    // machine_small's scratch was sized for max_storage 0; binding the
+    // 64-slot prepared must grow it, not slice out of bounds in makeContext.
+    try machine_small.bind(&prepared);
+    const context = machine_small.makeContext();
+    try std.testing.expectEqual(prepared.storage.len, context.storage_work.len);
 }

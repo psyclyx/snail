@@ -1,3 +1,4 @@
+const std = @import("std");
 const band_tex = @import("band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const vec = @import("../math/vec.zig");
@@ -9,13 +10,12 @@ const Transform2D = vec.Transform2D;
 
 pub const WORDS_PER_INSTANCE = vertex.WORDS_PER_INSTANCE;
 
-const identity_tint = [4]f32{ 1, 1, 1, 1 };
-
 pub const CursorError = error{
     /// The instance buffer has no room for another instance.
     BufferTooSmall,
-    /// A composed transform had a near-zero determinant.
-    InvalidTransform,
+    /// The packed instance could not be represented or violated an ABI
+    /// invariant. Higher-level emitters should preflight detailed errors.
+    InvalidInstance,
 };
 
 /// Incremental writer over an instance-word buffer.
@@ -23,14 +23,15 @@ pub const CursorError = error{
 /// Owns the mechanics every instance emitter repeats: the capacity check, the
 /// packed-vertex ABI write (via `vertex.generate*`), and the per-instance
 /// advance. It is layer-policy-agnostic — the caller resolves the atlas layer
-/// (a `u8` texture-array index) and passes it in, so the same writer serves
-/// both the batch `picture.emit` path and immediate-mode callers.
+/// (a `u8` texture-array index) and passes it in.
 pub const Cursor = struct {
     buf: []u32,
     len: *usize,
 
     fn ensureInstanceCapacity(self: Cursor) CursorError!void {
-        if (self.len.* + WORDS_PER_INSTANCE > self.buf.len) return error.BufferTooSmall;
+        if (self.len.* > self.buf.len or self.buf.len - self.len.* < WORDS_PER_INSTANCE) {
+            return error.BufferTooSmall;
+        }
     }
 
     fn dst(self: Cursor) []u32 {
@@ -40,8 +41,6 @@ pub const Cursor = struct {
     fn commit(self: Cursor) void {
         self.len.* += WORDS_PER_INSTANCE;
     }
-
-    // ── transformed variants (batch + immediate-mode) ────────────────────────
 
     pub fn appendGlyphTransformedTinted(
         self: Cursor,
@@ -54,7 +53,7 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateGlyphVerticesTransformedTinted(self.dst(), bbox, band_entry, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -68,11 +67,11 @@ pub const Cursor = struct {
         tint: [4]f32,
         layer: u8,
         transform: Transform2D,
-        policy: [7]u32,
+        policy: [4]u32,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateAutohintVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform, policy))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -89,7 +88,7 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generatePathRecordVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
@@ -106,11 +105,11 @@ pub const Cursor = struct {
     ) CursorError!void {
         try self.ensureInstanceCapacity();
         if (!vertex.generateMultiLayerGlyphVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
+            return error.InvalidInstance;
         self.commit();
     }
 
-    pub fn appendHintedTextTransformedTinted(
+    pub fn appendTtHintedTextTransformedTinted(
         self: Cursor,
         bbox: BBox,
         info_x: u16,
@@ -122,39 +121,19 @@ pub const Cursor = struct {
         transform: Transform2D,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
-        if (!vertex.generateHintedTextVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
-            return error.InvalidTransform;
-        self.commit();
-    }
-
-    // ── axis-aligned convenience (immediate-mode) ────────────────────────────
-
-    pub fn appendGlyph(
-        self: Cursor,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: BBox,
-        band_entry: GlyphBandEntry,
-        color: [4]f32,
-        layer: u8,
-    ) CursorError!void {
-        try self.appendGlyphTinted(x, y, font_size, bbox, band_entry, color, identity_tint, layer);
-    }
-
-    pub fn appendGlyphTinted(
-        self: Cursor,
-        x: f32,
-        y: f32,
-        font_size: f32,
-        bbox: BBox,
-        band_entry: GlyphBandEntry,
-        color: [4]f32,
-        tint: [4]f32,
-        layer: u8,
-    ) CursorError!void {
-        try self.ensureInstanceCapacity();
-        vertex.generateGlyphVerticesTinted(self.dst(), x, y, font_size, bbox, band_entry, color, tint, layer);
+        if (!vertex.generateTtHintedTextVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
+            return error.InvalidInstance;
         self.commit();
     }
 };
+
+test "cursor capacity check is total for an invalid or overflowing length" {
+    var storage: [WORDS_PER_INSTANCE]u32 = undefined;
+    var invalid_len: usize = std.math.maxInt(usize);
+    const invalid_cursor = Cursor{ .buf = &storage, .len = &invalid_len };
+    try std.testing.expectError(error.BufferTooSmall, invalid_cursor.ensureInstanceCapacity());
+
+    var short_len: usize = 1;
+    const short_cursor = Cursor{ .buf = storage[0..WORDS_PER_INSTANCE], .len = &short_len };
+    try std.testing.expectError(error.BufferTooSmall, short_cursor.ensureInstanceCapacity());
+}

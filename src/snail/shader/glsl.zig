@@ -1,0 +1,107 @@
+//! Canonical, entry-point-free GLSL fragment catalog.
+//!
+//! Every fragment has one source file, one runtime string, and one include
+//! filename. OpenGL callers pass `source(id)` to `glShaderSource`; offline
+//! compilers include `fileName(id)` from Snail's `snail_glsl` build path.
+//! `dependencies` records the required order without choosing a stage
+//! interface, resource bindings, entry point, or complete shader.
+
+pub const Fragment = enum {
+    render_abi,
+    coverage_common,
+    color_common,
+    vertex_interface,
+    vertex_body,
+    autohint_vertex_interface,
+    autohint_fragment_interface,
+    autohint_vertex_body,
+    render_fragment_interface,
+    text_coverage_interface,
+    text_subpixel_interface,
+    text_coverage_body,
+    regular_text_body,
+    colr_body,
+    path_body,
+    tt_hinted_text_body,
+    autohint_warp,
+    autohint_fast_body,
+    text_subpixel_body,
+    linear_resolve_body,
+};
+
+/// Runtime source for one canonical fragment.
+pub fn source(comptime fragment: Fragment) [:0]const u8 {
+    return switch (fragment) {
+        .render_abi => @embedFile("glsl/snail_render_abi.glsl"),
+        .coverage_common => @embedFile("glsl/snail_coverage_common.glsl"),
+        .color_common => @embedFile("glsl/snail_color_common.glsl"),
+        .vertex_interface => @embedFile("glsl/snail_vert.interface.glsl"),
+        .vertex_body => @embedFile("glsl/snail_vert_body.glsl"),
+        .autohint_vertex_interface => @embedFile("glsl/snail_autohint_vert.interface.glsl"),
+        .autohint_fragment_interface => @embedFile("glsl/snail_autohint_frag.interface.glsl"),
+        .autohint_vertex_body => @embedFile("glsl/snail_autohint_vert_body.glsl"),
+        .render_fragment_interface => @embedFile("glsl/snail_frag.interface.glsl"),
+        .text_coverage_interface => @embedFile("glsl/snail_text_coverage.interface.glsl"),
+        .text_subpixel_interface => @embedFile("glsl/snail_text_subpixel.interface.glsl"),
+        .text_coverage_body => @embedFile("glsl/snail_text_frag_body.glsl"),
+        .regular_text_body => @embedFile("glsl/snail_text_main.glsl"),
+        .colr_body => @embedFile("glsl/snail_colr_frag_body.glsl"),
+        .path_body => @embedFile("glsl/snail_path_frag_body.glsl"),
+        .tt_hinted_text_body => @embedFile("glsl/snail_tt_hinted_text_frag_body.glsl"),
+        .autohint_warp => @embedFile("glsl/snail_autohint_warp.glsl"),
+        .autohint_fast_body => @embedFile("glsl/snail_autohint_fast_main.glsl"),
+        .text_subpixel_body => @embedFile("glsl/snail_text_subpixel_body.glsl"),
+        .linear_resolve_body => @embedFile("glsl/snail_linear_resolve_body.glsl"),
+    };
+}
+
+/// Include filename for the same canonical fragment.
+pub fn fileName(fragment: Fragment) []const u8 {
+    return switch (fragment) {
+        .render_abi => "snail_render_abi.glsl",
+        .coverage_common => "snail_coverage_common.glsl",
+        .color_common => "snail_color_common.glsl",
+        .vertex_interface => "snail_vert.interface.glsl",
+        .vertex_body => "snail_vert_body.glsl",
+        .autohint_vertex_interface => "snail_autohint_vert.interface.glsl",
+        .autohint_fragment_interface => "snail_autohint_frag.interface.glsl",
+        .autohint_vertex_body => "snail_autohint_vert_body.glsl",
+        .render_fragment_interface => "snail_frag.interface.glsl",
+        .text_coverage_interface => "snail_text_coverage.interface.glsl",
+        .text_subpixel_interface => "snail_text_subpixel.interface.glsl",
+        .text_coverage_body => "snail_text_frag_body.glsl",
+        .regular_text_body => "snail_text_main.glsl",
+        .colr_body => "snail_colr_frag_body.glsl",
+        .path_body => "snail_path_frag_body.glsl",
+        .tt_hinted_text_body => "snail_tt_hinted_text_frag_body.glsl",
+        .autohint_warp => "snail_autohint_warp.glsl",
+        .autohint_fast_body => "snail_autohint_fast_main.glsl",
+        .text_subpixel_body => "snail_text_subpixel_body.glsl",
+        .linear_resolve_body => "snail_linear_resolve_body.glsl",
+    };
+}
+
+/// Required algorithm-fragment order for each reusable operation. Stage
+/// interfaces are deliberately absent: the caller chooses those separately.
+pub const dependencies = struct {
+    pub const vertex = [_]Fragment{ .color_common, .vertex_body };
+    pub const regular_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .regular_text_body };
+    pub const colr = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body, .colr_body };
+    pub const path = [_]Fragment{ .render_abi, .coverage_common, .color_common, .path_body };
+    pub const tt_hinted_text = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .tt_hinted_text_body };
+    pub const autohint_vertex = [_]Fragment{ .color_common, .autohint_warp, .vertex_body, .autohint_vertex_body };
+    pub const autohint_fast = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_coverage_body, .autohint_warp, .autohint_fast_body };
+    pub const text_subpixel = [_]Fragment{ .render_abi, .coverage_common, .color_common, .text_subpixel_body };
+    /// Fullscreen linear-resolve pass (float intermediate seed/encode) for
+    /// hosts without hardware sRGB encode; see the fragment's recipe doc.
+    pub const linear_resolve = [_]Fragment{ .color_common, .linear_resolve_body };
+};
+
+test "catalog sources and filenames describe the same atomic fragments" {
+    const std = @import("std");
+    inline for (comptime std.meta.tags(Fragment)) |fragment| {
+        try std.testing.expect(source(fragment).len != 0);
+        try std.testing.expect(std.mem.endsWith(u8, fileName(fragment), ".glsl"));
+        try std.testing.expect(std.mem.indexOf(u8, source(fragment), "void main") == null);
+    }
+}

@@ -35,7 +35,7 @@ pub const AtlasRecord = struct {
     /// Index into the owning Atlas's `pages` slice.
     page_index: u16,
     /// Snapshot of `AtlasPage.generation` at the time the record was issued.
-    page_generation: u16,
+    page_generation: u64,
     /// Starting texel within the page's curve texture.
     curve_texel: u32,
     /// Number of curve segments (each occupies `SEGMENT_TEXELS` texels).

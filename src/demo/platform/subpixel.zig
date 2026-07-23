@@ -3,7 +3,7 @@ const c = @cImport({
     @cInclude("stdio.h");
 });
 const snail = @import("snail");
-const SubpixelOrder = snail.SubpixelOrder;
+const SubpixelOrder = @import("snail-raster").SubpixelOrder;
 
 /// Query fontconfig for the system's LCD subpixel order.
 /// Falls back to .rgb (correct for the vast majority of modern displays).

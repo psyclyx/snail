@@ -9,7 +9,7 @@
 //! Works on either axis (`analyzeGlyph(.., axis)`): `.y` finds horizontal
 //! features (baseline/x-height/crossbars/stem tops), `.x` finds vertical
 //! stems. Each axis stays a separable, monotone, invertible coordinate warp.
-//! A font with no clean stem structure (much non-Latin text) simply yields
+//! A glyph with no clean stem or shared-reference structure simply yields
 //! few/no edges and renders unwarped (identity), which is the non-breaking
 //! guarantee. See [[project_snail]].
 //!
@@ -22,6 +22,7 @@ const std = @import("std");
 const bezier = @import("../../math/bezier.zig");
 const outline = @import("../truetype/outline.zig");
 const vec = @import("../../math/vec.zig");
+const font_types = @import("../types.zig");
 
 const Allocator = std.mem.Allocator;
 const ContourRange = outline.ContourRange;
@@ -70,12 +71,47 @@ pub const Axis = enum { y, x };
 /// Stable, serializable edge facts produced by outline analysis. Positions and
 /// widths are expressed as em fractions by the producer; fitting adds targets
 /// later without mutating these facts.
-pub const FeatureEdge = struct {
+pub const FeatureEdge = extern struct {
     pos: f32,
     width: f32,
     stem: i16,
     blue: i16,
-    flags: packed struct(u16) { round: bool, synthetic_apex: bool = false, _reserved: u14 = 0 },
+    flags: packed struct(u32) {
+        round: bool,
+        synthetic_apex: bool = false,
+        /// Direction used by blue-zone fitting. The grid-only direction is
+        /// derivable from the stem relation; the blue-zone direction also
+        /// depends on the nearest shared zone, so analysis records it once.
+        semantics_resolved: bool = false,
+        blue_dir_negative: bool = false,
+        /// Pre-resolved companion for a round blue edge under grid-only and
+        /// blue-zone policies. 62 means no companion; 63 means an older or
+        /// caller-authored record that still needs the generic search. These replace the two
+        /// quadratic searches that the shader used to repeat at draw time.
+        grid_companion: u6 = 63,
+        blue_companion: u6 = 63,
+        _reserved: u16 = 0,
+    },
+
+    pub fn direction(self: FeatureEdge, use_blues: bool, features: []const FeatureEdge) i8 {
+        if (use_blues) return if (self.flags.blue_dir_negative) -1 else 1;
+        if (self.stem >= 0 and @as(usize, @intCast(self.stem)) < features.len and
+            features[@intCast(self.stem)].pos > self.pos)
+        {
+            return -1;
+        }
+        return 1;
+    }
+
+    pub fn companion(self: FeatureEdge, use_blues: bool) i16 {
+        if (!self.flags.semantics_resolved) return -2;
+        const encoded = if (use_blues) self.flags.blue_companion else self.flags.grid_companion;
+        return switch (encoded) {
+            62 => -1,
+            63 => -2,
+            else => @intCast(encoded),
+        };
+    }
 };
 
 /// A near-axis-aligned run of the outline: a candidate contribution to an
@@ -127,6 +163,10 @@ pub const Edge = struct {
     /// Apex recovered from an analytic endpoint tangent rather than a sampled
     /// run. Used only as a natural-width companion during fitting.
     synthetic_apex: bool = false,
+    /// Pre-resolved blue-apex companion. -2 asks the generic fitter to use
+    /// its legacy search (useful for direct callers/tests); -1 means analysis
+    /// proved that no companion exists.
+    companion: i16 = -2,
 
     pub fn isStem(self: Edge) bool {
         return self.stem >= 0;
@@ -153,17 +193,6 @@ pub const GlyphAnalysis = struct {
         return n;
     }
 };
-
-/// Analyse a glyph's horizontal (y) features. Back-compat wrapper.
-pub fn analyzeGlyphY(
-    allocator: Allocator,
-    points: []const Point,
-    contours: []const ContourRange,
-    units_per_em: u16,
-    params: Params,
-) !GlyphAnalysis {
-    return analyzeGlyph(allocator, points, contours, units_per_em, params, .y);
-}
 
 /// Analyse a glyph's edges along `axis`. `allocator` owns the returned edges;
 /// a private arena holds all intermediate work and is freed here.
@@ -196,6 +225,117 @@ pub fn analyzeGlyph(
     linkStems(edges, min_overlap, max_stem);
 
     return .{ .allocator = allocator, .units_per_em = units_per_em, .edges = edges };
+}
+
+/// Analyze already-decoded line/quadratic/cubic/conic contours. Coordinates
+/// are in font units. This is the outline-format-neutral entry point used by
+/// CFF/CFF2 and variable-font instances.
+pub fn analyzeCurves(
+    allocator: Allocator,
+    curves: []const bezier.CurveSegment,
+    contours: []const font_types.CurveRange,
+    units_per_em: u16,
+    params: Params,
+    axis: Axis,
+) !GlyphAnalysis {
+    var arena_state = std.heap.ArenaAllocator.init(allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+
+    const em: f32 = @floatFromInt(units_per_em);
+    const min_len = params.min_len_em * em;
+    const merge_dist = params.merge_em * em;
+    const min_overlap = params.min_overlap_em * em;
+    const max_stem = params.max_stem_em * em;
+
+    var segments: std.ArrayList(Segment) = .empty;
+    for (contours) |contour| {
+        if (contour.end <= contour.start or contour.end > curves.len) continue;
+        try collectCurveSegments(
+            arena,
+            curves[contour.start..contour.end],
+            params,
+            units_per_em,
+            min_len,
+            merge_dist,
+            axis,
+            &segments,
+        );
+    }
+
+    const edges = try mergeSegments(allocator, arena, segments.items, merge_dist);
+    errdefer allocator.free(edges);
+    linkStems(edges, min_overlap, max_stem);
+    return .{ .allocator = allocator, .units_per_em = units_per_em, .edges = edges };
+}
+
+fn collectCurveSegments(
+    arena: Allocator,
+    curves: []const bezier.CurveSegment,
+    params: Params,
+    em_units: u16,
+    min_len: f32,
+    merge_dist: f32,
+    axis: Axis,
+    out: *std.ArrayList(Segment),
+) !void {
+    const straight_eps = 1e-3 * @as(f32, @floatFromInt(em_units));
+    const flat_ratio = if (axis == .x) params.flat_ratio_x else params.flat_ratio;
+    for (curves) |curve| {
+        const end = curve.endPoint();
+        const straight = curve.kind == .line or curve.flatness() <= straight_eps;
+        if (straight) {
+            if (segmentFor(curve.p0, end, axis, flat_ratio, min_len, false)) |segment|
+                try out.append(arena, segment);
+        } else if (axis == .y) {
+            var previous = curve.p0;
+            var step: u32 = 1;
+            while (step <= params.curve_steps) : (step += 1) {
+                const t = @as(f32, @floatFromInt(step)) / @as(f32, @floatFromInt(params.curve_steps));
+                const point = curve.evaluate(t);
+                if (segmentFor(previous, point, .y, params.flat_ratio, min_len, true)) |segment|
+                    try out.append(arena, segment);
+                previous = point;
+            }
+        }
+    }
+
+    if (axis == .y) {
+        for (curves, 0..) |incoming, i| {
+            const outgoing = curves[(i + 1) % curves.len];
+            if (curveEndpointExtremumSegment(incoming, outgoing, params.flat_ratio)) |segment| {
+                if (!hasNearbySegment(out.items, segment.pos, merge_dist)) try out.append(arena, segment);
+            }
+        }
+    }
+}
+
+fn curveEndpointExtremumSegment(
+    incoming: bezier.CurveSegment,
+    outgoing: bezier.CurveSegment,
+    flat_ratio: f32,
+) ?Segment {
+    const point = incoming.endPoint();
+    if (Vec2.length(Vec2.sub(point, outgoing.p0)) > 1e-4) return null;
+    const in_tangent = incoming.derivative(1.0);
+    const out_tangent = outgoing.derivative(0.0);
+    if (@abs(in_tangent.x) <= 1e-6 or @abs(out_tangent.x) <= 1e-6 or
+        @abs(in_tangent.y) > flat_ratio * @abs(in_tangent.x) or
+        @abs(out_tangent.y) > flat_ratio * @abs(out_tangent.x)) return null;
+
+    const before = incoming.evaluate(0.5).y;
+    const after = outgoing.evaluate(0.5).y;
+    const is_max = point.y >= before and point.y >= after and (point.y > before or point.y > after);
+    const is_min = point.y <= before and point.y <= after and (point.y < before or point.y < after);
+    if (!is_max and !is_min) return null;
+    return .{
+        .pos = point.y,
+        .min = point.x,
+        .max = point.x,
+        .dir = if (in_tangent.x >= 0) 1 else -1,
+        .round = true,
+        .synthetic_apex = true,
+    };
 }
 
 /// Emit near-axis-aligned segments of one contour. `contourToCurves` places
@@ -451,7 +591,7 @@ fn analyzeChar(allocator: Allocator, program: *const Program, font: *const Font,
         .simple => |s| s,
         else => return error.NotSimpleGlyph,
     };
-    return analyzeGlyphY(allocator, simple.points, simple.contours, font.units_per_em, .default);
+    return analyzeGlyph(allocator, simple.points, simple.contours, font.units_per_em, .default, .y);
 }
 
 test "analytic endpoint extremum recovers an undersampled inner apex" {

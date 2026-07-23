@@ -44,7 +44,7 @@ pub const ns = struct {
     /// Unhinted glyph: a=font_id, b=glyph_id, c=0.
     pub const unhinted_glyph: u32 = 1;
     /// Hinted glyph at a specific ppem: a=font_id, b=glyph_id, c=ppem_26_6.
-    pub const hinted_glyph: u32 = 2;
+    pub const tt_hinted_glyph: u32 = 2;
     /// Filled path shape: caller-chosen a, b, c.
     pub const path_fill: u32 = 3;
     /// Stroked path shape: caller-chosen a, b, c.
@@ -52,8 +52,12 @@ pub const ns = struct {
     /// Paint record (gradient, image): caller-chosen a, b, c.
     pub const paint_record: u32 = 5;
     /// Immutable auto-light analysis: a=font_id, b=glyph_id, c=0. Distinct
-    /// from `hinted_glyph`; one analysis serves every PPEM and policy.
+    /// from `tt_hinted_glyph`; one analysis serves every PPEM and policy.
     pub const autohint_glyph: u32 = 6;
+    /// TT-hinted horizontal advance: a=font_id, b=glyph_id,
+    /// c=`TtHintPpem.packed26Dot6()`. A CPU-only value record (26.6 px, no
+    /// geometry) — never uploaded; read at shape time by advance providers.
+    pub const tt_advance: u32 = 7;
 
     /// First namespace reserved for caller use.
     pub const user_base: u32 = 1024;
@@ -63,14 +67,21 @@ pub fn unhintedGlyph(font_id: u32, glyph_id: u16) RecordKey {
     return .{ .namespace = ns.unhinted_glyph, .a = font_id, .b = @intCast(glyph_id) };
 }
 
-pub fn hintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
-    return .{ .namespace = ns.hinted_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
+pub fn ttHintedGlyph(font_id: u32, glyph_id: u16, ppem_26_6: u32) RecordKey {
+    return .{ .namespace = ns.tt_hinted_glyph, .a = font_id, .b = @intCast(glyph_id), .c = ppem_26_6 };
 }
 
 /// Key for an immutable auto-light glyph analysis. Size and fitting policy
 /// are draw-time inputs and therefore do not participate in atlas identity.
 pub fn autohintGlyph(font_id: u32, glyph_id: u16) RecordKey {
     return .{ .namespace = ns.autohint_glyph, .a = font_id, .b = @intCast(glyph_id), .c = 0 };
+}
+
+/// Key for a TT-hinted horizontal advance. `ppem_packed_26_6` is
+/// `TtHintPpem.packed26Dot6()` — both axes, so non-square ppems get
+/// distinct records.
+pub fn ttAdvance(font_id: u32, glyph_id: u16, ppem_packed_26_6: u32) RecordKey {
+    return .{ .namespace = ns.tt_advance, .a = font_id, .b = @intCast(glyph_id), .c = ppem_packed_26_6 };
 }
 
 test "record key equality and hash" {
@@ -86,8 +97,8 @@ test "user namespaces start at 1024" {
     try std.testing.expect(ns.user_base > ns.autohint_glyph);
 }
 
-test "autohint and truetype keys of the same glyph never collide" {
-    const tt = hintedGlyph(3, 42, 12 * 64);
+test "autohint and tt-hint keys of the same glyph never collide" {
+    const tt = ttHintedGlyph(3, 42, 12 * 64);
     const au = autohintGlyph(3, 42);
     try std.testing.expect(!tt.eql(au));
     try std.testing.expect(tt.hash() != au.hash());

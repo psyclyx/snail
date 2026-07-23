@@ -1,4 +1,5 @@
 const std = @import("std");
+const sfnt = @import("../sfnt.zig");
 
 pub const ParseError = error{
     UnexpectedEof,
@@ -90,7 +91,15 @@ pub const ProgramTables = struct {
     gasp: ?TableRecord = null,
 
     pub fn init(data: []const u8) ParseError!ProgramTables {
+        return initFace(data, 0);
+    }
+
+    pub fn initFace(data: []const u8, face_index: u32) ParseError!ProgramTables {
         if (data.len < 12) return error.InvalidFont;
+        const directory: usize = sfnt.directoryOffset(data, face_index) catch |err| switch (err) {
+            error.InvalidFaceIndex, error.UnsupportedFontContainer => return error.InvalidFont,
+            else => |e| return e,
+        };
 
         var out = ProgramTables{
             .data = data,
@@ -100,8 +109,8 @@ pub const ProgramTables = struct {
         var have_head = false;
         var have_maxp = false;
 
-        const num_tables = try readU16(data, 4);
-        var offset: usize = 12;
+        const num_tables = try readU16(data, directory + 4);
+        var offset: usize = directory + 12;
         for (0..num_tables) |_| {
             if (offset + 16 > data.len) return error.UnexpectedEof;
             const tag = data[offset..][0..4];
@@ -172,8 +181,12 @@ pub const ProgramTables = struct {
     pub fn headInfo(self: ProgramTables) ParseError!Head {
         const bytes = try self.head.bytes(self.data);
         if (bytes.len < 54) return error.UnexpectedEof;
+        const units_per_em = try readU16(bytes, 18);
+        // Spec range (OpenType head.unitsPerEm); downstream FUnit→pixel
+        // scaling divides by this and assumes the result fits an i32.
+        if (units_per_em < 16 or units_per_em > 16_384) return error.InvalidFont;
         return .{
-            .units_per_em = try readU16(bytes, 18),
+            .units_per_em = units_per_em,
             .index_to_loc_format = try readI16(bytes, 50),
         };
     }
@@ -275,6 +288,24 @@ test "read TT program tables from bundled font" {
     try std.testing.expect(tables.loca != null);
     try std.testing.expect((try tables.tableBytes(tables.fpgm)).len > 0);
     try std.testing.expect((try tables.tableBytes(tables.prep)).len > 0);
+}
+
+test "head rejects units per em outside the spec range" {
+    var bytes = [_]u8{0} ** 54;
+    const tables = ProgramTables{
+        .data = &bytes,
+        .head = .{ .offset = 0, .length = bytes.len },
+        .maxp = .{ .offset = 0, .length = 0 },
+    };
+
+    std.mem.writeInt(u16, bytes[18..20], 15, .big);
+    try std.testing.expectError(error.InvalidFont, tables.headInfo());
+
+    std.mem.writeInt(u16, bytes[18..20], 16_385, .big);
+    try std.testing.expectError(error.InvalidFont, tables.headInfo());
+
+    std.mem.writeInt(u16, bytes[18..20], 1000, .big);
+    try std.testing.expectEqual(@as(u16, 1000), (try tables.headInfo()).units_per_em);
 }
 
 test "gasp behavior resolves ppem ranges" {

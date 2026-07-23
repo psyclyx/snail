@@ -4,7 +4,7 @@
 Minimize per-character pixel disagreement between composable autohint policies and DejaVu Sans Mono's TrueType rendering for corpus `a-zA-Z0-9!@#$%^*()[]{}+=` at 9–14 PPEM. Use the generated contact sheets and TSV to localize regressions. Preserve caller-explicit composability and PPEM-independent resources.
 
 ## Metrics
-- Primary: `dejavu_total` summed absolute per-pixel ink difference across y, x-natural, x-full, and xy-relative (lower is better).
+- Primary: `dejavu_total` summed absolute per-pixel ink difference across y, x-natural, x-full, and xy-registered (lower is better).
 - Secondary: each DejaVu policy total and `noto_total` (Noto reference is unhinted fallback, so treat it as a distortion monitor, not the target).
 
 ## How to Run
@@ -15,9 +15,9 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - `src/snail/font/autohint/analysis.zig`: immutable edge/stem analysis.
 - `src/snail/font/autohint/blue.zig`: blue-zone derivation.
 - `src/snail/font/autohint/producer.zig`: immutable glyph/font features and regression tests.
-- `src/snail/render/backend/glsl/snail_autohint_warp.glsl`: exact GPU mirror of retained fitting changes.
-- `src/demo/autohint_character_diff.zig`: diagnostic harness-local policies/metrics.
-- `src/demo/autohint_compare.zig`: demo-local policy constants, updated only when a generally better policy is retained.
+- `src/snail/shader/glsl/snail_autohint_warp.glsl`: exact GPU mirror of retained fitting changes.
+- `src/demo/tools/autohint/character_diff.zig`: diagnostic harness-local policies/metrics.
+- `src/demo/autohint/compare.zig`: demo-local policy constants, updated only when a generally better policy is retained.
 
 ## Off Limits
 - Per-PPEM or per-policy atlas resources/caches.
@@ -40,7 +40,7 @@ Minimize per-character pixel disagreement between composable autohint policies a
 - Kept: full y stem-width fitting instead of the 1.6px light cutoff. Deterministic DejaVu total improved 3,601,838→3,600,874 (241 per policy), Noto unchanged. Synced demo y/xy examples.
 - Kept: independent x-stem positioning with round-left registration. DejaVu strong policy improved 821,686→819,196 and Noto total improved 2,478,278→2,463,025. Renamed the diagnostic policy from `xy-relative` to `xy-registered` so its name remains truthful; this isolates registration beyond `x-full`.
 - Discarded: disabled x standard-width matching (`std_snap_ratio=0`). Metrics were bit-identical; all affected stems quantize to the same pixel widths at 9–14 PPEM.
-- Discarded: removed round-left registration from xy-relative. DejaVu xy worsened 821,686→832,766; registration is a clear win, despite a 488-point Noto improvement.
+- Discarded: removed round-left registration from the policy now named xy-registered. DejaVu xy worsened 821,686→832,766; registration is a clear win, despite a 488-point Noto improvement.
 - Kept: round-left registration on x-full. DejaVu x-full improved 830,276→819,196 (total 3,598,384→3,587,304); Noto rose only 488. x-full temporarily duplicates xy-registered, so the next experiment must repurpose one diagnostic policy.
 - Kept: round-left registration on x-natural. DejaVu x-natural improved 899,313→888,233 (total 3,587,304→3,576,224); Noto rose 488. Registration is independently beneficial with natural and full widths.
 - Discarded: natural-width relative x positioning with registration for the fourth policy. DejaVu policy worsened 819,196→889,710, though Noto improved strongly; relative positioning is not TT-like for this corpus.

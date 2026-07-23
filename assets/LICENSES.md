@@ -32,7 +32,37 @@ Copyright notices for the bundled files:
 - Copyright 2022 The Noto Project Authors (https://github.com/notofonts/thai)
 - Copyright 2013 Google LLC
 
-### SIL Open Font License 1.1
+## Source Serif Test Fonts
+
+Files:
+
+- `test-fonts/SourceSerif4-Regular.otf`
+- `test-fonts/SourceSerif4Variable-Roman.otf`
+- `test-fonts/SnailTestCollection.otc` (derived test fixture)
+
+These are unmodified release 4.005 files from Adobe's Source Serif repository:
+https://github.com/adobe-fonts/source-serif/tree/4.005R
+
+- Copyright 2014-2023 Adobe (http://www.adobe.com/), with Reserved Font Name
+  “Source”. All Rights Reserved. Source is a trademark of Adobe in the United
+  States and/or other countries.
+- `SourceSerif4-Regular.otf` SHA-256:
+  `edf160d0d584deee8a3bb2c3371b2a7624ca63580fbe02c57c1f4c91e84d8787`
+- `SourceSerif4Variable-Roman.otf` SHA-256:
+  `867b73c6a954a4a64616906d179f94572a748790a1d022ebeeff07f56ea0221a`
+- `SnailTestCollection.otc` SHA-256:
+  `06f3d80f994294f7a2e65537a16b5b349e95acead8e98c116c66980a69f3c473`
+
+`SnailTestCollection.otc` was generated with FontTools 4.63.0 from the two
+release files above. Each face was subset to U+0020, U+0041, U+0053, U+006D,
+U+006E, and U+FFFD; all layout features were retained; the faces were renamed
+to “Snail Test CFF” and “Snail Test CFF2 Variable” to avoid Adobe's Reserved
+Font Name; and the renamed faces were packaged as an OpenType collection.
+
+Source Serif is licensed under the SIL Open Font License, Version 1.1,
+reproduced below.
+
+## SIL Open Font License 1.1
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.
 This license is copied below, and is also available with a FAQ at:
@@ -123,6 +153,65 @@ DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL
 OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE,
 ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM OTHER
 DEALINGS IN THE FONT SOFTWARE.
+
+## DejaVu Fonts
+
+Files:
+
+- `DejaVuSansMono.ttf`
+- `DejaVuSerif.ttf`
+- `test-fonts/SnailTestTrueTypeCollection.ttc` (derived test fixture)
+
+`SnailTestTrueTypeCollection.ttc` was generated with FontTools 4.63.0 by
+subsetting the two DejaVu files to U+0020, U+0041, U+004D, U+0053, U+006D,
+U+006E, and U+FFFD, retaining all layout features, renaming the faces to
+“Snail Test Mono” and “Snail Test Serif”, and packaging them as a TrueType
+collection. Its SHA-256 is
+`e813012de32a2046aaa6987ff1710100ed020ca7e10d6e731eaf89f083c9397f`.
+
+Fonts are (c) Bitstream (see below). DejaVu changes are in public domain.
+
+### Bitstream Vera Fonts Copyright
+
+Copyright (c) 2003 by Bitstream, Inc. All Rights Reserved. Bitstream Vera is a
+trademark of Bitstream, Inc.
+
+Permission is hereby granted, free of charge, to any person obtaining a copy of
+the fonts accompanying this license ("Fonts") and associated documentation files
+(the "Font Software"), to reproduce and distribute the Font Software, including
+without limitation the rights to use, copy, merge, publish, distribute, and/or
+sell copies of the Font Software, and to permit persons to whom the Font Software
+is furnished to do so, subject to the following conditions:
+
+The above copyright and trademark notices and this permission notice shall be
+included in all copies of one or more of the Font Software typefaces.
+
+The Font Software may be modified, altered, or added to, and in particular the
+designs of glyphs or characters in the Fonts may be modified and additional
+glyphs or characters may be added to the Fonts, only if the fonts are renamed to
+names not containing either the words "Bitstream" or the word "Vera".
+
+This License becomes null and void to the extent applicable to Fonts or Font
+Software that has been modified and is distributed under the "Bitstream Vera"
+names.
+
+The Font Software may be sold as part of a larger software package but no copy
+of one or more of the Font Software typefaces may be sold by itself.
+
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT OF COPYRIGHT, PATENT, TRADEMARK, OR
+OTHER RIGHT. IN NO EVENT SHALL BITSTREAM OR THE GNOME FOUNDATION BE LIABLE FOR
+ANY CLAIM, DAMAGES OR OTHER LIABILITY, INCLUDING ANY GENERAL, SPECIAL, INDIRECT,
+INCIDENTAL, OR CONSEQUENTIAL DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR
+OTHERWISE, ARISING FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR
+FROM OTHER DEALINGS IN THE FONT SOFTWARE.
+
+Except as contained in this notice, the names of Gnome, the Gnome Foundation,
+and Bitstream Inc., shall not be used in advertising or otherwise to promote the
+sale, use or other dealings in this Font Software without prior written
+authorization from the Gnome Foundation or Bitstream Inc., respectively. For
+further information, contact: fonts at gnome dot org.
 
 ## Twemoji Mozilla
 

@@ -1,8 +1,7 @@
 const std = @import("std");
-const build_options = @import("build_options");
 const egl_common = @import("egl.zig");
 const snail = @import("snail");
-const SubpixelOrder = snail.SubpixelOrder;
+const SubpixelOrder = @import("snail-raster").SubpixelOrder;
 pub const presentation = @import("presentation.zig");
 const wayland = @import("wayland.zig");
 pub const gl = @import("support").gl;
@@ -57,10 +56,12 @@ pub fn init(width: u32, height: u32, title: [*:0]const u8, api: GlApi) !void {
         owns_window = false;
     }
 
-    try initForCurrentWindow(api);
+    try initForCurrentWindow(api, 0);
 }
 
-pub fn initForWindow(window: *wayland.Window, api: GlApi) !void {
+/// `depth_size` is the minimum default-framebuffer depth-buffer bits to request
+/// (0 = color-only, e.g. 24 when the scene depth-tests). See `egl.chooseConfig`.
+pub fn initForWindow(window: *wayland.Window, api: GlApi, depth_size: i32) !void {
     app = window;
     owns_window = false;
     errdefer {
@@ -68,10 +69,10 @@ pub fn initForWindow(window: *wayland.Window, api: GlApi) !void {
         owns_window = false;
     }
 
-    try initForCurrentWindow(api);
+    try initForCurrentWindow(api, depth_size);
 }
 
-fn initForCurrentWindow(api: GlApi) !void {
+fn initForCurrentWindow(api: GlApi, depth_size: i32) !void {
     active_api = api;
     egl_display = try initEglDisplay(api);
     errdefer {
@@ -81,7 +82,7 @@ fn initForCurrentWindow(api: GlApi) !void {
     }
 
     var config: egl.EGLConfig = null;
-    try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, api, &config);
+    try egl_common.chooseConfig(egl, egl_display, egl.EGL_WINDOW_BIT, api, depth_size, &config);
 
     egl_context = try egl_common.createOpenGlContext(egl, api, egl_display, config);
     errdefer {
@@ -171,7 +172,6 @@ pub fn consumeMonitorChanged() bool {
 }
 
 pub fn detectCurrentMonitorSubpixelOrder(base: SubpixelOrder) SubpixelOrder {
-    _ = build_options;
     if (app) |window| return window.currentSubpixelOrder(base);
     return base;
 }

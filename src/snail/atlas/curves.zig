@@ -14,6 +14,8 @@
 
 const std = @import("std");
 const bezier = @import("../math/bezier.zig");
+const curve_tex = @import("../format/curve_texture.zig");
+const band_tex = @import("../format/band_texture.zig");
 
 pub const BBox = bezier.BBox;
 
@@ -23,15 +25,17 @@ pub const GlyphCurves = struct {
     /// Laid out exactly as the existing `format/curve_texture.zig`
     /// format expects, with the glyph's first segment at byte 0.
     curve_bytes: []const u16,
-    /// Packed band texture bytes (u16 indices). Curve refs are encoded
-    /// assuming the glyph's first curve sits at texel 0 of the curve
+    /// Packed band texture bytes (u16 indices). Each non-empty block starts
+    /// with the private self-describing prefix from `format/band_texture.zig`;
+    /// records point at the headers immediately after it. Curve refs are
+    /// encoded assuming the glyph's first curve sits at texel 0 of the curve
     /// texture; the atlas rewrites them at insertion time to absolute
     /// page-local texel positions.
     band_bytes: []const u16,
     /// When non-null, both `curve_bytes` and `band_bytes` are slice views
     /// into this single combined allocation, and `deinit` frees only
     /// `backing`. Used by hot paths that want to coalesce the two
-    /// allocations into one (eg. the HintVm's cached-glyph clone). When
+    /// allocations into one (eg. the TtHintVm's cached-glyph clone). When
     /// null, `deinit` frees `curve_bytes` and `band_bytes` independently.
     backing: ?[]u16 = null,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
@@ -65,8 +69,12 @@ pub const GlyphCurves = struct {
     /// coalesces `curve_bytes` and `band_bytes` into a single `backing`
     /// buffer, so `deinit` frees exactly once. Scalar metadata is copied
     /// wholesale, so the invariant can't drift as fields are added.
-    pub fn clone(self: *const GlyphCurves, allocator: std.mem.Allocator) std.mem.Allocator.Error!GlyphCurves {
-        const backing = try allocator.alloc(u16, self.curve_bytes.len + self.band_bytes.len);
+    pub const CloneError = std.mem.Allocator.Error || error{ShapeTooLarge};
+
+    pub fn clone(self: *const GlyphCurves, allocator: std.mem.Allocator) CloneError!GlyphCurves {
+        const backing_len = std.math.add(usize, self.curve_bytes.len, self.band_bytes.len) catch
+            return error.ShapeTooLarge;
+        const backing = try allocator.alloc(u16, backing_len);
         @memcpy(backing[0..self.curve_bytes.len], self.curve_bytes);
         @memcpy(backing[self.curve_bytes.len..], self.band_bytes);
         var copy = self.*;
@@ -75,16 +83,6 @@ pub const GlyphCurves = struct {
         copy.band_bytes = backing[self.curve_bytes.len..];
         copy.backing = backing;
         return copy;
-    }
-
-    /// Byte size of the curve texture footprint (curves only, not bands).
-    pub fn curveBytes(self: *const GlyphCurves) usize {
-        return self.curve_bytes.len * @sizeOf(u16);
-    }
-
-    /// Byte size of the band lookup footprint.
-    pub fn bandBytes(self: *const GlyphCurves) usize {
-        return self.band_bytes.len * @sizeOf(u16);
     }
 
     /// Empty curves (no shape). Useful as a sentinel for missing glyphs that
@@ -108,13 +106,107 @@ pub const GlyphCurves = struct {
     pub fn isEmpty(self: *const GlyphCurves) bool {
         return self.curve_count == 0;
     }
+
+    pub const ValidationError = error{InvalidCurves};
+
+    /// Validate the packed texture payload before it crosses into the atlas.
+    /// `GlyphCurves` is intentionally constructible by custom producers, so
+    /// the atlas cannot assume its slices and scalar metadata were emitted by
+    /// snail's own packers.
+    pub fn validate(self: *const GlyphCurves) ValidationError!void {
+        const segment_words = curve_tex.SEGMENT_TEXELS * 4;
+        const expected_curve_words = @as(usize, self.curve_count) * segment_words;
+        if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
+        for (0..self.curve_count) |curve_index| {
+            const curve_texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
+            if (curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) == null) return error.InvalidCurves;
+        }
+
+        const scalar_values = [_]f32{
+            self.band_scale_x,
+            self.band_scale_y,
+            self.band_offset_x,
+            self.band_offset_y,
+            self.bbox.min.x,
+            self.bbox.min.y,
+            self.bbox.max.x,
+            self.bbox.max.y,
+        };
+        for (scalar_values) |value| {
+            if (!std.math.isFinite(value)) return error.InvalidCurves;
+        }
+        if (self.bbox.min.x > self.bbox.max.x or self.bbox.min.y > self.bbox.max.y) {
+            return error.InvalidCurves;
+        }
+
+        if (self.curve_count == 0) {
+            if (self.band_bytes.len != 0 or self.h_band_count != 0 or self.v_band_count != 0) {
+                return error.InvalidCurves;
+            }
+            return;
+        }
+
+        // A band reference stores its first-membership index in four bits.
+        // The regular instance ABI also requires non-zero counts before it
+        // encodes count-1.
+        const max_bands: u16 = 1 << 4;
+        if (self.h_band_count == 0 or self.v_band_count == 0 or
+            self.h_band_count > max_bands or self.v_band_count > max_bands or
+            self.band_bytes.len % 2 != 0)
+        {
+            return error.InvalidCurves;
+        }
+
+        const prefix_texels: usize = band_tex.block_prefix_texels;
+        const header_count = @as(usize, self.h_band_count) + @as(usize, self.v_band_count);
+        const total_texels = self.band_bytes.len / 2;
+        if (total_texels < prefix_texels + header_count) return error.InvalidCurves;
+        const prefix = band_tex.unpackBlockPrefix(self.band_bytes[0..4].*) orelse
+            return error.InvalidCurves;
+        if (prefix.h_band_count != self.h_band_count or prefix.v_band_count != self.v_band_count) {
+            return error.InvalidCurves;
+        }
+
+        var expected_ref_texel = prefix_texels + header_count;
+        for (0..header_count) |band_index| {
+            const header_word = (prefix_texels + band_index) * 2;
+            const count = @as(usize, self.band_bytes[header_word]);
+            const offset = @as(usize, self.band_bytes[header_word + 1]);
+            if (offset != expected_ref_texel - prefix_texels or count > total_texels - expected_ref_texel) {
+                return error.InvalidCurves;
+            }
+
+            const axis_band_count: u16 = if (band_index < self.h_band_count)
+                self.h_band_count
+            else
+                self.v_band_count;
+            for (expected_ref_texel..expected_ref_texel + count) |ref_texel| {
+                const w0 = self.band_bytes[ref_texel * 2];
+                const w1 = self.band_bytes[ref_texel * 2 + 1];
+                const first_member_band = w0 >> 12;
+                if (first_member_band >= axis_band_count) return error.InvalidCurves;
+
+                // x occupies 12 bits and y 14; y's high two bits carry the
+                // curve kind. References must point at a segment start in
+                // this glyph's local curve block.
+                const curve_texel = @as(u32, w1 & 0x3fff) * curve_tex.TEX_WIDTH +
+                    @as(u32, w0 & 0x0fff);
+                if (curve_texel % curve_tex.SEGMENT_TEXELS != 0 or
+                    curve_texel / curve_tex.SEGMENT_TEXELS >= self.curve_count)
+                {
+                    return error.InvalidCurves;
+                }
+            }
+            expected_ref_texel += count;
+        }
+        if (expected_ref_texel != total_texels) return error.InvalidCurves;
+    }
 };
 
 test "empty curves round-trip" {
     var c = GlyphCurves.empty(std.testing.allocator);
     defer c.deinit();
     try std.testing.expect(c.isEmpty());
-    try std.testing.expectEqual(@as(usize, 0), c.curveBytes());
 }
 
 test "clone deep-copies bytes and metadata into one backing" {
@@ -138,4 +230,46 @@ test "clone deep-copies bytes and metadata into one backing" {
     // Copy owns a single coalesced allocation, independent of the source.
     try std.testing.expect(dst.backing != null);
     try std.testing.expect(dst.curve_bytes.ptr != src.curve_bytes.ptr);
+}
+
+test "validate rejects inconsistent and out-of-range packed payloads" {
+    const allocator = std.testing.allocator;
+    var empty = GlyphCurves.empty(allocator);
+    try empty.validate();
+
+    empty.bbox.max.x = std.math.nan(f32);
+    try std.testing.expectError(error.InvalidCurves, empty.validate());
+    empty.bbox.max.x = 0;
+
+    empty.curve_count = 1;
+    try std.testing.expectError(error.InvalidCurves, empty.validate());
+
+    var curve_words = [_]u16{0} ** (curve_tex.SEGMENT_TEXELS * 4);
+    // Two one-band headers followed by one reference for each axis.
+    var band_words = band_tex.packBlockPrefix(1, 1) ++ [_]u16{ 1, 2, 1, 3, 0, 0, 0, 0 };
+    const valid = GlyphCurves{
+        .allocator = allocator,
+        .curve_bytes = &curve_words,
+        .band_bytes = &band_words,
+        .curve_count = 1,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+        .bbox = .{ .min = .zero, .max = .{ .x = 1, .y = 1 } },
+    };
+    try valid.validate();
+
+    curve_words[0] = @bitCast(std.math.nan(f16));
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
+    curve_words[0] = 0;
+
+    curve_words[10] = curve_tex.f32ToF16(9);
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
+    curve_words[10] = 0;
+
+    band_words[9] = 1; // local texel 4096 is outside the single curve
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
 }

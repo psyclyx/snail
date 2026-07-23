@@ -11,6 +11,41 @@ pub const PACKED_POINT_DELTA_LIMIT: f32 = 256.0;
 pub const PACKED_BAND_DILATION: f32 = 1.0;
 pub const DIRECT_ENCODING_KIND_BIAS: f32 = 4.0;
 const PACKED_CURVE_MAX_SPLIT_DEPTH: u8 = 24;
+// Leave one integer of headroom for rounding before the f32 -> i32 anchor
+// conversion. Finite values outside this range are not representable by the
+// packed texture format and must be rejected before `@intFromFloat`.
+const PACKED_ANCHOR_COORDINATE_LIMIT: f32 =
+    @as(f32, @floatFromInt(std.math.maxInt(i32) - 1024)) * PACKED_ANCHOR_CHUNK_EXTENT;
+
+fn pointIsFinite(point: Vec2) bool {
+    return std.math.isFinite(point.x) and std.math.isFinite(point.y) and
+        @abs(point.x) <= PACKED_ANCHOR_COORDINATE_LIMIT and
+        @abs(point.y) <= PACKED_ANCHOR_COORDINATE_LIMIT;
+}
+
+fn curveIsFinite(curve: CurveSegment) bool {
+    if (!pointIsFinite(curve.p0) or !pointIsFinite(curve.p1) or
+        !pointIsFinite(curve.p2) or !pointIsFinite(curve.p3))
+    {
+        return false;
+    }
+    for (curve.weights) |weight| {
+        if (!std.math.isFinite(weight)) return false;
+    }
+    if (curve.kind == .conic) {
+        for (curve.weights) |weight| {
+            if (weight <= 0) return false;
+        }
+    }
+    return true;
+}
+
+pub fn validateCurveData(curves: []const CurveSegment, origin: Vec2) error{InvalidCurveData}!void {
+    if (!pointIsFinite(origin)) return error.InvalidCurveData;
+    for (curves) |curve| {
+        if (!curveIsFinite(curve)) return error.InvalidCurveData;
+    }
+}
 
 /// Convert f32 to IEEE 754 binary16 (half-float). Uses Zig's f16
 /// type which the backend lowers to F16C `vcvtps2ph` on x86 and to
@@ -107,18 +142,37 @@ fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, axi
     const qb = 2.0 * b;
     const qc = c;
 
-    if (@abs(qa) < 1e-10) {
-        if (@abs(qb) < 1e-10) return;
+    // Affine transforms can make an analytically-zero leading coefficient
+    // land a few f32 ULPs away from zero through cancellation. An absolute
+    // epsilon misclassifies that near-linear derivative as quadratic on one
+    // side of otherwise mirrored geometry. Use a coefficient-relative test.
+    const coefficient_scale = @max(@abs(qa), @max(@abs(qb), @abs(qc)));
+    if (coefficient_scale == 0.0) return;
+    const coefficient_epsilon = coefficient_scale * (32.0 * std.math.floatEps(f32));
+    if (@abs(qa) <= coefficient_epsilon) {
+        if (@abs(qb) <= coefficient_epsilon) return;
         appendCubicExtremumRoot(roots, count, -qc / qb, axis_tag);
         return;
     }
 
-    const disc = qb * qb - 4.0 * qa * qc;
-    if (disc < 0.0) return;
+    const qb2 = qb * qb;
+    const four_ac = 4.0 * qa * qc;
+    var disc = qb2 - four_ac;
+    if (disc < 0.0) {
+        const disc_epsilon = @max(qb2, @abs(four_ac)) * (32.0 * std.math.floatEps(f32));
+        if (disc < -disc_epsilon) return;
+        disc = 0.0;
+    }
     const sqrt_disc = @sqrt(disc);
-    const inv_2a = 0.5 / qa;
-    appendCubicExtremumRoot(roots, count, (-qb - sqrt_disc) * inv_2a, axis_tag);
-    appendCubicExtremumRoot(roots, count, (-qb + sqrt_disc) * inv_2a, axis_tag);
+    // Stable quadratic form: one root is q/a, the other c/q. This avoids
+    // losing the small root when `qb` and `sqrt_disc` nearly cancel.
+    const q = -0.5 * (qb + if (qb >= 0.0) sqrt_disc else -sqrt_disc);
+    if (@abs(q) <= coefficient_epsilon) {
+        appendCubicExtremumRoot(roots, count, -qb / (2.0 * qa), axis_tag);
+        return;
+    }
+    appendCubicExtremumRoot(roots, count, q / qa, axis_tag);
+    appendCubicExtremumRoot(roots, count, qc / q, axis_tag);
 }
 
 // At an extremum split, the parent cubic has zero derivative in the split
@@ -174,6 +228,7 @@ pub fn splitCubicsAtExtrema(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
 ) ![]CurveSegment {
+    try validateCurveData(curves, .zero);
     // The GL/GLES path shader inverts cubics as monotonic spans. Split only
     // cubics; conics still use the exact quadratic root path in the shader.
     var out: std.ArrayList(CurveSegment) = .empty;
@@ -193,6 +248,7 @@ pub fn splitCurvesForPacking(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
 ) ![]CurveSegment {
+    try validateCurveData(curves, .zero);
     var out: std.ArrayList(CurveSegment) = .empty;
     errdefer out.deinit(allocator);
     try out.ensureTotalCapacity(allocator, curves.len);
@@ -272,17 +328,23 @@ pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
 /// Allocate and direct-encode a single glyph's prepared curves into a
 /// `prepared.len * SEGMENT_TEXELS * 4` u16 buffer. Skips the
 /// `buildCurveTexture` TEX_WIDTH-row padding — for single-glyph callers
-/// (`font.extractCurves`, hinted snapshots), the padding is pure waste.
+/// (`font.extractCurves`, TT-hinted snapshots), the padding is pure waste.
 pub fn encodeDirectSingleGlyphCurves(
     allocator: std.mem.Allocator,
     prepared: []const CurveSegment,
 ) ![]u16 {
-    const total_words = prepared.len * SEGMENT_TEXELS * 4;
+    try validateCurveData(prepared, .zero);
+    for (prepared) |curve| {
+        if (!curveFitsDirectF16(curve)) return error.InvalidCurveData;
+    }
+    const words_per_segment: usize = SEGMENT_TEXELS * 4;
+    const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
+        return error.ShapeTooComplex;
     const buf = try allocator.alloc(u16, total_words);
     var cursor: usize = 0;
     for (prepared) |curve| {
-        writeDirectCurveTexels(buf[cursor..][0 .. SEGMENT_TEXELS * 4], curve);
-        cursor += SEGMENT_TEXELS * 4;
+        writeDirectCurveTexels(buf[cursor..][0..words_per_segment], curve);
+        cursor += words_per_segment;
     }
     return buf;
 }
@@ -294,14 +356,21 @@ pub fn buildCurveTexture(
 ) !struct { texture: CurveTexture, entries: []GlyphCurveEntry } {
     var total_texels: u32 = 0;
     for (glyphs) |g| {
+        try validateCurveData(g.curves, g.origin);
+        if (g.prepared_curves) |prepared| try validateCurveData(prepared, .zero);
         const curve_count = if (g.prepared_curves) |prepared| prepared.len else g.curves.len;
-        total_texels += @as(u32, @intCast(curve_count)) * SEGMENT_TEXELS;
+        const count_u16 = std.math.cast(u16, curve_count) orelse return error.ShapeTooComplex;
+        const glyph_texels = std.math.mul(u32, count_u16, SEGMENT_TEXELS) catch return error.ShapeTooComplex;
+        total_texels = std.math.add(u32, total_texels, glyph_texels) catch return error.ShapeTooComplex;
     }
 
-    const height = @max(1, (total_texels + TEX_WIDTH - 1) / TEX_WIDTH);
-    const total = TEX_WIDTH * height;
+    const rounded_texels = std.math.add(u32, total_texels, TEX_WIDTH - 1) catch return error.ShapeTooComplex;
+    const height = @max(1, rounded_texels / TEX_WIDTH);
+    if (height > (@as(u32, 1) << 14)) return error.ShapeTooComplex;
+    const total = std.math.mul(u32, TEX_WIDTH, height) catch return error.ShapeTooComplex;
+    const total_words = std.math.mul(usize, total, 4) catch return error.ShapeTooComplex;
 
-    var data = try data_allocator.alloc(u16, total * 4);
+    var data = try data_allocator.alloc(u16, total_words);
     errdefer data_allocator.free(data);
     @memset(data, 0);
 
@@ -328,6 +397,7 @@ pub fn buildCurveTexture(
             defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |quantized_curve| {
+                if (!curveFitsDirectF16(quantized_curve)) return error.InvalidCurveData;
                 const base = texel_idx * 4;
                 data[base + 0] = f32ToF16(quantized_curve.p0.x);
                 data[base + 1] = f32ToF16(quantized_curve.p0.y);
@@ -355,6 +425,7 @@ pub fn buildCurveTexture(
             defer if (owned_prepared_curves) |prepared| scratch_allocator.free(prepared);
 
             for (prepared_curves) |curve| {
+                if (!curveFitsPackedF16(curve)) return error.InvalidCurveData;
                 const base = texel_idx * 4;
                 const p0 = curve.p0;
                 const p1 = curve.p1;
@@ -411,6 +482,39 @@ fn f16BitsToF32(val: u16) f32 {
 
 fn quantizeF16(val: f32) f32 {
     return f16BitsToF32(f32ToF16(val));
+}
+
+fn fitsF16(value: f32) bool {
+    return std.math.isFinite(value) and @abs(value) <= @as(f32, std.math.floatMax(f16));
+}
+
+fn curveFitsDirectF16(curve: CurveSegment) bool {
+    const points = [_]Vec2{ curve.p0, curve.p1, curve.p2, curve.p3 };
+    for (points) |point| {
+        if (!fitsF16(point.x) or !fitsF16(point.y)) return false;
+    }
+    for (curve.weights) |weight| {
+        if (!fitsF16(weight)) return false;
+    }
+    return true;
+}
+
+fn curveFitsPackedF16(curve: CurveSegment) bool {
+    const anchor = encodePackedAnchor(curve.p0);
+    const vectors = [_]Vec2{
+        anchor.chunk,
+        anchor.frac,
+        Vec2.sub(curve.p1, curve.p0),
+        Vec2.sub(curve.p2, curve.p0),
+        if (curve.kind == .cubic) Vec2.sub(curve.p3, curve.p0) else .zero,
+    };
+    for (vectors) |vector| {
+        if (!fitsF16(vector.x) or !fitsF16(vector.y)) return false;
+    }
+    for (curve.weights) |weight| {
+        if (!fitsF16(weight)) return false;
+    }
+    return true;
 }
 
 fn quantizeVec2F16(v: Vec2) Vec2 {
@@ -552,9 +656,12 @@ fn prepareGlyphCurves(
     comptime mode: PreparedCurveMode,
     bboxes_out: ?[]bezier_mod.BBox,
 ) ![]CurveSegment {
+    try validateCurveData(curves, origin);
+    if (bboxes_out) |bo| {
+        if (bo.len != curves.len) return error.InvalidOutputBufferSize;
+    }
     const out = try allocator.alloc(CurveSegment, curves.len);
     errdefer allocator.free(out);
-    if (bboxes_out) |bo| std.debug.assert(bo.len == curves.len);
 
     const delta = Vec2.new(-origin.x, -origin.y);
     var contour_start: usize = 0;
@@ -568,11 +675,17 @@ fn prepareGlyphCurves(
         var prev_quantized_end: ?Vec2 = null;
         for (curves[contour_start..contour_end], out[contour_start..contour_end]) |curve, *dst| {
             const local_curve = localizedCurve(curve, delta);
+            const representable = switch (mode) {
+                .packing => curveFitsPackedF16(local_curve),
+                .direct => curveFitsDirectF16(local_curve),
+            };
+            if (!representable) return error.InvalidCurveData;
             const start_override = if (prev_original_end) |prev_end|
                 if (pointsApproxEqual(local_curve.p0, prev_end)) prev_quantized_end else null
             else
                 null;
             dst.* = quantizePreparedCurve(local_curve, start_override, mode);
+            if (!curveIsFinite(dst.*)) return error.InvalidCurveData;
             prev_original_end = local_curve.endPoint();
             prev_quantized_end = dst.endPoint();
         }
@@ -626,9 +739,25 @@ pub fn prepareGlyphCurvesForDirectEncodingWithBBoxes(
 }
 
 pub fn decodeSegmentAt(data: []const u16, curve_texel: u32) ?CurveSegment {
-    const index = @as(usize, curve_texel) * 4;
-    if (index + SEGMENT_TEXELS * 4 > data.len) return null;
-    return decodeStoredSegment(data[index..][0 .. SEGMENT_TEXELS * 4]);
+    const index = std.math.mul(usize, curve_texel, 4) catch return null;
+    const segment_words: usize = SEGMENT_TEXELS * 4;
+    const end = std.math.add(usize, index, segment_words) catch return null;
+    if (end > data.len) return null;
+    const stored = data[index..end];
+    for (stored) |bits| {
+        if (!std.math.isFinite(f16BitsToF32(bits))) return null;
+    }
+    const stored_kind = f16BitsToF32(stored[10]);
+    const rounded_kind = @round(stored_kind);
+    if (stored_kind != rounded_kind or
+        !((rounded_kind >= 0 and rounded_kind <= 3) or
+            (rounded_kind >= DIRECT_ENCODING_KIND_BIAS and rounded_kind <= DIRECT_ENCODING_KIND_BIAS + 3)))
+    {
+        return null;
+    }
+    const decoded = decodeStoredSegment(stored);
+    if (!curveIsFinite(decoded)) return null;
+    return decoded;
 }
 
 fn decodeStoredSegment(data: []const u16) CurveSegment {
@@ -684,6 +813,60 @@ test "f32ToF16 basic conversions" {
     try std.testing.expectEqual(@as(u16, 0x3C00), f32ToF16(1.0));
     try std.testing.expectEqual(@as(u16, 0x3800), f32ToF16(0.5));
     try std.testing.expectEqual(@as(u16, 0xBC00), f32ToF16(-1.0));
+}
+
+test "decodeSegmentAt rejects malformed half-float payloads" {
+    var words = [_]u16{0} ** (SEGMENT_TEXELS * 4);
+    try std.testing.expect(decodeSegmentAt(&words, 0) != null);
+
+    words[0] = @bitCast(std.math.nan(f16));
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, 0));
+    words[0] = 0;
+
+    words[10] = f32ToF16(9);
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, 0));
+    try std.testing.expectEqual(@as(?CurveSegment, null), decodeSegmentAt(&words, std.math.maxInt(u32)));
+}
+
+test "curve preparation rejects non-finite producer data before packing" {
+    var curve = CurveSegment.fromLine(.zero, .{ .x = 1, .y = 1 });
+    curve.p1.x = std.math.nan(f32);
+
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForPacking(std.testing.allocator, &.{curve}, .zero),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        splitCurvesForPacking(std.testing.allocator, &.{curve}),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        encodeDirectSingleGlyphCurves(std.testing.allocator, &.{curve}),
+    );
+
+    const valid = CurveSegment.fromLine(.zero, .{ .x = 1, .y = 1 });
+    var wrong_size: [0]BBox = .{};
+    try std.testing.expectError(
+        error.InvalidOutputBufferSize,
+        prepareGlyphCurvesForDirectEncodingWithBBoxes(std.testing.allocator, &.{valid}, .zero, &wrong_size),
+    );
+
+    const outside_f16 = CurveSegment.fromLine(.{ .x = 70_000, .y = 0 }, .{ .x = 70_001, .y = 1 });
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &.{outside_f16}, .zero),
+    );
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        encodeDirectSingleGlyphCurves(std.testing.allocator, &.{outside_f16}),
+    );
+
+    const outside_anchor = CurveSegment.fromLine(.{ .x = 1.0e12, .y = 0 }, .{ .x = 1.0e12, .y = 1 });
+    try std.testing.expectError(
+        error.InvalidCurveData,
+        prepareGlyphCurvesForPacking(std.testing.allocator, &.{outside_anchor}, .zero),
+    );
 }
 
 test "buildCurveTexture packs FP16" {
@@ -825,8 +1008,8 @@ test "prepareGlyphCurvesForPacking keeps adjacent joins identical" {
     const prepared = try prepareGlyphCurvesForPacking(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().x, prepared[1].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[0].endPoint().x, prepared[1].p0.x);
+    try std.testing.expectEqual(prepared[0].endPoint().y, prepared[1].p0.y);
 }
 
 test "prepareGlyphCurvesForPacking keeps closed contour wrap identical" {
@@ -848,8 +1031,8 @@ test "prepareGlyphCurvesForPacking keeps closed contour wrap identical" {
     const prepared = try prepareGlyphCurvesForPacking(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y);
 }
 
 test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
@@ -871,8 +1054,8 @@ test "prepareGlyphCurvesForDirectEncoding keeps adjacent joins identical" {
     const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().x, prepared[1].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[0].endPoint().y, prepared[1].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[0].endPoint().x, prepared[1].p0.x);
+    try std.testing.expectEqual(prepared[0].endPoint().y, prepared[1].p0.y);
 }
 
 test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
@@ -894,8 +1077,45 @@ test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
     const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, &curves, .zero);
     defer std.testing.allocator.free(prepared);
 
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x, 0.0001);
-    try std.testing.expectApproxEqAbs(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y, 0.0001);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x);
+    try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y);
+}
+
+test "splitCubicsAtExtrema is symmetric after affine normalization" {
+    const right = CurveSegment.fromCubic(.{
+        .p0 = Vec2.new(28.8, 0.0),
+        .p1 = Vec2.new(57.6, 12.8),
+        .p2 = Vec2.new(57.6, 51.2),
+        .p3 = Vec2.new(28.8, 64.0),
+    });
+    const left = CurveSegment.fromCubic(.{
+        .p0 = Vec2.new(28.8, 64.0),
+        .p1 = Vec2.new(0.0, 51.2),
+        .p2 = Vec2.new(0.0, 12.8),
+        .p3 = Vec2.new(28.8, 0.0),
+    });
+
+    const right_split = try splitCubicsAtExtrema(std.testing.allocator, &.{right});
+    defer std.testing.allocator.free(right_split);
+    const left_split = try splitCubicsAtExtrema(std.testing.allocator, &.{left});
+    defer std.testing.allocator.free(left_split);
+
+    try std.testing.expectEqual(@as(usize, 2), right_split.len);
+    try std.testing.expectEqual(@as(usize, 2), left_split.len);
+    try std.testing.expectApproxEqAbs(@as(f32, 32.0), right_split[0].p3.y, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 32.0), left_split[0].p3.y, 1e-4);
+    try std.testing.expectApproxEqAbs(@as(f32, 57.6), right_split[0].p3.x + left_split[0].p3.x, 1e-4);
+
+    const leaf_split = try splitCubicsAtExtrema(std.testing.allocator, &.{ right, left });
+    defer std.testing.allocator.free(leaf_split);
+    const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, leaf_split, .zero);
+    defer std.testing.allocator.free(prepared);
+    try std.testing.expectEqual(@as(usize, 4), prepared.len);
+    for (prepared, 0..) |curve, i| {
+        const next = prepared[(i + 1) % prepared.len];
+        try std.testing.expectEqual(curve.endPoint().x, next.p0.x);
+        try std.testing.expectEqual(curve.endPoint().y, next.p0.y);
+    }
 }
 
 test "buildCurveTexture supports direct encoding for font glyphs" {
