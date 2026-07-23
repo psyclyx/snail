@@ -86,6 +86,14 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
+
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
 
@@ -104,6 +112,14 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       - name: Backend pixel comparison
         run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
@@ -140,6 +156,14 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       # CPU-rasterizer demo + banner renders: the comparison base for the
       # Vulkan gates below, and the source of the checked-in Windows/macOS
@@ -221,6 +245,14 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       # wgpu's GL backend over surfaceless-EGL llvmpipe. The Vulkan backend
       # is NOT used here: wgpu 27.0.4.0 on lavapipe (mesa 26.0.5, LLVM
@@ -307,6 +339,14 @@ jobs:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
 
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
+
       # install-demo/install-game compile the native-Slang families to
       # SPIR-V at build time, so they need slangc (from shell.nix).
       - name: Build consumer entry points
@@ -389,6 +429,14 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       - name: Test public modules
         run: nix-shell --run "zig build test -Dcpu=baseline"
@@ -501,6 +549,14 @@ jobs:
         with:
           primary-key: nix-${{ runner.os }}-${{ hashFiles('npins/sources.json', 'shell.nix', 'default.nix') }}
           restore-prefixes-first-match: nix-${{ runner.os }}-
+
+      # Upstream Nix (unlike Determinate Nix) ships no NIX_PATH, but the
+      # nix-shell binary evaluates (import <nixpkgs> {}).bashInteractive for
+      # its shell environment — fatal on a channel-less install (seen on
+      # macOS: falls back to /bin/bash 3.2 with an empty PATH). Point
+      # <nixpkgs> at the same npins pin shell.nix uses, so no drift.
+      - name: Pin NIX_PATH to the npins nixpkgs
+        run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       - name: Build demo derivation
         run: nix-build default.nix --no-out-link -A demo
