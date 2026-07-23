@@ -617,7 +617,8 @@ pub const Font = struct {
             const layer_index = self.index;
             self.index += 1;
 
-            const layer_rec = self.colr_offset + self.layer_off + (@as(u32, self.first_layer) + @as(u32, layer_index)) * 4;
+            const layer_rec = @as(usize, self.colr_offset) + @as(usize, self.layer_off) +
+                (@as(usize, self.first_layer) + @as(usize, layer_index)) * 4;
             const layer_gid = readU16(self.data, layer_rec) catch {
                 self.index = self.num_layers;
                 return null;
@@ -631,7 +632,7 @@ pub const Font = struct {
                 return .{ .glyph_id = layer_gid, .color = .{ -1, -1, -1, -1 } };
             }
 
-            const entry = self.color_recs_off + @as(u32, pal_idx) * 4;
+            const entry = @as(usize, self.color_recs_off) + @as(usize, pal_idx) * 4;
             if (entry + 3 >= self.data.len) {
                 self.index = self.num_layers;
                 return null;
@@ -654,16 +655,18 @@ pub const Font = struct {
 
     fn findColrRecord(self: *const Font, base_glyph_id: u16) ?ColrRecord {
         if (self.colr_offset == 0 or self.cpal_offset == 0) return null;
-        const colr = self.colr_offset;
-        const cpal = self.cpal_offset;
+        // Widen all file-controlled u32 offsets before arithmetic: sums like
+        // colr + base_off + mid * 6 overflow u32 for crafted offsets.
+        const colr: usize = self.colr_offset;
+        const cpal: usize = self.cpal_offset;
 
         const num_base = readU16(self.data, colr + 2) catch return null;
         if (num_base == 0) return null;
-        const base_off = readU32(self.data, colr + 4) catch return null;
+        const base_off: usize = readU32(self.data, colr + 4) catch return null;
         const layer_off = readU32(self.data, colr + 8) catch return null;
 
-        var lo: u32 = 0;
-        var hi: u32 = num_base;
+        var lo: usize = 0;
+        var hi: usize = num_base;
         const rec = blk: {
             while (lo < hi) {
                 const mid = (lo + hi) / 2;
@@ -684,7 +687,7 @@ pub const Font = struct {
             .first_layer = first_layer,
             .num_layers = num_layers,
             .layer_off = layer_off,
-            .color_recs_off = cpal + color_recs_off,
+            .color_recs_off = std.math.cast(u32, cpal + @as(usize, color_recs_off)) orelse return null,
         };
     }
 
@@ -802,6 +805,29 @@ test "kern table offset near u32 max fails cleanly" {
     var data = [_]u8{0} ** 16;
     const font = Font{ .data = &data, .kern_offset = 0xFFFFFFFE };
     try std.testing.expectError(error.UnexpectedEof, font.getKerning(1, 2));
+}
+
+test "COLR record search with huge offsets fails cleanly" {
+    var data = [_]u8{0} ** 64;
+    // COLR header at offset 1: one base record, base-records offset near u32 max.
+    std.mem.writeInt(u16, data[3..5], 1, .big); // num_base
+    std.mem.writeInt(u32, data[5..9], 0xFFFFFFFF, .big); // base_off
+    const font = Font{ .data = &data, .colr_offset = 1, .cpal_offset = 32 };
+    try std.testing.expect(font.findColrRecord(0) == null);
+    try std.testing.expectEqual(@as(u16, 0), font.colrLayerCount(0));
+}
+
+test "COLR layer iterator with huge offsets fails cleanly" {
+    var data = [_]u8{0} ** 16;
+    var it = Font.ColrLayerIterator{
+        .data = &data,
+        .colr_offset = 0xFFFFFFFF,
+        .layer_off = 0xFFFFFFFF,
+        .first_layer = 0xFFFF,
+        .num_layers = 1,
+        .color_recs_off = 0xFFFFFFFF,
+    };
+    try std.testing.expect(it.next() == null);
 }
 
 test "parse real font" {
