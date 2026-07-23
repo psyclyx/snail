@@ -791,9 +791,16 @@ pub const Renderer = struct {
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0) orelse return;
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1) orelse return;
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2])) orelse return;
+        // Slab floats are caller-controlled bit patterns, legitimately NaN in
+        // some words. Decode the glyph location with the same validated
+        // conversion the autohint sibling uses, and require a finite band
+        // transform; anything else skips the instance instead of trapping.
+        const glyph_x = path_paint_mod.exactUnsigned(header[0], std.math.maxInt(u16)) orelse return;
+        const glyph_y = path_paint_mod.exactUnsigned(header[1], std.math.maxInt(u16)) orelse return;
+        for (band) |value| if (!std.math.isFinite(value)) return;
         const be = GlyphBandEntry{
-            .glyph_x = @intFromFloat(header[0]),
-            .glyph_y = @intFromFloat(header[1]),
+            .glyph_x = @intCast(glyph_x),
+            .glyph_y = @intCast(glyph_y),
             .h_band_count = band_counts.h,
             .v_band_count = band_counts.v,
             .band_scale_x = band[0],
@@ -2239,6 +2246,53 @@ fn testSpecialGlyphWord(layer_count: u16, kind: render_abi.SpecialLayerKind) u32
     // Same packing as the private abi special-word constructor, which is not
     // re-exported through render.records: count | kind << 16 | marker bit 31.
     return @as(u32, layer_count) | (@as(u32, @intFromEnum(kind)) << 16) | (@as(u32, 1) << 31);
+}
+
+test "drawBatch skips hinted-text instances with non-canonical header floats" {
+    var pixels: [4]u8 = .{ 11, 22, 33, 44 };
+    var renderer = try Renderer.init(&pixels, 1, 1, 4, .rgba8_unorm);
+
+    var slab = [_]f32{0} ** 8;
+    var infos = [_]LayerInfoEntry{.{ .data = &slab, .width = 2, .height = 1 }};
+    var pages = [_]?PreparedAtlasPage{
+        try PreparedAtlasPage.initFromView(testing.allocator, .{
+            .curve_data = &[_]u16{},
+            .band_data = &[_]u16{},
+            .curve_width = @as(u32, 0),
+            .curve_height = @as(u32, 0),
+            .band_width = @as(u32, 0),
+            .band_height = @as(u32, 0),
+        }),
+    };
+    defer if (pages[0]) |*page| page.deinit(testing.allocator);
+    var prepared = PreparedResources{
+        .allocator = testing.allocator,
+        .atlas_pages = &pages,
+        .layer_infos = &infos,
+        .layer_info_count = 1,
+    };
+    const state = render_state.DrawState{
+        .mvp = snail.Mat4.identity,
+        .surface = .{ .pixel_width = 1, .pixel_height = 1, .encoding = .linear },
+    };
+
+    var instance = std.mem.zeroes(vertex.Instance);
+    instance.xform = .{ 1, 0, 0, 1 };
+    instance.glyph[0] = 0; // info_x = 0, info_y = 0: inside the slab
+    instance.glyph[1] = testSpecialGlyphWord(1, .tt_hinted_text);
+
+    // NaN, negative, fractional, and out-of-range glyph coordinates must all
+    // skip the instance rather than trap in float→int conversion.
+    for ([_]f32{ std.math.nan(f32), -1, 1.5, 65536 }) |bad_x| {
+        slab[0] = bad_x;
+        try renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null);
+    }
+    // A non-finite band transform word bails out the same way.
+    slab[0] = 0;
+    slab[4] = std.math.inf(f32);
+    try renderer.drawPreparedBatch(&prepared, &.{instance}, state, 0, null);
+
+    try testing.expectEqualSlices(u8, &.{ 11, 22, 33, 44 }, &pixels);
 }
 
 test "linear resolve clear honors target pixel format" {

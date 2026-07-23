@@ -131,7 +131,7 @@ const PathRecordDescriptor = struct {
 
 pub const PreparePathLayerInfoError = std.mem.Allocator.Error || error{InvalidLayerInfo};
 
-fn exactUnsigned(raw: f32, max: u32) ?u32 {
+pub fn exactUnsigned(raw: f32, max: u32) ?u32 {
     if (!std.math.isFinite(raw) or raw < 0 or @as(f64, raw) > @as(f64, @floatFromInt(max))) return null;
     const rounded = @round(raw);
     if (raw != rounded) return null;
