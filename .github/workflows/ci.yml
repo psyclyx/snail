@@ -54,19 +54,14 @@ concurrency:
 #         | screenshots gated vs the CPU        | Vulkan ICD (WARP is D3D-only);   | MoltenVK from the pin + loader
 #         | rasterizer (baselines 0 / 280),     | a software ICD would break the   | wiring; recorded as future work.
 #         | game screenshot vs gl33 (1777).     | artifact-only rule.              |
-# WebGPU  | GATE: wgpu GL backend on llvmpipe   | GATE: cross-built exe + upstream | GATE: nixpkgs wgpu-native
-# (wgpu)  | (baseline 0 vs the GL reference).   | wgpu-native v29.0.1.1 gnu DLL    | 27.0.4.0, Metal backend; magick
-#         | The Vulkan backend on lavapipe      | (pinned in shell.nix); D3D12 on  | <=2000 vs the GL reference.
-#         | SEGVs after adapter selection       | WARP (forceFallbackAdapter retry |
-#         | (wgpu 27.0.4.0 + mesa 26.0.5        | — WebGPU withholds software      |
-#         | lavapipe, LLVM 21.1.8): the known   | adapters by default). naga 29's  |
-#         | fwidth+loop fragment JIT crash.     | default FXC path compiles the    |
-#         | Recorded infeasible for now.        | shaders fine (naga 27's SM 5.1   |
-#         |                                     | sampler heap needed DXC; naga    |
-#         |                                     | 29 changed the codegen). DXC     |
-#         |                                     | (dxcompiler/dxil) hangs WARP     |
-#         |                                     | device creation — do NOT set     |
-#         |                                     | WGPU_DX12_COMPILER here.         |
+# WebGPU  | GATE: wgpu GL backend on llvmpipe   | infeasible: wgpu 29's D3D12   | GATE: nixpkgs wgpu-native
+# (wgpu)  | (baseline 0 vs the GL reference).   | backend hangs the WARP        | 27.0.4.0, Metal backend; magick
+#         | The Vulkan backend on lavapipe      | readback on windows-2025      | <=2000 vs the GL reference.
+#         | SEGVs after adapter selection       | (43s in queue submit, >4min   |
+#         | (wgpu 27.0.4.0 + mesa 26.0.5        | unfinished map; FXC and DXC   |
+#         | lavapipe, LLVM 21.1.8): the known   | alike). The D3D12 leg runs    |
+#         | fwidth+loop fragment JIT crash.     | under Wine instead — vkd3d on |
+#         | Recorded infeasible for now.        | lavapipe in linux-wgpu-wine.  |
 # D3D11   | GATE under Wine/Xvfb (wine 11.6     | GATE: the authoritative runtime  | infeasible: no D3D outside
 #         | vkd3d-shader compiles all nine      | (real d3dcompiler_47, WARP or    | windows/wine; wine is not
 #         | HLSL artifacts).                    | hardware).                       | packaged for aarch64-darwin in
@@ -297,13 +292,32 @@ jobs:
           esac
           test "$n" -le 2000
 
-      # Cross-build the artifacts the `windows` job executes: the D3D11 and
-      # WebGPU demo exes (+ the pinned upstream wgpu_native.dll), the
-      # CPU-rasterizer screenshot exe, the dependency-free pixelgate
-      # comparison tool, and the reference TGAs. The Windows runner installs
-      # no toolchain — the one nix pin here builds everything it runs.
+      # Cross-build the gate artifacts: the D3D11 and WebGPU demo exes (+
+      # the pinned upstream wgpu_native.dll), the CPU-rasterizer screenshot
+      # exe, the dependency-free pixelgate comparison tool, and the
+      # reference TGAs. The D3D11 and CPU exes run in the `windows` job;
+      # the WebGPU exe runs right here under Wine (see below). The Windows
+      # runner installs no toolchain — the one nix pin builds everything.
       - name: Build Windows gate artifacts
         run: nix-shell --run "zig build install-windows-gates -Dcpu=baseline"
+
+      # The wgpu-on-D3D12 leg lives here, NOT in the `windows` job: wgpu
+      # 29's D3D12 backend hangs the readback on the windows-2025 WARP
+      # runtime (43s in submit, >4min unfinished map; FXC and DXC alike —
+      # see the matrix). Under Wine, D3D12 goes through vkd3d onto lavapipe
+      # and renders in seconds. Measured baseline: 683.
+      - name: Minimal WebGPU example (Windows exe under Wine, D3D12 on lavapipe)
+        run: |
+          nix-shell --run 'export WINEPREFIX="$PWD/zig-out/wineprefix" VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD SNAIL_WGPU_BACKEND=d3d12 SNAIL_WGPU_LOG=1; cd zig-out/windows-gates && xvfb-run -a timeout 600 wine snail-minimal-wgpu.exe'
+
+      - name: Gate the Wine WebGPU render
+        run: |
+          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/windows-gates/zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          echo "pixels over 4% channel delta: $n (threshold 2000; Wine/vkd3d baseline: 683)"
+          case "$n" in
+            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
+          esac
+          test "$n" -le 2000
 
       - name: Upload Windows gate artifacts
         uses: actions/upload-artifact@v4
@@ -326,6 +340,7 @@ jobs:
             zig-out/minimal-d3d11.tga
             zig-out/minimal-d3d11-diff.png
             zig-out/minimal-wgpu.tga
+            zig-out/windows-gates/zig-out/minimal-wgpu.tga
           if-no-files-found: ignore
 
   consumer-builds:
@@ -359,12 +374,14 @@ jobs:
 
   # The same D3D11 exe the Wine gate ran, on the authoritative runtime: a
   # real Windows kernel, Microsoft's d3dcompiler_47 and D3D11 runtime
-  # (hardware or WARP) — plus the CPU-rasterizer and WebGPU (wgpu D3D12)
-  # gates. No Windows-side toolchain — the runner only executes the
-  # prebuilt `windows-gates` artifacts from the linux-wgpu-wine job,
-  # keeping shell.nix the single toolchain pin.
+  # (hardware or WARP) — plus the CPU-rasterizer gate. The WebGPU leg moved
+  # to linux-wgpu-wine (Wine/vkd3d on lavapipe): wgpu 29's D3D12 backend
+  # hangs the readback on this runner's WARP runtime (see the matrix).
+  # No Windows-side toolchain — the runner only executes the prebuilt
+  # `windows-gates` artifacts from the linux-wgpu-wine job, keeping
+  # shell.nix the single toolchain pin.
   windows:
-    name: Windows (D3D11 + CPU + wgpu)
+    name: Windows (D3D11 + CPU)
     runs-on: windows-2025
     needs: linux-wgpu-wine
     timeout-minutes: 15
@@ -393,26 +410,6 @@ jobs:
       - name: Gate the CPU render
         run: .\pixelgate.exe demo_cpu_reference.tga zig-out\demo-screenshot.tga 0
 
-      # wgpu-native (upstream v27.0.4.0 windows-gnu release, pinned in
-      # shell.nix) picks D3D12 here — WARP on the GPU-less runner. Wine
-      # smoke run (host Vulkan) measured 679 = the known wgpu baseline.
-      - name: Render through WebGPU (wgpu D3D12)
-        # Bounded: the exe's event pumps also carry 120s deadlines, so a
-        # hung wgpu callback must fail fast, never hit the job timeout.
-        timeout-minutes: 5
-        env:
-          SNAIL_WGPU_LOG: "1"
-          # No WGPU_DX12_COMPILER: naga 27's SM 5.1 sampler heap needed DXC
-          # (FXC rejected it, E5017), but naga 29's default FXC path accepts
-          # the same shaders (verified under Wine against Wine's
-          # d3dcompiler_47) — and the DXC/dxil pair hangs device creation on
-          # the windows-2025 WARP runtime. windows-2025 ships a real
-          # d3dcompiler_47, so the stock FXC path is the correct one here.
-        run: .\snail-minimal-wgpu.exe
-
-      - name: Gate the WebGPU render
-        run: .\pixelgate.exe minimal_reference.tga zig-out\minimal-wgpu.tga 2000
-
       - name: Upload Windows renders
         if: always()
         uses: actions/upload-artifact@v4
@@ -421,7 +418,6 @@ jobs:
           path: |
             zig-out/minimal-d3d11.tga
             zig-out/demo-screenshot.tga
-            zig-out/minimal-wgpu.tga
           if-no-files-found: ignore
 
   macos:

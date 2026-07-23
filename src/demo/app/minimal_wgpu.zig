@@ -135,7 +135,10 @@ fn monotonicNanos() u64 {
 fn pumpEvents(instance: c.WGPUInstance, device: ?c.WGPUDevice, done: *const bool, what: []const u8) !void {
     const deadline = monotonicNanos() + 120 * std.time.ns_per_s;
     while (!done.*) {
-        if (device) |d| _ = c.wgpuDevicePoll(d, 1, null);
+        // Never pass wait=true: a blocking poll can park inside the backend
+        // (WARP executing a slow frame) and the deadline below would never
+        // be checked — the whole point of the bound is to break that.
+        if (device) |d| _ = c.wgpuDevicePoll(d, 0, null);
         c.wgpuInstanceProcessEvents(instance);
         if (monotonicNanos() > deadline) {
             std.debug.print("timed out waiting for {s}\n", .{what});

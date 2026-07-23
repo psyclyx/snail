@@ -39,10 +39,10 @@ let
   # Microsoft DXC (dxcompiler.dll + dxil.dll), shipped in windows-gates for
   # opt-in wgpu D3D12 shader compilation (WGPU_DX12_COMPILER=dxc). History:
   # naga 27's SM 5.1 sampler-heap HLSL needed DXC (FXC rejects it, E5017);
-  # naga 29's default FXC path compiles the same shaders, and the DXC/dxil
-  # pair hangs device creation on the windows-2025 WARP runtime — so the
-  # Windows wgpu gate deliberately runs WITHOUT the env var. Kept pinned for
-  # hardware-Windows use, where DXC is the better compiler.
+  # naga 29's default FXC path compiles the same shaders. Neither compiler
+  # makes wgpu 29 viable on the windows-2025 WARP runtime (hangs the frame
+  # readback), so the Windows wgpu gate runs under Wine instead; DXC stays
+  # pinned for hardware-Windows use, where it is the better compiler.
   dxcWindows = pkgs.fetchzip {
     url = "https://github.com/microsoft/DirectXShaderCompiler/releases/download/v1.8.2502/dxc_2025_02_20.zip";
     sha256 = "0dwyghlnx0fwmj6w2qc92gaz2x39a0qsb51a9ljcwsgpn70mr840";
