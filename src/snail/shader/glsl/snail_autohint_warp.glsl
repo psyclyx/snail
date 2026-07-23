@@ -47,6 +47,27 @@ bool snailAhCount(float encoded, out int count) {
     return true;
 }
 
+// Decode a binary16 value using only uint32/float32 operations.
+// unpackHalf2x16 is not core in GLSL 3.30 (it needs GLSL 4.20 or
+// GL_ARB_shading_language_packing), so spell the decode out — mirror of
+// autohint_warp.slang snailAhDecodeFloat16. Every binary16 value is exactly
+// representable as an f32, including subnormals. Preserve infinities and NaNs
+// so the policy's finite-value validation keeps rejecting corrupt payloads.
+float snailAhDecodeFloat16(uint bits) {
+    bits &= 0xffffu;
+    uint sign = (bits & 0x8000u) << 16u;
+    uint exponent = (bits >> 10u) & 31u;
+    uint fraction = bits & 1023u;
+    if (exponent == 0u) {
+        if (fraction == 0u) return uintBitsToFloat(sign);
+        float magnitude = float(fraction) * 5.960464477539063e-8;
+        return sign == 0u ? magnitude : -magnitude;
+    }
+    if (exponent == 31u)
+        return uintBitsToFloat(sign | 0x7f800000u | (fraction << 13u));
+    return uintBitsToFloat(sign | ((exponent + 112u) << 23u) | (fraction << 13u));
+}
+
 bool snailDecodeAutohintPolicy(uvec4 words, out SnailAutohintPolicy p) {
     uint config = words.x;
     if ((config & ~0x1fffffffu) != 0u || (words.w >> 16u) != 0u) return false;
@@ -63,13 +84,11 @@ bool snailDecodeAutohintPolicy(uvec4 words, out SnailAutohintPolicy p) {
     if (p.xAlign > 1 || p.xStem > 2 || p.xPositioning > 1 ||
         p.xRegistration > 1 || p.yAlign > 2 || p.yStem > 2 || p.yOvershoot > 1)
         return false;
-    vec2 xValues = unpackHalf2x16(words.y);
-    vec2 yValues = unpackHalf2x16(words.z);
-    p.xRatio = xValues.x;
-    p.xMaxPx = xValues.y;
-    p.yRatio = yValues.x;
-    p.yMaxPx = yValues.y;
-    p.overshootMinPx = unpackHalf2x16(words.w).x;
+    p.xRatio = snailAhDecodeFloat16(words.y);
+    p.xMaxPx = snailAhDecodeFloat16(words.y >> 16u);
+    p.yRatio = snailAhDecodeFloat16(words.z);
+    p.yMaxPx = snailAhDecodeFloat16(words.z >> 16u);
+    p.overshootMinPx = snailAhDecodeFloat16(words.w);
     if ((p.xStem != 0 && (!snailAhFinite(p.xRatio) || p.xRatio < 0.0)) ||
         (p.xStem == 1 && (!snailAhFinite(p.xMaxPx) || p.xMaxPx < 0.0)) ||
         (p.yStem != 0 && (!snailAhFinite(p.yRatio) || p.yRatio < 0.0)) ||
