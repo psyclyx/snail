@@ -511,13 +511,31 @@ fn pickPhysicalDevice() !void {
     var actual: u32 = @min(count, 16);
     _ = vk.vkEnumeratePhysicalDevices(instance, &actual, &devices);
 
+    // Prefer a discrete GPU: when several ICDs are visible (e.g. lavapipe
+    // alongside the real driver) enumeration can put the software device
+    // first, and it renders at single-digit fps. Fall back to the first
+    // capable device so software-only setups (CI) keep working.
+    var first_dev: vk.VkPhysicalDevice = null;
+    var first_qf: u32 = 0;
     for (devices[0..actual]) |dev| {
         if (dev == null) continue;
-        if (findQueueFamily(dev)) |qf| {
+        const qf = findQueueFamily(dev) orelse continue;
+        var props: vk.VkPhysicalDeviceProperties = undefined;
+        vk.vkGetPhysicalDeviceProperties(dev, &props);
+        if (props.deviceType == vk.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             physical_device = dev;
             queue_family_index = qf;
             return;
         }
+        if (first_dev == null) {
+            first_dev = dev;
+            first_qf = qf;
+        }
+    }
+    if (first_dev != null) {
+        physical_device = first_dev;
+        queue_family_index = first_qf;
+        return;
     }
     return error.NoSuitableDevice;
 }

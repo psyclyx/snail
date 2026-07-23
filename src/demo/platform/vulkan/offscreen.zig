@@ -235,13 +235,29 @@ fn pickPhysicalDeviceOffscreen() !void {
     var devices: [16]vk.VkPhysicalDevice = .{null} ** 16;
     var actual: u32 = @min(count, 16);
     _ = vk.vkEnumeratePhysicalDevices(instance, &actual, &devices);
+    // Prefer a discrete GPU (see pickPhysicalDevice in windowed.zig);
+    // fall back to the first capable device for software-only setups (CI).
+    var first_dev: vk.VkPhysicalDevice = null;
+    var first_qf: u32 = 0;
     for (devices[0..actual]) |dev| {
         if (dev == null) continue;
-        if (findGraphicsQueueFamily(dev)) |qf| {
+        const qf = findGraphicsQueueFamily(dev) orelse continue;
+        var props: vk.VkPhysicalDeviceProperties = undefined;
+        vk.vkGetPhysicalDeviceProperties(dev, &props);
+        if (props.deviceType == vk.VK_PHYSICAL_DEVICE_TYPE_DISCRETE_GPU) {
             physical_device = dev;
             queue_family_index = qf;
             return;
         }
+        if (first_dev == null) {
+            first_dev = dev;
+            first_qf = qf;
+        }
+    }
+    if (first_dev != null) {
+        physical_device = first_dev;
+        queue_family_index = first_qf;
+        return;
     }
     return error.NoSuitableDevice;
 }

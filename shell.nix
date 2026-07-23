@@ -118,11 +118,19 @@ pkgs.mkShell ({
   # DXC release tree (bin/x64/{dxcompiler,dxil}.dll) for the same gate.
   SNAIL_DXC_WINDOWS = "${dxcWindows}";
 
-  # GL comes fully from the pin: glvnd dispatches to this mesa (llvmpipe
-  # under LIBGL_ALWAYS_SOFTWARE for the headless gates) instead of
-  # whatever the host happens to ship — CI runners ship nothing.
-  __EGL_VENDOR_LIBRARY_DIRS = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
-  LIBGL_DRIVERS_PATH = "${pkgs.mesa}/lib/dri";
+  # GL prefers the host driver stack: on NixOS /run/opengl-driver carries
+  # the vendor manifests (10_nvidia.json sorts ahead of mesa's, so the real
+  # GPU wins); the pinned mesa stays as fallback so CI runners, which ship
+  # nothing, still get llvmpipe under LIBGL_ALWAYS_SOFTWARE. Without the
+  # host dirs a proprietary-NVIDIA host gets no DRI2 screen and silently
+  # falls back to llvmpipe (all cores pegged, single-digit fps).
+  __EGL_VENDOR_LIBRARY_DIRS = "/run/opengl-driver/share/glvnd/egl_vendor.d:${pkgs.mesa}/share/glvnd/egl_vendor.d";
+  LIBGL_DRIVERS_PATH = "/run/opengl-driver/lib/dri:${pkgs.mesa}/lib/dri";
+
+  # Same for Vulkan: let the loader discover the host's ICDs. The manifests
+  # reference absolute store paths, so no LD_LIBRARY_PATH entry is needed.
+  # Missing dirs are skipped, so non-NixOS hosts and CI are unaffected.
+  XDG_DATA_DIRS = "/run/opengl-driver/share";
 
   # The pinned mesa's lavapipe (software Vulkan) ICD manifest. Not exported
   # as VK_DRIVER_FILES directly so local machines keep their real GPU by
