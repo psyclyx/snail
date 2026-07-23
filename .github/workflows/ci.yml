@@ -395,6 +395,9 @@ jobs:
       # shell.nix) picks D3D12 here — WARP on the GPU-less runner. Wine
       # smoke run (host Vulkan) measured 679 = the known wgpu baseline.
       - name: Render through WebGPU (wgpu D3D12)
+        # Bounded: the exe's event pumps also carry 120s deadlines, so a
+        # hung wgpu callback must fail fast, never hit the job timeout.
+        timeout-minutes: 5
         env:
           SNAIL_WGPU_LOG: "1"
           # naga's D3D12 sampler heap needs SM 5.1+; FXC rejects it. The

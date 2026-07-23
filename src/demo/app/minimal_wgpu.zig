@@ -100,6 +100,40 @@ fn printMessage(context: []const u8, message: c.WGPUStringView) void {
     }
 }
 
+/// Monotonic clock in nanoseconds for pumpEvents' deadline. Zig 0.16 dropped
+/// `std.time.Timer`; mirror of snail-raster renderer.zig monotonicNanos —
+/// std.c.clock_gettime on POSIX, QueryPerformanceCounter on Windows.
+fn monotonicNanos() u64 {
+    if (@import("builtin").os.tag == .windows) {
+        const windows = std.os.windows;
+        var qpc: windows.LARGE_INTEGER = undefined;
+        var qpf: windows.LARGE_INTEGER = undefined;
+        if (!windows.ntdll.RtlQueryPerformanceCounter(&qpc).toBool()) return 0;
+        if (!windows.ntdll.RtlQueryPerformanceFrequency(&qpf).toBool()) return 0;
+        const ticks: u128 = @intCast(qpc);
+        return @intCast(ticks * 1_000_000_000 / @as(u128, @intCast(qpf)));
+    }
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(u64, @intCast(ts.sec)) * 1_000_000_000 + @as(u64, @intCast(ts.nsec));
+}
+
+/// Pump wgpu events until `done` flips, with a hard deadline. On CI software
+/// stacks (WARP, lavapipe) a lost or rejected device can leave the callback
+/// unfired forever; an unbounded pump turns that into a job-level timeout
+/// with no diagnostics instead of a fast, labeled failure.
+fn pumpEvents(instance: c.WGPUInstance, device: ?c.WGPUDevice, done: *const bool, what: []const u8) !void {
+    const deadline = monotonicNanos() + 120 * std.time.ns_per_s;
+    while (!done.*) {
+        if (device) |d| _ = c.wgpuDevicePoll(d, 1, null);
+        c.wgpuInstanceProcessEvents(instance);
+        if (monotonicNanos() > deadline) {
+            std.debug.print("timed out waiting for {s}\n", .{what});
+            return error.WgpuTimeout;
+        }
+    }
+}
+
 // ── GPU context ──
 
 const Gpu = struct {
@@ -155,7 +189,7 @@ const Gpu = struct {
             .userdata1 = &adapter_req,
             .userdata2 = null,
         });
-        while (!adapter_req.done) c.wgpuInstanceProcessEvents(instance);
+        try pumpEvents(instance, null, &adapter_req.done, "adapter request");
         if (adapter_req.adapter == null) {
             // GPU-less machines (CI runners) expose only software adapters
             // (WARP, lavapipe), which WebGPU treats as fallback adapters and
@@ -170,7 +204,7 @@ const Gpu = struct {
                 .userdata1 = &adapter_req,
                 .userdata2 = null,
             });
-            while (!adapter_req.done) c.wgpuInstanceProcessEvents(instance);
+            try pumpEvents(instance, null, &adapter_req.done, "fallback adapter request");
         }
         const adapter = adapter_req.adapter orelse return error.NoAdapter;
         errdefer c.wgpuAdapterRelease(adapter);
@@ -205,7 +239,7 @@ const Gpu = struct {
             .userdata1 = &device_req,
             .userdata2 = null,
         });
-        while (!device_req.done) c.wgpuInstanceProcessEvents(instance);
+        try pumpEvents(instance, null, &device_req.done, "device request");
         const device = device_req.device orelse return error.NoDevice;
         errdefer c.wgpuDeviceRelease(device);
 
@@ -976,10 +1010,7 @@ pub fn main() !void {
         .userdata1 = &map_req,
         .userdata2 = null,
     });
-    while (!map_req.done) {
-        _ = c.wgpuDevicePoll(gpu.device, 1, null);
-        c.wgpuInstanceProcessEvents(gpu.instance);
-    }
+    try pumpEvents(gpu.instance, gpu.device, &map_req.done, "readback buffer map");
     if (!map_req.ok) return error.MapFailed;
 
     const mapped: [*]const u8 = @ptrCast(c.wgpuBufferGetConstMappedRange(readback_buffer, 0, readback_size) orelse return error.MapRangeFailed);
