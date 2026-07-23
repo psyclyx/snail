@@ -260,6 +260,9 @@ pub const HarfBuzzShaper = struct {
         features: []const hb.hb_feature_t,
         properties: SegmentProperties,
     ) ShapedRaw {
+        // `hb_buffer_add_utf8` takes a c_int length; a caller handing us
+        // more than 2GB of text gets an empty run instead of a trap.
+        if (text.len > std.math.maxInt(c_int)) return .{ .count = 0, .infos = null, .positions = null };
         hb.hb_buffer_clear_contents(self.hb_buffer);
         hb.hb_buffer_add_utf8(self.hb_buffer, text.ptr, @intCast(text.len), 0, @intCast(text.len));
         if (properties.direction) |direction| {
