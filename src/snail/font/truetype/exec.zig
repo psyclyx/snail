@@ -1222,7 +1222,8 @@ pub const Context = struct {
         const dx = subWrap(p2_x, p1_x);
         const dy = subWrap(p2_y, p1_y);
         return if (perpendicular)
-            tt_graphics.normalizeF2Dot14(-dy, dx)
+            // negWrap: dy can be minInt(i32) via SCFS + SPVTL[1]/SFVTL[1].
+            tt_graphics.normalizeF2Dot14(negWrap(dy), dx)
         else
             tt_graphics.normalizeF2Dot14(dx, dy);
     }
@@ -2060,6 +2061,31 @@ test "tt executor tolerates i32-min vectors from the stack" {
     });
 
     try expectStack(&ctx, &.{ -11585, -11585 });
+}
+
+test "tt executor derives perpendicular vectors without negation overflow" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [2]Point = .{
+        .{ .x = 0, .y = 0, .ox = 0, .oy = 0, .on_curve = true },
+        // y = minInt(i32), as SCFS can leave it; SPVTL[1] negates dy for the
+        // perpendicular and plain `-dy` would overflow.
+        .{ .x = 0, .y = std.math.minInt(i32), .ox = 0, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    try ctx.execute(&.{
+        0xB1, 1, 0, 0x07, 0x0C, // SPVTL[1], GPV
+    });
+
+    try expectStack(&ctx, &.{ -0x4000, 0 });
 }
 
 test "tt executor derives line vectors from popped zp2 point toward popped zp1 point" {
