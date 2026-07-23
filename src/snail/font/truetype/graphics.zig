@@ -72,7 +72,10 @@ pub fn mulFix16Dot16(value: i32, ratio: i32) i32 {
     if (ratio == 0x10000) return value;
     const prod: i64 = @as(i64, value) * @as(i64, ratio);
     const rounded = if (prod >= 0) prod + (1 << 15) else prod - (1 << 15);
-    return @intCast(rounded >> 16);
+    // Truncate like the VM's other fixed-point ops: extreme ratios (huge
+    // ppems under a diagonal projection) and hostile CVT values can push the
+    // result past i32, where @intCast would trap.
+    return @truncate(rounded >> 16);
 }
 
 /// 16.16 divide: (value << 16) / ratio, with rounding to nearest.
@@ -82,7 +85,9 @@ pub fn divFix16Dot16(value: i32, ratio: i32) i32 {
     const num: i64 = @as(i64, value) << 16;
     const half = @divTrunc(@as(i64, ratio), 2);
     const adjusted = if ((num >= 0) == (ratio >= 0)) num + half else num - half;
-    return @intCast(@divTrunc(adjusted, ratio));
+    // Same totality as mulFix16Dot16: a tiny ratio (e.g. ppem_x = 1) with an
+    // attacker-controlled value overflows i32; wrap rather than trap.
+    return @truncate(@divTrunc(adjusted, ratio));
 }
 
 pub const ZonePointer = enum(u8) {
@@ -462,4 +467,19 @@ test "normalizeF2Dot14 tolerates i32-min inputs" {
     try std.testing.expectEqual(Vector.x_axis, normalizeF2Dot14(0, 0));
     // Ordinary F2DOT14 inputs are unaffected.
     try std.testing.expectEqual(Vector.x_axis, normalizeF2Dot14(Vector.one, 0));
+}
+
+test "mulFix16Dot16/divFix16Dot16 tolerate extreme ratios" {
+    // Extreme ppems (65535×65534 under a diagonal projection, or ppem_x = 1)
+    // and hostile CVT values can push the 16.16 result past i32; truncate
+    // like the VM's other fixed-point ops instead of trapping.
+    _ = mulFix16Dot16(std.math.maxInt(i32), std.math.maxInt(i32));
+    _ = mulFix16Dot16(std.math.minInt(i32), 92680); // ~sqrt(2) in 16.16
+    _ = divFix16Dot16(std.math.maxInt(i32), 1);
+    _ = divFix16Dot16(std.math.minInt(i32), 1);
+    // In-range behaviour is unchanged.
+    try std.testing.expectEqual(@as(i32, 0x8000), mulFix16Dot16(0x10000, 0x8000));
+    try std.testing.expectEqual(@as(i32, 0x20000), divFix16Dot16(0x10000, 0x8000));
+    try std.testing.expectEqual(@as(i32, 42), mulFix16Dot16(42, 0x10000));
+    try std.testing.expectEqual(@as(i32, 42), divFix16Dot16(42, 0x10000));
 }
