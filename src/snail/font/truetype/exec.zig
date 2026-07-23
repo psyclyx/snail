@@ -309,6 +309,11 @@ pub const Context = struct {
                 const count = try self.popU32();
                 var i: u32 = 0;
                 while (i < count) : (i += 1) {
+                    // Charge every iteration, not just every instruction: an
+                    // empty FDEF body is legal and consumes zero steps, so a
+                    // hostile font could otherwise LOOPCALL 2^31-1 times
+                    // inside the step budget and hang the VM.
+                    try self.countStep(steps);
                     try self.callFunction(function_id, steps);
                 }
             },
@@ -2481,6 +2486,26 @@ test "tt executor loop-calls functions and enforces call depth" {
         0x2D,
     });
     try std.testing.expectError(Error.CallDepthExceeded, ctx.execute(&.{ 0xB0, 5, 0x2B }));
+}
+
+test "tt executor counts LOOPCALL iterations against the step budget" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{0};
+    var entries: [4]Function = undefined;
+    var functions: FunctionDefs = .{ .entries = &entries };
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{ .max_steps = 8 });
+    ctx.setFunctions(&functions);
+
+    // An empty FDEF body is legal and consumes zero steps per call. If
+    // iterations were free, a count of 32767 (or 2^31-1 via synthesized
+    // stack values) would run inside the budget; each iteration must cost a
+    // step so the limit trips instead.
+    try std.testing.expectError(Error.ExecutionLimitExceeded, ctx.execute(&.{
+        0xB0, 4, 0x2C, 0x2D, // FDEF 4 with an empty body
+        0xB8, 0x7F, 0xFF, // count = 32767
+        0xB0, 4, 0x2A, // LOOPCALL 4
+    }));
 }
 
 test "tt executor handles SROUND, S45ROUND and RTDG" {
