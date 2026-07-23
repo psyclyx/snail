@@ -758,7 +758,10 @@ pub const Context = struct {
         if (arg < 0) return null;
         const encoded: u8 = @truncate(@as(u32, @intCast(arg)));
         const ppem = self.projectionPpem26Dot6() / 64;
-        const target_ppem = self.graphics.delta_base + base_offset + @as(i32, encoded >> 4);
+        // Wrap like the rest of the VM's i32 arithmetic: delta_base comes
+        // from SDB and can sit near the i32 edge, where the plain sum would
+        // overflow; the ppem comparison then just fails and no delta fires.
+        const target_ppem = addWrap(addWrap(self.graphics.delta_base, base_offset), @as(i32, encoded >> 4));
         if (@as(i32, @intCast(ppem)) != target_ppem) return null;
 
         // Per TrueType spec: low 4 bits encode magnitude with a forbidden 0:
@@ -2482,6 +2485,39 @@ test "tt executor applies delta point and cvt exceptions" {
     try std.testing.expectEqual(@as(i32, 16), glyph_points[0].x);
     try std.testing.expectEqual(@as(i32, 108), glyph_points[1].x);
     try std.testing.expectEqual(@as(i32, 84), cvt[0]);
+}
+
+test "tt executor wraps delta target ppem arithmetic" {
+    var stack: [16]i32 = undefined;
+    var storage: [1]i32 = .{0};
+    var cvt: [1]i32 = .{std.math.maxInt(i32)};
+    var ctx = Context.init(.{ .stack = &stack, .storage = &storage, .cvt = &cvt }, .{});
+    ctx.setEnvironment(.{
+        .ppem_x_26_6 = 12 * 64,
+        .ppem_y_26_6 = 12 * 64,
+        .units_per_em = 1000,
+    });
+
+    var twilight_points: [1]Point = undefined;
+    var glyph_points: [1]Point = .{
+        .{ .x = 100, .y = 0, .ox = 100, .oy = 0, .on_curve = true },
+    };
+    var zones: PointZones = .{
+        .twilight = PointZone.initTwilight(&twilight_points),
+        .glyph = .{ .points = &glyph_points },
+    };
+    ctx.setZones(&zones);
+
+    // SDB accepts any i32; a hostile font can put delta_base at the i32 edge
+    // so `delta_base + base_offset + ppem_nibble` overflows. Wrapping makes
+    // the ppem comparison fail and no delta fires (CVT injection keeps the
+    // program short; the value is equally synthesizable via DUP;ADD).
+    try ctx.execute(&.{
+        0xB0, 0, 0x45, 0x5E, // SDB = maxInt(i32)
+        0xB2, 0x19, 0, 1, 0x5D, // DELTAP1: ppem nibble 1, point 0
+    });
+
+    try std.testing.expectEqual(@as(i32, 100), glyph_points[0].x);
 }
 
 test "tt executor records and calls function definitions" {
