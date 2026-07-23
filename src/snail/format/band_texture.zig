@@ -305,11 +305,20 @@ comptime {
     }
 }
 
-fn packBandCurveRef(curve_texel: u32, first_member_band: u16, kind: bezier_mod.CurveKind) [2]u16 {
+fn curveRefTexel(offset: u32, curve_idx: u16) error{ShapeTooComplex}!u32 {
+    const span = std.math.mul(u32, @as(u32, curve_idx), curve_tex.SEGMENT_TEXELS) catch
+        return error.ShapeTooComplex;
+    return std.math.add(u32, offset, span) catch return error.ShapeTooComplex;
+}
+
+fn packBandCurveRef(curve_texel: u32, first_member_band: u16, kind: bezier_mod.CurveKind) error{ShapeTooComplex}![2]u16 {
     const cx = curve_texel % TEX_WIDTH;
     const cy = curve_texel / TEX_WIDTH;
+    // cy shares its word with the 2-bit curve kind: a row that does not fit
+    // would smear into the kind field, and the debug assert alone compiles
+    // out in ReleaseFast. Reject instead.
+    if (cy > curve_loc_y_mask) return error.ShapeTooComplex;
     std.debug.assert(cx <= curve_loc_x_mask);
-    std.debug.assert(cy <= curve_loc_y_mask);
     std.debug.assert(first_member_band < (1 << (16 - curve_loc_x_bits)));
     const kind_bits: u16 = @intCast(@intFromEnum(kind));
     std.debug.assert(kind_bits <= 3);
@@ -455,9 +464,9 @@ fn packBandLists(
     var write_pos: u32 = block_prefix_texels + header_count;
     for (0..h_bands) |bi| {
         for (lists.hBand(bi)) |curve_idx| {
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
+            const curve_texel = try curveRefTexel(curve_entry.offset, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
-            const encoded = packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)], kind);
+            const encoded = try packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
             data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
@@ -466,9 +475,9 @@ fn packBandLists(
 
     for (0..v_bands) |bi| {
         for (lists.vBand(bi)) |curve_idx| {
-            const curve_texel = @as(u32, curve_entry.offset) + @as(u32, curve_idx) * curve_tex.SEGMENT_TEXELS;
+            const curve_texel = try curveRefTexel(curve_entry.offset, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
-            const encoded = packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)], kind);
+            const encoded = try packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
             data[write_pos * 2 + 1] = encoded[1];
             write_pos += 1;
@@ -814,6 +823,29 @@ test "band texture rejects inconsistent caller-authored block sizes" {
         std.testing.allocator,
         std.testing.allocator,
         &.{malformed},
+    ));
+}
+
+test "huge curve texture offsets are rejected instead of smearing the packed kind" {
+    const curves = [_]CurveSegment{.{
+        .kind = .quadratic,
+        .p0 = Vec2.new(0, 0),
+        .p1 = Vec2.new(0.5, 0.5),
+        .p2 = Vec2.new(1, 0),
+    }};
+    const bbox = BBox{ .min = Vec2.new(0, 0), .max = Vec2.new(1, 0.5) };
+    // The packed curve row has 14 bits; an offset near maxInt(u32) neither
+    // fits nor survives `offset + curve_idx * SEGMENT_TEXELS` unchecked.
+    const entry = curve_tex.GlyphCurveEntry{ .start_x = 0, .start_y = 0, .count = 1, .offset = std.math.maxInt(u32) };
+    try std.testing.expectError(error.ShapeTooComplex, buildGlyphBandData(
+        std.testing.allocator,
+        std.testing.allocator,
+        &curves,
+        curves.len,
+        bbox,
+        entry,
+        .zero,
+        false,
     ));
 }
 
