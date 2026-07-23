@@ -707,16 +707,18 @@ pub const Font = struct {
 
     pub fn getKerning(self: *const Font, left: u16, right: u16) !i16 {
         if (self.kern_offset == 0) return 0;
-        const base = self.kern_offset;
+        // Widen the raw u32 directory offset before any arithmetic: kern_offset
+        // is file-controlled and `base + 2` would overflow u32 near 0xFFFFFFFF.
+        const base: usize = self.kern_offset;
         const n_tables = try readU16(self.data, base + 2);
-        var offset: u32 = base + 4;
+        var offset: usize = base + 4;
         for (0..n_tables) |_| {
             const coverage = try readU16(self.data, offset + 4);
             if (coverage & 1 == 1) {
                 const n_pairs = try readU16(self.data, offset + 6);
                 const pairs_base = offset + 14;
-                var lo: u32 = 0;
-                var hi: u32 = n_pairs;
+                var lo: usize = 0;
+                var hi: usize = n_pairs;
                 const key: u32 = (@as(u32, left) << 16) | right;
                 while (lo < hi) {
                     const mid = (lo + hi) / 2;
@@ -794,6 +796,12 @@ test "cyclic compound glyph is rejected at bounded depth" {
         .num_h_metrics = 1,
     };
     try std.testing.expectError(error.InvalidFont, font.parseGlyph(std.testing.allocator, 0));
+}
+
+test "kern table offset near u32 max fails cleanly" {
+    var data = [_]u8{0} ** 16;
+    const font = Font{ .data = &data, .kern_offset = 0xFFFFFFFE };
+    try std.testing.expectError(error.UnexpectedEof, font.getKerning(1, 2));
 }
 
 test "parse real font" {
