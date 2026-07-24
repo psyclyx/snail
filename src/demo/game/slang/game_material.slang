@@ -20,7 +20,7 @@
 // composed catalog's exact `u_view_proj * (u_model * pos)` arithmetic
 // (premultiplying on the CPU would shift clip coordinates by ULPs and move
 // every interpolated sample — the AE=0 gate forbids it). GL hosts bind the
-// block as the std140 UBO `GameMaterialParams_std140`
+// block as the std140 UBO `block_GameMaterialParams_0`
 // (gl_material.zig:Params mirrors the layout).
 module game_material;
 

@@ -408,10 +408,9 @@ subsequently retired in favor of build-time generation. The Vulkan leg is compil
 the demo build (build.zig addGameShaderSpirv →
 slang_shaders.vulkanGameMaterialSpv), keeping the existing MaterialPush
 push-constant layout, set 0 = atlas plane, set 1 binding 0 = records SSBO,
-entry `main`. gl_material.zig now embeds the artifacts and binds
-GameMaterialParams_std140 as a UBO + the SPIRV_Cross_Combined* /
-u_snail_text_records names; the loose-uniform + source-composition plumbing
-is gone.
+entry `main`. gl_material.zig now embeds the artifacts and binds direct
+Slang GLSL's `block_GameMaterialParams_0` UBO and `u_*_0` sampler names;
+the loose-uniform + source-composition plumbing is gone.
 
 GLES record store (trap 17, ES half): RESOLVED single-source. New
 build/slang_shaders.zig mechanism `gles_define` compiles a SECOND SPIR-V

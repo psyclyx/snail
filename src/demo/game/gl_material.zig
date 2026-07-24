@@ -37,6 +37,8 @@ const CURVE_UNIT: i32 = 3;
 const BAND_UNIT: i32 = 4;
 /// UBO binding point for the material parameter block.
 const PARAMS_BINDING: u32 = 0;
+/// Direct Slang GLSL name for `ConstantBuffer<GameMaterialParams> pc`.
+const params_block_name = "block_GameMaterialParams_0";
 
 // The shader source hardcodes the 18-word record stride
 // (SNAIL_TEXT_RECORD_WORDS_PER_GLYPH in game_material.slang); keep it in
@@ -105,6 +107,13 @@ pub fn GlMaterial(comptime variant: Variant) type {
             .gl33, .gl44 => @embedFile("game_material.frag.glsl330"),
             .gles30 => @embedFile("game_material.frag.gles300"),
         };
+        comptime {
+            if (std.mem.indexOf(u8, vertex_src, params_block_name) == null or
+                std.mem.indexOf(u8, fragment_src, params_block_name) == null)
+            {
+                @compileError("generated game material uniform-block name no longer matches the GL host");
+            }
+        }
         // Direct Slang GLSL keeps the records uniform's source-derived name
         // for both desktop's texel buffer and GLES's 2D texture.
         const records_uniform_name = switch (variant) {
@@ -139,7 +148,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
 
             // One std140 block for both stages (identical definition — the
             // linker merges them), bound to a caller-owned UBO.
-            const block_index = gl.glGetUniformBlockIndex(self.program, "GameMaterialParams_std140");
+            const block_index = gl.glGetUniformBlockIndex(self.program, params_block_name);
             if (block_index == gl.GL_INVALID_INDEX) return error.MissingUniformBlock;
             gl.glUniformBlockBinding(self.program, block_index, PARAMS_BINDING);
             gl.glGenBuffers(1, &self.ubo);
