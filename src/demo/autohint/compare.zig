@@ -156,6 +156,11 @@ pub const Compare = struct {
     /// The font's own TT hinting, if it has any (DejaVu does; Noto Sans
     /// Mono is unhinted, so this stays null and the tt row renders unhinted).
     tt: ?snail.TtHintVm,
+    /// Caller-owned fpgm/prep result per device PPEM. The comparison keeps a
+    /// fixed size corpus on screen, so preparing those sizes once is both the
+    /// representative integration pattern and much cheaper than rerunning font
+    /// bytecode while rebuilding the per-frame draw list.
+    tt_prepareds: std.AutoHashMapUnmanaged(u32, snail.TtHintVm.PreparedPpem),
     /// Short display name for the font (e.g. "DejaVu", "Noto").
     label: []const u8,
     /// Proportional (non-monospace) face: the hinted rows snap per-glyph
@@ -194,6 +199,7 @@ pub const Compare = struct {
             .font_id = font_id,
             .auto = auto,
             .tt = tt,
+            .tt_prepareds = .empty,
             .label = label,
             .proportional = proportional,
             .shape_cache = ShapedRunCache.init(allocator),
@@ -203,12 +209,30 @@ pub const Compare = struct {
 
     pub fn deinit(self: *Compare) void {
         self.atlas.deinit();
+        var prepared_it = self.tt_prepareds.valueIterator();
+        while (prepared_it.next()) |prepared| prepared.deinit();
+        self.tt_prepareds.deinit(self.allocator);
         if (self.tt) |*vm| vm.deinit();
         self.shape_cache.deinit();
         self.auto.deinit();
         self.faces.deinit();
         self.allocator.destroy(self.font);
         self.* = undefined;
+    }
+
+    /// Return the cached caller-owned fpgm/prep result for one device PPEM,
+    /// preparing it on first use. Preparation failures are left uncached so a
+    /// transient allocation failure does not permanently disable the TT row.
+    fn preparedFor(self: *Compare, ppem_26_6: u32) ?*const snail.TtHintVm.PreparedPpem {
+        const vm = if (self.tt) |*tt| tt else return null;
+        const gop = self.tt_prepareds.getOrPut(self.allocator, ppem_26_6) catch return null;
+        if (!gop.found_existing) {
+            gop.value_ptr.* = vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch {
+                _ = self.tt_prepareds.remove(ppem_26_6);
+                return null;
+            };
+        }
+        return gop.value_ptr;
     }
 
     /// Device pixels per grid pixel. Hinting is a device-pixel operation:
@@ -251,7 +275,13 @@ pub const Compare = struct {
         const tags = try self.shape_cache.shape(&self.faces, tags_str, .{});
         try self.ensureAll(scratch, shaped, tags, px_scale);
 
-        var refs: std.ArrayList(*const demo_support.Picture) = .empty;
+        // The grid's cells are disjoint, so painter order is immaterial here.
+        // Keep that fact local to the producer and order pictures by semantic
+        // family. `emit` can then coalesce each group into one draw batch while
+        // retaining its safe, general painter-order contract.
+        var regular_refs: std.ArrayList(*const demo_support.Picture) = .empty;
+        var autohint_refs: std.ArrayList(*const demo_support.Picture) = .empty;
+        var tt_refs: std.ArrayList(*const demo_support.Picture) = .empty;
         const left_tag: f32 = x0 + 8 * px_scale;
         const left_sample: f32 = x0 + 52 * px_scale;
         const tag_em: f32 = 12 * px_scale;
@@ -264,7 +294,7 @@ pub const Compare = struct {
             .em = tag_em,
             .color = tag_color,
         });
-        try refs.append(frame_alloc, head);
+        try regular_refs.append(frame_alloc, head);
 
         var y: f32 = grid_top * px_scale;
         for (grid_ppems) |ppem| {
@@ -280,7 +310,7 @@ pub const Compare = struct {
                 .em = tag_em,
                 .color = tag_color,
             });
-            try refs.append(frame_alloc, size_lbl);
+            try regular_refs.append(frame_alloc, size_lbl);
             y += section_head * px_scale;
 
             for (rows) |row_desc| {
@@ -293,16 +323,24 @@ pub const Compare = struct {
                     .em = tag_em,
                     .color = tag_color,
                 });
-                try refs.append(frame_alloc, tag);
+                try regular_refs.append(frame_alloc, tag);
                 // The sample in this mode.
                 const row = try frame_alloc.create(demo_support.Picture);
                 row.* = try self.renderRow(frame_alloc, shaped, row_desc, ppem_26_6, em, left_sample, baseline);
-                try refs.append(frame_alloc, row);
+                switch (row_desc.mode) {
+                    .unhinted => try regular_refs.append(frame_alloc, row),
+                    .autohint => try autohint_refs.append(frame_alloc, row),
+                    .tt_hint => try tt_refs.append(frame_alloc, row),
+                }
                 y += em * row_leading + row_gap * px_scale;
             }
             y += ppem_gap * px_scale;
         }
-        return demo_support.Picture.concat(frame_alloc, refs.items);
+        var ordered_refs: std.ArrayList(*const demo_support.Picture) = .empty;
+        try ordered_refs.appendSlice(frame_alloc, regular_refs.items);
+        try ordered_refs.appendSlice(frame_alloc, autohint_refs.items);
+        try ordered_refs.appendSlice(frame_alloc, tt_refs.items);
+        return demo_support.Picture.concat(frame_alloc, ordered_refs.items);
     }
 
     fn renderRow(
@@ -410,31 +448,39 @@ pub const Compare = struct {
         // Only TT-hint preparation and baked curves remain PPEM-specific.
         for (ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
-            // Run fpgm/prep once for this size; every glyph hints from it.
-            var tt_prepared: ?snail.TtHintVm.PreparedPpem = if (self.tt) |*vm|
-                (vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch null)
-            else
-                null;
-            defer if (tt_prepared) |*p| p.deinit();
+            if (self.tt == null) continue;
 
+            // Do not even touch the prepared-state cache when this size's
+            // complete glyph corpus is already resident. This is the normal
+            // per-frame path after the first overlay build.
+            var has_missing = false;
+            for (shaped.glyphs) |g| {
+                if (g.font_id != self.font_id) continue;
+                const key_t = snail.record_key.ttHintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
+                if (!self.atlas.contains(key_t) and !hasKey(entries.items, key_t)) {
+                    has_missing = true;
+                    break;
+                }
+            }
+            if (!has_missing) continue;
+
+            const prepared = self.preparedFor(ppem_26_6) orelse continue;
+            const vm = &self.tt.?;
             for (shaped.glyphs) |g| {
                 if (g.font_id != self.font_id) continue;
 
-                if (self.tt) |*vm| if (tt_prepared) |*prepared| {
-                    const key_t = snail.record_key.ttHintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
-                    if (!self.atlas.contains(key_t) and !hasKey(entries.items, key_t)) {
-                        // Output on `scratch` (persists to the atlas build); VM
-                        // internals on a dedicated temp arena so they can't
-                        // alias the output. Hinting is pure now, so a glyph that
-                        // errors can't corrupt anything — just register an empty
-                        // record so the TT row still resolves.
-                        var tmp = std.heap.ArenaAllocator.init(self.allocator);
-                        defer tmp.deinit();
-                        const curves = vm.hintGlyph(scratch, tmp.allocator(), prepared, g.glyph_id) catch
-                            snail.GlyphCurves.empty(scratch);
-                        try entries.append(scratch, .{ .key = key_t, .curves = curves });
-                    }
-                };
+                const key_t = snail.record_key.ttHintedGlyph(g.font_id, g.glyph_id, ppem_26_6);
+                if (self.atlas.contains(key_t) or hasKey(entries.items, key_t)) continue;
+                // Output on `scratch` (persists to the atlas build); VM
+                // internals on a dedicated temp arena so they can't
+                // alias the output. Hinting is pure now, so a glyph that
+                // errors can't corrupt anything — just register an empty
+                // record so the TT row still resolves.
+                var tmp = std.heap.ArenaAllocator.init(self.allocator);
+                defer tmp.deinit();
+                const curves = vm.hintGlyph(scratch, tmp.allocator(), prepared, g.glyph_id) catch
+                    snail.GlyphCurves.empty(scratch);
+                try entries.append(scratch, .{ .key = key_t, .curves = curves });
             }
         }
 
@@ -472,6 +518,68 @@ test "comparison contains both x-width policies and fits the default viewport" {
     try testing.expectEqualStrings("df", rows[4].tag);
     try testing.expectEqualStrings("tt", rows[5].tag);
     try testing.expect(gridHeightPx(1.0) <= @as(f32, @floatFromInt(default_viewport_height)));
+}
+
+test "comparison caches caller-owned TT preparation by device PPEM" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 8,
+        .curve_words_per_page = 1 << 18,
+        .band_words_per_page = 1 << 16,
+    });
+    defer pool.deinit();
+
+    var compare = try Compare.init(testing.allocator, pool);
+    defer compare.deinit();
+
+    const first = compare.preparedFor(12 * 64) orelse return error.TestExpectedTtHinting;
+    const again = compare.preparedFor(12 * 64) orelse return error.TestExpectedTtHinting;
+    try testing.expect(first == again);
+    try testing.expectEqual(@as(u32, 1), compare.tt_prepareds.count());
+
+    _ = compare.preparedFor(16 * 64) orelse return error.TestExpectedTtHinting;
+    try testing.expectEqual(@as(u32, 2), compare.tt_prepareds.count());
+}
+
+test "disjoint comparison grid coalesces to one batch per text family" {
+    var pool = try snail.PagePool.init(testing.allocator, .{
+        .max_layers = 8,
+        .curve_words_per_page = 1 << 18,
+        .band_words_per_page = 1 << 16,
+    });
+    defer pool.deinit();
+
+    var compare = try Compare.init(testing.allocator, pool);
+    defer compare.deinit();
+    var frame = std.heap.ArenaAllocator.init(testing.allocator);
+    defer frame.deinit();
+    var scratch = std.heap.ArenaAllocator.init(testing.allocator);
+    defer scratch.deinit();
+
+    var picture = try compare.buildGrid(frame.allocator(), scratch.allocator(), 1.0);
+    defer picture.deinit();
+    const instances = try testing.allocator.alloc(snail.render.records.Instance, picture.shapes.len);
+    defer testing.allocator.free(instances);
+    const batches = try testing.allocator.alloc(snail.render.records.DrawBatch, picture.shapes.len);
+    defer testing.allocator.free(batches);
+    var instance_len: usize = 0;
+    var batch_len: usize = 0;
+    _ = try snail.emit.emit(
+        instances,
+        batches,
+        &instance_len,
+        &batch_len,
+        .{ .pool = pool },
+        &compare.atlas,
+        picture.shapes,
+        .identity,
+        .{ 1, 1, 1, 1 },
+    );
+
+    try testing.expect(instance_len > 0);
+    try testing.expectEqual(@as(usize, 3), batch_len);
+    try testing.expectEqual(snail.render.records.ShapeKind.regular, batches[0].kind);
+    try testing.expectEqual(snail.render.records.ShapeKind.autohint, batches[1].kind);
+    try testing.expectEqual(snail.render.records.ShapeKind.tt_hinted_text, batches[2].kind);
 }
 
 test "comparison setup reuses autohint analysis across grid PPEMs" {
