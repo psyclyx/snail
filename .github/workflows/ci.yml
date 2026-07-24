@@ -510,8 +510,6 @@ jobs:
       # backend on macOS). Same scene/reference/threshold as the other
       # minimal-example gates.
       - name: Minimal WebGPU example (wgpu Metal backend)
-        env:
-          SNAIL_WGPU_LOG: "1"
         run: nix-shell --run "zig build run-minimal-wgpu -Dcpu=baseline"
 
       - name: Gate the WebGPU render

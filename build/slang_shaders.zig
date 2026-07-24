@@ -62,10 +62,11 @@
 //!    changes.
 //!  - GLES default precision is inserted as highp by the direct patcher
 //!    (the catalog's precision; coverage math needs fp32).
-//!  - `-target wgsl` works DIRECTLY for native Slang (entry names are the
+//!  - `-target wgsl` works directly for native Slang (entry names are the
 //!    Slang function names, e.g. `vertexMain`): the GLSL-ingestion bugs
-//!    (miscompiled texelFetch, renumbered stage IO) do not apply, and the
-//!    output validates with naga as-is. No spirv-opt / naga pipeline needed.
+//!    (miscompiled texelFetch, renumbered stage IO) do not apply. One
+//!    mechanical cleanup removes interpolation attributes that Slang leaks
+//!    onto non-IO helper structs; naga validates every resulting artifact.
 //!  - `SV_VertexID` is avoided in the family source for SPIR-V targets:
 //!    Slang lowers it to `VertexIndex - BaseVertex` for SPIR-V. Vulkan
 //!    families therefore use raw VertexIndex via `spirv_asm`; the direct GL
@@ -310,7 +311,7 @@ fn toolchainGates(b: *std.Build) *@TypeOf(toolchain_gate_cache.?) {
         else
             null,
         .naga_fail = if (naga_missing)
-            &b.addFail("the subpixel WGSL validation tripwire needs the naga CLI (wgpu-utils); enter nix-shell or install it (only zig build test / gen-shaders run this)").step
+            &b.addFail("WGSL artifact validation needs the naga CLI (wgpu-utils); enter nix-shell or install it (only zig build test / gen-shaders run this)").step
         else
             null,
     };
@@ -451,8 +452,8 @@ pub const Entry = struct {
     target: Target,
     sub_path: []const u8,
     file: std.Build.LazyPath,
-    /// Optional validation step (naga over transformed subpixel WGSL, so
-    /// regeneration re-proves the structural transform's assumptions).
+    /// Optional validation step (naga over final WGSL, so regeneration
+    /// re-proves the cleanup and dual-source transform assumptions).
     /// Run only by the aggregate/test module and gen-shaders, never by
     /// consumer scopes.
     validate: ?*std.Build.Step = null,
@@ -511,6 +512,14 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
             .optimize = .Debug,
         }),
     });
+    const wgsl_patch_direct_tool = b.addExecutable(.{
+        .name = "wgsl-patch-direct",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("build/wgsl_patch_direct.zig"),
+            .target = b.graph.host,
+            .optimize = .Debug,
+        }),
+    });
     // The parameter-ABI generator: every shared-block family's Vulkan-leg
     // reflection (both stages) plus one WGSL-leg reflection (the uniform
     // buffer's group/binding) → reflection.zig, laid out next to the
@@ -548,28 +557,28 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const spv = vulkanStageSpv(b, family, stage);
                 appendEntry(b, list, .spirv, "spirv/" ++ family.name ++ "." ++ stage.short ++ ".spv", spv);
 
-                // WGSL — direct target. The subpixel families' artifacts
-                // then gain their dual-source entry (`fragmentDualMain`,
+                // WGSL — direct target, followed by a mechanical cleanup of
+                // interpolation attributes Slang leaks onto ordinary helper
+                // structs (entry-point IO bindings retain their attributes).
+                // The subpixel families' artifacts then gain their
+                // dual-source entry (`fragmentDualMain`,
                 // @blend_src) via wgsl-gen-dual-entry — a mechanical clone
                 // of fragmentMain derived from the emitted text (slangc's
                 // WGSL backend cannot express @blend_src; see the tool's
-                // header) — and get a naga validation step re-proving the
-                // transform. The other families are runtime-validated by
-                // the wgpu example gates.
+                // header). Naga validates every final WGSL artifact.
                 const raw_wgsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_WGSL"}, &.{ "-target", "wgsl" }, family.name ++ "." ++ stage.short ++ ".wgsl");
+                const patch_wgsl = b.addRunArtifact(wgsl_patch_direct_tool);
+                patch_wgsl.addFileArg(raw_wgsl);
+                const direct_wgsl = patch_wgsl.addOutputFileArg("patched-" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
                 const is_dual_source_family = comptime std.mem.eql(u8, family.name, "text_subpixel") or
                     std.mem.eql(u8, family.name, "tt_hinted_text_subpixel") or
                     std.mem.eql(u8, family.name, "autohint_subpixel");
                 const wgsl = if (is_dual_source_family) blk: {
                     const gen = b.addRunArtifact(wgsl_dual_entry_tool);
-                    gen.addFileArg(raw_wgsl);
+                    gen.addFileArg(direct_wgsl);
                     break :blk gen.addOutputFileArg("dual-" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
-                } else raw_wgsl;
-                const wgsl_validation: ?*std.Build.Step = if (is_dual_source_family)
-                    nagaValidation(b, wgsl)
-                else
-                    null;
-                appendEntryValidated(b, list, .wgsl, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl, wgsl_validation);
+                } else direct_wgsl;
+                appendEntryValidated(b, list, .wgsl, "wgsl/" ++ family.name ++ "." ++ stage.short ++ ".wgsl", wgsl, nagaValidation(b, wgsl));
 
                 // D3D11 HLSL (SM 5.0) — direct target (see hlsl_args).
                 const hlsl = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_D3D11"}, hlsl_args, family.name ++ "." ++ stage.short ++ ".hlsl");
@@ -649,8 +658,8 @@ pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifac
     return createGeneratedModuleOpts(b, name, artifacts, targets, false);
 }
 
-/// `run_validations` wires the artifacts' validation steps (naga over the
-/// subpixel WGSL) into the module — used by the aggregate/test module so
+/// `run_validations` wires the artifacts' validation steps (naga over every
+/// WGSL artifact) into the module — used by the aggregate/test module so
 /// `zig build test` re-proves the fragile artifacts; consumer scopes skip
 /// it and carry no naga requirement.
 pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target, run_validations: bool) GeneratedModule {
