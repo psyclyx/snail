@@ -64,6 +64,7 @@ pub const VkSceneRenderer = struct {
     panel_text_b: snail.render.records.Binding,
     hud_path_b: snail.render.records.Binding,
     hud_text_b: snail.render.records.Binding,
+    hud_gen: u32,
 
     scratch: []snail.render.records.Instance,
     segs: [4]snail.render.records.DrawBatch = undefined,
@@ -75,9 +76,24 @@ pub const VkSceneRenderer = struct {
         const transfer_pool = try embed_vulkan.createTransferPool(ctx);
         errdefer vk.vkDestroyCommandPool(ctx.device, transfer_pool, null);
 
-        // Upload every atlas the scene needs in one decoupled upload.
+        // The game owns this queue, so use the reusable transfer pool here:
+        // unlike a one-shot caller-provided command buffer, it also supports
+        // later HUD atlas refreshes.
         var bindings: [7]snail.render.records.Binding = undefined;
-        var cache = try embed_vulkan.cacheWithDecoupledUpload(allocator, ctx, scene.fonts.pool, &layout, &.{
+        var cache = try embed_vulkan.VulkanDeviceAtlas.init(
+            allocator,
+            scene.fonts.pool,
+            embed_vulkan.cachePipelineShape(ctx, &layout, transfer_pool),
+            .{
+                .max_bindings = 16,
+                .layer_info_height = 128,
+                .max_images = 8,
+                .max_image_width = 128,
+                .max_image_height = 128,
+            },
+        );
+        errdefer cache.deinit();
+        try cache.upload(allocator, &.{
             &scene.material.text_atlas,
             &scene.label.path_atlas,
             &scene.label.text_atlas,
@@ -85,14 +101,7 @@ pub const VkSceneRenderer = struct {
             &scene.panel.text_atlas,
             &scene.hud.path_atlas,
             &scene.hud.text_atlas,
-        }, &bindings, .{
-            .max_bindings = 16,
-            .layer_info_height = 128,
-            .max_images = 8,
-            .max_image_width = 128,
-            .max_image_height = 128,
-        });
-        errdefer cache.deinit();
+        }, &bindings);
 
         var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, true);
         errdefer caller.deinit();
@@ -113,6 +122,7 @@ pub const VkSceneRenderer = struct {
             .panel_text_b = bindings[4],
             .hud_path_b = bindings[5],
             .hud_text_b = bindings[6],
+            .hud_gen = scene.hud_gen,
             .scratch = try allocator.alloc(snail.render.records.Instance, maxShapeBudget(scene)),
         };
         errdefer allocator.free(self.scratch);
@@ -150,6 +160,35 @@ pub const VkSceneRenderer = struct {
             if (n > m) m = n;
         }
         return @max(m, 1);
+    }
+
+    fn ensureScratch(self: *VkSceneRenderer, needed: usize) !void {
+        if (needed <= self.scratch.len) return;
+        self.scratch = try self.allocator.realloc(self.scratch, @max(needed, self.scratch.len * 2));
+    }
+
+    /// Synchronize scene resources before the platform begins recording its
+    /// render pass. HUD rebuilds replace both atlas snapshots, so upload the
+    /// replacements and retire the old bindings while no frame can still be
+    /// sampling their cache regions.
+    pub fn syncScene(self: *VkSceneRenderer, scene: *Scene) !void {
+        if (scene.hud_gen == self.hud_gen) return;
+
+        try check(vk.vkDeviceWaitIdle(self.ctx.device));
+        var bindings: [2]snail.render.records.Binding = undefined;
+        try self.cache.upload(self.allocator, &.{
+            &scene.hud.path_atlas,
+            &scene.hud.text_atlas,
+        }, &bindings);
+
+        self.cache.release(self.hud_path_b);
+        self.cache.release(self.hud_text_b);
+        self.hud_path_b = bindings[0];
+        self.hud_text_b = bindings[1];
+        self.hud_gen = scene.hud_gen;
+
+        const needed = scene.hud.path_picture.shapes.len + scene.hud.text_picture.shapes.len;
+        try self.ensureScratch(@max(needed, 1));
     }
 
     fn buildRecords(self: *VkSceneRenderer, scene: *Scene) !void {

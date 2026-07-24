@@ -116,12 +116,10 @@ pub const Driver = union(Kind) {
         return label(self.kind());
     }
 
-    /// The GL family re-uploads the HUD atlas each rebuild (live perf line). The
-    /// Vulkan cache uploads atlases once, so its HUD is static after init — the
-    /// loop shouldn't rebuild it mid-session (it would emit against a stale
-    /// binding). It's refreshed on backend switch instead.
+    /// Every backend refreshes its HUD atlas when the live perf line changes.
     pub fn wantsHudRebuild(self: *const Driver) bool {
-        return self.kind() != .vulkan;
+        _ = self;
+        return true;
     }
 
     pub fn shouldClose(self: *Driver) bool {
@@ -243,6 +241,7 @@ const VulkanGameDriver = struct {
         if (fb[0] == 0 or fb[1] == 0) return;
         const fb_w: f32 = @floatFromInt(fb[0]);
         const fb_h: f32 = @floatFromInt(fb[1]);
+        try self.sr.syncScene(scene);
         // Clear in linear (the sRGB swapchain encodes on store).
         const clear = [4]f32{ srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0 };
         const platform_cmd = vulkan_platform.beginFrame(clear) orelse return;

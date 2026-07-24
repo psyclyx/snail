@@ -528,7 +528,7 @@ zig build test-core               # library/raster tests; no shader-generation t
 zig build test                    # complete suite, including generated-shader and public-API gates
 zig build run                     # interactive Wayland banner demo (C cycles backends)
 zig build run-terminal            # incremental cell-grid text, fallback, wrapping, and emoji
-zig build run-game                # interactive 3D scene: world-space text, custom material shader
+zig build run-game                # interactive 3D scene: world-space text, custom material shader, live backend HUD
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
 zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
 zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga

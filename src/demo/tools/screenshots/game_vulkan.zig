@@ -35,6 +35,11 @@ pub fn main() !void {
     var sr = try vk_scene.VkSceneRenderer.init(allocator, ctx, &scene, 1);
     defer sr.deinit();
 
+    // Exercise the interactive path: the live HUD is rebuilt after the cache's
+    // initial upload, then synchronized before command recording.
+    try scene.rebuildHud(W, "Vulkan", "post-upload HUD refresh");
+    try sr.syncScene(&scene);
+
     const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{
         harness.srgbToLinear(0.035), harness.srgbToLinear(0.045), harness.srgbToLinear(0.065), 1.0,
     }));
