@@ -174,6 +174,9 @@ pub const VkSceneRenderer = struct {
     pub fn syncScene(self: *VkSceneRenderer, scene: *Scene) !void {
         if (scene.hud_gen == self.hud_gen) return;
 
+        const needed = scene.hud.path_picture.shapes.len + scene.hud.text_picture.shapes.len;
+        try self.ensureScratch(@max(needed, 1));
+
         try check(vk.vkDeviceWaitIdle(self.ctx.device));
         var bindings: [2]snail.render.records.Binding = undefined;
         try self.cache.upload(self.allocator, &.{
@@ -186,9 +189,6 @@ pub const VkSceneRenderer = struct {
         self.hud_path_b = bindings[0];
         self.hud_text_b = bindings[1];
         self.hud_gen = scene.hud_gen;
-
-        const needed = scene.hud.path_picture.shapes.len + scene.hud.text_picture.shapes.len;
-        try self.ensureScratch(@max(needed, 1));
     }
 
     fn buildRecords(self: *VkSceneRenderer, scene: *Scene) !void {
