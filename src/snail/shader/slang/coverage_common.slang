@@ -4,15 +4,23 @@
 module coverage_common;
 
 public static const int kLogBandTextureWidth = 12;
+public static const float kRootCodeEps = 1.0 / 65536.0;
 public static const float kCoverageBandSpanParamEps = 1.0 / 100000.0;
 public static const uint kBandCurveLocXMaskCommon = 0x0FFFu;
 public static const uint kBandCurveLocYMaskCommon = 0x3FFFu;
 public static const uint kBandCurveFirstMemberShiftCommon = 12u;
 public static const uint kBandCurveKindShiftCommon = 14u;
 
+// Normalize tiny transform/subtraction drift at shared endpoints to +0 so
+// neighboring segments make the same half-open ownership decision.
+public float rootCodeCoord(float v) {
+    return (abs(v) <= kRootCodeEps) ? 0.0 : v;
+}
+
 public uint calcRootCode(float y1, float y2, float y3) {
-    // Slug's compact quadratic crossing classifier is the raw sign pattern
-    // of the three sample-relative Bernstein coordinates.
+    y1 = rootCodeCoord(y1);
+    y2 = rootCodeCoord(y2);
+    y3 = rootCodeCoord(y3);
     uint i1 = asuint(y1) >> 31u;
     uint i2 = asuint(y2) >> 30u;
     uint i3 = asuint(y3) >> 29u;

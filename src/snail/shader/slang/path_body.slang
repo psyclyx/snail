@@ -185,7 +185,9 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     // A vertex exactly on the scanline snaps to +0 and reads as the positive
     // side, so a vertex shared with the next segment is owned by exactly one of
     // them. See snail_path_frag_body.glsl for the full derivation.
-    if ((rootAxis0 < 0.0) == (rootAxis2 < 0.0)) return;
+    float a0 = rootCodeCoord(rootAxis0);
+    float a2 = rootCodeCoord(rootAxis2);
+    if ((a0 < 0.0) == (a2 < 0.0)) return;
 
     float denom = rootAxis2 - rootAxis0;
     if (abs(denom) < 1e-10) return;

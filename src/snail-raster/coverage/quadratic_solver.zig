@@ -11,6 +11,10 @@ const CurveSegment = bezier.CurveSegment;
 
 pub const coord_eps: f32 = 1.0 / 65536.0;
 
+pub inline fn rootCodeCoord(v: f32) f32 {
+    return if (@abs(v) <= coord_eps) 0.0 else v;
+}
+
 /// Tight upper bound on the curve's x-coordinate over t ∈ [0, 1].
 /// For a Bezier the curve lies inside its convex hull, so the max of
 /// the control points is a safe bound.
@@ -46,9 +50,9 @@ pub inline fn segmentMinY(segment: CurveSegment) f32 {
 /// Encodes whether 0, 1, or 2 roots contribute to coverage.
 /// Returns: 0 = no roots, 1 = first root only, 0x0100 = second root only, 0x0101 = both.
 pub inline fn calcRootCode(y1: f32, y2: f32, y3: f32) u16 {
-    const s1: u32 = @as(u32, @bitCast(y1)) >> 31;
-    const s2: u32 = @as(u32, @bitCast(y2)) >> 30;
-    const s3: u32 = @as(u32, @bitCast(y3)) >> 29;
+    const s1: u32 = @as(u32, @bitCast(rootCodeCoord(y1))) >> 31;
+    const s2: u32 = @as(u32, @bitCast(rootCodeCoord(y2))) >> 30;
+    const s3: u32 = @as(u32, @bitCast(rootCodeCoord(y3))) >> 29;
 
     // Replicate the GLSL bit manipulation
     const shift_a: u32 = (s2 & 2) | (s1 & ~@as(u32, 2));
@@ -123,7 +127,7 @@ pub inline fn solveVertPoly(p1x: f32, p1y: f32, p2x: f32, p2y: f32, p3x: f32, p3
     return .{ y1 * ppe_y, y2 * ppe_y };
 }
 
-test "root code uses raw Bernstein signs" {
-    try std.testing.expect(calcRootCode(0.0, -0.25, -0.5) != calcRootCode(-coord_eps * 0.5, -0.25, -0.5));
-    try std.testing.expectEqual(@as(u16, 0), calcRootCode(-coord_eps * 0.5, -0.25, -0.5));
+test "root code stabilizes tiny shared-endpoint drift" {
+    try std.testing.expectEqual(calcRootCode(0.0, -0.25, -0.5), calcRootCode(-coord_eps * 0.5, -0.25, -0.5));
+    try std.testing.expectEqual(@as(u16, 0), calcRootCode(-coord_eps * 2.0, -0.25, -0.5));
 }

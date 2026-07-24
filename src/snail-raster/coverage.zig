@@ -24,15 +24,15 @@ const invalid_prepared_cold = std.math.maxInt(u32);
 
 // Coefficients only touched after the hot record identifies a rational conic.
 pub const PreparedAxisCurveCold = struct {
-    conic_num_a_root: f32 = 0.0,
-    conic_num_b_root: f32 = 0.0,
-    conic_num_c_root: f32 = 0.0,
+    conic_root0_weighted: f32 = 0.0,
+    conic_root1_weighted: f32 = 0.0,
+    conic_root2_weighted: f32 = 0.0,
     conic_num_a_along: f32 = 0.0,
     conic_num_b_along: f32 = 0.0,
     conic_num_c_along: f32 = 0.0,
-    conic_den_a: f32 = 0.0,
-    conic_den_b: f32 = 0.0,
-    conic_den_c: f32 = 0.0,
+    conic_weight0: f32 = 0.0,
+    conic_weight1: f32 = 0.0,
+    conic_weight2: f32 = 0.0,
 
     fn fromSegment(segment: CurveSegment, comptime horizontal: bool) PreparedAxisCurveCold {
         const p0_root = if (horizontal) segment.p0.y else segment.p0.x;
@@ -53,15 +53,15 @@ pub const PreparedAxisCurveCold = struct {
         const p2_along_w = p2_along * w2;
 
         return .{
-            .conic_num_a_root = p0_root_w - 2.0 * p1_root_w + p2_root_w,
-            .conic_num_b_root = 2.0 * (p1_root_w - p0_root_w),
-            .conic_num_c_root = p0_root_w,
+            .conic_root0_weighted = p0_root_w,
+            .conic_root1_weighted = p1_root_w,
+            .conic_root2_weighted = p2_root_w,
             .conic_num_a_along = p0_along_w - 2.0 * p1_along_w + p2_along_w,
             .conic_num_b_along = 2.0 * (p1_along_w - p0_along_w),
             .conic_num_c_along = p0_along_w,
-            .conic_den_a = w0 - 2.0 * w1 + w2,
-            .conic_den_b = 2.0 * (w1 - w0),
-            .conic_den_c = w0,
+            .conic_weight0 = w0,
+            .conic_weight1 = w1,
+            .conic_weight2 = w2,
         };
     }
 };
@@ -224,6 +224,7 @@ pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f3
 }
 
 const coord_eps = quadratic.coord_eps;
+const rootCodeCoord = quadratic.rootCodeCoord;
 const calcRootCode = quadratic.calcRootCode;
 const solveHorizPoly = quadratic.solveHorizPoly;
 const solveVertPoly = quadratic.solveVertPoly;
@@ -240,7 +241,7 @@ inline fn distToUnitInterval(t: f32) f32 {
 /// crossing from BOTH segments and collapse an interior pixel's winding.
 /// Returns the crossing parameter clamped to [0, 1], or null.
 pub inline fn lineCrossingT(root_axis0: f32, root_axis2: f32) ?f32 {
-    if ((root_axis0 < 0.0) == (root_axis2 < 0.0)) return null;
+    if ((rootCodeCoord(root_axis0) < 0.0) == (rootCodeCoord(root_axis2) < 0.0)) return null;
     const denom = root_axis2 - root_axis0;
     if (@abs(denom) < 1e-10) return null;
     return std.math.clamp(-root_axis0 / denom, 0.0, 1.0);
@@ -250,18 +251,16 @@ pub const GatedConicRoots = struct { count: u8 = 0, t: [2]f32 = .{ 0, 0 } };
 
 /// Conic crossings with `calcRootCode` as the source of truth for the
 /// crossing COUNT (mirrors the GLSL conic path). The gate is the sign
-/// pattern of the weighted Bernstein control values, recovered from the
-/// sample-shifted power-basis root polynomial `pa·t² + pb·t + pc` (conic
-/// weights baked in). Solved parameters can FP-drift just outside [0, 1]
-/// at a shared vertex; they are clamped in — never rejected — so a
-/// crossing the conic owns is not dropped.
-pub inline fn gatedConicRoots(pa: f32, pb: f32, pc: f32) GatedConicRoots {
-    const c0 = pc;
-    const c1 = pc + 0.5 * pb;
-    const c2 = pa + pb + pc;
+/// pattern of the three sample-relative weighted control values. Solved
+/// parameters can FP-drift just outside [0, 1] at a shared vertex; they are
+/// clamped in — never rejected — so a crossing the conic owns is not dropped.
+pub inline fn gatedConicRoots(c0: f32, c1: f32, c2: f32) GatedConicRoots {
     const code = calcRootCode(c0, c1, c2);
     if (code == 0) return .{};
     const want: u8 = if (code == 0x0101) 2 else 1;
+    const pa = c0 - 2.0 * c1 + c2;
+    const pb = 2.0 * (c1 - c0);
+    const pc = c0;
 
     var cand: [2]f32 = undefined;
     var ncand: usize = 0;
@@ -403,7 +402,7 @@ inline fn accumulateGlyphCoverageSegment(
         const c0 = segment.weights[0] * p0r;
         const c1 = segment.weights[1] * p1r;
         const c2 = segment.weights[2] * p2r;
-        const gated = gatedConicRoots(c0 - 2.0 * c1 + c2, 2.0 * (c1 - c0), c0);
+        const gated = gatedConicRoots(c0, c1, c2);
         for (gated.t[0..gated.count]) |t| {
             const point = segment.evaluate(t);
             const deriv = segment.derivative(t);
@@ -497,15 +496,21 @@ inline fn accumulatePreparedLineCoverage(
 }
 
 inline fn evaluatePreparedConicAlong(cold: *const PreparedAxisCurveCold, t: f32) f32 {
-    const denom = @max((cold.conic_den_a * t + cold.conic_den_b) * t + cold.conic_den_c, 1.0 / 65536.0);
+    const den_a = cold.conic_weight0 - 2.0 * cold.conic_weight1 + cold.conic_weight2;
+    const den_b = 2.0 * (cold.conic_weight1 - cold.conic_weight0);
+    const denom = @max((den_a * t + den_b) * t + cold.conic_weight0, 1.0 / 65536.0);
     return ((cold.conic_num_a_along * t + cold.conic_num_b_along) * t + cold.conic_num_c_along) / denom;
 }
 
 inline fn derivativePreparedConicRoot(cold: *const PreparedAxisCurveCold, t: f32) f32 {
-    const denom = @max((cold.conic_den_a * t + cold.conic_den_b) * t + cold.conic_den_c, 1.0 / 65536.0);
-    const denom_prime = 2.0 * cold.conic_den_a * t + cold.conic_den_b;
-    const n = (cold.conic_num_a_root * t + cold.conic_num_b_root) * t + cold.conic_num_c_root;
-    const n_prime = 2.0 * cold.conic_num_a_root * t + cold.conic_num_b_root;
+    const den_a = cold.conic_weight0 - 2.0 * cold.conic_weight1 + cold.conic_weight2;
+    const den_b = 2.0 * (cold.conic_weight1 - cold.conic_weight0);
+    const denom = @max((den_a * t + den_b) * t + cold.conic_weight0, 1.0 / 65536.0);
+    const denom_prime = 2.0 * den_a * t + den_b;
+    const num_a = cold.conic_root0_weighted - 2.0 * cold.conic_root1_weighted + cold.conic_root2_weighted;
+    const num_b = 2.0 * (cold.conic_root1_weighted - cold.conic_root0_weighted);
+    const n = (num_a * t + num_b) * t + cold.conic_root0_weighted;
+    const n_prime = 2.0 * num_a * t + num_b;
     const inv = 1.0 / (denom * denom);
     return (n_prime * denom - n * denom_prime) * inv;
 }
@@ -572,9 +577,9 @@ pub inline fn accumulatePreparedCurveCoverage(
         if (!rootHullCanCross3(curve.p0_root, curve.p1_root, curve.p2_root, sample_root)) return .continue_scan;
         const cold = preparedCurveCold(curve, cold_curves);
         const gated = gatedConicRoots(
-            cold.conic_num_a_root - sample_root * cold.conic_den_a,
-            cold.conic_num_b_root - sample_root * cold.conic_den_b,
-            cold.conic_num_c_root - sample_root * cold.conic_den_c,
+            cold.conic_root0_weighted - sample_root * cold.conic_weight0,
+            cold.conic_root1_weighted - sample_root * cold.conic_weight1,
+            cold.conic_root2_weighted - sample_root * cold.conic_weight2,
         );
         for (gated.t[0..gated.count]) |t| {
             const along = evaluatePreparedConicAlong(cold, t);
@@ -898,9 +903,9 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             if (curve.cold_index >= cold_curves.len) return null;
             const cold = &cold_curves[curve.cold_index];
             const gated = gatedConicRoots(
-                cold.conic_num_a_root - sample_root * cold.conic_den_a,
-                cold.conic_num_b_root - sample_root * cold.conic_den_b,
-                cold.conic_num_c_root - sample_root * cold.conic_den_c,
+                cold.conic_root0_weighted - sample_root * cold.conic_weight0,
+                cold.conic_root1_weighted - sample_root * cold.conic_weight1,
+                cold.conic_root2_weighted - sample_root * cold.conic_weight2,
             );
             for (gated.t[0..gated.count], 0..) |t, idx| {
                 const root_deriv = derivativePreparedConicRoot(cold, t);

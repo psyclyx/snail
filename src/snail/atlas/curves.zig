@@ -21,14 +21,15 @@ const render_abi = @import("../format/abi.zig");
 pub const BBox = bezier.BBox;
 pub const PathCurveClass = render_abi.PathCurveClass;
 
-/// Classify a prepared segment list by the strongest evaluator it needs.
-/// Authored cubics must already have been lowered to quadratics.
+/// Classify a segment list by the strongest evaluator it needs. Production
+/// packers lower cubics first; `.cubic` remains a legacy general-path class
+/// for callers inspecting unprepared geometry.
 pub fn classifyPathCurves(curves: []const bezier.CurveSegment) PathCurveClass {
     var result: PathCurveClass = .quadratic;
     for (curves) |curve| switch (curve.kind) {
         .line, .quadratic => {},
         .conic => result = result.combine(.conic),
-        .cubic => unreachable,
+        .cubic => return .cubic,
     };
     return result;
 }
