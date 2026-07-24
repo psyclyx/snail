@@ -16,7 +16,7 @@ const std = @import("std");
 const snail = @import("snail");
 const coverage = @import("../coverage.zig");
 const subpixel = @import("subpixel.zig");
-const cubic = @import("cubic_solver.zig");
+const quadratic = @import("quadratic_solver.zig");
 const texture = @import("../texture.zig");
 const band_tex = @import("snail").render.geometry;
 
@@ -29,7 +29,7 @@ const PreparedAxisCurveCold = coverage.PreparedAxisCurveCold;
 const SubpixelCoverage = subpixel.SubpixelCoverage;
 const SubpixelCoveragePlan = subpixel.SubpixelCoveragePlan;
 const lane_count = coverage.subpixel_lane_count;
-const calcRootCode = cubic.calcRootCode;
+const calcRootCode = quadratic.calcRootCode;
 const readBandTexelLinear = texture.readBandTexelLinear;
 
 pub fn evalGlyphCoverageSubpixel(
@@ -203,7 +203,7 @@ inline fn accumulateCurveMulti(
         return;
     }
 
-    // Varying root, or conic/cubic: scalar fan-out across active lanes. The
+    // Varying root, or conic: scalar fan-out across active lanes. The
     // grouped header read above still saves redundant band lookups.
     const W = lane_count;
     inline for (0..W) |i| {

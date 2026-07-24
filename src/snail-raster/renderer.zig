@@ -1988,7 +1988,7 @@ pub const Renderer = struct {
         var c: usize = 0;
         while (c < state.count) : (c += 1) {
             const e = state.curves[c];
-            if (e.sign[0] != 0.0 or e.sign[1] != 0.0 or e.sign[2] != 0.0) return false;
+            if (e.sign[0] != 0.0 or e.sign[1] != 0.0) return false;
         }
         return true;
     }
@@ -2008,7 +2008,7 @@ pub const Renderer = struct {
         var c: usize = 0;
         while (c < state.count) : (c += 1) {
             const e = state.curves[c];
-            if (e.sign[0] != 0.0 or e.sign[1] != 0.0 or e.sign[2] != 0.0) n += 1;
+            if (e.sign[0] != 0.0 or e.sign[1] != 0.0) n += 1;
         }
         return n;
     }

@@ -93,7 +93,8 @@ pub const PaintShaderClass = enum {
     path_quadratic,
     /// General paint over line/quadratic/rational-conic geometry.
     path_conic,
-    /// General paint requiring the full cubic evaluator.
+    /// Legacy general-path class; uses the conic-capable evaluator now that
+    /// authored cubics are lowered during preparation.
     path_cubic,
 };
 

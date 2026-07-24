@@ -18,8 +18,9 @@ pub const SpecialLayerKind = enum(u8) {
 };
 
 /// Strongest curve evaluator required by one path record. The numeric order
-/// is deliberate: zero is the conservative full-cubic fallback for
-/// caller-authored/zero-initialized instance payloads.
+/// is ABI-stable: zero remains the conservative general-path fallback for
+/// caller-authored/zero-initialized instance payloads. Native cubic records
+/// are no longer accepted; authored cubics are lowered before packing.
 pub const PathCurveClass = enum(u32) {
     cubic = 0,
     conic = 1,

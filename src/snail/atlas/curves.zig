@@ -21,15 +21,14 @@ const render_abi = @import("../format/abi.zig");
 pub const BBox = bezier.BBox;
 pub const PathCurveClass = render_abi.PathCurveClass;
 
-/// Classify a segment list by the strongest evaluator it needs. Lines share
-/// the quadratic shader; rational conics add the conic solver; any cubic
-/// requires the full monotonic root finder.
+/// Classify a prepared segment list by the strongest evaluator it needs.
+/// Authored cubics must already have been lowered to quadratics.
 pub fn classifyPathCurves(curves: []const bezier.CurveSegment) PathCurveClass {
     var result: PathCurveClass = .quadratic;
     for (curves) |curve| switch (curve.kind) {
         .line, .quadratic => {},
         .conic => result = result.combine(.conic),
-        .cubic => return .cubic,
+        .cubic => unreachable,
     };
     return result;
 }
@@ -55,8 +54,9 @@ pub const GlyphCurves = struct {
     backing: ?[]u16 = null,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
     curve_count: u16,
-    /// Strongest path evaluator required by the packed segments. Defaults to
-    /// the full evaluator so custom producers that omit it remain safe.
+    /// Strongest path evaluator required by the packed segments. `.cubic`
+    /// remains the zero-compatible general-path ABI value, but native cubic
+    /// payloads are rejected by `validate`.
     path_curve_class: PathCurveClass = .cubic,
     /// Horizontal and vertical band counts (used by the renderer to walk only
     /// the candidate curves per sample).
@@ -142,7 +142,7 @@ pub const GlyphCurves = struct {
             const required: PathCurveClass = switch (segment.kind) {
                 .line, .quadratic => .quadratic,
                 .conic => .conic,
-                .cubic => .cubic,
+                .cubic => return error.InvalidCurves,
             };
             if (self.path_curve_class.combine(required) != self.path_curve_class) return error.InvalidCurves;
         }
@@ -292,6 +292,10 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
     curve_words[0] = 0;
 
     curve_words[10] = curve_tex.f32ToF16(9);
+    try std.testing.expectError(error.InvalidCurves, valid.validate());
+    curve_words[10] = 0;
+
+    curve_words[10] = curve_tex.f32ToF16(2); // legacy cubic kind
     try std.testing.expectError(error.InvalidCurves, valid.validate());
     curve_words[10] = 0;
 

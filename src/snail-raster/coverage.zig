@@ -4,7 +4,7 @@ const std = @import("std");
 const snail = @import("snail");
 const color_mod = @import("color.zig");
 const subpixel = @import("coverage/subpixel.zig");
-const cubic = @import("coverage/cubic_solver.zig");
+const quadratic = @import("coverage/quadratic_solver.zig");
 const texture = @import("texture.zig");
 const band_tex = @import("snail").render.geometry;
 
@@ -22,16 +22,8 @@ const readCurveTexelF32Base = texture.readCurveTexelF32Base;
 
 const invalid_prepared_cold = std.math.maxInt(u32);
 
-// Coefficients only touched after the hot record identifies a curve as conic or cubic.
+// Coefficients only touched after the hot record identifies a rational conic.
 pub const PreparedAxisCurveCold = struct {
-    cubic_a_root: f32 = 0.0,
-    cubic_b_root: f32 = 0.0,
-    cubic_c_root: f32 = 0.0,
-    cubic_p3_root: f32 = 0.0,
-    cubic_a_along: f32 = 0.0,
-    cubic_b_along: f32 = 0.0,
-    cubic_c_along: f32 = 0.0,
-    cubic_p3_along: f32 = 0.0,
     conic_num_a_root: f32 = 0.0,
     conic_num_b_root: f32 = 0.0,
     conic_num_c_root: f32 = 0.0,
@@ -46,11 +38,9 @@ pub const PreparedAxisCurveCold = struct {
         const p0_root = if (horizontal) segment.p0.y else segment.p0.x;
         const p1_root = if (horizontal) segment.p1.y else segment.p1.x;
         const p2_root = if (horizontal) segment.p2.y else segment.p2.x;
-        const p3_root = if (horizontal) segment.p3.y else segment.p3.x;
         const p0_along = if (horizontal) segment.p0.x else segment.p0.y;
         const p1_along = if (horizontal) segment.p1.x else segment.p1.y;
         const p2_along = if (horizontal) segment.p2.x else segment.p2.y;
-        const p3_along = if (horizontal) segment.p3.x else segment.p3.y;
 
         const w0 = segment.weights[0];
         const w1 = segment.weights[1];
@@ -63,14 +53,6 @@ pub const PreparedAxisCurveCold = struct {
         const p2_along_w = p2_along * w2;
 
         return .{
-            .cubic_a_root = -p0_root + 3.0 * p1_root - 3.0 * p2_root + p3_root,
-            .cubic_b_root = 3.0 * p0_root - 6.0 * p1_root + 3.0 * p2_root,
-            .cubic_c_root = -3.0 * p0_root + 3.0 * p1_root,
-            .cubic_p3_root = p3_root,
-            .cubic_a_along = -p0_along + 3.0 * p1_along - 3.0 * p2_along + p3_along,
-            .cubic_b_along = 3.0 * p0_along - 6.0 * p1_along + 3.0 * p2_along,
-            .cubic_c_along = -3.0 * p0_along + 3.0 * p1_along,
-            .cubic_p3_along = p3_along,
             .conic_num_a_root = p0_root_w - 2.0 * p1_root_w + p2_root_w,
             .conic_num_b_root = 2.0 * (p1_root_w - p0_root_w),
             .conic_num_c_root = p0_root_w,
@@ -85,8 +67,8 @@ pub const PreparedAxisCurveCold = struct {
 };
 
 // Hot per-axis eval record laid out for scanline walking. Quadratic and line
-// coverage use only this record; conic/cubic coefficients are indexed
-// separately via cold_index. Numeric fields are at the front so a single
+// coverage use only this record; conic coefficients are indexed separately
+// via cold_index. Numeric fields are at the front so a single
 // loaded line covers every operand the hot solver touches.
 pub const PreparedAxisCurve = struct {
     max_axis: f32 = 0.0,
@@ -130,7 +112,7 @@ pub const PreparedAxisCurve = struct {
 };
 
 inline fn preparedAxisCurveNeedsCold(kind: bezier.CurveKind) bool {
-    return kind == .conic or kind == .cubic;
+    return kind == .conic;
 }
 
 pub fn prepareAxisCurve(
@@ -165,8 +147,6 @@ const GlyphBandState = struct {
 
 pub const SubpixelCoverage = subpixel.SubpixelCoverage;
 pub const SubpixelCoveragePlan = subpixel.SubpixelCoveragePlan;
-
-const CurveRoots = cubic.CurveRoots;
 
 fn applyFillRule(fill_rule: FillRule, winding: f32) f32 {
     if (fill_rule == .even_odd) {
@@ -227,26 +207,22 @@ fn initGlyphBandState(
     };
 }
 
-const solveQuadraticRoots = cubic.solveQuadraticRoots;
-const solveMonotonicCubicCrossing = cubic.solveMonotonicCubicCrossing;
-const solveSegmentHorizontalRoots = cubic.solveSegmentHorizontalRoots;
-const solveSegmentVerticalRoots = cubic.solveSegmentVerticalRoots;
-const segmentMaxX = cubic.segmentMaxX;
-const segmentMaxY = cubic.segmentMaxY;
-const segmentMinX = cubic.segmentMinX;
-const segmentMinY = cubic.segmentMinY;
+const segmentMaxX = quadratic.segmentMaxX;
+const segmentMaxY = quadratic.segmentMaxY;
+const segmentMinX = quadratic.segmentMinX;
+const segmentMinY = quadratic.segmentMinY;
 
 pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f32) void {
     result.cov += sign * clamp01(distance + 0.5);
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
 
-const root_code_eps = cubic.root_code_eps;
-const rootCodeCoord = cubic.rootCodeCoord;
-const snapNearTangentSqrt = cubic.snapNearTangentSqrt;
-const calcRootCode = cubic.calcRootCode;
-const solveHorizPoly = cubic.solveHorizPoly;
-const solveVertPoly = cubic.solveVertPoly;
+const root_code_eps = quadratic.root_code_eps;
+const rootCodeCoord = quadratic.rootCodeCoord;
+const snapNearTangentSqrt = quadratic.snapNearTangentSqrt;
+const calcRootCode = quadratic.calcRootCode;
+const solveHorizPoly = quadratic.solveHorizPoly;
+const solveVertPoly = quadratic.solveVertPoly;
 
 inline fn distToUnitInterval(t: f32) f32 {
     return @max(@max(0.0, -t), t - 1.0);
@@ -320,12 +296,6 @@ pub inline fn gatedConicRoots(pa: f32, pb: f32, pc: f32) GatedConicRoots {
 inline fn rootHullCanCross3(p0: f32, p1: f32, p2: f32, sample_root: f32) bool {
     const min_root = @min(@min(p0, p1), p2);
     const max_root = @max(@max(p0, p1), p2);
-    return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
-}
-
-inline fn rootHullCanCross4(p0: f32, p1: f32, p2: f32, p3: f32, sample_root: f32) bool {
-    const min_root = @min(@min(p0, p1), @min(p2, p3));
-    const max_root = @max(@max(p0, p1), @max(p2, p3));
     return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
 }
 
@@ -453,40 +423,9 @@ inline fn accumulateGlyphCoverageSegment(
         return .continue_scan;
     }
 
-    std.debug.assert(segment.kind == .cubic);
-    {
-        const p0 = if (horizontal) segment.p0.y else segment.p0.x;
-        const p1 = if (horizontal) segment.p1.y else segment.p1.x;
-        const p2 = if (horizontal) segment.p2.y else segment.p2.x;
-        const p3 = if (horizontal) segment.p3.y else segment.p3.x;
-        const sample_root = if (horizontal) sample_rc.y else sample_rc.x;
-        if (!rootHullCanCross4(p0, p1, p2, p3, sample_root)) return .continue_scan;
-    }
-
-    const roots = if (horizontal)
-        solveSegmentHorizontalRoots(segment, sample_rc.y)
-    else
-        solveSegmentVerticalRoots(segment, sample_rc.x);
-
-    for (roots.t[0..roots.count]) |t| {
-        const point = if (t == 1.0) segment.p3 else segment.evaluate(t);
-        // Packed cubics are split into monotonic spans. Their winding
-        // direction is therefore determined by the span endpoints, even
-        // when the crossing is a stationary inflection (or merely has a
-        // very small derivative after path normalization). A fixed
-        // derivative epsilon is coordinate-scale dependent and would drop
-        // these valid crossings.
-        const derivative_axis = if (horizontal)
-            segment.p3.y - segment.p0.y
-        else
-            segment.p0.x - segment.p3.x;
-        const distance = if (horizontal)
-            (point.x - sample_rc.x) * ppe
-        else
-            (point.y - sample_rc.y) * ppe;
-        appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
-    }
-    return .continue_scan;
+    // Atlas validation rejects cubic payloads: every producer lowers them
+    // before packing, so reaching this branch indicates corrupt input.
+    unreachable;
 }
 
 pub inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_along: f32, p0_root: f32, ppe: f32) [2]f32 {
@@ -562,16 +501,6 @@ inline fn accumulatePreparedLineCoverage(
     appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
 }
 
-inline fn solvePreparedCubicRoots(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, sample_root: f32) CurveRoots {
-    return solveMonotonicCubicCrossing(
-        cold.cubic_a_root,
-        cold.cubic_b_root,
-        cold.cubic_c_root,
-        curve.p0_root - sample_root,
-        cold.cubic_p3_root - sample_root,
-    );
-}
-
 inline fn evaluatePreparedConicAlong(cold: *const PreparedAxisCurveCold, t: f32) f32 {
     const denom = @max((cold.conic_den_a * t + cold.conic_den_b) * t + cold.conic_den_c, 1.0 / 65536.0);
     return ((cold.conic_num_a_along * t + cold.conic_num_b_along) * t + cold.conic_num_c_along) / denom;
@@ -586,14 +515,9 @@ inline fn derivativePreparedConicRoot(cold: *const PreparedAxisCurveCold, t: f32
     return (n_prime * denom - n * denom_prime) * inv;
 }
 
-inline fn evaluatePreparedCubicAlong(curve: *const PreparedAxisCurve, cold: *const PreparedAxisCurveCold, t: f32) f32 {
-    if (t == 1.0) return cold.cubic_p3_along;
-    return ((cold.cubic_a_along * t + cold.cubic_b_along) * t + cold.cubic_c_along) * t + curve.p0_along;
-}
-
 fn preparedCurveCold(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) *const PreparedAxisCurveCold {
     if (curve.cold_index >= cold_curves.len) {
-        @panic("prepared conic/cubic curve is missing cold coefficient data");
+        @panic("prepared conic curve is missing cold coefficient data");
     }
     return &cold_curves[curve.cold_index];
 }
@@ -668,22 +592,8 @@ pub inline fn accumulatePreparedCurveCoverage(
         return .continue_scan;
     }
 
-    std.debug.assert(curve.kind == .cubic);
-    const cold = preparedCurveCold(curve, cold_curves);
-    if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return .continue_scan;
-
-    const roots = solvePreparedCubicRoots(curve, cold, sample_root);
-    for (roots.t[0..roots.count]) |t| {
-        const along = evaluatePreparedCubicAlong(curve, cold, t);
-        // Cubics are monotonic spans, so endpoint direction is the
-        // scale-invariant winding sign.  Do not reject a valid crossing
-        // because normalization made its local derivative tiny.
-        const root_deriv = cold.cubic_p3_root - curve.p0_root;
-        const derivative_axis = if (horizontal) root_deriv else -root_deriv;
-        const distance = (along - sample_along) * ppe;
-        appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
-    }
-    return .continue_scan;
+    // Prepared records are built only after atlas validation.
+    unreachable;
 }
 
 fn evalPreparedGlyphCoverageAxisFromBand(page: anytype, sample_rc: Vec2, ppe: f32, band_base: usize, count: u32, comptime horizontal: bool) CoveragePair {
@@ -947,10 +857,10 @@ pub const subpixel_lane_count: usize = 7;
 
 // Per-curve solve cache for the row-batched H-axis path. One slot per H
 // curve in the row's band; populated once per row, used by every pixel.
-// Up to 3 sub-contributions per curve so cubic roots fit without spilling.
+// Quadratics and conics contribute at most two roots.
 pub const RowHorizCurveSolve = struct {
-    along: [3]f32 = .{ 0, 0, 0 },
-    sign: [3]f32 = .{ 0, 0, 0 }, // 0 => no contribution from this slot
+    along: [2]f32 = .{ 0, 0 },
+    sign: [2]f32 = .{ 0, 0 }, // 0 => no contribution from this slot
 };
 
 const max_row_horiz_curves: usize = 128;
@@ -1005,19 +915,7 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             }
             return entry;
         },
-        .cubic => {
-            if (curve.cold_index >= cold_curves.len) return null;
-            const cold = &cold_curves[curve.cold_index];
-            if (!rootHullCanCross4(curve.p0_root, curve.p1_root, curve.p2_root, cold.cubic_p3_root, sample_root)) return entry;
-            const roots = solvePreparedCubicRoots(curve, cold, sample_root);
-            for (roots.t[0..roots.count], 0..) |t, idx| {
-                if (idx >= 3) break;
-                const root_deriv = cold.cubic_p3_root - curve.p0_root;
-                entry.along[idx] = evaluatePreparedCubicAlong(curve, cold, t);
-                entry.sign[idx] = if (root_deriv > 0.0) 1.0 else -1.0;
-            }
-            return entry;
-        },
+        .cubic => unreachable,
     }
 }
 
@@ -1121,7 +1019,7 @@ fn applyRowHorizStateToScalar(
     var c: usize = 0;
     while (c < state.count) : (c += 1) {
         const entry = state.curves[c];
-        inline for (0..3) |s| {
+        inline for (0..entry.sign.len) |s| {
             if (entry.sign[s] != 0.0) {
                 appendCoverageContribution(h_pair, (entry.along[s] - em_x_pixel) * ppe_x, entry.sign[s]);
             }
@@ -1150,7 +1048,7 @@ fn applyRowHorizStateToPixel(
     var c: usize = 0;
     while (c < state.count) : (c += 1) {
         const entry = state.curves[c];
-        inline for (0..3) |slot| {
+        inline for (0..entry.sign.len) |slot| {
             if (entry.sign[slot] != 0.0) {
                 inline for (0..W) |s| {
                     appendCoverageContribution(&h_pairs[s], (entry.along[slot] - sample_along[s]) * ppe_x, entry.sign[slot]);
@@ -1230,7 +1128,7 @@ pub const SaturatedRowState = struct {
     valid: bool,
 };
 
-fn curveVAxisXExtent(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) struct { lo: f32, hi: f32 } {
+fn curveVAxisXExtent(curve: *const PreparedAxisCurve) struct { lo: f32, hi: f32 } {
     var lo = curve.p0_root;
     var hi = curve.p0_root;
     switch (curve.kind) {
@@ -1243,16 +1141,7 @@ fn curveVAxisXExtent(curve: *const PreparedAxisCurve, cold_curves: []const Prepa
             lo = @min(@min(lo, curve.p1_root), curve.p2_root);
             hi = @max(@max(hi, curve.p1_root), curve.p2_root);
         },
-        .cubic => {
-            lo = @min(@min(lo, curve.p1_root), curve.p2_root);
-            hi = @max(@max(hi, curve.p1_root), curve.p2_root);
-            if (curve.cold_index < cold_curves.len) {
-                const cold = &cold_curves[curve.cold_index];
-                const p3 = cold.cubic_p3_root;
-                lo = @min(lo, p3);
-                hi = @max(hi, p3);
-            }
-        },
+        .cubic => unreachable,
     }
     return .{ .lo = lo, .hi = hi };
 }
@@ -1260,7 +1149,7 @@ fn curveVAxisXExtent(curve: *const PreparedAxisCurve, cold_curves: []const Prepa
 // Returns the saturated-below entry for a curve, or null if the curve is not
 // monotonic on x (would have multiple V-ray crossings with potentially
 // different signs).
-fn classifySaturatedBelow(curve: *const PreparedAxisCurve, cold_curves: []const PreparedAxisCurveCold) ?SaturatedBelowEntry {
+fn classifySaturatedBelow(curve: *const PreparedAxisCurve) ?SaturatedBelowEntry {
     switch (curve.kind) {
         .line => {
             const p2 = curve.p0_root + curve.a_root;
@@ -1290,18 +1179,7 @@ fn classifySaturatedBelow(curve: *const PreparedAxisCurve, cold_curves: []const 
             const sign: f32 = if (curve.p2_root < curve.p0_root) 1.0 else -1.0;
             return .{ .x_lo = min_p, .x_hi = max_p, .sign = sign };
         },
-        .cubic => {
-            // Cubics are pre-split at extrema so each piece is monotonic on
-            // both axes (see path/picture_compile.zig: splitCubicsAtExtrema).
-            if (curve.cold_index >= cold_curves.len) return null;
-            const cold = &cold_curves[curve.cold_index];
-            const p3 = cold.cubic_p3_root;
-            // For a monotonic cubic, dx/dt has constant sign across t ∈ [0,1].
-            // derivative_axis = -dx/dt, so its sign matches sign(p0 - p3).
-            if (@abs(p3 - curve.p0_root) < 1e-10) return null;
-            const sign: f32 = if (p3 < curve.p0_root) 1.0 else -1.0;
-            return .{ .x_lo = @min(curve.p0_root, p3), .x_hi = @max(curve.p0_root, p3), .sign = sign };
-        },
+        .cubic => unreachable,
     }
 }
 
@@ -1348,7 +1226,7 @@ pub fn prepareSaturatedRowState(
 
             // Below sample: saturated contributes ±sign.
             if (min_y > below_thresh) {
-                if (classifySaturatedBelow(curve, page.v_cold_curves)) |entry| {
+                if (classifySaturatedBelow(curve)) |entry| {
                     if (state.below_count >= max_sat_curves) {
                         state.valid = false;
                         return state;
@@ -1363,7 +1241,7 @@ pub fn prepareSaturatedRowState(
 
             // Transition: curve straddles em_y_row's fringe (or is non-
             // monotonic). Per-pixel Slug needed for pixels in its x-extent.
-            const xe = curveVAxisXExtent(curve, page.v_cold_curves);
+            const xe = curveVAxisXExtent(curve);
             if (state.transition_count >= max_sat_curves) {
                 state.valid = false;
                 return state;
@@ -1518,33 +1396,6 @@ pub fn evalGlyphCoverageSubpixelRowH(
 
 const subpixel_eval = @import("coverage/subpixel_eval.zig");
 pub const evalGlyphCoverageSubpixel = subpixel_eval.evalGlyphCoverageSubpixel;
-
-test "monotonic cubic winding is invariant under path normalization" {
-    // y(t) = (t - 0.5)^3 + epsilon * (t - 0.5).  It crosses y=0 at
-    // t=0.5 with a small but non-zero derivative.  Scaling the same curve
-    // into the canonical design frame must not change whether that crossing
-    // exists.
-    const epsilon: f32 = 1e-4;
-    const scales = [_]f32{ 1.0, 1.0 / 304.0 };
-
-    for (scales) |scale| {
-        const segment = CurveSegment.fromCubic(.{
-            .p0 = .{ .x = scale, .y = (-0.125 - 0.5 * epsilon) * scale },
-            .p1 = .{ .x = scale, .y = (0.125 - epsilon / 6.0) * scale },
-            .p2 = .{ .x = scale, .y = (-0.125 + epsilon / 6.0) * scale },
-            .p3 = .{ .x = scale, .y = (0.125 + 0.5 * epsilon) * scale },
-        });
-        var pair = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
-        _ = accumulateGlyphCoverageSegment(
-            &pair,
-            segment,
-            .zero,
-            1.0 / scale,
-            true,
-        );
-        try std.testing.expectApproxEqAbs(@as(f32, 1.0), pair.cov, 1e-6);
-    }
-}
 
 pub fn floorBandIndex(value: f32, band_max: i32) i32 {
     if (band_max <= 0 or std.math.isNan(value) or value <= 0) return 0;

@@ -107,143 +107,6 @@ fn appendCurveForPacking(
     try appendCurveForPacking(allocator, out, halves[1], depth - 1);
 }
 
-const CUBIC_EXTREMA_SPLIT_EPS: f32 = 1e-5;
-
-const ExtremumAxis = enum(u2) { x = 1, y = 2, both = 3 };
-
-const ExtremumRoot = struct { t: f32, axis: ExtremumAxis };
-
-fn appendCubicExtremumRoot(roots: *[4]ExtremumRoot, count: *usize, t: f32, axis: ExtremumAxis) void {
-    if (t <= CUBIC_EXTREMA_SPLIT_EPS or t >= 1.0 - CUBIC_EXTREMA_SPLIT_EPS) return;
-    for (roots[0..count.*]) |*existing| {
-        if (@abs(existing.t - t) <= CUBIC_EXTREMA_SPLIT_EPS) {
-            existing.axis = @enumFromInt(@intFromEnum(existing.axis) | @intFromEnum(axis));
-            return;
-        }
-    }
-
-    var insert_at = count.*;
-    while (insert_at > 0 and roots[insert_at - 1].t > t) : (insert_at -= 1) {}
-    var i = count.*;
-    while (i > insert_at) : (i -= 1) roots[i] = roots[i - 1];
-    roots[insert_at] = .{ .t = t, .axis = axis };
-    count.* += 1;
-}
-
-fn appendCubicExtremaForAxis(curve: CurveSegment, comptime axis: []const u8, axis_tag: ExtremumAxis, roots: *[4]ExtremumRoot, count: *usize) void {
-    const p0 = @field(curve.p0, axis);
-    const p1 = @field(curve.p1, axis);
-    const p2 = @field(curve.p2, axis);
-    const p3 = @field(curve.p3, axis);
-    const a = -p0 + 3.0 * p1 - 3.0 * p2 + p3;
-    const b = 3.0 * p0 - 6.0 * p1 + 3.0 * p2;
-    const c = -3.0 * p0 + 3.0 * p1;
-    const qa = 3.0 * a;
-    const qb = 2.0 * b;
-    const qc = c;
-
-    // Affine transforms can make an analytically-zero leading coefficient
-    // land a few f32 ULPs away from zero through cancellation. An absolute
-    // epsilon misclassifies that near-linear derivative as quadratic on one
-    // side of otherwise mirrored geometry. Use a coefficient-relative test.
-    const coefficient_scale = @max(@abs(qa), @max(@abs(qb), @abs(qc)));
-    if (coefficient_scale == 0.0) return;
-    const coefficient_epsilon = coefficient_scale * (32.0 * std.math.floatEps(f32));
-    if (@abs(qa) <= coefficient_epsilon) {
-        if (@abs(qb) <= coefficient_epsilon) return;
-        appendCubicExtremumRoot(roots, count, -qc / qb, axis_tag);
-        return;
-    }
-
-    const qb2 = qb * qb;
-    const four_ac = 4.0 * qa * qc;
-    var disc = qb2 - four_ac;
-    if (disc < 0.0) {
-        const disc_epsilon = @max(qb2, @abs(four_ac)) * (32.0 * std.math.floatEps(f32));
-        if (disc < -disc_epsilon) return;
-        disc = 0.0;
-    }
-    const sqrt_disc = @sqrt(disc);
-    // Stable quadratic form: one root is q/a, the other c/q. This avoids
-    // losing the small root when `qb` and `sqrt_disc` nearly cancel.
-    const q = -0.5 * (qb + if (qb >= 0.0) sqrt_disc else -sqrt_disc);
-    if (@abs(q) <= coefficient_epsilon) {
-        appendCubicExtremumRoot(roots, count, -qb / (2.0 * qa), axis_tag);
-        return;
-    }
-    appendCubicExtremumRoot(roots, count, q / qa, axis_tag);
-    appendCubicExtremumRoot(roots, count, qc / q, axis_tag);
-}
-
-// At an extremum split, the parent cubic has zero derivative in the split
-// axis at t = tx. De Casteljau computes the join control points via
-// linear interpolation, which produces the exact zero-tangent geometry
-// up to FP precision but may not be bit-equal in the relevant axis.
-// Snap the join-adjacent control point to share the join coordinate in
-// the split axis, so the post-quantization derivative at the join is
-// bit-exactly zero. The coverage evaluator's existing `derivative_axis
-// <= 1e-5` skip then correctly excludes the grazing crossing at the
-// scanline aligned with the extremum (Slug's half-open semantic counts
-// the t=0 root, but at an extremum kiss the curve doesn't cross — both
-// halves must skip the join root).
-fn snapExtremumJoin(left: *CurveSegment, right: *CurveSegment, axis: ExtremumAxis) void {
-    const join_x = left.p3.x;
-    const join_y = left.p3.y;
-    if (@intFromEnum(axis) & @intFromEnum(ExtremumAxis.x) != 0) {
-        left.p2.x = join_x;
-        right.p1.x = join_x;
-    }
-    if (@intFromEnum(axis) & @intFromEnum(ExtremumAxis.y) != 0) {
-        left.p2.y = join_y;
-        right.p1.y = join_y;
-    }
-}
-
-fn appendCubicMonotonicSegments(allocator: std.mem.Allocator, out: *std.ArrayList(CurveSegment), curve: CurveSegment) !void {
-    var roots: [4]ExtremumRoot = .{ .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x }, .{ .t = 0, .axis = .x } };
-    var count: usize = 0;
-    appendCubicExtremaForAxis(curve, "x", .x, &roots, &count);
-    appendCubicExtremaForAxis(curve, "y", .y, &roots, &count);
-    if (count == 0) {
-        try out.append(allocator, curve);
-        return;
-    }
-
-    var current = curve;
-    var prev_t: f32 = 0.0;
-    for (roots[0..count]) |root| {
-        const remaining = 1.0 - prev_t;
-        if (remaining <= CUBIC_EXTREMA_SPLIT_EPS) break;
-        const local_t = (root.t - prev_t) / remaining;
-        var halves = current.split(local_t);
-        snapExtremumJoin(&halves[0], &halves[1], root.axis);
-        try out.append(allocator, halves[0]);
-        current = halves[1];
-        prev_t = root.t;
-    }
-    try out.append(allocator, current);
-}
-
-pub fn splitCubicsAtExtrema(
-    allocator: std.mem.Allocator,
-    curves: []const CurveSegment,
-) ![]CurveSegment {
-    try validateCurveData(curves, .zero);
-    // The GL/GLES path shader inverts cubics as monotonic spans. Split only
-    // cubics; conics still use the exact quadratic root path in the shader.
-    var out: std.ArrayList(CurveSegment) = .empty;
-    errdefer out.deinit(allocator);
-    try out.ensureTotalCapacity(allocator, curves.len);
-    for (curves) |curve| {
-        if (curve.kind == .cubic) {
-            try appendCubicMonotonicSegments(allocator, &out, curve);
-        } else {
-            try out.append(allocator, curve);
-        }
-    }
-    return out.toOwnedSlice(allocator);
-}
-
 pub fn splitCurvesForPacking(
     allocator: std.mem.Allocator,
     curves: []const CurveSegment,
@@ -543,12 +406,8 @@ fn quantizedPreparedLocalCurve(curve: CurveSegment, start_override: ?Vec2) Curve
     const p3_rel = if (curve.kind == .cubic) quantizeVec2F16(Vec2.sub(curve.p3, p0)) else Vec2.zero;
 
     // Preserve bit-exact zero start/end tangents through quantization.
-    // splitCubicsAtExtrema snaps control points to share the join
-    // coordinate in the split axis pre-quantization; without this
-    // preservation, start_override's quantized p0 differs from raw
-    // curve.p0 by ~1 ULP, and that residual leaks into p1_rel/p2_rel,
-    // breaking the coverage evaluator's zero-derivative skip at
-    // grazing scanlines (the snail's brick stripes).
+    // Without this, start_override's quantized p0 can differ from raw p0 by
+    // an ULP and turn an exact shared tangent into a tiny nonzero one.
     if (curve.p1.x == curve.p0.x) p1_rel.x = 0;
     if (curve.p1.y == curve.p0.y) p1_rel.y = 0;
     if (curve.kind == .cubic) {
@@ -1079,43 +938,6 @@ test "prepareGlyphCurvesForDirectEncoding keeps closed contour wrap identical" {
 
     try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().x, prepared[0].p0.x);
     try std.testing.expectEqual(prepared[prepared.len - 1].endPoint().y, prepared[0].p0.y);
-}
-
-test "splitCubicsAtExtrema is symmetric after affine normalization" {
-    const right = CurveSegment.fromCubic(.{
-        .p0 = Vec2.new(28.8, 0.0),
-        .p1 = Vec2.new(57.6, 12.8),
-        .p2 = Vec2.new(57.6, 51.2),
-        .p3 = Vec2.new(28.8, 64.0),
-    });
-    const left = CurveSegment.fromCubic(.{
-        .p0 = Vec2.new(28.8, 64.0),
-        .p1 = Vec2.new(0.0, 51.2),
-        .p2 = Vec2.new(0.0, 12.8),
-        .p3 = Vec2.new(28.8, 0.0),
-    });
-
-    const right_split = try splitCubicsAtExtrema(std.testing.allocator, &.{right});
-    defer std.testing.allocator.free(right_split);
-    const left_split = try splitCubicsAtExtrema(std.testing.allocator, &.{left});
-    defer std.testing.allocator.free(left_split);
-
-    try std.testing.expectEqual(@as(usize, 2), right_split.len);
-    try std.testing.expectEqual(@as(usize, 2), left_split.len);
-    try std.testing.expectApproxEqAbs(@as(f32, 32.0), right_split[0].p3.y, 1e-4);
-    try std.testing.expectApproxEqAbs(@as(f32, 32.0), left_split[0].p3.y, 1e-4);
-    try std.testing.expectApproxEqAbs(@as(f32, 57.6), right_split[0].p3.x + left_split[0].p3.x, 1e-4);
-
-    const leaf_split = try splitCubicsAtExtrema(std.testing.allocator, &.{ right, left });
-    defer std.testing.allocator.free(leaf_split);
-    const prepared = try prepareGlyphCurvesForDirectEncoding(std.testing.allocator, leaf_split, .zero);
-    defer std.testing.allocator.free(prepared);
-    try std.testing.expectEqual(@as(usize, 4), prepared.len);
-    for (prepared, 0..) |curve, i| {
-        const next = prepared[(i + 1) % prepared.len];
-        try std.testing.expectEqual(curve.endPoint().x, next.p0.x);
-        try std.testing.expectEqual(curve.endPoint().y, next.p0.y);
-    }
 }
 
 test "buildCurveTexture supports direct encoding for font glyphs" {
