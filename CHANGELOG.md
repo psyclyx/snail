@@ -150,6 +150,10 @@ Treat this as a from-scratch migration.
   is bounded.
 - Draw batches describe one draw call over a contiguous run of instances:
   there is one bounding quad per instance, not one quad per batch.
+- The interactive terminal-text demo models character streaming, whole-line
+  updates, wrapping/scrolling, combining clusters, wide cells, styled faces,
+  script fallback, and COLRv0 emoji. It retains atlas state and exercises
+  delta uploads across the Vulkan, GL, GLES, and software demo backends.
 
 ### Design
 
@@ -175,6 +179,12 @@ Treat this as a from-scratch migration.
   (unhinted / autohint / tt_hint), `RunSnap` device-pixel origin snapping,
   optional COLR fanout, and a `y_axis` option (`.down` default, `.up` for
   y-up hosts — coverage is orientation-independent).
+- `placeCellRun` / `placeCellRunAlloc`: shaped run plus caller-owned
+  source-range cells → exact terminal columns, preserving fallback advances
+  and intra-cluster mark/ligature offsets. Cells carry explicit columns,
+  colors, and hint modes; the host retains width, wrapping, and cursor policy.
+- `recordUnhintedRuns`: batch several shaped runs into one idempotent atlas
+  transaction, deduplicating records across the whole batch.
 - `Atlas` store: `recordUnhintedRun` (with `ColrHandling`: composite /
   layers / outline_only), `recordAutohintRun`, `recordTtHintRun`,
   `recordTtAdvanceRun` (measurement-only advances; `TtAdvanceSource` is the

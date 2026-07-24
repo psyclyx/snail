@@ -374,6 +374,68 @@ each pairing a record namespace with a population verb:
 | `.autohint = policy` | `recordAutohintRun` | one immutable per-glyph analysis, ppem-independent; the fitting `AutohintPolicy` is draw-time instance state (GPU runtime warp / CPU parity) |
 | `.tt_hint = .{ .ppem_26_6 }` | `recordTtHintRun` | authentic TrueType bytecode via the pure `TtHintVm`; per-ppem curve records, hinted advances recorded for free |
 
+### Terminal-style cell grids
+
+For terminals, font advances should not determine columns. Shape each dirty
+style run normally, then describe the host's cells with source-byte ranges and
+explicit column numbers:
+
+```zig
+const text = "A🌍e\u{301}";
+const cells = [_]snail.Cell{
+    .{ .source = .{ .start = 0, .end = 1 }, .column = 0 },
+    .{ .source = .{ .start = 1, .end = 5 }, .column = 1 }, // wide: next is 3
+    .{ .source = .{ .start = 5, .end = 8 }, .column = 3 },
+};
+var shaped = try snail.shape(alloc, &faces, text, .{});
+defer shaped.deinit();
+
+// Batch all dirty runs into one idempotent atlas transaction in real code.
+try snail.recordUnhintedRuns(
+    &atlas, persistent_alloc, &faces, &.{&shaped}, .{ .colr = .layers },
+);
+const shapes = try snail.placeCellRunAlloc(alloc, &shaped, &faces, &cells, .{
+    .baseline = .{ .x = 24, .y = 40 },
+    .cell_width = 10,
+    .em = 18,
+    .snap = .grid,
+    .world_to_pixel = world_to_pixel,
+    .colr = true,
+});
+defer alloc.free(shapes);
+```
+
+`placeCellRun` anchors each HarfBuzz cluster to its assigned cell while
+preserving mark, ligature, and fallback-face offsets inside that cluster.
+Per-cell color and `HintMode` are retained. A wide cell is simply followed by
+a later column; snail deliberately does not decide Unicode width,
+grapheme/cursor policy, tabs, line wrapping, paragraph bidi, or scrollback.
+Those remain properties of the caller's screen model.
+
+A practical update loop retains `Font` storage, `Faces`, `PagePool`, and
+`Atlas`; shapes only changed row/style runs; records all such runs with one
+`recordUnhintedRuns` call; rebuilds the cheap placed picture; and applies
+`planDelta`/`DeviceAtlas.uploadDelta` to the existing binding. Recording is
+idempotent, so repeated characters add no atlas work. Stable `font_id` values
+must identify the same stable `Font` pointers everywhere that feeds an atlas.
+Adding or reordering fallback faces requires building a new `Faces` value;
+already-recorded atlas keys remain valid when those identities stay stable.
+
+The current color-font path is COLRv0. Dynamic terminals can use
+`ColrHandling.layers` plus cell placement's `colr = true`: this expands solid
+palette layers into ordinary glyph shapes and avoids growing
+binding-relative paint side data. Composite COLR records, images, and other
+paint data can instead require a fresh binding if their fixed side-data
+reservation is exceeded. Atlas exhaustion remains a host policy decision:
+compact/evict with working-set headroom or rotate to a new pool.
+
+The complete worked example is
+[`src/demo/app/terminal.zig`](src/demo/app/terminal.zig), with the independent
+[cell model](src/demo/terminal/screen.zig),
+[simulation](src/demo/terminal/simulation.zig), and
+[snail-backed view](src/demo/terminal/view.zig). Run it with
+`zig build run-terminal` (`R` resets, `P` pauses, and `C` cycles renderers).
+
 Grid-fit hinting needs integer device-pixel origins: pair strong policies or
 `tt_hint` with `RunSnap.origins` (proportional) or `.columns` (monospace
 terminals), passing `world_to_pixel = mvpToScenePixel(mvp, fb_w, fb_h)`.
@@ -420,6 +482,7 @@ system and graphics APIs (Wayland + EGL/OpenGL or Vulkan on Linux).
 zig build test-core               # library/raster tests; no shader-generation tools required
 zig build test                    # complete suite, including generated-shader and public-API gates
 zig build run                     # interactive Wayland banner demo (C cycles backends)
+zig build run-terminal            # incremental cell-grid text, fallback, wrapping, and emoji
 zig build run-game                # interactive 3D scene: world-space text, custom material shader
 zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
 zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
