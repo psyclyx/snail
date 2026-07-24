@@ -123,6 +123,7 @@ const atlas_populate = @import("atlas/populate.zig");
 pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
 pub const ColrHandling = atlas_populate.ColrHandling;
 pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
+pub const recordUnhintedRuns = atlas_populate.recordUnhintedRuns;
 pub const recordAutohintRun = atlas_populate.recordAutohintRun;
 pub const recordTtHintRun = atlas_populate.recordTtHintRun;
 pub const recordTtAdvanceRun = atlas_populate.recordTtAdvanceRun;

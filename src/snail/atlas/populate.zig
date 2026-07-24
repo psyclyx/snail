@@ -183,6 +183,29 @@ fn appendUnhintedGlyph(
     try batch.layer_storage.append(batch.allocator, layers);
 }
 
+fn appendUnhintedRun(
+    batch: *Batch,
+    atlas: *const Atlas,
+    faces: *const faces_mod.Faces,
+    shaped: *const text_mod.ShapedText,
+    options: UnhintedRunOptions,
+) !void {
+    for (shaped.glyphs) |glyph| {
+        const face_index: usize = @intCast(glyph.face_index);
+        if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
+        const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
+        if (font_id != glyph.font_id) return error.MismatchedFontId;
+        try appendUnhintedGlyph(
+            batch,
+            atlas,
+            faces.fontForFace(glyph.face_index).?,
+            font_id,
+            glyph.glyph_id,
+            options,
+        );
+    }
+}
+
 /// Record every missing unhinted glyph referenced by `shaped`.
 /// COLRv0 glyphs are packed into composites by default, so ordinary
 /// `placeRun` (`colr = false`) emits one instance per base glyph without
@@ -194,22 +217,28 @@ pub fn recordUnhintedRun(
     shaped: *const text_mod.ShapedText,
     options: UnhintedRunOptions,
 ) !void {
+    return recordUnhintedRuns(atlas, allocator, faces, &.{shaped}, options);
+}
+
+/// Record missing unhinted glyphs from several shaped runs in one atlas
+/// transaction. Existing records and duplicates across runs are skipped.
+///
+/// This is the screen/paragraph ingestion path: callers may shape rows and
+/// style spans independently, then avoid one persistent snapshot commit per
+/// span. Any validation, extraction, allocation, or atlas error leaves the
+/// original atlas unchanged.
+pub fn recordUnhintedRuns(
+    atlas: *Atlas,
+    allocator: Allocator,
+    faces: *const faces_mod.Faces,
+    shaped_runs: []const *const text_mod.ShapedText,
+    options: UnhintedRunOptions,
+) !void {
     var batch = Batch.init(allocator);
     defer batch.deinit();
 
-    for (shaped.glyphs) |glyph| {
-        const face_index: usize = @intCast(glyph.face_index);
-        if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
-        const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
-        if (font_id != glyph.font_id) return error.MismatchedFontId;
-        try appendUnhintedGlyph(
-            &batch,
-            atlas,
-            faces.fontForFace(glyph.face_index).?,
-            font_id,
-            glyph.glyph_id,
-            options,
-        );
+    for (shaped_runs) |shaped| {
+        try appendUnhintedRun(&batch, atlas, faces, shaped, options);
     }
     try batch.apply(atlas);
 }
@@ -414,6 +443,38 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     try testing.expect(info.layer_count > 1);
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+}
+
+test "unhinted runs commit several shaped runs as one snapshot" {
+    var font = try Font.init(@import("assets").noto_sans_regular);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 7 }});
+    defer faces.deinit();
+
+    var first = try faces_mod.shape(testing.allocator, &faces, "abc", .{});
+    defer first.deinit();
+    var second = try faces_mod.shape(testing.allocator, &faces, "xyz", .{});
+    defer second.deinit();
+
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_layers = 4,
+        .curve_words_per_page = 1 << 15,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = try Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+
+    const before = atlas.snapshotIdentity();
+    try recordUnhintedRuns(&atlas, testing.allocator, &faces, &.{ &first, &second }, .{});
+    const after = atlas.snapshotIdentity();
+    try testing.expectEqual(before.revision + 1, after.revision);
+    try testing.expectEqual(before.snapshot_id, after.parent_snapshot_id);
+    for (first.glyphs) |glyph| {
+        try testing.expect(atlas.contains(record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)));
+    }
+    for (second.glyphs) |glyph| {
+        try testing.expect(atlas.contains(record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)));
+    }
 }
 
 test "outline_only COLR handling records base outlines and ignores layers" {
