@@ -340,7 +340,7 @@ const VulkanDriver = struct {
         errdefer layout.deinit();
         const transfer_pool = try embed_vulkan.createTransferPool(ctx);
         errdefer embed_vulkan.vk.vkDestroyCommandPool(ctx.device, transfer_pool, null);
-        const caller = try embed_vulkan.Renderer.init(ctx, layout.desc_set_layout, SLOT_BYTES, vulkan_platform.MAX_FRAMES_IN_FLIGHT, false);
+        const caller = try embed_vulkan.Renderer.init(ctx, layout.desc_set_layout, SLOT_BYTES, vulkan_platform.MAX_FRAMES_IN_FLIGHT, .disabled);
         return .{
             .allocator = allocator,
             .ctx = ctx,

@@ -80,7 +80,7 @@ pub fn main() !void {
     defer allocator.free(batches);
     const e = try harness.emitScene(instances, batches, scene, bindings[0], bindings[1]);
 
-    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.shapeBudget(scene) * snail.render.records.BYTES_PER_INSTANCE, 1, false);
+    var caller = try embed_vulkan.Renderer.init(vk_ctx, cache.descriptorSetLayout(), harness.shapeBudget(scene) * snail.render.records.BYTES_PER_INSTANCE, 1, .disabled);
     defer caller.deinit();
 
     const cmd: vk.VkCommandBuffer = @ptrCast(vulkan_platform.beginFrameOffscreenWithClear(.{

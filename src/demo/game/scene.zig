@@ -11,7 +11,7 @@
 //!      *behind* the material quad, drawn depth-tested so the quad hides the
 //!      part it overlaps (the depth showcase).
 //!   3. the **translucent panel** — a snail-pipeline rounded panel + text in
-//!      front, blended in painter's order (depth-test on, depth-write off).
+//!      front, blended after opaque depth has been established.
 //!   4. the **HUD** — screen-space snail text incl. a live renderer+perf line.
 
 const std = @import("std");
@@ -186,17 +186,6 @@ pub const Scene = struct {
         return common.buildViewProjection(self.cam.camera(), aspect);
     }
 
-    /// Should the label be drawn before the panel? The label and panel are both
-    /// depth-tested against the opaque material quad but write no depth
-    /// themselves (one is translucent), so they must be composited in
-    /// back-to-front painter's order among themselves — otherwise a translucent
-    /// panel drawn after a nearer opaque label paints over it. Returns true when
-    /// the label is the farther of the two from the camera (draw it first).
-    pub fn labelBeforePanel(self: *const Scene) bool {
-        const cam = self.cam.camera().pos;
-        return camDist2(cam, self.label_plane.pos) >= camDist2(cam, self.panel_plane.pos);
-    }
-
     /// A studio light fixed in view space, transformed into the material's
     /// tangent frame. It has no independent animation: orbiting the scene is
     /// the only thing that changes the light direction seen by the surface.
@@ -219,13 +208,6 @@ pub const Scene = struct {
         };
     }
 };
-
-fn camDist2(cam: Vec3, p: Vec3) f32 {
-    const dx = cam.x - p.x;
-    const dy = cam.y - p.y;
-    const dz = cam.z - p.z;
-    return dx * dx + dy * dy + dz * dz;
-}
 
 fn normalizedModelAxis(model: snail.Mat4, column: usize) Vec3 {
     const base = column * 4;
@@ -268,8 +250,8 @@ fn buildLabel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     const rect = snail.Rect{ .x = 8.0, .y = 8.0, .w = w - 16.0, .h = label_scene_h - 16.0 };
     try b.addRoundedRectFilledStroked(
         rect,
-        .{ .solid = srgb(.{ 0.10, 0.13, 0.18, 0.94 }) },
-        .{ .solid = srgb(.{ 0.30, 0.50, 0.70, 0.85 }) },
+        .{ .solid = srgb(.{ 0.10, 0.13, 0.18, 1.0 }) },
+        .{ .solid = srgb(.{ 0.30, 0.50, 0.70, 1.0 }) },
         2.5,
         16.0,
     );
@@ -298,8 +280,8 @@ fn buildPanel(allocator: std.mem.Allocator, fonts: *Fonts) !PreparedPass {
     );
     _ = try b.appendText(.{ .weight = .bold }, "TRANSLUCENT", 40.0, 84.0, 40.0, srgb(.{ 0.95, 0.99, 1.0, 0.85 }));
     _ = try b.appendText(.{}, "snail's own pipeline,", 40.0, 128.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
-    _ = try b.appendText(.{}, "drawn in painter's order", 40.0, 158.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
-    _ = try b.appendText(.{}, "with depth-write off.", 40.0, 188.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
+    _ = try b.appendText(.{}, "blended after opaque depth", 40.0, 158.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
+    _ = try b.appendText(.{}, "without a sort-order flip.", 40.0, 188.0, 24.0, srgb(.{ 0.86, 0.94, 1.0, 0.8 }));
     return b.freeze(fonts.pool);
 }
 

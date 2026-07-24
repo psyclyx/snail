@@ -54,6 +54,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
         fbo: gl.GLuint = 0,
         tex: gl.GLuint = 0,
         dst_tex: gl.GLuint = 0,
+        depth_rb: gl.GLuint = 0,
         width: u32 = 0,
         height: u32 = 0,
         format: IntermediateFormat = .rgba16f,
@@ -91,6 +92,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             if (self.fbo != 0) gl.glDeleteFramebuffers(1, &self.fbo);
             if (self.tex != 0) gl.glDeleteTextures(1, &self.tex);
             if (self.dst_tex != 0) gl.glDeleteTextures(1, &self.dst_tex);
+            if (self.depth_rb != 0) gl.glDeleteRenderbuffers(1, &self.depth_rb);
         }
 
         pub fn begin(self: *Self, surface: TargetSurface, resolve: LinearResolve) !LinearResolveRestore {
@@ -109,6 +111,9 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             gl.glGetIntegerv(gl.GL_VIEWPORT, &restore.viewport);
             restore.resolve_rect = resolve.region.rect(width, height);
             restore.depth_test = gl.glIsEnabled(gl.GL_DEPTH_TEST) == gl.GL_TRUE;
+            var depth_write: gl.GLint = 0;
+            gl.glGetIntegerv(gl.GL_DEPTH_WRITEMASK, &depth_write);
+            restore.depth_write = depth_write != 0;
             restore.scissor_test = gl.glIsEnabled(gl.GL_SCISSOR_TEST) == gl.GL_TRUE;
             restore.blend = gl.glIsEnabled(gl.GL_BLEND) == gl.GL_TRUE;
 
@@ -132,6 +137,12 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
                 },
                 .dont_care => {},
             }
+            // The intermediate owns its depth attachment. Reset it for callers
+            // that render a complete 3D scene through this resolve; 2D callers
+            // leave depth testing disabled and pay no additional draw cost.
+            const clear_depth = [1]f32{1.0};
+            gl.glDepthMask(gl.GL_TRUE);
+            gl.glClearBufferfv(gl.GL_DEPTH, 0, &clear_depth);
             self.active = true;
             return restore;
         }
@@ -157,6 +168,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             } else {
                 gl.glDisable(gl.GL_DEPTH_TEST);
             }
+            gl.glDepthMask(@intFromBool(restore.depth_write));
             if (restore.scissor_test) {
                 gl.glEnable(gl.GL_SCISSOR_TEST);
             } else {
@@ -215,11 +227,14 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             var prev_draw: gl.GLint = 0;
             var prev_read: gl.GLint = 0;
             var prev_tex: gl.GLint = 0;
+            var prev_rb: gl.GLint = 0;
             gl.glGetIntegerv(gl.GL_DRAW_FRAMEBUFFER_BINDING, &prev_draw);
             gl.glGetIntegerv(gl.GL_READ_FRAMEBUFFER_BINDING, &prev_read);
             gl.glGetIntegerv(gl.GL_TEXTURE_BINDING_2D, &prev_tex);
+            gl.glGetIntegerv(gl.GL_RENDERBUFFER_BINDING, &prev_rb);
             defer {
                 gl.glBindTexture(gl.GL_TEXTURE_2D, @intCast(prev_tex));
+                gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, @intCast(prev_rb));
                 gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, @intCast(prev_draw));
                 gl.glBindFramebuffer(gl.GL_READ_FRAMEBUFFER, @intCast(prev_read));
             }
@@ -227,6 +242,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             gl.glGenFramebuffers(1, &self.fbo);
             gl.glGenTextures(1, &self.tex);
             gl.glGenTextures(1, &self.dst_tex);
+            gl.glGenRenderbuffers(1, &self.depth_rb);
             initIntermediateTexture(self.tex, width, height, format);
             switch (dst_format) {
                 .intermediate => initIntermediateTexture(self.dst_tex, width, height, format),
@@ -234,6 +250,9 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             }
             gl.glBindFramebuffer(gl.GL_DRAW_FRAMEBUFFER, self.fbo);
             gl.glFramebufferTexture2D(gl.GL_DRAW_FRAMEBUFFER, gl.GL_COLOR_ATTACHMENT0, gl.GL_TEXTURE_2D, self.tex, 0);
+            gl.glBindRenderbuffer(gl.GL_RENDERBUFFER, self.depth_rb);
+            gl.glRenderbufferStorage(gl.GL_RENDERBUFFER, gl.GL_DEPTH_COMPONENT24, @intCast(width), @intCast(height));
+            gl.glFramebufferRenderbuffer(gl.GL_DRAW_FRAMEBUFFER, gl.GL_DEPTH_ATTACHMENT, gl.GL_RENDERBUFFER, self.depth_rb);
             if (gl.glCheckFramebufferStatus(gl.GL_DRAW_FRAMEBUFFER) != gl.GL_FRAMEBUFFER_COMPLETE) {
                 return error.FramebufferIncomplete;
             }
@@ -246,6 +265,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             return self.fbo != 0 and
                 self.tex != 0 and
                 self.dst_tex != 0 and
+                self.depth_rb != 0 and
                 self.width == width and
                 self.height == height and
                 self.format == format;
@@ -255,9 +275,11 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             if (self.fbo != 0) gl.glDeleteFramebuffers(1, &self.fbo);
             if (self.tex != 0) gl.glDeleteTextures(1, &self.tex);
             if (self.dst_tex != 0) gl.glDeleteTextures(1, &self.dst_tex);
+            if (self.depth_rb != 0) gl.glDeleteRenderbuffers(1, &self.depth_rb);
             self.fbo = 0;
             self.tex = 0;
             self.dst_tex = 0;
+            self.depth_rb = 0;
             self.width = 0;
             self.height = 0;
             self.format = format;

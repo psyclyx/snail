@@ -124,7 +124,24 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
                 self.hud_gen = scene.hud_gen;
             }
 
-            const output_srgb = surface.encoding.shaderOutputEncoding() == .srgb;
+            var resolve_restore: ?@TypeOf(try self.renderer.state.beginLinearResolve(surface, .{})) = null;
+            var render_surface = surface;
+            if (surface.supportsLinearResolve()) {
+                // A linear default framebuffer whose consumer expects sRGB
+                // pixels cannot blend translucent draws correctly in place.
+                // Put the complete depth-tested scene in a linear float target,
+                // then encode it once after composition.
+                resolve_restore = try self.renderer.state.beginLinearResolve(surface, .{
+                    .backdrop = .target,
+                    .region = .full_target,
+                    .intermediate_format = .rgba16f,
+                });
+                render_surface.encoding = .linear;
+                render_surface.format = .rgba16f;
+            }
+            errdefer if (resolve_restore) |r| self.renderer.state.endLinearResolve(r);
+
+            const output_srgb = render_surface.encoding.shaderOutputEncoding() == .srgb;
 
             // 1. Custom-material coverage quad (opaque; writes depth → occludes).
             gl.glEnable(gl.GL_DEPTH_TEST);
@@ -142,24 +159,20 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
                 output_srgb,
             );
 
-            // 2 & 3. The label (opaque sign) and translucent panel are both
-            // depth-tested against the material quad but write no depth
-            // themselves, so they must be drawn back-to-front among themselves
-            // (painter's order) — otherwise the translucent panel paints over a
-            // nearer label. Draw the farther one first.
+            // 2 & 3. Commit the opaque label to depth, then blend the
+            // translucent panel. Per-fragment depth now decides their overlap,
+            // so orbiting cannot trigger a center-distance sort flip.
+            gl.glDepthMask(gl.GL_TRUE);
+            try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), render_surface);
             gl.glDepthMask(gl.GL_FALSE);
-            if (scene.labelBeforePanel()) {
-                try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), surface);
-                try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), surface);
-            } else {
-                try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), surface);
-                try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), surface);
-            }
+            try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), render_surface);
 
             // 4. HUD overlay (screen space; no depth).
             gl.glDisable(gl.GL_DEPTH_TEST);
             const hud_mvp = snail.Mat4.ortho(0, @floatFromInt(logical_w), @floatFromInt(logical_h), 0, -1, 1);
-            try self.drawSnailPass(&scene.hud, self.hud_b, hud_mvp, surface);
+            try self.drawSnailPass(&scene.hud, self.hud_b, hud_mvp, render_surface);
+
+            if (resolve_restore) |r| self.renderer.state.endLinearResolve(r);
         }
 
         fn drawSnailPass(self: *Self, pass: *const PreparedPass, b: PassBindings, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {

@@ -22,6 +22,7 @@ pub const LinearResolveRestore = struct {
     viewport: [4]c_int = .{ 0, 0, 0, 0 },
     resolve_rect: PixelRect = .{},
     depth_test: bool = false,
+    depth_write: bool = true,
     scissor_test: bool = false,
     blend: bool = false,
 };

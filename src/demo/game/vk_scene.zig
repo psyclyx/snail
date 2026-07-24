@@ -5,7 +5,7 @@
 //!      coverage via the atlas plane in set 0 + a records SSBO in set 1;
 //!      depth-tests + writes so it occludes),
 //!   2. the depth-tested occluded label, the translucent panel, and the HUD,
-//!      all via `embed_vulkan.Renderer` (built with depth_test=true).
+//!      all via `embed_vulkan.Renderer` with explicit depth behavior.
 //!
 //! Platform-agnostic: the windowed driver and the offscreen screenshot harness
 //! both build one of these and hand it a command buffer.
@@ -103,7 +103,7 @@ pub const VkSceneRenderer = struct {
             &scene.hud.text_atlas,
         }, &bindings);
 
-        var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, true);
+        var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, .test_and_write);
         errdefer caller.deinit();
 
         var self = VkSceneRenderer{
@@ -367,17 +367,13 @@ pub const VkSceneRenderer = struct {
         vk.vkCmdBindVertexBuffers(cmd, 0, 1, &quad_buf, &quad_off);
         vk.vkCmdDraw(cmd, 6, 1, 0, 0);
 
-        // 2/3. Label + translucent panel, depth-tested against the material
-        // quad but writing no depth, so drawn back-to-front among themselves
-        // (see Scene.labelBeforePanel) — otherwise the panel paints over a
-        // nearer label.
-        if (scene.labelBeforePanel()) {
-            try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
-            try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
-        } else {
-            try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
-            try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
-        }
+        // 2/3. Commit the opaque label to depth, then blend the translucent
+        // panel. Their per-fragment depths decide which one is in front; there
+        // is no center-distance sort to flip as the camera crosses a boundary.
+        // The panel is the final world draw, so its otherwise unnecessary
+        // depth writes have no later world consumer.
+        try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+        try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
         // 4. HUD.
         const hud_mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1);
         try self.drawSnailPass(cmd, &scene.hud, self.hud_path_b, self.hud_text_b, hud_mvp, surface);
