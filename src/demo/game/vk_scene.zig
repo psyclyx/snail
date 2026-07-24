@@ -103,7 +103,7 @@ pub const VkSceneRenderer = struct {
             &scene.hud.text_atlas,
         }, &bindings);
 
-        var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, .test_and_write);
+        var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, .test_only);
         errdefer caller.deinit();
 
         var self = VkSceneRenderer{
@@ -127,6 +127,7 @@ pub const VkSceneRenderer = struct {
         };
         errdefer allocator.free(self.scratch);
 
+        try self.prepareLabelDepth(scene);
         try self.buildRecords(scene);
         errdefer self.records.deinit(ctx.device);
         try self.buildQuad();
@@ -199,6 +200,23 @@ pub const VkSceneRenderer = struct {
         self.glyph_count = @intCast(wlen);
         self.records = try embed_vulkan.HostBuffer.init(self.ctx, @max(wlen * snail.render.records.BYTES_PER_INSTANCE, 4), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
         @memcpy(self.records.bytes()[0 .. wlen * snail.render.records.BYTES_PER_INSTANCE], std.mem.sliceAsBytes(self.scratch[0..wlen]));
+    }
+
+    fn prepareLabelDepth(self: *VkSceneRenderer, scene: *Scene) !void {
+        var wlen: usize = 0;
+        var slen: usize = 0;
+        _ = try snail.emit.emit(
+            self.scratch,
+            &self.segs,
+            &wlen,
+            &slen,
+            self.label_path_b,
+            &scene.label.path_atlas,
+            scene.label.path_picture.shapes,
+            .identity,
+            .{ 1, 1, 1, 1 },
+        );
+        for (self.segs[0..slen]) |batch| try self.caller.prepareDepthWrite(self.ctx, batch.kind);
     }
 
     fn buildQuad(self: *VkSceneRenderer) !void {
@@ -367,12 +385,12 @@ pub const VkSceneRenderer = struct {
         vk.vkCmdBindVertexBuffers(cmd, 0, 1, &quad_buf, &quad_off);
         vk.vkCmdDraw(cmd, 6, 1, 0, 0);
 
-        // 2/3. Commit the opaque label to depth, then blend the translucent
-        // panel. Their per-fragment depths decide which one is in front; there
-        // is no center-distance sort to flip as the camera crosses a boundary.
-        // The panel is the final world draw, so its otherwise unnecessary
-        // depth writes have no later world consumer.
-        try self.drawSnailPass(cmd, &scene.label, self.label_path_b, self.label_text_b, scene.label_plane.mvp(view_proj), surface);
+        // 2/3. The label's single opaque plate establishes depth. Its coplanar
+        // text and every translucent panel shape only test depth, so decoration
+        // on one surface cannot self-occlude.
+        const label_mvp = scene.label_plane.mvp(view_proj);
+        try self.drawSnailPart(cmd, &scene.label.path_atlas, scene.label.path_picture.shapes, self.label_path_b, label_mvp, surface, true);
+        try self.drawSnailPart(cmd, &scene.label.text_atlas, scene.label.text_picture.shapes, self.label_text_b, label_mvp, surface, false);
         try self.drawSnailPass(cmd, &scene.panel, self.panel_path_b, self.panel_text_b, scene.panel_plane.mvp(view_proj), surface);
         // 4. HUD.
         const hud_mvp = snail.Mat4.ortho(0, w, h, 0, -1, 1);
@@ -380,12 +398,29 @@ pub const VkSceneRenderer = struct {
     }
 
     fn drawSnailPass(self: *VkSceneRenderer, cmd: vk.VkCommandBuffer, pass: *const PreparedPass, path_b: snail.render.records.Binding, text_b: snail.render.records.Binding, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
+        try self.drawSnailPart(cmd, &pass.path_atlas, pass.path_picture.shapes, path_b, mvp, surface, false);
+        try self.drawSnailPart(cmd, &pass.text_atlas, pass.text_picture.shapes, text_b, mvp, surface, false);
+    }
+
+    fn drawSnailPart(
+        self: *VkSceneRenderer,
+        cmd: vk.VkCommandBuffer,
+        atlas: *const snail.Atlas,
+        shapes: []const snail.Shape,
+        binding: snail.render.records.Binding,
+        mvp: snail.Mat4,
+        surface: @import("snail-raster").TargetSurface,
+        depth_write: bool,
+    ) !void {
         var wlen: usize = 0;
         var slen: usize = 0;
-        _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, path_b, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-        _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, text_b, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+        _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, binding, atlas, shapes, .identity, .{ 1, 1, 1, 1 });
         const ds = @import("snail-raster").DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
-        try self.caller.render(cmd, &self.cache, ds, self.scratch[0..wlen], self.segs[0..slen]);
+        if (depth_write) {
+            try self.caller.renderDepthWrite(cmd, &self.cache, ds, self.scratch[0..wlen], self.segs[0..slen]);
+        } else {
+            try self.caller.render(cmd, &self.cache, ds, self.scratch[0..wlen], self.segs[0..slen]);
+        }
     }
 };
 

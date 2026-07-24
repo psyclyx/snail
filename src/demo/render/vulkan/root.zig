@@ -34,6 +34,7 @@ const SUBPIXEL_FAMILIES = [_]contract.Family{ .subpixel, .tt_hinted_subpixel, .a
 const FAMILY_COUNT = std.enums.values(contract.Family).len;
 
 pub const RenderError = error{
+    MissingDepthWritePipeline,
     StaleBinding,
     VertexBufferFull,
 } || snail.render.records.DrawRecords.ValidationError;
@@ -49,6 +50,9 @@ pub const Renderer = struct {
     pipeline_layout: vk.VkPipelineLayout,
     // Indexed by @intFromEnum(contract.Family).
     pipelines: [FAMILY_COUNT]vk.VkPipeline = .{null} ** FAMILY_COUNT,
+    // Opt-in variants for the small subset of families a caller uses as an
+    // opaque depth prepass. These are compiled explicitly, never wholesale.
+    depth_write_pipelines: [FAMILY_COUNT]vk.VkPipeline = .{null} ** FAMILY_COUNT,
     supports_dual_src: bool,
     ibo: HostBuffer,
     // Vertex upload ring: `num_slots` regions of `slot_bytes` each, so frames
@@ -123,6 +127,15 @@ pub const Renderer = struct {
         self.cursor = 0;
     }
 
+    /// Prepare a depth-writing variant for one emitted shape family. Callers
+    /// use this for opaque surface passes without duplicating every pipeline.
+    pub fn prepareDepthWrite(self: *Renderer, ctx: VulkanContext, kind: snail.render.records.ShapeKind) !void {
+        const family = contract.familyForKind(kind, .grayscale);
+        const index = @intFromEnum(family);
+        if (self.depth_write_pipelines[index] != null) return;
+        self.depth_write_pipelines[index] = try buildPipeline(ctx, self.pipeline_layout, contract.recipe(family), .test_and_write);
+    }
+
     /// Record one draw (one `emit` stream) into `cmd`, inside an active render
     /// pass, appending its vertices after any earlier `render` calls this
     /// frame. Every batch must carry a live binding issued by `cache`.
@@ -133,6 +146,31 @@ pub const Renderer = struct {
         draw_state: render_state.DrawState,
         instances: []const snail.render.records.Instance,
         batches: []const snail.render.records.DrawBatch,
+    ) RenderError!void {
+        return self.renderWithDepthMode(cmd, cache, draw_state, instances, batches, false);
+    }
+
+    /// Same record path as `render`, selecting the explicitly prepared
+    /// depth-writing pipeline variants.
+    pub fn renderDepthWrite(
+        self: *Renderer,
+        cmd: vk.VkCommandBuffer,
+        cache: *const VulkanDeviceAtlas,
+        draw_state: render_state.DrawState,
+        instances: []const snail.render.records.Instance,
+        batches: []const snail.render.records.DrawBatch,
+    ) RenderError!void {
+        return self.renderWithDepthMode(cmd, cache, draw_state, instances, batches, true);
+    }
+
+    fn renderWithDepthMode(
+        self: *Renderer,
+        cmd: vk.VkCommandBuffer,
+        cache: *const VulkanDeviceAtlas,
+        draw_state: render_state.DrawState,
+        instances: []const snail.render.records.Instance,
+        batches: []const snail.render.records.DrawBatch,
+        depth_write: bool,
     ) RenderError!void {
         try (snail.render.records.DrawRecords{ .instances = instances, .batches = batches }).validate();
         const instance_bytes = std.mem.sliceAsBytes(instances);
@@ -167,7 +205,12 @@ pub const Renderer = struct {
             else
                 .grayscale;
             const family = contract.familyForKind(batch.kind, mode);
-            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, self.pipelines[@intFromEnum(family)]);
+            const index = @intFromEnum(family);
+            const pipeline = if (depth_write)
+                self.depth_write_pipelines[index] orelse return error.MissingDepthWritePipeline
+            else
+                self.pipelines[index];
+            vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
             var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
@@ -183,6 +226,9 @@ pub const Renderer = struct {
         self.vbo.deinit(self.device);
         self.ibo.deinit(self.device);
         for (self.pipelines) |p| {
+            if (p != null) vk.vkDestroyPipeline(self.device, p, null);
+        }
+        for (self.depth_write_pipelines) |p| {
             if (p != null) vk.vkDestroyPipeline(self.device, p, null);
         }
         vk.vkDestroyPipelineLayout(self.device, self.pipeline_layout, null);
@@ -371,6 +417,13 @@ fn buildPipeline(ctx: VulkanContext, layout: vk.VkPipelineLayout, r: contract.Pi
         .polygonMode = vk.VK_POLYGON_MODE_FILL,
         .cullMode = vk.VK_CULL_MODE_NONE,
         .frontFace = vk.VK_FRONT_FACE_COUNTER_CLOCKWISE,
+        // A depth-establishing surface is followed by coplanar decoration
+        // whose independently interpolated depth can differ by a few ulps.
+        // Store the prepass slightly farther away so that decoration passes
+        // robustly without changing its visible position.
+        .depthBiasEnable = @intFromBool(depth_mode == .test_and_write),
+        .depthBiasConstantFactor = if (depth_mode == .test_and_write) @as(f32, 1.0) else @as(f32, 0.0),
+        .depthBiasSlopeFactor = if (depth_mode == .test_and_write) @as(f32, 1.0) else @as(f32, 0.0),
         .lineWidth = 1.0,
     });
     const ms_info = std.mem.zeroInit(vk.VkPipelineMultisampleStateCreateInfo, .{

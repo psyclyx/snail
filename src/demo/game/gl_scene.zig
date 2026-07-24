@@ -159,12 +159,19 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
                 output_srgb,
             );
 
-            // 2 & 3. Commit the opaque label to depth, then blend the
-            // translucent panel. Per-fragment depth now decides their overlap,
-            // so orbiting cannot trigger a center-distance sort flip.
+            // 2 & 3. Only the label's opaque plate establishes depth. Its
+            // coplanar text and the translucent panel test without writing, so
+            // shapes belonging to one surface cannot self-occlude.
+            const label_mvp = scene.label_plane.mvp(view_proj);
             gl.glDepthMask(gl.GL_TRUE);
-            try self.drawSnailPass(&scene.label, self.label_b, scene.label_plane.mvp(view_proj), render_surface);
+            {
+                gl.glEnable(gl.GL_POLYGON_OFFSET_FILL);
+                defer gl.glDisable(gl.GL_POLYGON_OFFSET_FILL);
+                gl.glPolygonOffset(1.0, 1.0);
+                try self.drawSnailPart(&scene.label.path_atlas, scene.label.path_picture.shapes, self.label_b.path, label_mvp, render_surface);
+            }
             gl.glDepthMask(gl.GL_FALSE);
+            try self.drawSnailPart(&scene.label.text_atlas, scene.label.text_picture.shapes, self.label_b.text, label_mvp, render_surface);
             try self.drawSnailPass(&scene.panel, self.panel_b, scene.panel_plane.mvp(view_proj), render_surface);
 
             // 4. HUD overlay (screen space; no depth).
@@ -176,12 +183,23 @@ pub fn GlSceneRenderer(comptime variant: gl_material.Variant) type {
         }
 
         fn drawSnailPass(self: *Self, pass: *const PreparedPass, b: PassBindings, mvp: snail.Mat4, surface: @import("snail-raster").TargetSurface) !void {
-            const needed = pass.path_picture.shapes.len + pass.text_picture.shapes.len;
+            try self.drawSnailPart(&pass.path_atlas, pass.path_picture.shapes, b.path, mvp, surface);
+            try self.drawSnailPart(&pass.text_atlas, pass.text_picture.shapes, b.text, mvp, surface);
+        }
+
+        fn drawSnailPart(
+            self: *Self,
+            atlas: *const snail.Atlas,
+            shapes: []const snail.Shape,
+            binding: snail.render.records.Binding,
+            mvp: snail.Mat4,
+            surface: @import("snail-raster").TargetSurface,
+        ) !void {
+            const needed = shapes.len;
             try self.scratch.ensure(needed, @max(needed, 4));
             var ilen: usize = 0;
             var blen: usize = 0;
-            _ = try snail.emit.emit(self.scratch.instances, self.scratch.batches, &ilen, &blen, b.path, &pass.path_atlas, pass.path_picture.shapes, .identity, .{ 1, 1, 1, 1 });
-            _ = try snail.emit.emit(self.scratch.instances, self.scratch.batches, &ilen, &blen, b.text, &pass.text_atlas, pass.text_picture.shapes, .identity, .{ 1, 1, 1, 1 });
+            _ = try snail.emit.emit(self.scratch.instances, self.scratch.batches, &ilen, &blen, binding, atlas, shapes, .identity, .{ 1, 1, 1, 1 });
             const ds = @import("snail-raster").DrawState{ .mvp = mvp, .surface = surface, .raster = .{} };
             self.renderer.state.beginDraw();
             try self.renderer.state.draw(self.allocator, ds, .{ .instances = self.scratch.instances[0..ilen], .batches = self.scratch.batches[0..blen] }, &.{&self.cache});
