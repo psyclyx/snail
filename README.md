@@ -37,10 +37,15 @@ run-algorithm-diagrams` writes their TGA source renders to `zig-out/` (see
 
 **1. Prepare: outlines stay curves.** TrueType glyphs are quadratic Béziers
 in em coordinates; CFF/CFF2 glyphs and general vector paths may also contain
-cubics, while paths additionally support lines and rational conics.
-Preparation packs the segments — four texels each — into the curve texture.
-Unhinted records are ppem-independent and reusable at every size and
-transform. TrueType grid-fit records are ppem-specific.
+cubics, while paths additionally support lines and rational conics. During
+preparation, each cubic is split wherever its direction or bending behavior
+changes, then replaced by a chain of simpler quadratic curves. The original
+endpoints remain exact, neighboring pieces share the same join, and pieces are
+subdivided until their measured deviation is below the precision of the packed
+curve data. The resulting line, quadratic, and conic segments are packed —
+four texels each — into the curve texture. Unhinted records are ppem-independent
+and reusable at every size and transform. TrueType grid-fit records are
+ppem-specific.
 
 <img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
 
@@ -80,19 +85,23 @@ bands, leaving a handful of candidate segments instead of the whole glyph.
 <img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band spans highlighted and their candidate curves emphasized" width="640">
 
 **5. Draw: solve ray roots per candidate.** Cast axis-aligned rays through
-the sample and solve the ray/curve equation for each candidate: quadratic
-for TrueType outlines, cubic for CFF/CFF2 outlines, and line, rational-conic,
-quadratic, or cubic for general paths. Eligible roots use half-open endpoint
-rules to avoid double-counting shared vertices and are signed by the
-direction the curve crosses the ray.
+the sample and solve the ray/curve equation for each candidate. Every font
+and path now reaches this stage as lines, quadratics, or rational conics, so
+the shader needs no cubic equation solver. For each candidate, it checks which
+side of the ray the curve's defining points lie on. That small pattern tells
+the evaluator whether the curve crosses the ray zero, one, or two times before
+it solves for the exact crossing positions. A crossing at a shared endpoint
+belongs to only one of its two neighboring segments, preventing vertices from
+being counted twice. Each crossing is signed by the direction in which the
+curve passes through the ray.
 
 <img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
 
 **6. Draw: signed roots sum to winding.** The crossing signs accumulate
-into a winding number, and the fill rule (`non_zero` or `even_odd`) maps
-winding to inside/outside — the hole's crossings cancel to zero on their
-own. The horizontal and vertical estimates are weighted together for
-robustness near tangencies.
+into a winding number. The horizontal and vertical estimates are combined
+first for robustness near tangencies; the fill rule (`non_zero` or
+`even_odd`) is then applied once to the resolved winding coverage. The hole's
+crossings cancel to zero on their own.
 
 <img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="640">
 
@@ -298,10 +307,12 @@ worked example. For OpenGL, prefer the driver-oriented complete stages in
 the `snail-shaders-glsl330` / `snail-shaders-gl` module scopes. Slang emits
 them directly, preserving authored helpers and structured control flow;
 `colrFrag*` is specialized for solid-layer COLRv0 glyphs while `pathFrag*`
-retains the general cubic/conic/gradient/image path engine. Compile only the
-families a renderer actually draws; the reference GL/GLES renderer does this
-lazily. `run-minimal-gl` demonstrates the generated-GL consumer route. WebGPU
-is validated by the `run-minimal-wgpu` example against the GL reference.
+retains the general conic/gradient/image path engine. Cubics never enter a
+generated stage: the historical general-path entry is a compatibility alias
+for the conic-capable evaluator. Compile only the families a renderer actually
+draws; the reference GL/GLES renderer does this lazily. `run-minimal-gl`
+demonstrates the generated-GL consumer route. WebGPU is validated by the
+`run-minimal-wgpu` example against the GL reference.
 
 **Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded
 f16 local bbox, affine transform/origin, glyph words, four payload words, and

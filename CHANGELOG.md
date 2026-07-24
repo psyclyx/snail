@@ -89,6 +89,20 @@ Treat this as a from-scratch migration.
 
 ### Correctness and performance
 
+- CFF/CFF2 and path cubics are now adaptively lowered during preparation to
+  tangent-preserving quadratic chains. The lowerer splits at axis extrema and
+  inflections and uses a conservative convex-hull error bound; packed atlas
+  records, GPU stages, and the software rasterizer no longer carry a native
+  cubic root solver. Legacy general-path shader/API discriminants remain
+  ABI-compatible conic-capable aliases, while atlas validation rejects an
+  unlowered cubic payload.
+- Quadratic crossing eligibility retains a narrow shared-endpoint tolerance
+  for transform/subtraction drift, but near-positive discriminants are no
+  longer collapsed to tangent roots. Prepared conics classify the original
+  stored control values instead of values reconstructed through polynomial
+  coefficients. Directional winding coverage is resolved before applying the
+  fill rule once, fixing even-odd coverage when horizontal and vertical
+  winding estimates cross different parity intervals.
 - Tiny-PPEM autohint collision repair now preserves fitted stem widths while
   allowing independently snapped counter gaps to collapse. Multi-stem glyphs
   no longer manufacture a full pixel per collided edge and expand beyond
@@ -129,13 +143,12 @@ Treat this as a from-scratch migration.
   set links in about 3.27 seconds cold versus roughly 16.3 seconds before these
   changes. The previous handwritten mirror reached 2.27 seconds but required
   maintaining a second implementation.
-- General painted paths are further classified by their strongest packed
-  segment kind. Line/quadratic records use a 28 KiB GL fragment with no conic
-  or cubic solver, rational-conic records use a 36 KiB fragment with no cubic
-  root finder, and only records containing cubics select the full 43 KiB
-  fragment. The classification is preserved across composite layers,
-  compaction, emit batches, and every generated target; zero-initialized
-  caller-authored path instances remain conservatively full-cubic.
+- General painted paths are classified into line/quadratic and
+  rational-conic evaluator tiers. No tier contains cubic root code; the
+  historical general-path tier aliases the conic evaluator for ABI-compatible
+  zero-initialized caller-authored instances. Classification is preserved
+  across composite layers, compaction, emit batches, and every generated
+  target.
 - Upload planning distinguishes exact snapshots, direct append-only children,
   branches, and unrelated atlases using full snapshot lineage. Delta plans
   copy only changed page spans for direct growth; branches/unrelated snapshots
@@ -952,7 +965,7 @@ migration recipes below each entry.
   avoid per-pixel layer-info decoding, repeated texture-coordinate wrapping,
   and curve-texel decoding in the coverage hot path.
 - CPU prepared text drawing now predecodes glyph-band curve references into
-  axis-local hot records with separate cold conic/cubic coefficient storage,
+  axis-local hot records with separate cold conic coefficient storage,
   and transformed glyph spans advance local coordinates incrementally across
   each scanline instead of recomputing the inverse transform per pixel.
 

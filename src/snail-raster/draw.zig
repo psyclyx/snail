@@ -616,11 +616,9 @@ fn containsEntryKey(entries: []const @import("snail").AtlasEntry, key: @import("
 test "shared-endpoint interior coverage stays solid (no centre seam)" {
     // Regression for the 1px white seam down shapes whose halves meet on the
     // sampling axis. The banner "custom path" leaf is two cubics sharing the
-    // endpoints (0.5,0) and (0.5,1); both sit on the vertical centre line, so
-    // the vertical-ray winding is evaluated right at a curve endpoint there.
-    // The old Cardano/quadratic cubic solver dropped that near-endpoint root in
-    // a hair-thin column, collapsing V-coverage to 0 and painting a white line
-    // down the shape on the CPU (the GPU's monotonic solver stayed correct).
+    // endpoints (0.5,0) and (0.5,1). Adaptive lowering must retain those joins
+    // exactly so the half-open quadratic root convention assigns each
+    // vertical-ray endpoint crossing once.
     const allocator = testing.allocator;
     const coverage = @import("coverage.zig");
     const geometry = @import("geometry.zig");

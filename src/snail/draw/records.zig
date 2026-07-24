@@ -22,8 +22,8 @@ pub const ShapeKind = enum {
     path_quadratic,
     /// General paint over line/quadratic/rational-conic path geometry.
     path_conic,
-    /// General paint with the full cubic evaluator. Retains the historical
-    /// `.path` name as the conservative fallback family.
+    /// General conic-capable paint. Retains the historical `.path` name as
+    /// the conservative fallback family after cubics are lowered.
     path,
     tt_hinted_text,
     autohint,
