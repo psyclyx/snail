@@ -224,10 +224,10 @@ const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabiliti
 /// text.vert.* — identical source, identical interface).
 pub const families = [_]Family{
     .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
-    .{ .name = "colr", .source = "families/painted.slang", .defines = &.{"SNAIL_PAINTED_COLR"}, .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_quadratic", .source = "families/painted.slang", .defines = &.{ "SNAIL_PAINTED_PATH", "SNAIL_PATH_QUADRATIC" }, .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_conic", .source = "families/painted.slang", .defines = &.{ "SNAIL_PAINTED_PATH", "SNAIL_PATH_CONIC" }, .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path", .source = "families/painted.slang", .defines = &.{"SNAIL_PAINTED_PATH"}, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "colr", .source = "families/colr.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_quadratic", .source = "families/path.slang", .defines = &.{"SNAIL_PATH_QUADRATIC"}, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_conic", .source = "families/path.slang", .defines = &.{"SNAIL_PATH_CONIC"}, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path", .source = "families/path.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
     // The WGSL artifact carries a dual-source entry (`fragmentDualMain`,
