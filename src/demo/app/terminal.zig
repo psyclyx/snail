@@ -157,6 +157,7 @@ pub fn main() !void {
             .pictures = &pictures,
             .draw_state = draw_state,
             .dirty = atlas_dirty,
+            .binding_update = .incremental,
         }};
         _ = try driver.renderFrame(
             allocator,

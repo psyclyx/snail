@@ -22,12 +22,23 @@ const demo_support = @import("support");
 /// The driver keeps per-pass binding state by position in the array,
 /// so callers pass the same passes in the same order each frame. Set
 /// `dirty=true` when any atlas in the pass added entries since the
-/// last upload; the driver releases and re-issues that pass's bindings.
+/// last upload. `binding_update` controls whether the driver replaces
+/// or incrementally extends that pass's bindings.
 pub const Pass = struct {
+    pub const BindingUpdate = enum {
+        /// Release every old binding and upload complete atlas snapshots.
+        replace,
+        /// Preserve binding slots and upload only atlas deltas. If retained
+        /// side data outgrows a slot, the driver transparently falls back to
+        /// replacing the pass's bindings.
+        incremental,
+    };
+
     atlases: []const *const snail.Atlas,
     pictures: []const *const demo_support.Picture,
     draw_state: @import("snail-raster").DrawState,
     dirty: bool,
+    binding_update: BindingUpdate = .replace,
     /// CPU-backend hint: when true, fan tile work across the driver's
     /// thread pool; when false, rasterize on the calling thread. GPU
     /// backends ignore this field.
@@ -139,8 +150,29 @@ pub fn emitPasses(
     }
 }
 
-/// Ensure each pass's bindings are live in `cache`. Releases stale bindings on
-/// `pass.dirty`; reuses bindings otherwise.
+fn uploadPassBindings(
+    comptime CacheType: type,
+    cache: *CacheType,
+    allocator: std.mem.Allocator,
+    pass: Pass,
+    state: *PassState,
+) !void {
+    std.debug.assert(pass.atlases.len <= MAX_BINDINGS_PER_PASS);
+    try cache.upload(allocator, pass.atlases, state.bindings[0..pass.atlases.len]);
+    state.count = @intCast(pass.atlases.len);
+    state.initialized = true;
+}
+
+fn releasePassBindings(comptime CacheType: type, cache: *CacheType, state: *PassState) void {
+    if (!state.initialized) return;
+    for (state.bindings[0..state.count]) |binding| cache.release(binding);
+    state.initialized = false;
+    state.count = 0;
+}
+
+/// Ensure each pass's bindings are live in `cache`. Clean passes reuse their
+/// bindings. Dirty replacement passes release and upload complete snapshots;
+/// dirty incremental passes preserve their slots and call `uploadDelta`.
 pub fn syncPassBindings(
     comptime CacheType: type,
     cache: *CacheType,
@@ -152,14 +184,27 @@ pub fn syncPassBindings(
     for (passes, pass_states) |pass, *state| {
         const needs_upload = cache_was_reinitialized or pass.dirty or !state.initialized;
         if (!needs_upload) continue;
-        if (state.initialized and !cache_was_reinitialized) {
-            for (state.bindings[0..state.count]) |b| cache.release(b);
+
+        const can_extend = !cache_was_reinitialized and
+            state.initialized and
+            state.count == pass.atlases.len and
+            pass.binding_update == .incremental;
+        if (can_extend) {
+            var must_replace = false;
+            for (pass.atlases, state.bindings[0..state.count]) |atlas, *binding| {
+                binding.* = cache.uploadDelta(allocator, binding.*, atlas) catch |err| switch (err) {
+                    error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow => {
+                        must_replace = true;
+                        break;
+                    },
+                    else => return err,
+                };
+            }
+            if (!must_replace) continue;
         }
-        state.initialized = false;
-        std.debug.assert(pass.atlases.len <= MAX_BINDINGS_PER_PASS);
-        try cache.upload(allocator, pass.atlases, state.bindings[0..pass.atlases.len]);
-        state.count = @intCast(pass.atlases.len);
-        state.initialized = true;
+
+        if (!cache_was_reinitialized) releasePassBindings(CacheType, cache, state);
+        try uploadPassBindings(CacheType, cache, allocator, pass, state);
     }
 }
 
@@ -194,6 +239,77 @@ test "shape budget covers every shape in mixed pictures" {
     }};
 
     try std.testing.expectEqual(@as(usize, shapes_a.len + shapes_b.len), passesShapeBudget(&passes));
+}
+
+test "incremental pass updates preserve bindings and fall back when a slot is full" {
+    const MockCache = struct {
+        uploads: usize = 0,
+        deltas: usize = 0,
+        releases: usize = 0,
+        reject_delta: bool = false,
+
+        const Self = @This();
+        const UploadError = error{NoLayerInfoRoomToGrow};
+
+        pub fn upload(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            atlases: []const *const snail.Atlas,
+            out: []snail.render.records.Binding,
+        ) UploadError!void {
+            _ = allocator;
+            _ = atlases;
+            self.uploads += 1;
+            for (out) |*binding| binding.* = std.mem.zeroes(snail.render.records.Binding);
+        }
+
+        pub fn uploadDelta(
+            self: *Self,
+            allocator: std.mem.Allocator,
+            binding: snail.render.records.Binding,
+            atlas: *const snail.Atlas,
+        ) UploadError!snail.render.records.Binding {
+            _ = allocator;
+            _ = atlas;
+            self.deltas += 1;
+            if (self.reject_delta) return error.NoLayerInfoRoomToGrow;
+            return binding;
+        }
+
+        pub fn release(self: *Self, binding: snail.render.records.Binding) void {
+            _ = binding;
+            self.releases += 1;
+        }
+    };
+
+    var atlas: snail.Atlas = undefined;
+    const atlases = [_]*const snail.Atlas{&atlas};
+    const pass = Pass{
+        .atlases = &atlases,
+        .pictures = &.{},
+        .draw_state = undefined,
+        .dirty = true,
+        .binding_update = .incremental,
+    };
+    var state = PassState{};
+    var cache = MockCache{};
+
+    try syncPassBindings(MockCache, &cache, std.testing.allocator, &.{pass}, (&state)[0..1], false);
+    try std.testing.expectEqual(@as(usize, 1), cache.uploads);
+    try std.testing.expectEqual(@as(usize, 0), cache.deltas);
+    try std.testing.expect(state.initialized);
+
+    try syncPassBindings(MockCache, &cache, std.testing.allocator, &.{pass}, (&state)[0..1], false);
+    try std.testing.expectEqual(@as(usize, 1), cache.uploads);
+    try std.testing.expectEqual(@as(usize, 1), cache.deltas);
+    try std.testing.expectEqual(@as(usize, 0), cache.releases);
+
+    cache.reject_delta = true;
+    try syncPassBindings(MockCache, &cache, std.testing.allocator, &.{pass}, (&state)[0..1], false);
+    try std.testing.expectEqual(@as(usize, 2), cache.uploads);
+    try std.testing.expectEqual(@as(usize, 2), cache.deltas);
+    try std.testing.expectEqual(@as(usize, 1), cache.releases);
+    try std.testing.expect(state.initialized);
 }
 
 // ── Frame-time stats (HUD) ───────────────────────────────────────────────────
