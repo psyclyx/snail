@@ -16,8 +16,23 @@ const std = @import("std");
 const bezier = @import("../math/bezier.zig");
 const curve_tex = @import("../format/curve_texture.zig");
 const band_tex = @import("../format/band_texture.zig");
+const render_abi = @import("../format/abi.zig");
 
 pub const BBox = bezier.BBox;
+pub const PathCurveClass = render_abi.PathCurveClass;
+
+/// Classify a segment list by the strongest evaluator it needs. Lines share
+/// the quadratic shader; rational conics add the conic solver; any cubic
+/// requires the full monotonic root finder.
+pub fn classifyPathCurves(curves: []const bezier.CurveSegment) PathCurveClass {
+    var result: PathCurveClass = .quadratic;
+    for (curves) |curve| switch (curve.kind) {
+        .line, .quadratic => {},
+        .conic => result = result.combine(.conic),
+        .cubic => return .cubic,
+    };
+    return result;
+}
 
 pub const GlyphCurves = struct {
     allocator: std.mem.Allocator,
@@ -40,6 +55,9 @@ pub const GlyphCurves = struct {
     backing: ?[]u16 = null,
     /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
     curve_count: u16,
+    /// Strongest path evaluator required by the packed segments. Defaults to
+    /// the full evaluator so custom producers that omit it remain safe.
+    path_curve_class: PathCurveClass = .cubic,
     /// Horizontal and vertical band counts (used by the renderer to walk only
     /// the candidate curves per sample).
     h_band_count: u16,
@@ -93,6 +111,7 @@ pub const GlyphCurves = struct {
             .curve_bytes = &[_]u16{},
             .band_bytes = &[_]u16{},
             .curve_count = 0,
+            .path_curve_class = .quadratic,
             .h_band_count = 0,
             .v_band_count = 0,
             .band_scale_x = 0,
@@ -119,7 +138,13 @@ pub const GlyphCurves = struct {
         if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
         for (0..self.curve_count) |curve_index| {
             const curve_texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
-            if (curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) == null) return error.InvalidCurves;
+            const segment = curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) orelse return error.InvalidCurves;
+            const required: PathCurveClass = switch (segment.kind) {
+                .line, .quadratic => .quadratic,
+                .conic => .conic,
+                .cubic => .cubic,
+            };
+            if (self.path_curve_class.combine(required) != self.path_curve_class) return error.InvalidCurves;
         }
 
         const scalar_values = [_]f32{

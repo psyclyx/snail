@@ -225,6 +225,8 @@ const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabiliti
 pub const families = [_]Family{
     .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
     .{ .name = "colr", .source = "families/painted.slang", .defines = &.{"SNAIL_PAINTED_COLR"}, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_quadratic", .source = "families/painted.slang", .defines = &.{ "SNAIL_PAINTED_PATH", "SNAIL_PATH_QUADRATIC" }, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_conic", .source = "families/painted.slang", .defines = &.{ "SNAIL_PAINTED_PATH", "SNAIL_PATH_CONIC" }, .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "path", .source = "families/painted.slang", .defines = &.{"SNAIL_PAINTED_PATH"}, .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
@@ -397,6 +399,8 @@ fn stageReflectionJson(b: *std.Build, comptime family: Family, stage: Stage, tar
 fn familyHasReflectionContract(comptime name: []const u8) bool {
     return comptime std.mem.eql(u8, name, "text") or
         std.mem.eql(u8, name, "colr") or
+        std.mem.eql(u8, name, "path_quadratic") or
+        std.mem.eql(u8, name, "path_conic") or
         std.mem.eql(u8, name, "path") or
         std.mem.eql(u8, name, "tt_hinted_text") or
         std.mem.eql(u8, name, "autohint") or

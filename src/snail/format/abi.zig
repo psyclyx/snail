@@ -17,6 +17,28 @@ pub const SpecialLayerKind = enum(u8) {
     autohint = 3,
 };
 
+/// Strongest curve evaluator required by one path record. The numeric order
+/// is deliberate: zero is the conservative full-cubic fallback for
+/// caller-authored/zero-initialized instance payloads.
+pub const PathCurveClass = enum(u32) {
+    cubic = 0,
+    conic = 1,
+    quadratic = 2,
+
+    pub fn combine(a: PathCurveClass, b: PathCurveClass) PathCurveClass {
+        return @enumFromInt(@min(@intFromEnum(a), @intFromEnum(b)));
+    }
+};
+
+pub fn pathCurveClass(raw: u32) ?PathCurveClass {
+    return switch (raw) {
+        @intFromEnum(PathCurveClass.cubic) => .cubic,
+        @intFromEnum(PathCurveClass.conic) => .conic,
+        @intFromEnum(PathCurveClass.quadratic) => .quadratic,
+        else => null,
+    };
+}
+
 pub const PaintRecordKind = enum(u8) {
     solid = 1,
     linear_gradient = 2,
@@ -178,6 +200,13 @@ test "glyph word encoders reject unrepresentable semantic values" {
     try std.testing.expect(regularGlyphWord(16, 16, std.math.maxInt(u8)) != null);
     try std.testing.expectEqual(@as(?u32, null), specialGlyphWord(0, .path, 0));
     try std.testing.expect(specialGlyphWord(std.math.maxInt(u16), .autohint, std.math.maxInt(u8)) != null);
+}
+
+test "path curve classes preserve zero as the conservative fallback" {
+    try std.testing.expectEqual(PathCurveClass.cubic, pathCurveClass(0).?);
+    try std.testing.expectEqual(PathCurveClass.conic, PathCurveClass.quadratic.combine(.conic));
+    try std.testing.expectEqual(PathCurveClass.cubic, PathCurveClass.conic.combine(.cubic));
+    try std.testing.expectEqual(@as(?PathCurveClass, null), pathCurveClass(3));
 }
 
 test "Slang render ABI constants match Zig constants" {

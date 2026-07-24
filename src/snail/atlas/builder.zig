@@ -55,6 +55,14 @@ fn isSolidPaint(paint: Paint) bool {
     };
 }
 
+fn pathShaderClass(curve_class: curves_mod.PathCurveClass) PaintShaderClass {
+    return switch (curve_class) {
+        .quadratic => .path_quadratic,
+        .conic => .path_conic,
+        .cubic => .path_cubic,
+    };
+}
+
 pub const Builder = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
@@ -719,7 +727,8 @@ pub const Builder = struct {
 
         const glyph_solid = entry.key.namespace == record_key_mod.ns.unhinted_glyph and
             base_paint != null and isSolidPaint(base_paint.?) and
-            base_fill_rule == .non_zero;
+            base_fill_rule == .non_zero and
+            curves.path_curve_class == .quadratic;
         if (extra_count == 0) {
             // Single-layer path: just one paint record, no composite header.
             try self.insertPaintRecord(
@@ -727,7 +736,7 @@ pub const Builder = struct {
                 base_paint.?,
                 base_placement.bands,
                 base_fill_rule,
-                if (glyph_solid) .colr_solid else .general,
+                if (glyph_solid) .colr_solid else pathShaderClass(curves.path_curve_class),
             );
             return;
         }
@@ -737,10 +746,13 @@ pub const Builder = struct {
         const total_layers: u32 = @intCast(1 + extra_count);
         const composite_base_paint = base_paint orelse Paint{ .solid = .{ 0, 0, 0, 0 } };
         var colr_solid = glyph_solid and entry.composite_mode == .source_over;
+        var path_curve_class = curves.path_curve_class;
         for (entry.extra_layers, 0..) |layer, layer_index| {
             if (promoted_extra == layer_index or layer.curves.isEmpty()) continue;
             colr_solid = colr_solid and isSolidPaint(layer.paint) and
-                layer.fill_rule == .non_zero;
+                layer.fill_rule == .non_zero and
+                layer.curves.path_curve_class == .quadratic;
+            path_curve_class = path_curve_class.combine(layer.curves.path_curve_class);
         }
         try self.insertCompositeRecord(
             entry.key,
@@ -752,7 +764,7 @@ pub const Builder = struct {
             extras_storage[0..extra_count],
             promoted_extra,
             total_layers,
-            if (colr_solid) .colr_solid else .general,
+            if (colr_solid) .colr_solid else pathShaderClass(path_curve_class),
         );
     }
 

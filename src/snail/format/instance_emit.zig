@@ -3,6 +3,7 @@ const band_tex = @import("band_texture.zig");
 const bezier = @import("../math/bezier.zig");
 const vec = @import("../math/vec.zig");
 const vertex = @import("vertex.zig");
+const render_abi = @import("abi.zig");
 
 const BBox = bezier.BBox;
 const GlyphBandEntry = band_tex.GlyphBandEntry;
@@ -85,9 +86,10 @@ pub const Cursor = struct {
         tint: [4]f32,
         layer: u8,
         transform: Transform2D,
+        curve_class: render_abi.PathCurveClass,
     ) CursorError!void {
         try self.ensureInstanceCapacity();
-        if (!vertex.generatePathRecordVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform))
+        if (!vertex.generateClassifiedPathRecordVerticesTransformedTinted(self.dst(), bbox, info_x, info_y, layer_count, color, tint, layer, transform, curve_class))
             return error.InvalidInstance;
         self.commit();
     }

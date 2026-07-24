@@ -127,6 +127,7 @@ pub fn packCurves(
         .curve_bytes = curve_bytes,
         .band_bytes = band_bytes,
         .curve_count = curve_count,
+        .path_curve_class = curves_mod.classifyPathCurves(split),
         .h_band_count = bd.h_band_count,
         .v_band_count = bd.v_band_count,
         .band_scale_x = bd.band_scale_x,

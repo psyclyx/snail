@@ -237,6 +237,9 @@ pub fn validateInstance(instance: *const Instance) ValidationError!void {
         if (render_abi.specialGlyphWordLayerCount(word) == 0) return error.InvalidGlyphWord;
         if (kind == .autohint) {
             _ = autohint_policy.AutohintPolicy.unpack(instance.payload) catch return error.InvalidPayload;
+        } else if (kind == .path) {
+            _ = render_abi.pathCurveClass(instance.payload[0]) orelse return error.InvalidPayload;
+            if (!std.mem.allEqual(u32, instance.payload[1..], 0)) return error.InvalidPayload;
         } else if (!std.mem.allEqual(u32, &instance.payload, 0)) {
             return error.InvalidPayload;
         }
@@ -339,7 +342,38 @@ pub fn generatePathRecordVerticesTransformedTinted(
     atlas_layer: u8,
     transform: vec.Transform2D,
 ) bool {
-    return generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .path);
+    return generateClassifiedPathRecordVerticesTransformedTinted(
+        buf,
+        bbox,
+        info_x,
+        info_y,
+        layer_count,
+        color,
+        tint,
+        atlas_layer,
+        transform,
+        .cubic,
+    );
+}
+
+/// Generate a path instance whose payload selects the cheapest compatible
+/// path pipeline. The special-layer kind remains `.path`; renderers recover
+/// the exact family through `draw.shapeKind`.
+pub fn generateClassifiedPathRecordVerticesTransformedTinted(
+    buf: []u32,
+    bbox: BBox,
+    info_x: u16,
+    info_y: u16,
+    layer_count: u16,
+    color: [4]f32,
+    tint: [4]f32,
+    atlas_layer: u8,
+    transform: vec.Transform2D,
+    curve_class: render_abi.PathCurveClass,
+) bool {
+    if (!generateSpecialLayerVerticesTransformedTinted(buf, bbox, info_x, info_y, layer_count, color, tint, atlas_layer, transform, .path)) return false;
+    instancePtr(buf).payload[0] = @intFromEnum(curve_class);
+    return true;
 }
 
 /// Generate instance data for a tinted transformed hinted text layer-info record.

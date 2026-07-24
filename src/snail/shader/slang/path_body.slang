@@ -47,6 +47,7 @@ struct SegmentData {
     float3 weights;
 };
 
+#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDelta, out float tOut) {
     // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
     // monotonic along both sampling axes and can contribute at most one root.
@@ -79,6 +80,7 @@ bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDel
     tOut = t;
     return true;
 }
+#endif
 
 float2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, float p2x, float p2y, float ppeX) {
     float ax = p0x - p1x * 2.0 + p2x;
@@ -155,33 +157,45 @@ SegmentData fetchSegment(SnailFloatTexture2DArray curve_tex, int2 loc, int layer
     seg.p1 = tex0.zw;
     seg.p2 = tex1.xy;
     seg.p3 = tex1.zw;
+#if defined(SNAIL_PATH_QUADRATIC)
+    seg.weights = float3(1.0);
+#else
     if (kind == 1) {
         float4 tex2 = curve_tex.Load(int4(offsetCurveLoc(loc, 2), layer, 0));
         seg.weights = float3(tex2.w, tex2.x, tex2.y);
     } else {
         seg.weights = float3(1.0);
     }
+#endif
     return seg;
 }
 
 float segmentMaxX(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
+#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
     if (seg.kind == 2) return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
+#endif
     return max(max(seg.p0.x, seg.p1.x), seg.p2.x);
 }
 
 float segmentMaxY(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
+#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
     if (seg.kind == 2) return max(max(seg.p0.y, seg.p1.y), max(seg.p2.y, seg.p3.y));
+#endif
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
+#if !defined(SNAIL_PATH_QUADRATIC)
 float segmentEndRootDelta(SegmentData seg, float2 sampleRc, bool horizontal) {
+#if !defined(SNAIL_PATH_CONIC)
     if (seg.kind == 2) {
         return horizontal ? seg.p3.y - sampleRc.y : seg.p3.x - sampleRc.x;
     }
+#endif
     return horizontal ? seg.p2.y - sampleRc.y : seg.p2.x - sampleRc.x;
 }
+#endif
 
 bool rootHullCanCross3(float p0, float p1, float p2, float sampleRoot) {
     float minRoot = min(min(p0, p1), p2);
@@ -189,14 +203,18 @@ bool rootHullCanCross3(float p0, float p1, float p2, float sampleRoot) {
     return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
 }
 
+#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 bool rootHullCanCross4(float p0, float p1, float p2, float p3, float sampleRoot) {
     float minRoot = min(min(p0, p1), min(p2, p3));
     float maxRoot = max(max(p0, p1), max(p2, p3));
     return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
 }
+#endif
 
+#if !defined(SNAIL_PATH_QUADRATIC)
 bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) {
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
+#if !defined(SNAIL_PATH_CONIC)
     if (seg.kind == 2) {
         return rootHullCanCross4(
             horizontal ? seg.p0.y : seg.p0.x,
@@ -206,6 +224,7 @@ bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) 
             sampleRoot
         );
     }
+#endif
     return rootHullCanCross3(
         horizontal ? seg.p0.y : seg.p0.x,
         horizontal ? seg.p1.y : seg.p1.x,
@@ -213,6 +232,7 @@ bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) 
         sampleRoot
     );
 }
+#endif
 
 void appendCoverageContribution(inout float cov, inout float wgt, float distance, float sign) {
     cov += sign * clamp(distance + 0.5, 0.0, 1.0);
@@ -242,6 +262,7 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
 }
 
+#if !defined(SNAIL_PATH_QUADRATIC)
 float distToUnitInterval(float t) {
     return max(max(0.0, -t), t - 1.0);
 }
@@ -356,7 +377,9 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
                             rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
     }
 }
+#endif
 
+#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, float2 sampleRc, float ppe, bool horizontal) {
     if (!segmentRootHullCanCross(seg, sampleRc, horizontal)) return;
 
@@ -402,6 +425,7 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float dist = (along - sampleAlong) * ppe;
     appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
 }
+#endif
 
 bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, float2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
     float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
@@ -444,13 +468,42 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, float2 samp
         return true;
     }
 
+#if defined(SNAIL_PATH_QUADRATIC)
+    // Classified records guarantee the only remaining kind is line.
+    accumulateLineCoverage(
+        cov,
+        wgt,
+        seg.p0.x - sampleRc.x,
+        seg.p0.y - sampleRc.y,
+        seg.p2.x - sampleRc.x,
+        seg.p2.y - sampleRc.y,
+        ppe,
+        horizontal
+    );
+    return true;
+#else
     if (seg.kind == 1) {
         accumulateConicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
         return true;
     }
 
+#if defined(SNAIL_PATH_CONIC)
+    // Classified records guarantee the only remaining kind is line.
+    accumulateLineCoverage(
+        cov,
+        wgt,
+        seg.p0.x - sampleRc.x,
+        seg.p0.y - sampleRc.y,
+        seg.p2.x - sampleRc.x,
+        seg.p2.y - sampleRc.y,
+        ppe,
+        horizontal
+    );
+#else
     accumulateCubicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
+#endif
     return true;
+#endif
 }
 
 float2 evalAxisCoverageBands(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float2 sampleRc, float ppe, int2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {

@@ -160,6 +160,30 @@ pub fn colrFragWgsl() [:0]const u8 {
     return @embedFile("generated/wgsl/colr.frag.wgsl");
 }
 
+pub fn pathQuadraticFragGlsl330() [:0]const u8 {
+    return @embedFile("generated/glsl330/path_quadratic.frag.glsl");
+}
+
+pub fn pathQuadraticFragGles300() [:0]const u8 {
+    return @embedFile("generated/gles300/path_quadratic.frag.glsl");
+}
+
+pub fn pathQuadraticFragWgsl() [:0]const u8 {
+    return @embedFile("generated/wgsl/path_quadratic.frag.wgsl");
+}
+
+pub fn pathConicFragGlsl330() [:0]const u8 {
+    return @embedFile("generated/glsl330/path_conic.frag.glsl");
+}
+
+pub fn pathConicFragGles300() [:0]const u8 {
+    return @embedFile("generated/gles300/path_conic.frag.glsl");
+}
+
+pub fn pathConicFragWgsl() [:0]const u8 {
+    return @embedFile("generated/wgsl/path_conic.frag.wgsl");
+}
+
 pub fn pathFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/path.frag.glsl");
 }
@@ -323,6 +347,14 @@ pub fn colrFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/colr.frag.hlsl");
 }
 
+pub fn pathQuadraticFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/path_quadratic.frag.hlsl");
+}
+
+pub fn pathConicFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/path_conic.frag.hlsl");
+}
+
 pub fn pathFragHlsl() [:0]const u8 {
     return @embedFile("generated/hlsl/path.frag.hlsl");
 }
@@ -375,6 +407,14 @@ pub fn colrFragMsl() [:0]const u8 {
     return @embedFile("generated/msl/colr.frag.metal");
 }
 
+pub fn pathQuadraticFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/path_quadratic.frag.metal");
+}
+
+pub fn pathConicFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/path_conic.frag.metal");
+}
+
 pub fn pathFragMsl() [:0]const u8 {
     return @embedFile("generated/msl/path.frag.metal");
 }
@@ -409,6 +449,10 @@ const aligned_text_vert_spv: [raw_text_vert_spv.len]u8 align(4) = raw_text_vert_
 const aligned_text_frag_spv: [raw_text_frag_spv.len]u8 align(4) = raw_text_frag_spv.*;
 const raw_colr_frag_spv = @embedFile("generated/spirv/colr.frag.spv");
 const aligned_colr_frag_spv: [raw_colr_frag_spv.len]u8 align(4) = raw_colr_frag_spv.*;
+const raw_path_quadratic_frag_spv = @embedFile("generated/spirv/path_quadratic.frag.spv");
+const aligned_path_quadratic_frag_spv: [raw_path_quadratic_frag_spv.len]u8 align(4) = raw_path_quadratic_frag_spv.*;
+const raw_path_conic_frag_spv = @embedFile("generated/spirv/path_conic.frag.spv");
+const aligned_path_conic_frag_spv: [raw_path_conic_frag_spv.len]u8 align(4) = raw_path_conic_frag_spv.*;
 const raw_path_frag_spv = @embedFile("generated/spirv/path.frag.spv");
 const aligned_path_frag_spv: [raw_path_frag_spv.len]u8 align(4) = raw_path_frag_spv.*;
 const raw_tt_hinted_frag_spv = @embedFile("generated/spirv/tt_hinted_text.frag.spv");
@@ -436,6 +480,14 @@ pub fn textSpv(comptime stage: Stage) []align(4) const u8 {
 
 pub fn colrFragSpv() []align(4) const u8 {
     return &aligned_colr_frag_spv;
+}
+
+pub fn pathQuadraticFragSpv() []align(4) const u8 {
+    return &aligned_path_quadratic_frag_spv;
+}
+
+pub fn pathConicFragSpv() []align(4) const u8 {
+    return &aligned_path_conic_frag_spv;
 }
 
 pub fn pathFragSpv() []align(4) const u8 {
@@ -504,6 +556,10 @@ test "generated GL coverage stages stay driver-compile sized" {
     inline for (.{
         colrFragGlsl330(),
         colrFragGles300(),
+        pathQuadraticFragGlsl330(),
+        pathQuadraticFragGles300(),
+        pathConicFragGlsl330(),
+        pathConicFragGles300(),
         pathFragGlsl330(),
         pathFragGles300(),
         ttHintedFragGlsl330(),
@@ -519,6 +575,20 @@ test "generated GL coverage stages stay driver-compile sized" {
         textSampleFragGles300(),
     }) |src| {
         try std.testing.expect(src.len <= max_stage_bytes);
+    }
+}
+
+test "classified path artifacts contain only compatible curve solvers" {
+    inline for (.{ pathQuadraticFragGlsl330(), pathQuadraticFragGles300() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "accumulateConicCoverage") == null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") == null);
+    }
+    inline for (.{ pathConicFragGlsl330(), pathConicFragGles300() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "accumulateConicCoverage") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") == null);
+    }
+    inline for (.{ pathFragGlsl330(), pathFragGles300() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") != null);
     }
 }
 
@@ -539,7 +609,14 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_layer_tex_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_image_tex_name) == null);
     }
-    inline for (.{ pathFragGlsl330(), pathFragGles300() }) |src| {
+    inline for (.{
+        pathQuadraticFragGlsl330(),
+        pathQuadraticFragGles300(),
+        pathConicFragGlsl330(),
+        pathConicFragGles300(),
+        pathFragGlsl330(),
+        pathFragGles300(),
+    }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_curve_tex_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_band_tex_name) != null);
@@ -552,11 +629,11 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_band_tex_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_layer_tex_name) != null);
     }
-    inline for (.{ colrFragWgsl(), pathFragWgsl(), ttHintedFragWgsl(), autohintWgsl(.fragment) }) |src| {
+    inline for (.{ colrFragWgsl(), pathQuadraticFragWgsl(), pathConicFragWgsl(), pathFragWgsl(), ttHintedFragWgsl(), autohintWgsl(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "fn " ++ wgsl_fragment_entry) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "@group(2) var<uniform>") != null);
     }
-    inline for (.{ colrFragSpv(), pathFragSpv(), ttHintedFragSpv(), autohintSpv(.vertex), autohintSpv(.fragment) }) |spv| {
+    inline for (.{ colrFragSpv(), pathQuadraticFragSpv(), pathConicFragSpv(), pathFragSpv(), ttHintedFragSpv(), autohintSpv(.vertex), autohintSpv(.fragment) }) |spv| {
         try std.testing.expect(std.mem.readInt(u32, spv[0..4], .little) == 0x0723_0203);
     }
     // Autohint GL vertex: shared block name, vertex-stage layer sampler,
@@ -664,7 +741,7 @@ test "generated artifacts carry the documented interface names" {
     // Autohint's vertex-stage layer read keeps the contract register even
     // with curve/band stripped as unused.
     try std.testing.expect(std.mem.indexOf(u8, autohintHlsl(.vertex), "register(t2)") != null);
-    inline for (.{ textHlsl(.fragment), autohintHlsl(.fragment), colrFragHlsl(), pathFragHlsl(), ttHintedFragHlsl(), subpixelFragHlsl(), textSampleFragHlsl() }) |src| {
+    inline for (.{ textHlsl(.fragment), autohintHlsl(.fragment), colrFragHlsl(), pathQuadraticFragHlsl(), pathConicFragHlsl(), pathFragHlsl(), ttHintedFragHlsl(), subpixelFragHlsl(), textSampleFragHlsl() }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "register(b0)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t0)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t1)") != null);
@@ -673,7 +750,7 @@ test "generated artifacts carry the documented interface names" {
     try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(t2)") != null);
     try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(t3)") == null);
     try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(s0)") == null);
-    inline for (.{pathFragHlsl()}) |src| {
+    inline for (.{ pathQuadraticFragHlsl(), pathConicFragHlsl(), pathFragHlsl() }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t2)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t3)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(s0)") != null);
@@ -706,7 +783,7 @@ test "generated artifacts carry the documented interface names" {
     // Autohint's vertex-stage layer read keeps the contract slot even with
     // curve/band stripped as unused.
     try std.testing.expect(std.mem.indexOf(u8, autohintMsl(.vertex), "[[texture(2)]]") != null);
-    inline for (.{ textMsl(.fragment), autohintMsl(.fragment), colrFragMsl(), pathFragMsl(), ttHintedFragMsl(), subpixelFragMsl(), textSampleFragMsl() }) |src| {
+    inline for (.{ textMsl(.fragment), autohintMsl(.fragment), colrFragMsl(), pathQuadraticFragMsl(), pathConicFragMsl(), pathFragMsl(), ttHintedFragMsl(), subpixelFragMsl(), textSampleFragMsl() }) |src| {
         try std.testing.expect(std.mem.startsWith(u8, src, "#include <metal_stdlib>"));
         try std.testing.expect(std.mem.indexOf(u8, src, "[[buffer(0)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "[[fragment]]") != null);
@@ -718,7 +795,7 @@ test "generated artifacts carry the documented interface names" {
     try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[texture(2)]]") != null);
     try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[texture(3)]]") == null);
     try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[sampler(0)]]") == null);
-    inline for (.{pathFragMsl()}) |src| {
+    inline for (.{ pathQuadraticFragMsl(), pathConicFragMsl(), pathFragMsl() }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(2)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(3)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "[[sampler(0)]]") != null);

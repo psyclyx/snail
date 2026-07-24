@@ -47,6 +47,8 @@ pub const Gles30TextState = struct {
     backend: Backend = .gles30,
     text_program: ProgramState = .{},
     colr_program: ProgramState = .{},
+    path_quadratic_program: ProgramState = .{},
+    path_conic_program: ProgramState = .{},
     path_program: ProgramState = .{},
     tt_hinted_text_program: ProgramState = .{},
     autohint_program: ProgramState = .{},
@@ -93,6 +95,8 @@ pub const Gles30TextState = struct {
     pub fn deinit(self: *Gles30TextState) void {
         deleteProgramState(&self.text_program);
         deleteProgramState(&self.colr_program);
+        deleteProgramState(&self.path_quadratic_program);
+        deleteProgramState(&self.path_conic_program);
         deleteProgramState(&self.path_program);
         deleteProgramState(&self.tt_hinted_text_program);
         deleteProgramState(&self.autohint_program);
@@ -158,6 +162,8 @@ pub const Gles30TextState = struct {
         const prog_state = switch (kind) {
             .regular => try self.ensureTextProgram(),
             .colr => try self.ensureColrProgram(),
+            .path_quadratic => try self.ensurePathQuadraticProgram(),
+            .path_conic => try self.ensurePathConicProgram(),
             .path => try self.ensurePathProgram(),
             .tt_hinted_text => try self.ensureTtHintedTextProgram(),
             .autohint => try self.ensureAutohintProgram(),
@@ -250,6 +256,18 @@ pub const Gles30TextState = struct {
         if (self.path_program.handle == 0)
             self.path_program = try gl_programs.loadNativeProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path);
         return &self.path_program;
+    }
+
+    fn ensurePathQuadraticProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.path_quadratic_program.handle == 0)
+            self.path_quadratic_program = try gl_programs.loadNativeProgramState("path-quadratic", shaders.vertex_shader, shaders.fragment_shader_path_quadratic);
+        return &self.path_quadratic_program;
+    }
+
+    fn ensurePathConicProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.path_conic_program.handle == 0)
+            self.path_conic_program = try gl_programs.loadNativeProgramState("path-conic", shaders.vertex_shader, shaders.fragment_shader_path_conic);
+        return &self.path_conic_program;
     }
 
     fn ensureTtHintedTextProgram(self: *Gles30TextState) DrawError!*const ProgramState {

@@ -1,7 +1,9 @@
 // Painted families: one shared vertex/interface shell with genuinely
 // specialized fragment bodies. SNAIL_PAINTED_COLR selects the compact
 // TrueType-quadratic + solid-layer COLRv0 evaluator; SNAIL_PAINTED_PATH
-// selects the arbitrary path and general paint evaluator.
+// selects the arbitrary path and general paint evaluator. The optional
+// SNAIL_PATH_QUADRATIC / SNAIL_PATH_CONIC defines remove stronger curve
+// solvers from classified path variants; no define keeps full cubic support.
 //
 // Per-target compile flags match families/text.slang (see
 // build/slang_shaders.zig). The vertex is the same raw-VertexIndex

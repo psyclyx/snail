@@ -210,7 +210,7 @@ const Pipelines = struct {
             .regular => .{ .layout = self.text_layout.?, .vs = self.text_vs.?, .ps = self.regular_ps.? },
             .autohint => .{ .layout = self.autohint_layout.?, .vs = self.autohint_vs.?, .ps = self.autohint_ps.? },
             .tt_hinted_text => .{ .layout = self.text_layout.?, .vs = self.text_vs.?, .ps = self.tt_ps.? },
-            .path => .{ .layout = self.text_layout.?, .vs = self.text_vs.?, .ps = self.path_ps.? },
+            .path_quadratic, .path_conic, .path => .{ .layout = self.text_layout.?, .vs = self.text_vs.?, .ps = self.path_ps.? },
             .colr => .{ .layout = self.text_layout.?, .vs = self.text_vs.?, .ps = self.colr_ps.? },
         };
     }
@@ -502,7 +502,7 @@ pub fn main() !void {
         .autohint => seen.autohint = true,
         .tt_hinted_text => seen.tt_hinted_text = true,
         .colr => seen.colr = true,
-        .path => seen.path_shapes += batch.instance_count,
+        .path_quadratic, .path_conic, .path => seen.path_shapes += batch.instance_count,
     };
     std.debug.assert(seen.regular and seen.autohint and seen.tt_hinted_text and seen.colr and seen.path_shapes == 2);
 

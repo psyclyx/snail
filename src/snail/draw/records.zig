@@ -18,6 +18,12 @@ pub const Instance = vertex_mod.Instance;
 pub const ShapeKind = enum {
     regular,
     colr,
+    /// General paint over line/quadratic path geometry.
+    path_quadratic,
+    /// General paint over line/quadratic/rational-conic path geometry.
+    path_conic,
+    /// General paint with the full cubic evaluator. Retains the historical
+    /// `.path` name as the conservative fallback family.
     path,
     tt_hinted_text,
     autohint,
@@ -122,7 +128,11 @@ pub fn shapeKind(instance: *const Instance) ?ShapeKind {
     if (!abi_mod.glyphWordIsSpecial(packed_word)) return .regular;
     return switch (abi_mod.specialGlyphWordKind(packed_word) orelse return null) {
         .colr => .colr,
-        .path => .path,
+        .path => switch (abi_mod.pathCurveClass(instance.payload[0]) orelse return null) {
+            .quadratic => .path_quadratic,
+            .conic => .path_conic,
+            .cubic => .path,
+        },
         .tt_hinted_text => .tt_hinted_text,
         .autohint => .autohint,
     };

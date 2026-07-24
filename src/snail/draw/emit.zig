@@ -84,6 +84,8 @@ pub const EmitResult = struct {
 const ShapeMode = enum {
     regular,
     colr,
+    path_quadratic,
+    path_conic,
     path,
     tt_hinted_text,
     autohint,
@@ -92,6 +94,8 @@ const ShapeMode = enum {
         return switch (self) {
             .regular => .regular,
             .colr => .colr,
+            .path_quadratic => .path_quadratic,
+            .path_conic => .path_conic,
             .path => .path,
             .tt_hinted_text => .tt_hinted_text,
             .autohint => .autohint,
@@ -193,7 +197,12 @@ fn inspectShape(
         inspected.layer_count = info.layer_count;
     } else if (atlas.lookupPaintRecord(shape.key)) |info| {
         if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
-        inspected.mode = if (info.shader_class == .colr_solid) .colr else .path;
+        inspected.mode = switch (info.shader_class) {
+            .colr_solid => .colr,
+            .path_quadratic => .path_quadratic,
+            .path_conic => .path_conic,
+            .path_cubic => .path,
+        };
         inspected.info_x = info.info_x;
         inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
         inspected.layer_count = info.layer_count;
@@ -302,7 +311,7 @@ pub fn emit(
                 error.BufferTooSmall => error.BufferTooSmall,
                 error.InvalidInstance => unreachable,
             },
-            .path => cur.appendPathRecordTransformedTinted(
+            .path_quadratic, .path_conic, .path => cur.appendPathRecordTransformedTinted(
                 inspected.rec.bbox,
                 inspected.info_x,
                 inspected.info_y,
@@ -311,6 +320,12 @@ pub fn emit(
                 world_tint,
                 inspected.atlas_layer,
                 inspected.final_transform,
+                switch (inspected.mode) {
+                    .path_quadratic => .quadratic,
+                    .path_conic => .conic,
+                    .path => .cubic,
+                    else => unreachable,
+                },
             ) catch |err| return switch (err) {
                 error.BufferTooSmall => error.BufferTooSmall,
                 error.InvalidInstance => unreachable,
@@ -427,6 +442,7 @@ fn makeTinyCurves(allocator: std.mem.Allocator) !GlyphCurves {
         .curve_bytes = curve_bytes,
         .band_bytes = band_bytes,
         .curve_count = 1,
+        .path_curve_class = .quadratic,
         .h_band_count = 1,
         .v_band_count = 1,
         .band_scale_x = 1.0,
@@ -799,12 +815,12 @@ test "emit splits contiguous shapes into exact semantic batches" {
     try testing.expectEqual(@as(usize, 5), batch_len);
     try testing.expectEqual(draw_records.ShapeKind.regular, batches[0].kind);
     try testing.expectEqual(draw_records.ShapeKind.colr, batches[1].kind);
-    try testing.expectEqual(draw_records.ShapeKind.path, batches[2].kind);
+    try testing.expectEqual(draw_records.ShapeKind.path_quadratic, batches[2].kind);
     try testing.expectEqual(@as(u32, 2), batches[2].instance_count);
     try testing.expectEqual(draw_records.ShapeKind.tt_hinted_text, batches[3].kind);
     try testing.expectEqual(draw_records.ShapeKind.regular, batches[4].kind);
     for (batches[0..batch_len]) |batch| {
-        if (batch.kind == .path) continue;
+        if (batch.kind == .path_quadratic) continue;
         try testing.expectEqual(@as(u32, 1), batch.instance_count);
     }
 }

@@ -118,6 +118,8 @@ pub const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 pub const vert_text_native_spv = vk_shaders.vert_text_native_spv;
 pub const frag_text_native_spv = vk_shaders.frag_text_native_spv;
 pub const frag_colr_native_spv = vk_shaders.frag_colr_native_spv;
+pub const frag_path_quadratic_native_spv = vk_shaders.frag_path_quadratic_native_spv;
+pub const frag_path_conic_native_spv = vk_shaders.frag_path_conic_native_spv;
 pub const frag_path_native_spv = vk_shaders.frag_path_native_spv;
 pub const frag_tt_hinted_native_spv = vk_shaders.frag_tt_hinted_native_spv;
 pub const vert_autohint_native_spv = vk_shaders.vert_autohint_native_spv;
@@ -156,7 +158,7 @@ pub fn blendAttachment(mode: Blend) vk.VkPipelineColorBlendAttachmentState {
 /// A shape family the caller builds one pipeline for. The `*subpixel`
 /// families are the LCD dual-source variants of the three text kinds
 /// (regular, TT-hinted, autohint); the rest map 1:1 to `ShapeKind`.
-pub const Family = enum { text, colr, path, tt_hinted_text, autohint, subpixel, tt_hinted_subpixel, autohint_subpixel };
+pub const Family = enum { text, colr, path_quadratic, path_conic, path, tt_hinted_text, autohint, subpixel, tt_hinted_subpixel, autohint_subpixel };
 
 /// The frag module + blend the caller's pipeline for `family` must use. Vertex
 /// input, descriptor-set layout and push constants are the same for all.
@@ -173,6 +175,8 @@ pub fn recipe(family: Family) PipelineRecipe {
     return switch (family) {
         .text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_text_native_spv, .blend = .premultiplied },
         .colr => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_colr_native_spv, .blend = .premultiplied },
+        .path_quadratic => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_path_quadratic_native_spv, .blend = .premultiplied },
+        .path_conic => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_path_conic_native_spv, .blend = .premultiplied },
         .path => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_path_native_spv, .blend = .premultiplied },
         .tt_hinted_text => .{ .vert_spv = vert_text_native_spv, .frag_spv = frag_tt_hinted_native_spv, .blend = .premultiplied },
         .autohint => .{ .vert_spv = vert_autohint_native_spv, .frag_spv = frag_autohint_native_spv, .blend = .premultiplied },
@@ -208,7 +212,7 @@ pub fn textRenderMode(
 pub fn kindHasSubpixelFamily(kind: vertex.ShapeKind) bool {
     return switch (kind) {
         .regular, .tt_hinted_text, .autohint => true,
-        .colr, .path => false,
+        .colr, .path_quadratic, .path_conic, .path => false,
     };
 }
 
@@ -222,6 +226,8 @@ pub fn familyForKind(kind: vertex.ShapeKind, text_mode: TextRenderMode) Family {
             .subpixel_dual_source => .subpixel,
         },
         .colr => .colr,
+        .path_quadratic => .path_quadratic,
+        .path_conic => .path_conic,
         .path => .path,
         .tt_hinted_text => switch (text_mode) {
             .grayscale => .tt_hinted_text,

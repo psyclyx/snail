@@ -124,6 +124,13 @@ Treat this as a from-scratch migration.
   set links in about 3.27 seconds cold versus roughly 16.3 seconds before these
   changes. The previous handwritten mirror reached 2.27 seconds but required
   maintaining a second implementation.
+- General painted paths are further classified by their strongest packed
+  segment kind. Line/quadratic records use a 28 KiB GL fragment with no conic
+  or cubic solver, rational-conic records use a 36 KiB fragment with no cubic
+  root finder, and only records containing cubics select the full 43 KiB
+  fragment. The classification is preserved across composite layers,
+  compaction, emit batches, and every generated target; zero-initialized
+  caller-authored path instances remain conservatively full-cubic.
 - Upload planning distinguishes exact snapshots, direct append-only children,
   branches, and unrelated atlases using full snapshot lineage. Delta plans
   copy only changed page spans for direct growth; branches/unrelated snapshots

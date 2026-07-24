@@ -29,7 +29,7 @@ const embeddable = @import("resources.zig");
 pub const cachePipelineShape = embeddable.cachePipelineShape;
 pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
 
-const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .tt_hinted_text, .autohint };
+const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path_quadratic, .path_conic, .path, .tt_hinted_text, .autohint };
 const SUBPIXEL_FAMILIES = [_]contract.Family{ .subpixel, .tt_hinted_subpixel, .autohint_subpixel };
 const FAMILY_COUNT = std.enums.values(contract.Family).len;
 

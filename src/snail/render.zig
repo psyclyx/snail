@@ -29,6 +29,7 @@ pub const records = struct {
     pub const shapeKind = draw_mod.shapeKind;
 
     pub const SpecialLayerKind = abi_mod.SpecialLayerKind;
+    pub const PathCurveClass = abi_mod.PathCurveClass;
     pub const PaintRecordKind = abi_mod.PaintRecordKind;
     pub const BandCounts = abi_mod.BandCounts;
     pub const paint_texels_per_record = abi_mod.paint_texels_per_record;

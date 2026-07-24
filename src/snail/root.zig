@@ -105,6 +105,7 @@ pub const CompositeMode = atlas_mod.CompositeMode;
 pub const AtlasLayer = atlas_mod.Layer;
 pub const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 pub const PaintShaderClass = atlas_mod.PaintShaderClass;
+pub const PathCurveClass = @import("format/abi.zig").PathCurveClass;
 pub const AtlasRecord = @import("atlas/record.zig").AtlasRecord;
 pub const RecordFilter = atlas_mod.RecordFilter;
 

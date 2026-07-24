@@ -26,11 +26,11 @@ fn textRenderMode(order: SubpixelOrder, supports_dual_source: bool) TextRenderMo
 }
 
 /// Whether a shape kind has an LCD dual-source program (the three text
-/// kinds). colr/path always render premultiplied grayscale.
+/// kinds). colr/path families always render premultiplied grayscale.
 fn kindHasSubpixelProgram(kind: ShapeKind) bool {
     return switch (kind) {
         .regular, .tt_hinted_text, .autohint => true,
-        .colr, .path => false,
+        .colr, .path_quadratic, .path_conic, .path => false,
     };
 }
 
@@ -67,6 +67,8 @@ fn TextStateFor(comptime backend: Backend) type {
         text_program: ProgramState = .{},
         text_subpixel_dual_program: ProgramState = .{},
         colr_program: ProgramState = .{},
+        path_quadratic_program: ProgramState = .{},
+        path_conic_program: ProgramState = .{},
         path_program: ProgramState = .{},
         tt_hinted_text_program: ProgramState = .{},
         tt_hinted_subpixel_dual_program: ProgramState = .{},
@@ -93,7 +95,7 @@ fn TextStateFor(comptime backend: Backend) type {
         // and (defensively) when the bound cache changes.
         active_cache: ?*const GlDeviceAtlas = null,
         program_cache_count: usize = 0,
-        program_uniform_caches: [8]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 8,
+        program_uniform_caches: [10]ProgramUniformCache = [_]ProgramUniformCache{.{}} ** 10,
         // Per-draw GL state shadows.
         cached_blend_mode: BlendMode = .uninitialized,
         cached_heterogeneous_vao_bound: bool = false,
@@ -196,6 +198,8 @@ fn TextStateFor(comptime backend: Backend) type {
             deleteProgramState(&self.text_program);
             deleteProgramState(&self.text_subpixel_dual_program);
             deleteProgramState(&self.colr_program);
+            deleteProgramState(&self.path_quadratic_program);
+            deleteProgramState(&self.path_conic_program);
             deleteProgramState(&self.path_program);
             deleteProgramState(&self.tt_hinted_text_program);
             deleteProgramState(&self.tt_hinted_subpixel_dual_program);
@@ -320,6 +324,8 @@ fn TextStateFor(comptime backend: Backend) type {
             const prog_state = switch (kind) {
                 .regular => try self.ensureTextProgram(run_mode),
                 .colr => try self.ensureColrProgram(),
+                .path_quadratic => try self.ensurePathQuadraticProgram(),
+                .path_conic => try self.ensurePathConicProgram(),
                 .path => try self.ensurePathProgram(),
                 .tt_hinted_text => try self.ensureTtHintedTextProgram(run_mode),
                 .autohint => try self.ensureAutohintProgram(run_mode),
@@ -535,6 +541,18 @@ fn TextStateFor(comptime backend: Backend) type {
             if (self.path_program.handle == 0)
                 self.path_program = try gl_programs.loadNativeProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path);
             return &self.path_program;
+        }
+
+        fn ensurePathQuadraticProgram(self: *GlTextState) DrawError!*const ProgramState {
+            if (self.path_quadratic_program.handle == 0)
+                self.path_quadratic_program = try gl_programs.loadNativeProgramState("path-quadratic", shaders.vertex_shader, shaders.fragment_shader_path_quadratic);
+            return &self.path_quadratic_program;
+        }
+
+        fn ensurePathConicProgram(self: *GlTextState) DrawError!*const ProgramState {
+            if (self.path_conic_program.handle == 0)
+                self.path_conic_program = try gl_programs.loadNativeProgramState("path-conic", shaders.vertex_shader, shaders.fragment_shader_path_conic);
+            return &self.path_conic_program;
         }
 
         fn ensureTtHintedTextProgram(self: *GlTextState, mode: TextRenderMode) DrawError!*const ProgramState {
