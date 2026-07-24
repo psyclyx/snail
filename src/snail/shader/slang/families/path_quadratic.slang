@@ -1,10 +1,10 @@
-// Unrestricted cubic path fragment entry.
-module path;
+// Classified quadratic path fragment entry.
+module path_quadratic;
 
 import painted_family_common;
 import path_family;
 
 [shader("fragment")]
 float4 fragmentMain(PaintedFragmentInput input) : SV_Target {
-    return pathFragment<true, true>(input);
+    return pathFragment<false, false>(input);
 }

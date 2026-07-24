@@ -122,8 +122,6 @@ pub const Family = struct {
     /// material shader) are wired as anonymous imports next to their
     /// consumer.
     owner: enum { library, game } = .library,
-    /// Extra -D defines (family variants sharing one source).
-    defines: []const []const u8 = &.{},
     stages: []const Stage,
     /// Preserve authored helper boundaries in coverage-heavy desktop GLSL.
     /// GLES intentionally keeps Slang's default O1; see the flag notes above.
@@ -225,8 +223,8 @@ const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabiliti
 pub const families = [_]Family{
     .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
     .{ .name = "colr", .source = "families/colr.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_quadratic", .source = "families/path.slang", .defines = &.{"SNAIL_PATH_QUADRATIC"}, .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_conic", .source = "families/path.slang", .defines = &.{"SNAIL_PATH_CONIC"}, .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_quadratic", .source = "families/path_quadratic.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path_conic", .source = "families/path_conic.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "path", .source = "families/path.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
@@ -337,7 +335,6 @@ fn slangcFamily(
     const cmd = b.addSystemCommand(&.{"slangc"});
     attachSlangcGate(b, &cmd.step);
     for (target_defines) |d| cmd.addArg(b.fmt("-D{s}", .{d}));
-    inline for (family.defines) |d| cmd.addArg("-D" ++ d);
     cmd.addArgs(&.{
         "-entry",
         stage.entry,
@@ -369,7 +366,6 @@ fn stageReflectionJson(b: *std.Build, comptime family: Family, stage: Stage, tar
     const cmd = b.addSystemCommand(&.{"slangc"});
     attachSlangcGate(b, &cmd.step);
     cmd.addArg(b.fmt("-D{s}", .{target_define}));
-    inline for (family.defines) |d| cmd.addArg("-D" ++ d);
     cmd.addArgs(&.{
         "-entry",
         stage.entry,

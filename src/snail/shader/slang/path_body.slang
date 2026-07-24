@@ -47,7 +47,6 @@ struct SegmentData {
     float3 weights;
 };
 
-#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDelta, out float tOut) {
     // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
     // monotonic along both sampling axes and can contribute at most one root.
@@ -80,7 +79,6 @@ bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDel
     tOut = t;
     return true;
 }
-#endif
 
 float2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, float p2x, float p2y, float ppeX) {
     float ax = p0x - p1x * 2.0 + p2x;
@@ -148,7 +146,12 @@ float2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, f
 // is no longer reachable from the path producer: every path glyph and
 // every freed vector picture goes through `encodeDirectSingleGlyphCurves`
 // / `prefer_direct_encoding = true`, so segments are always direct.
-SegmentData fetchSegment(SnailFloatTexture2DArray curve_tex, int2 loc, int layer, int kind) {
+SegmentData fetchSegment<let HAS_CONIC : bool>(
+    SnailFloatTexture2DArray curve_tex,
+    int2 loc,
+    int layer,
+    int kind)
+{
     float4 tex0 = curve_tex.Load(int4(loc, layer, 0));
     float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(loc, 1), layer, 0));
     SegmentData seg;
@@ -157,45 +160,39 @@ SegmentData fetchSegment(SnailFloatTexture2DArray curve_tex, int2 loc, int layer
     seg.p1 = tex0.zw;
     seg.p2 = tex1.xy;
     seg.p3 = tex1.zw;
-#if defined(SNAIL_PATH_QUADRATIC)
-    seg.weights = float3(1.0);
-#else
-    if (kind == 1) {
+    if (HAS_CONIC && kind == 1) {
         float4 tex2 = curve_tex.Load(int4(offsetCurveLoc(loc, 2), layer, 0));
         seg.weights = float3(tex2.w, tex2.x, tex2.y);
     } else {
         seg.weights = float3(1.0);
     }
-#endif
     return seg;
 }
 
-float segmentMaxX(SegmentData seg) {
+float segmentMaxX<let HAS_CUBIC : bool>(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
-#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
-    if (seg.kind == 2) return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
-#endif
+    if (HAS_CUBIC && seg.kind == 2)
+        return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
     return max(max(seg.p0.x, seg.p1.x), seg.p2.x);
 }
 
-float segmentMaxY(SegmentData seg) {
+float segmentMaxY<let HAS_CUBIC : bool>(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
-#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
-    if (seg.kind == 2) return max(max(seg.p0.y, seg.p1.y), max(seg.p2.y, seg.p3.y));
-#endif
+    if (HAS_CUBIC && seg.kind == 2)
+        return max(max(seg.p0.y, seg.p1.y), max(seg.p2.y, seg.p3.y));
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
-#if !defined(SNAIL_PATH_QUADRATIC)
-float segmentEndRootDelta(SegmentData seg, float2 sampleRc, bool horizontal) {
-#if !defined(SNAIL_PATH_CONIC)
-    if (seg.kind == 2) {
+float segmentEndRootDelta<let HAS_CUBIC : bool>(
+    SegmentData seg,
+    float2 sampleRc,
+    bool horizontal)
+{
+    if (HAS_CUBIC && seg.kind == 2) {
         return horizontal ? seg.p3.y - sampleRc.y : seg.p3.x - sampleRc.x;
     }
-#endif
     return horizontal ? seg.p2.y - sampleRc.y : seg.p2.x - sampleRc.x;
 }
-#endif
 
 bool rootHullCanCross3(float p0, float p1, float p2, float sampleRoot) {
     float minRoot = min(min(p0, p1), p2);
@@ -203,19 +200,19 @@ bool rootHullCanCross3(float p0, float p1, float p2, float sampleRoot) {
     return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
 }
 
-#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 bool rootHullCanCross4(float p0, float p1, float p2, float p3, float sampleRoot) {
     float minRoot = min(min(p0, p1), min(p2, p3));
     float maxRoot = max(max(p0, p1), max(p2, p3));
     return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
 }
-#endif
 
-#if !defined(SNAIL_PATH_QUADRATIC)
-bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) {
+bool segmentRootHullCanCross<let HAS_CUBIC : bool>(
+    SegmentData seg,
+    float2 sampleRc,
+    bool horizontal)
+{
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
-#if !defined(SNAIL_PATH_CONIC)
-    if (seg.kind == 2) {
+    if (HAS_CUBIC && seg.kind == 2) {
         return rootHullCanCross4(
             horizontal ? seg.p0.y : seg.p0.x,
             horizontal ? seg.p1.y : seg.p1.x,
@@ -224,7 +221,6 @@ bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) 
             sampleRoot
         );
     }
-#endif
     return rootHullCanCross3(
         horizontal ? seg.p0.y : seg.p0.x,
         horizontal ? seg.p1.y : seg.p1.x,
@@ -232,7 +228,6 @@ bool segmentRootHullCanCross(SegmentData seg, float2 sampleRc, bool horizontal) 
         sampleRoot
     );
 }
-#endif
 
 void appendCoverageContribution(inout float cov, inout float wgt, float distance, float sign) {
     cov += sign * clamp(distance + 0.5, 0.0, 1.0);
@@ -262,7 +257,6 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
 }
 
-#if !defined(SNAIL_PATH_QUADRATIC)
 float distToUnitInterval(float t) {
     return max(max(0.0, -t), t - 1.0);
 }
@@ -300,8 +294,15 @@ void accumulateConicRoot(inout float cov,
     appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
 }
 
-void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, float2 sampleRc, float ppe, bool horizontal) {
-    if (!segmentRootHullCanCross(seg, sampleRc, horizontal)) return;
+void accumulateConicCoverage<let HAS_CUBIC : bool>(
+    inout float cov,
+    inout float wgt,
+    SegmentData seg,
+    float2 sampleRc,
+    float ppe,
+    bool horizontal)
+{
+    if (!segmentRootHullCanCross<HAS_CUBIC>(seg, sampleRc, horizontal)) return;
 
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
     float sampleAlong = horizontal ? sampleRc.x : sampleRc.y;
@@ -368,7 +369,7 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float denA = seg.weights.x - 2.0 * seg.weights.y + seg.weights.z;
     float denB = 2.0 * (seg.weights.y - seg.weights.x);
     float denC = seg.weights.x;
-    float endRootDelta = segmentEndRootDelta(seg, sampleRc, horizontal);
+    float endRootDelta = segmentEndRootDelta<HAS_CUBIC>(seg, sampleRc, horizontal);
 
     accumulateConicRoot(cov, wgt, root0, endRootDelta, sampleAlong, ppe, horizontal,
                         rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
@@ -377,11 +378,9 @@ void accumulateConicCoverage(inout float cov, inout float wgt, SegmentData seg, 
                             rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
     }
 }
-#endif
 
-#if !defined(SNAIL_PATH_QUADRATIC) && !defined(SNAIL_PATH_CONIC)
 void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, float2 sampleRc, float ppe, bool horizontal) {
-    if (!segmentRootHullCanCross(seg, sampleRc, horizontal)) return;
+    if (!segmentRootHullCanCross<true>(seg, sampleRc, horizontal)) return;
 
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
     float sampleAlong = horizontal ? sampleRc.x : sampleRc.y;
@@ -425,10 +424,20 @@ void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, 
     float dist = (along - sampleAlong) * ppe;
     appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
 }
-#endif
 
-bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, float2 sampleRc, float ppe, SegmentData seg, bool horizontal) {
-    float maxCoord = (horizontal ? segmentMaxX(seg) - sampleRc.x : segmentMaxY(seg) - sampleRc.y);
+bool accumulateAxisCoverageSegment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+    inout float cov,
+    inout float wgt,
+    float2 sampleRc,
+    float ppe,
+    SegmentData seg,
+    bool horizontal)
+{
+    float maxCoord = (
+        horizontal
+            ? segmentMaxX<HAS_CUBIC>(seg) - sampleRc.x
+            : segmentMaxY<HAS_CUBIC>(seg) - sampleRc.y
+    );
     if (maxCoord * ppe < -0.5) return false;
 
     if (seg.kind == 0) {
@@ -468,45 +477,42 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, float2 samp
         return true;
     }
 
-#if defined(SNAIL_PATH_QUADRATIC)
-    // Classified records guarantee the only remaining kind is line.
-    accumulateLineCoverage(
-        cov,
-        wgt,
-        seg.p0.x - sampleRc.x,
-        seg.p0.y - sampleRc.y,
-        seg.p2.x - sampleRc.x,
-        seg.p2.y - sampleRc.y,
-        ppe,
-        horizontal
-    );
-    return true;
-#else
-    if (seg.kind == 1) {
-        accumulateConicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
+    if (HAS_CONIC && seg.kind == 1) {
+        accumulateConicCoverage<HAS_CUBIC>(cov, wgt, seg, sampleRc, ppe, horizontal);
         return true;
     }
 
-#if defined(SNAIL_PATH_CONIC)
-    // Classified records guarantee the only remaining kind is line.
-    accumulateLineCoverage(
-        cov,
-        wgt,
-        seg.p0.x - sampleRc.x,
-        seg.p0.y - sampleRc.y,
-        seg.p2.x - sampleRc.x,
-        seg.p2.y - sampleRc.y,
-        ppe,
-        horizontal
-    );
-#else
-    accumulateCubicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
-#endif
+    if (HAS_CUBIC) {
+        accumulateCubicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
+    } else {
+        // Classified quadratic/conic records guarantee the only remaining
+        // kind is line.
+        accumulateLineCoverage(
+            cov,
+            wgt,
+            seg.p0.x - sampleRc.x,
+            seg.p0.y - sampleRc.y,
+            seg.p2.x - sampleRc.x,
+            seg.p2.y - sampleRc.y,
+            ppe,
+            horizontal
+        );
+    }
     return true;
-#endif
 }
 
-float2 evalAxisCoverageBands(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float2 sampleRc, float ppe, int2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {
+float2 evalAxisCoverageBands<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    float2 sampleRc,
+    float ppe,
+    int2 gLoc,
+    int headerBase,
+    int firstBand,
+    int lastBand,
+    int layer,
+    bool horizontal)
+{
     float cov = 0.0;
     float wgt = 0.0;
     bool dedup = firstBand != lastBand;
@@ -524,21 +530,39 @@ float2 evalAxisCoverageBands(SnailFloatTexture2DArray curve_tex, SnailUint2Textu
             }
             int2 cLoc = decodeBandCurveLocCommon(ref);
             int kind = decodeBandCurveKindCommon(ref);
-            if (!accumulateAxisCoverageSegment(cov, wgt, sampleRc, ppe, fetchSegment(curve_tex, cLoc, layer, kind), horizontal)) break;
+            SegmentData seg = fetchSegment<HAS_CONIC>(curve_tex, cLoc, layer, kind);
+            if (!accumulateAxisCoverageSegment<HAS_CONIC, HAS_CUBIC>(
+                    cov, wgt, sampleRc, ppe, seg, horizontal))
+                break;
         }
     }
     return float2(cov, wgt);
 }
 
-float evalPathGlyphCoverage(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float2 rc, float2 epp, float2 ppe,
-                            int2 gLoc, int2 bandMax, float4 banding, int texLayer, int fill_rule, float coverage_exponent) {
+float evalPathGlyphCoverage<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    float2 rc,
+    float2 epp,
+    float2 ppe,
+    int2 gLoc,
+    int2 bandMax,
+    float4 banding,
+    int texLayer,
+    int fill_rule,
+    float coverage_exponent)
+{
     // Band-span epsilon: the GLSL body's coverageBandSpan uses kParamEps
     // (1e-5), the same value as coverage_common's
     // kCoverageBandSpanParamEps (1/100000).
     CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
     CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
-    float2 horiz = evalAxisCoverageBands(curve_tex, band_tex, rc, ppe.x, gLoc, 0, hSpan.first, hSpan.last, texLayer, true);
-    float2 vert = evalAxisCoverageBands(curve_tex, band_tex, rc, ppe.y, gLoc, bandMax.y + 1, vSpan.first, vSpan.last, texLayer, false);
+    float2 horiz = evalAxisCoverageBands<HAS_CONIC, HAS_CUBIC>(
+        curve_tex, band_tex, rc, ppe.x, gLoc, 0,
+        hSpan.first, hSpan.last, texLayer, true);
+    float2 vert = evalAxisCoverageBands<HAS_CONIC, HAS_CUBIC>(
+        curve_tex, band_tex, rc, ppe.y, gLoc, bandMax.y + 1,
+        vSpan.first, vSpan.last, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float cov = max(applyFillRule(blended / max(wsum, kCoordEps), fill_rule),
@@ -661,7 +685,21 @@ PathPaintSample samplePathPaint(SnailFloatTexture2D layer_tex, SnailFloatTexture
     return s;
 }
 
-PathCompositeSample compositePathGroup(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, SnailFloatTexture2D layer_tex, SnailFloatTexture2DArray image_tex, SnailSamplerState image_sampler, float2 rc, float2 epp, float2 ppe, int2 infoBase, float4 header, int texLayer, float4 tint, float coverage_exponent) {
+PathCompositeSample compositePathGroup<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    SnailFloatTexture2D layer_tex,
+    SnailFloatTexture2DArray image_tex,
+    SnailSamplerState image_sampler,
+    float2 rc,
+    float2 epp,
+    float2 ppe,
+    int2 infoBase,
+    float4 header,
+    int texLayer,
+    float4 tint,
+    float coverage_exponent)
+{
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
     float4 result = float4(0.0);
@@ -680,7 +718,10 @@ PathCompositeSample compositePathGroup(SnailFloatTexture2DArray curve_tex, Snail
         int rec_fill_rule = (packed_gx >> 15) & 1;
         int bandMaxH = asint(info.z) & 0xFFFF;
         int bandMaxV = (asint(info.z) >> 16) & 0xFFFF;
-        float cov = evalPathGlyphCoverage(curve_tex, band_tex, rc, epp, ppe, gLoc, int2(bandMaxV, bandMaxH), band, texLayer, rec_fill_rule, coverage_exponent);
+        float cov = evalPathGlyphCoverage<HAS_CONIC, HAS_CUBIC>(
+            curve_tex, band_tex, rc, epp, ppe, gLoc,
+            int2(bandMaxV, bandMaxH), band, texLayer,
+            rec_fill_rule, coverage_exponent);
         PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, loc, info);
         paint.color *= tint;
 
@@ -720,7 +761,7 @@ public struct PaintedVaryings {
     public int4 glyph;
 };
 
-public float4 snailPaintedFragment(
+public float4 snailPaintedFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     PaintedVaryings v,
     float2 frag_coord,
     SnailFloatTexture2DArray curve_tex,
@@ -746,7 +787,10 @@ public float4 snailPaintedFragment(
     // v.tint arrives as a linear-light f16 vertex attribute.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
-        PathCompositeSample result = compositePathGroup(curve_tex, band_tex, layer_tex, image_tex, image_sampler, rc, epp, ppe, infoBase, firstInfo, texLayer, v.tint, p.coverage_exponent);
+        PathCompositeSample result = compositePathGroup<HAS_CONIC, HAS_CUBIC>(
+            curve_tex, band_tex, layer_tex, image_tex, image_sampler,
+            rc, epp, ppe, infoBase, firstInfo, texLayer, v.tint,
+            p.coverage_exponent);
         if (result.color.a < 1.0 / 255.0) discard;
         float4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color, frag_coord, p.dither_scale) : result.color;
         return (p.mask_output != 0) ? float4(emit.a) : ((p.output_srgb != 0) ? srgbEncodePremultiplied(emit) : emit);
@@ -758,7 +802,10 @@ public float4 snailPaintedFragment(
     int rec_fill_rule = (packed_gx >> 15) & 1;
     int bandMaxH = asint(firstInfo.z) & 0xFFFF;
     int bandMaxV = (asint(firstInfo.z) >> 16) & 0xFFFF;
-    float cov = evalPathGlyphCoverage(curve_tex, band_tex, rc, epp, ppe, gLoc, int2(bandMaxV, bandMaxH), band, texLayer, rec_fill_rule, p.coverage_exponent);
+    float cov = evalPathGlyphCoverage<HAS_CONIC, HAS_CUBIC>(
+        curve_tex, band_tex, rc, epp, ppe, gLoc,
+        int2(bandMaxV, bandMaxH), band, texLayer,
+        rec_fill_rule, p.coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, infoBase, firstInfo);
     paint.color *= v.tint;
