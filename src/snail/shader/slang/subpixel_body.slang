@@ -120,28 +120,24 @@ float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_m
 public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
     float2 sample_step = ((subpixel_order <= 2) ? display_dx : display_dy) * (1.0 / 3.0);
     float2 display_epp = subpixelCoverageEdgePixels(display_dx, display_dy, subpixel_order);
-    float2 rc_m3 = rc - sample_step * 3.0;
-    float2 rc_m2 = rc - sample_step * 2.0;
-    float2 rc_m1 = rc - sample_step * 1.0;
-    float2 rc_p1 = rc + sample_step * 1.0;
-    float2 rc_p2 = rc + sample_step * 2.0;
-    float2 rc_p3 = rc + sample_step * 3.0;
-
-    float s_m3 = evalGlyphSample(rc_m3, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_m2 = evalGlyphSample(rc_m2, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_m1 = evalGlyphSample(rc_m1, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_0 = evalGlyphSample(rc, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_p1 = evalGlyphSample(rc_p1, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_p2 = evalGlyphSample(rc_p2, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
-    float s_p3 = evalGlyphSample(rc_p3, display_epp, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
+    // One evaluator call site avoids cloning the complete coverage call graph
+    // seven times in GL backend linkers.
+    float samples[7];
+    for (int tap = 0; tap < 7; ++tap) {
+        samples[tap] = evalGlyphSample(
+            rc + sample_step * float(tap - 3),
+            display_epp, glyph_loc, band_max, banding, layer,
+            curve_tex, band_tex
+        );
+    }
     float4 coverage = filterSubpixelCoverage(
-        s_m3,
-        s_m2,
-        s_m1,
-        s_0,
-        s_p1,
-        s_p2,
-        s_p3,
+        samples[0],
+        samples[1],
+        samples[2],
+        samples[3],
+        samples[4],
+        samples[5],
+        samples[6],
         subpixel_order == 2 || subpixel_order == 4
     );
     return float4(applyCoverageTransfer3(coverage.rgb, coverage_exponent), applyCoverageTransfer(coverage.a, coverage_exponent));

@@ -669,7 +669,6 @@ public struct PaintedVaryings {
 };
 
 public float4 snailPaintedFragment(
-    int expected_special_kind,
     PaintedVaryings v,
     float2 frag_coord,
     Texture2DArray<float4> curve_tex,
@@ -685,7 +684,7 @@ public float4 snailPaintedFragment(
 
     int special_kind = v.glyph.w & 0x3;
     if ((uint(v.glyph.w) & 0x8000u) == 0u) discard;
-    if (special_kind != expected_special_kind) discard;
+    if (special_kind != SNAIL_SPECIAL_KIND_COLR && special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
 
     int2 infoBase = v.glyph.xy;
     float4 firstInfo = layer_tex.Load(int3(infoBase, 0));

@@ -156,27 +156,41 @@ pub fn textWgsl(comptime stage: Stage) [:0]const u8 {
 // `textGles300(.vertex)`.
 
 pub fn colrFragGlsl330() [:0]const u8 {
-    return @embedFile("generated/glsl330/colr.frag.glsl");
+    return paintedFragGlsl330();
 }
 
 pub fn colrFragGles300() [:0]const u8 {
-    return @embedFile("generated/gles300/colr.frag.glsl");
+    return paintedFragGles300();
 }
 
 pub fn colrFragWgsl() [:0]const u8 {
-    return @embedFile("generated/wgsl/colr.frag.wgsl");
+    return paintedFragWgsl();
 }
 
-pub fn pathFragGlsl330() [:0]const u8 {
+/// Shared COLR/path paint evaluator. Hosts should link this once and select
+/// the resulting program for both painted batch kinds.
+pub fn paintedFragGlsl330() [:0]const u8 {
     return @embedFile("generated/glsl330/path.frag.glsl");
 }
 
-pub fn pathFragGles300() [:0]const u8 {
+pub fn paintedFragGles300() [:0]const u8 {
     return @embedFile("generated/gles300/path.frag.glsl");
 }
 
-pub fn pathFragWgsl() [:0]const u8 {
+pub fn paintedFragWgsl() [:0]const u8 {
     return @embedFile("generated/wgsl/path.frag.wgsl");
+}
+
+pub fn pathFragGlsl330() [:0]const u8 {
+    return paintedFragGlsl330();
+}
+
+pub fn pathFragGles300() [:0]const u8 {
+    return paintedFragGles300();
+}
+
+pub fn pathFragWgsl() [:0]const u8 {
+    return paintedFragWgsl();
 }
 
 pub fn ttHintedFragGlsl330() [:0]const u8 {
@@ -331,11 +345,15 @@ pub fn autohintHlsl(comptime stage: Stage) [:0]const u8 {
 }
 
 pub fn colrFragHlsl() [:0]const u8 {
-    return @embedFile("generated/hlsl/colr.frag.hlsl");
+    return paintedFragHlsl();
+}
+
+pub fn paintedFragHlsl() [:0]const u8 {
+    return @embedFile("generated/hlsl/path.frag.hlsl");
 }
 
 pub fn pathFragHlsl() [:0]const u8 {
-    return @embedFile("generated/hlsl/path.frag.hlsl");
+    return paintedFragHlsl();
 }
 
 pub fn ttHintedFragHlsl() [:0]const u8 {
@@ -383,11 +401,15 @@ pub fn autohintMsl(comptime stage: Stage) [:0]const u8 {
 }
 
 pub fn colrFragMsl() [:0]const u8 {
-    return @embedFile("generated/msl/colr.frag.metal");
+    return paintedFragMsl();
+}
+
+pub fn paintedFragMsl() [:0]const u8 {
+    return @embedFile("generated/msl/path.frag.metal");
 }
 
 pub fn pathFragMsl() [:0]const u8 {
-    return @embedFile("generated/msl/path.frag.metal");
+    return paintedFragMsl();
 }
 
 pub fn ttHintedFragMsl() [:0]const u8 {
@@ -446,11 +468,15 @@ pub fn textSpv(comptime stage: Stage) []align(4) const u8 {
 }
 
 pub fn colrFragSpv() []align(4) const u8 {
-    return &aligned_colr_frag_spv;
+    return paintedFragSpv();
+}
+
+pub fn paintedFragSpv() []align(4) const u8 {
+    return &aligned_path_frag_spv;
 }
 
 pub fn pathFragSpv() []align(4) const u8 {
-    return &aligned_path_frag_spv;
+    return paintedFragSpv();
 }
 
 pub fn ttHintedFragSpv() []align(4) const u8 {
@@ -503,6 +529,34 @@ fn expectNo16BitArithmeticSpv(spv: []const u8) !void {
         word_index += word_count;
     }
     try std.testing.expectEqual(spv.len / @sizeOf(u32), word_index);
+}
+
+test "generated GL coverage stages stay driver-compile sized" {
+    // These strings are shipped to consumers for runtime compilation.
+    // Slang's default optimization can inline a complete coverage program
+    // into one 200–300 KiB main function, which is valid but pathologically
+    // slow on a cold NVIDIA compiler. Keep enough headroom for harmless
+    // toolchain churn while rejecting that structural regression.
+    const max_stage_bytes = 96 * 1024;
+    inline for (.{
+        colrFragGlsl330(),
+        colrFragGles300(),
+        pathFragGlsl330(),
+        pathFragGles300(),
+        ttHintedFragGlsl330(),
+        ttHintedFragGles300(),
+        autohintGlsl330(.vertex),
+        autohintGles300(.vertex),
+        autohintGlsl330(.fragment),
+        autohintGles300(.fragment),
+        subpixelFragGlsl330(),
+        ttHintedSubpixelFragGlsl330(),
+        autohintSubpixelFragGlsl330(),
+        textSampleFragGlsl330(),
+        textSampleFragGles300(),
+    }) |src| {
+        try std.testing.expect(src.len <= max_stage_bytes);
+    }
 }
 
 test "generated artifacts carry the documented interface names" {

@@ -680,14 +680,14 @@ PathCompositeSample compositePathGroup(vec2 rc, vec2 epp, vec2 ppe, ivec2 infoBa
     return PathCompositeSample(result, has_gradient);
 }
 
-void snailPaintedFragment(int expected_special_kind) {
+void snailPaintedFragment() {
     vec2 rc = v_texcoord;
     vec2 epp = fwidth(rc);
     vec2 ppe = 1.0 / max(epp, vec2(1.0 / 65536.0));
 
     int special_kind = v_glyph.w & 0x3;
     if ((uint(v_glyph.w) & 0x8000u) == 0u) discard;
-    if (special_kind != expected_special_kind) discard;
+    if (special_kind != SNAIL_SPECIAL_KIND_COLR && special_kind != SNAIL_SPECIAL_KIND_PATH) discard;
 
     ivec2 infoBase = v_glyph.xy;
     vec4 firstInfo = texelFetch(u_layer_tex, infoBase, 0);
@@ -720,5 +720,5 @@ void snailPaintedFragment(int expected_special_kind) {
 }
 
 void snailPathFragment() {
-    snailPaintedFragment(SNAIL_SPECIAL_KIND_PATH);
+    snailPaintedFragment();
 }

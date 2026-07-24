@@ -41,6 +41,13 @@ fn compileShader(shader_type: gl.GLenum, source: [*c]const u8) ?gl.GLuint {
     return shader;
 }
 
+fn monotonicSeconds() f64 {
+    var ts: std.c.timespec = undefined;
+    _ = std.c.clock_gettime(.MONOTONIC, &ts);
+    return @as(f64, @floatFromInt(ts.sec)) +
+        @as(f64, @floatFromInt(ts.nsec)) / 1_000_000_000.0;
+}
+
 pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !ProgramState {
     const handle = try linkProgram(cache_label, vs_src, fs_src, dual_source);
     const ps = ProgramState{
@@ -129,12 +136,16 @@ pub fn deleteProgramState(prog_state: *ProgramState) void {
     prog_state.* = .{};
 }
 
-pub fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !gl.GLuint {
+pub fn linkProgram(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, dual_source: bool) !gl.GLuint {
     _ = dual_source;
+    const timing = std.c.getenv("SNAIL_SHADER_TIMING") != null;
+    const start = if (timing) monotonicSeconds() else 0;
     const vs = compileShader(gl.GL_VERTEX_SHADER, vs_src) orelse return error.VertexShaderFailed;
     defer gl.glDeleteShader(vs);
+    const after_vertex = if (timing) monotonicSeconds() else 0;
     const fs = compileShader(gl.GL_FRAGMENT_SHADER, fs_src) orelse return error.FragmentShaderFailed;
     defer gl.glDeleteShader(fs);
+    const after_fragment = if (timing) monotonicSeconds() else 0;
 
     const prog = gl.glCreateProgram();
     gl.glAttachShader(prog, vs);
@@ -143,6 +154,19 @@ pub fn linkProgram(_: []const u8, vs_src: [*c]const u8, fs_src: [*c]const u8, du
 
     var ok: gl.GLint = 0;
     gl.glGetProgramiv(prog, gl.GL_LINK_STATUS, &ok);
+    if (timing) {
+        const after_link = monotonicSeconds();
+        std.debug.print(
+            "[shader] {s}: vertex={d:.1}ms fragment={d:.1}ms link={d:.1}ms total={d:.1}ms\n",
+            .{
+                cache_label,
+                (after_vertex - start) * 1000.0,
+                (after_fragment - after_vertex) * 1000.0,
+                (after_link - after_fragment) * 1000.0,
+                (after_link - start) * 1000.0,
+            },
+        );
+    }
     if (ok == 0) {
         var buf: [4096]u8 = undefined;
         var len: gl.GLsizei = 0;

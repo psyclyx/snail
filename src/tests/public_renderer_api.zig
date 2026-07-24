@@ -84,6 +84,8 @@ test "core and external renderers need only the intentional public api" {
         _ = snail.shader.glsl.source(.coverage_common);
         _ = snail.shader.glsl.fileName(.coverage_common);
         _ = snail.shader.glsl.dependencies.regular_text;
+        _ = snail.shader.glsl.programs.Gl330.painted_fragment;
+        _ = snail.shader.glsl.programs.Gl330.autohint_subpixel_fragment;
         if (@hasDecl(snail.shader, "generated")) @compileError("the generated catalog moved to the snail-shaders module");
         if (@hasDecl(snail.shader.glsl, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
         if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");

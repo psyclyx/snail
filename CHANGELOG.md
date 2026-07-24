@@ -89,6 +89,30 @@ Treat this as a from-scratch migration.
 
 ### Correctness and performance
 
+- Cold Vulkan startup no longer compiles every shader family serially. The
+  independent family pipelines compile concurrently, and Vulkan SPIR-V is
+  optimized with Slang `-O2` before reaching the driver (reducing the path
+  fragment module from roughly 172 KiB to 107 KiB with Slang 2026.5.2).
+- Shipped coverage-heavy GL/GLES shaders now preserve helper functions through
+  the Slang-to-SPIRV-Cross pipeline instead of presenting drivers with giant
+  inlined entry points. The generated GL/GLES matrix shrinks from 2.65 MiB to
+  656 KiB overall; path and COLR fragments each shrink from 298 KiB to 44 KiB.
+- OpenGL ships driver-oriented complete stages under
+  `snail.shader.glsl.programs` and the reference renderer uses them by
+  default. COLR and path now share one painted program instead of linking the
+  same evaluator twice. Autohint records resolve semantic relationships once
+  at serialization, allowing the shader to remove its quadratic fallback
+  searches; validated runtime counts bound fitter loops so NVIDIA cannot
+  expand every 16/32-element pass during link. Structured TT-hinted and
+  autohint LCD stages are included rather than falling back to SPIRV-Cross.
+  The LCD filter uses one looped coverage call site instead of cloning the
+  complete curve evaluator seven times. The cold 32-knot fragment fallback
+  explicitly stays rolled on NVIDIA; otherwise the linker speculatively
+  expands its data-dependent passes even though ordinary records use the
+  vertex fit. With the NVIDIA disk cache disabled on an RTX 3090 (driver
+  595.84), the reference renderer's full desktop GL shader set links in about
+  2.27 seconds cold versus roughly 16.3 seconds before these changes; no
+  autohint program exceeds 0.66 seconds.
 - Upload planning distinguishes exact snapshots, direct append-only children,
   branches, and unrelated atlases using full snapshot lineage. Delta plans
   copy only changed page spans for direct growth; branches/unrelated snapshots
@@ -113,8 +137,9 @@ Treat this as a from-scratch migration.
 
 - **Embeddable-only.** snail owns no GPU objects, command submission,
   threads, caches, or eviction policy. The `snail` module is CPU-side
-  preparation plus entry-point-free shader fragments and byte-layout
-  contracts; the host engine owns textures, uploads, pipelines, and draws.
+  preparation plus composable shader fragments, complete structured GL
+  stages, and byte-layout contracts; the host engine owns textures, uploads,
+  pipelines, and draws.
   The GL/Vulkan all-in-one renderers were removed from the shipped surface
   (reference callers live in the demo tree); the optional software renderer
   is the separate `snail-raster` module.

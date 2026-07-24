@@ -1,9 +1,6 @@
-// Painted family (path + COLR): native-Slang single source for all four GPU
-// targets. The two families share one body (snail_path_frag_body.glsl is the
-// spec); the expected special-instance kind — COLR (0) vs PATH (1) — is
-// selected at compile time with -DSNAIL_FAMILY_COLR (path is the default),
-// mirroring how the GLSL catalog composes snail_colr_frag_body.glsl on top
-// of the path body.
+// Painted family (path + COLR): native-Slang single source for all GPU
+// targets. Both instance kinds share the same immutable paint-record
+// evaluator; the host's batch selection chooses this one program for either.
 //
 // Per-target compile flags match families/text.slang (see
 // build/slang_shaders.zig). The vertex is the same raw-VertexIndex
@@ -129,12 +126,6 @@ VsOutput vertexBody(VsInput input, uint vertex_index) {
     return o;
 }
 
-#if defined(SNAIL_FAMILY_COLR)
-static const int kExpectedSpecialKind = SNAIL_SPECIAL_KIND_COLR;
-#else
-static const int kExpectedSpecialKind = SNAIL_SPECIAL_KIND_PATH;
-#endif
-
 [shader("fragment")]
 float4 fragmentMain(VsOutput input) : SV_Target {
     PaintedVaryings v;
@@ -148,7 +139,7 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     p.coverage_exponent = pc.coverage_exponent;
     p.dither_scale = pc.dither_scale;
     p.mask_output = pc.mask_output;
-    return snailPaintedFragment(kExpectedSpecialKind, v, input.position.xy,
+    return snailPaintedFragment(v, input.position.xy,
                                 u_curve_tex, u_band_tex, u_layer_tex,
                                 u_image_tex, u_image_sampler, p);
 }

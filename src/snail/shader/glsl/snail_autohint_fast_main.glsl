@@ -78,7 +78,17 @@ float snailInverseFastAxis(
     return loBase + (hinted - loTarget) * invSlope;
 }
 
-void snailAutohintFragment() {
+struct SnailAutohintWarped {
+    vec2 rc;
+    vec2 epp;
+    vec2 slope;
+    ivec2 gLoc;
+    ivec2 bandMax;
+    vec4 band;
+    int texLayer;
+};
+
+SnailAutohintWarped snailAutohintWarpSample() {
     vec4 h0 = texelFetch(u_layer_tex, v_info, 0);
     vec4 h1 = texelFetch(u_layer_tex, snailAhLayerLoc(v_info, 1), 0);
     ivec2 gLoc = ivec2(int(h0.x + 0.5), int(h0.y + 0.5));
@@ -107,24 +117,23 @@ void snailAutohintFragment() {
     bool fallbackY = yCount < 0;
 
     if (valid && (fallbackX || fallbackY)) {
+        // X and Y fitting are sequential. Reuse one scratch set instead of
+        // making the linker allocate and optimize two 32-element triplets.
+        float bases[SNAIL_AH_MAX_KNOTS];
+        float targets[SNAIL_AH_MAX_KNOTS];
+        int sources[SNAIL_AH_MAX_KNOTS];
         SnailAutohintPolicy policy;
         float stdX = snailWarpF(0, 8);
         float stdY = snailWarpF(0, 9);
         valid = snailDecodeAutohintPolicy(v_policy, policy) &&
             snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0;
         if (valid && fallbackX) {
-            float bases[SNAIL_AH_MAX_KNOTS];
-            float targets[SNAIL_AH_MAX_KNOTS];
-            int sources[SNAIL_AH_MAX_KNOTS];
             bool fitValid = snailFitAutohintAxis(0, xRun, blueCount, stdX, snailWarpF(0, 11),
                 scale.x, policy, xCount, bases, targets, sources);
             if (!fitValid) xCount = 0;
             rc.x = snailInverseWarpAxis(xCount, bases, targets, rc.x, slopeX);
         }
         if (valid && fallbackY) {
-            float bases[SNAIL_AH_MAX_KNOTS];
-            float targets[SNAIL_AH_MAX_KNOTS];
-            int sources[SNAIL_AH_MAX_KNOTS];
             bool fitValid = snailFitAutohintAxis(1, yRun, blueCount, stdY, 0.0,
                 scale.y, policy, yCount, bases, targets, sources);
             if (!fitValid) yCount = 0;
@@ -134,9 +143,22 @@ void snailAutohintFragment() {
     if (!fallbackX) rc.x = snailInverseFastAxis(xCount, v_ah_x_targets, v_ah_x_sources, xRun, snailWarpF(0, 11), rc.x, slopeX);
     if (!fallbackY) rc.y = snailInverseFastAxis(yCount, v_ah_y_targets, v_ah_y_sources, yRun, 0.0, rc.y, slopeY);
 
-    epp *= vec2(slopeX, slopeY);
+    SnailAutohintWarped w;
+    w.rc = rc;
+    w.epp = epp;
+    w.slope = vec2(slopeX, slopeY);
+    w.gLoc = gLoc;
+    w.bandMax = ivec2(bandMaxV, bandMaxH);
+    w.band = h1;
+    w.texLayer = texLayer;
+    return w;
+}
+
+void snailAutohintFragment() {
+    SnailAutohintWarped w = snailAutohintWarpSample();
+    vec2 epp = w.epp * w.slope;
     vec2 ppe = vec2(1.0 / max(epp.x, 1.0 / 65536.0), 1.0 / max(epp.y, 1.0 / 65536.0));
-    float cov = evalGlyphCoverage(rc, epp, ppe, gLoc, ivec2(bandMaxV, bandMaxH), h1, texLayer);
+    float cov = evalGlyphCoverage(w.rc, epp, ppe, w.gLoc, w.bandMax, w.band, w.texLayer);
     if (cov < 1.0 / 255.0) discard;
     vec4 premul = premultiplyColor(v_paint, cov);
     frag_color = (SNAIL_MASK_OUTPUT != 0) ? vec4(premul.a) :

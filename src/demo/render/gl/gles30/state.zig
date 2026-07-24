@@ -47,7 +47,6 @@ const MAX_GLYPHS_PER_UPLOAD = STREAM_BYTES / BYTES_PER_GLYPH;
 pub const Gles30TextState = struct {
     backend: Backend = .gles30,
     text_program: ProgramState = .{},
-    colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
     tt_hinted_text_program: ProgramState = .{},
     autohint_program: ProgramState = .{},
@@ -64,15 +63,19 @@ pub const Gles30TextState = struct {
         self.backend = gl_backend.detect(gl);
 
         // Link all draw programs during renderer init so draw never compiles or links.
-        // Regular text and colr use the native-Slang generated shaders
-        // (stages A/B of the Slang cutover); the remaining families keep the
-        // composed GLSL-fragment catalog. The fragment-only native families
-        // share the native text vertex stage.
-        self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
-        self.colr_program = try gl_programs.loadNativeProgramState("colr-native", shaders.native_text_vertex_shader, shaders.native_colr_fragment_shader);
-        self.path_program = try gl_programs.loadNativeProgramState("path-native", shaders.native_text_vertex_shader, shaders.native_path_fragment_shader);
-        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
-        self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
+        // Structured catalog programs are the shipping GL path; see desktop.
+        const composed = std.c.getenv("SNAIL_GL_NATIVE_TRANSLATED") == null;
+        if (composed) {
+            self.text_program = try loadProgramState("text-composed", shaders.vertex_shader, shaders.fragment_shader_text, false);
+            self.path_program = try loadProgramState("painted-composed", shaders.vertex_shader, shaders.fragment_shader_path, false);
+            self.tt_hinted_text_program = try loadProgramState("hinted-text-composed", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
+            self.autohint_program = try loadProgramState("autohint-composed", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
+        } else {
+            self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
+            self.path_program = try gl_programs.loadNativeProgramState("painted-native", shaders.native_text_vertex_shader, shaders.native_path_fragment_shader);
+            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
+            self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
+        }
         try self.linear_resolve.init();
 
         self.initGles30();
@@ -101,7 +104,6 @@ pub const Gles30TextState = struct {
 
     pub fn deinit(self: *Gles30TextState) void {
         deleteProgramState(&self.text_program);
-        deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
         deleteProgramState(&self.tt_hinted_text_program);
         deleteProgramState(&self.autohint_program);
@@ -243,8 +245,8 @@ pub const Gles30TextState = struct {
     }
 
     fn ensureColrProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.colr_program.handle != 0);
-        return &self.colr_program;
+        std.debug.assert(self.path_program.handle != 0);
+        return &self.path_program;
     }
 
     fn ensurePathProgram(self: *Gles30TextState) *const ProgramState {

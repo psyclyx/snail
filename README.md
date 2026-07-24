@@ -273,10 +273,13 @@ either. Composition is
 Slang-level too: a caller-authored family can `import text_sample` and
 sample glyph coverage inside its own material shader — the game demo's
 [`game_material.slang`](src/demo/game/slang/game_material.slang) is the
-worked example. The hand-written GLSL fragment catalog (`shader.glsl`)
-remains as the behavioral spec and the source-injection surface for GL
-hosts that compose snail's fragments into their own programs
-(`run-minimal-gl` does exactly this). WebGPU is validated by the
+worked example. For OpenGL, prefer the driver-oriented complete stages in
+`shader.glsl.programs.Gl330` / `.Gles300`. They preserve authored helper and
+loop structure, expose one shared `painted_fragment` for both COLR and path,
+and avoid expensive driver re-optimization of SPIRV-Cross control flow.
+The atomic `shader.glsl.source` catalog remains the behavioral spec and
+source-injection surface for hosts composing custom entry points
+(`run-minimal-gl` demonstrates that route). WebGPU is validated by the
 `run-minimal-wgpu` example against the GL reference.
 
 **Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded

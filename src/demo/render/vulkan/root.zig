@@ -30,6 +30,8 @@ pub const cachePipelineShape = embeddable.cachePipelineShape;
 pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
 
 const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path, .tt_hinted_text, .autohint };
+const SUBPIXEL_FAMILIES = [_]contract.Family{ .subpixel, .tt_hinted_subpixel, .autohint_subpixel };
+const FAMILY_COUNT = std.enums.values(contract.Family).len;
 
 pub const RenderError = error{
     StaleBinding,
@@ -40,7 +42,7 @@ pub const Renderer = struct {
     device: vk.VkDevice,
     pipeline_layout: vk.VkPipelineLayout,
     // Indexed by @intFromEnum(contract.Family).
-    pipelines: [std.enums.values(contract.Family).len]vk.VkPipeline = .{null} ** std.enums.values(contract.Family).len,
+    pipelines: [FAMILY_COUNT]vk.VkPipeline = .{null} ** FAMILY_COUNT,
     supports_dual_src: bool,
     ibo: HostBuffer,
     // Vertex upload ring: `num_slots` regions of `slot_bytes` each, so frames
@@ -95,14 +97,12 @@ pub const Renderer = struct {
         errdefer for (self.pipelines) |p| {
             if (p != null) vk.vkDestroyPipeline(device, p, null);
         };
-        for (PREMUL_FAMILIES) |family| {
-            self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family), depth_test);
-        }
-        if (self.supports_dual_src) {
-            for ([_]contract.Family{ .subpixel, .tt_hinted_subpixel, .autohint_subpixel }) |family| {
-                self.pipelines[@intFromEnum(family)] = try buildPipeline(ctx, pipeline_layout, contract.recipe(family), depth_test);
-            }
-        }
+        // Pipeline compilation dominates a genuinely cold NVIDIA launch.
+        // The families share no mutable pipeline cache and write distinct
+        // result slots, so Vulkan permits these calls concurrently. Compile
+        // them on independent host threads instead of making the driver
+        // process eight large native-Slang modules serially.
+        try buildPipelines(&self, ctx, depth_test);
 
         self.ibo = try HostBuffer.init(ctx, @sizeOf(@TypeOf(contract.QUAD_INDICES)), vk.VK_BUFFER_USAGE_INDEX_BUFFER_BIT);
         errdefer self.ibo.deinit(device);
@@ -184,6 +184,75 @@ pub const Renderer = struct {
         vk.vkDestroyPipelineLayout(self.device, self.pipeline_layout, null);
     }
 };
+
+const PipelineCompileTask = struct {
+    ctx: VulkanContext,
+    layout: vk.VkPipelineLayout,
+    family: contract.Family,
+    depth_test: bool,
+    pipeline: vk.VkPipeline = null,
+    compile_error: ?anyerror = null,
+
+    fn run(self: *PipelineCompileTask) void {
+        self.pipeline = buildPipeline(
+            self.ctx,
+            self.layout,
+            contract.recipe(self.family),
+            self.depth_test,
+        ) catch |err| {
+            self.compile_error = err;
+            return;
+        };
+    }
+};
+
+fn buildPipelines(self: *Renderer, ctx: VulkanContext, depth_test: bool) !void {
+    var tasks: [FAMILY_COUNT]PipelineCompileTask = undefined;
+    var threads: [FAMILY_COUNT]?std.Thread = .{null} ** FAMILY_COUNT;
+    var task_count: usize = 0;
+
+    for (PREMUL_FAMILIES) |family| {
+        tasks[task_count] = .{
+            .ctx = ctx,
+            .layout = self.pipeline_layout,
+            .family = family,
+            .depth_test = depth_test,
+        };
+        task_count += 1;
+    }
+    if (self.supports_dual_src) {
+        for (SUBPIXEL_FAMILIES) |family| {
+            tasks[task_count] = .{
+                .ctx = ctx,
+                .layout = self.pipeline_layout,
+                .family = family,
+                .depth_test = depth_test,
+            };
+            task_count += 1;
+        }
+    }
+
+    // Thread creation failure is not a renderer failure: compile that one
+    // task synchronously and keep the remaining work parallel.
+    for (tasks[0..task_count], 0..) |*task, i| {
+        threads[i] = std.Thread.spawn(.{}, PipelineCompileTask.run, .{task}) catch blk: {
+            task.run();
+            break :blk null;
+        };
+    }
+    for (threads[0..task_count]) |maybe_thread| {
+        if (maybe_thread) |thread| thread.join();
+    }
+
+    // Publish every successful handle before returning an error so init's
+    // existing errdefer destroys all partial results.
+    var first_error: ?anyerror = null;
+    for (tasks[0..task_count]) |task| {
+        self.pipelines[@intFromEnum(task.family)] = task.pipeline;
+        if (first_error == null) first_error = task.compile_error;
+    }
+    if (first_error) |err| return err;
+}
 
 /// Create a `VulkanDeviceAtlas` and upload `atlases` via a caller-owned
 /// command buffer submitted on the caller's queue — the §6 queue-decoupled

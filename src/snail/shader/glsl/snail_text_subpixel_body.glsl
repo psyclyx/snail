@@ -202,38 +202,47 @@ float evalGlyphSample(vec2 rc, vec2 display_epp, ivec2 glyph_loc, ivec2 band_max
     return evalGlyphCoverage(rc, display_epp, ppe, glyph_loc, band_max, banding, layer);
 }
 
-vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {
-    vec2 display_dx = dFdx(rc);
-    vec2 display_dy = dFdy(rc);
+vec4 evalGlyphCoverageSubpixelDerivs(
+    vec2 rc,
+    vec2 display_dx,
+    vec2 display_dy,
+    ivec2 glyph_loc,
+    ivec2 band_max,
+    vec4 banding,
+    int layer
+) {
     vec2 sample_step = ((SNAIL_SUBPIXEL_ORDER <= 2) ? display_dx : display_dy) * (1.0 / 3.0);
     vec2 display_epp = subpixelCoverageEdgePixels(display_dx, display_dy);
-    vec2 rc_m3 = rc - sample_step * 3.0;
-    vec2 rc_m2 = rc - sample_step * 2.0;
-    vec2 rc_m1 = rc - sample_step * 1.0;
-    vec2 rc_p1 = rc + sample_step * 1.0;
-    vec2 rc_p2 = rc + sample_step * 2.0;
-    vec2 rc_p3 = rc + sample_step * 3.0;
-
-    float s_m3 = evalGlyphSample(rc_m3, display_epp, glyph_loc, band_max, banding, layer);
-    float s_m2 = evalGlyphSample(rc_m2, display_epp, glyph_loc, band_max, banding, layer);
-    float s_m1 = evalGlyphSample(rc_m1, display_epp, glyph_loc, band_max, banding, layer);
-    float s_0 = evalGlyphSample(rc, display_epp, glyph_loc, band_max, banding, layer);
-    float s_p1 = evalGlyphSample(rc_p1, display_epp, glyph_loc, band_max, banding, layer);
-    float s_p2 = evalGlyphSample(rc_p2, display_epp, glyph_loc, band_max, banding, layer);
-    float s_p3 = evalGlyphSample(rc_p3, display_epp, glyph_loc, band_max, banding, layer);
+    // Keep one coverage-evaluator call site. Seven spelled-out calls cause
+    // some GL linkers to clone and optimize the complete band/curve evaluator
+    // seven times.
+    float samples[7];
+    for (int tap = 0; tap < 7; ++tap) {
+        samples[tap] = evalGlyphSample(
+            rc + sample_step * float(tap - 3),
+            display_epp, glyph_loc, band_max, banding, layer
+        );
+    }
     vec4 coverage = filterSubpixelCoverage(
-        s_m3,
-        s_m2,
-        s_m1,
-        s_0,
-        s_p1,
-        s_p2,
-        s_p3,
+        samples[0],
+        samples[1],
+        samples[2],
+        samples[3],
+        samples[4],
+        samples[5],
+        samples[6],
         SNAIL_SUBPIXEL_ORDER == 2 || SNAIL_SUBPIXEL_ORDER == 4
     );
     return vec4(applyCoverageTransfer(coverage.rgb), applyCoverageTransfer(coverage.a));
 }
 
+vec4 evalGlyphCoverageSubpixel(vec2 rc, ivec2 glyph_loc, ivec2 band_max, vec4 banding, int layer) {
+    return evalGlyphCoverageSubpixelDerivs(
+        rc, dFdx(rc), dFdy(rc), glyph_loc, band_max, banding, layer
+    );
+}
+
+#ifndef SNAIL_SUBPIXEL_NO_REGULAR_ENTRY
 void snailSubpixelFragment() {
 #ifdef SNAIL_DUAL_SOURCE
     frag_blend = vec4(0.0);
@@ -252,3 +261,4 @@ void snailSubpixelFragment() {
     // v_color / v_tint arrive as linear-light f16 vertex attributes.
     emitSubpixelColor(v_color * v_tint, cov, cov_alpha.a);
 }
+#endif

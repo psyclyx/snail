@@ -110,23 +110,80 @@ pub fn writeRecord(
         data[cursor + 1] = zone.shoot;
         cursor += floats_per_blue;
     }
-    cursor += writeFeatureRun(data[cursor..], glyph.x);
-    _ = writeFeatureRun(data[cursor..], glyph.y);
+    cursor += writeFeatureRun(data[cursor..], glyph.x, font.blues);
+    _ = writeFeatureRun(data[cursor..], glyph.y, font.blues);
 }
 
-fn writeFeatureRun(out: []f32, features: []const FeatureEdge) usize {
+fn writeFeatureRun(out: []f32, features: []const FeatureEdge, blues: []const blue.FeatureZone) usize {
     out[0] = @floatFromInt(features.len);
     for (features, 0..) |edge, i| {
         const dst = 1 + i * floats_per_feature;
         const refs = packed struct(u32) { stem: i16, blue: i16 }{ .stem = edge.stem, .blue = edge.blue };
+        const flags = canonicalFlags(features, blues, i);
         out[dst + 0] = edge.pos;
         out[dst + 1] = edge.width;
         const refs_bits: u32 = @bitCast(refs);
-        const flags_bits: u32 = @bitCast(edge.flags);
+        const flags_bits: u32 = @bitCast(flags);
         out[dst + 2] = @bitCast(refs_bits);
         out[dst + 3] = @bitCast(flags_bits);
     }
     return 1 + floats_per_feature * features.len;
+}
+
+/// Records are a trust boundary. Resolve the legacy/caller-authored semantic
+/// relationships once here so every backend consumes the same compact fit
+/// program; shaders must not repeat quadratic feature searches per fragment.
+fn canonicalFlags(features: []const FeatureEdge, blues: []const blue.FeatureZone, index: usize) @FieldType(FeatureEdge, "flags") {
+    var flags = features[index].flags;
+    if (flags.semantics_resolved) return flags;
+
+    flags.semantics_resolved = true;
+    flags.blue_dir_negative = semanticDirection(features, blues, index, true) < 0;
+    flags.grid_companion = 62;
+    flags.blue_companion = 62;
+    if (features[index].blue >= 0 and flags.round) {
+        flags.grid_companion = findCompanion(features, blues, index, false);
+        flags.blue_companion = findCompanion(features, blues, index, true);
+    }
+    return flags;
+}
+
+fn semanticDirection(features: []const FeatureEdge, blues: []const blue.FeatureZone, index: usize, use_blues: bool) i8 {
+    const feature = features[index];
+    const partner_above = feature.stem >= 0 and
+        features[@intCast(feature.stem)].pos > feature.pos;
+    const valid_blue = use_blues and feature.blue >= 0;
+    const bottom_blue = valid_blue and
+        blues[@intCast(feature.blue)].shoot < blues[@intCast(feature.blue)].ref;
+    if (partner_above or bottom_blue) return -1;
+    if (feature.stem >= 0 or valid_blue or !use_blues) return 1;
+
+    var nearest = std.math.inf(f32);
+    var direction: i8 = 1;
+    for (features) |candidate| {
+        if (candidate.blue < 0) continue;
+        const gap = @abs(candidate.pos - feature.pos);
+        if (gap >= nearest) continue;
+        nearest = gap;
+        const zone = blues[@intCast(candidate.blue)];
+        direction = if (zone.shoot < zone.ref) 1 else -1;
+    }
+    return direction;
+}
+
+fn findCompanion(features: []const FeatureEdge, blues: []const blue.FeatureZone, index: usize, use_blues: bool) u6 {
+    const direction = semanticDirection(features, blues, index, use_blues);
+    const top = direction > 0;
+    var best: u6 = 62;
+    var best_gap = std.math.inf(f32);
+    for (features, 0..) |candidate, candidate_index| {
+        if (candidate_index == index or semanticDirection(features, blues, candidate_index, use_blues) == direction) continue;
+        const gap = if (top) features[index].pos - candidate.pos else candidate.pos - features[index].pos;
+        if (gap <= 0 or gap >= best_gap) continue;
+        best_gap = gap;
+        best = @intCast(candidate_index);
+    }
+    return best;
 }
 
 /// Allocation-free, validated borrowed view of one record. Call `decode` once
@@ -283,8 +340,16 @@ test "autohint record round-trips immutable features" {
     try testing.expectApproxEqAbs(font.std_x, back_font.std_x, 1e-6);
     try testing.expectEqualSlices(blue.FeatureZone, &blues, back_font.blues);
     try testing.expectApproxEqAbs(glyph.left, decoded.glyph.left, 1e-6);
-    try testing.expectEqualSlices(FeatureEdge, &x, decoded.glyph.x);
-    try testing.expectEqualSlices(FeatureEdge, &y, decoded.glyph.y);
+    var expected_x = x;
+    expected_x[0].flags.semantics_resolved = true;
+    expected_x[0].flags.grid_companion = 62;
+    expected_x[0].flags.blue_companion = 62;
+    var expected_y = y;
+    expected_y[0].flags.semantics_resolved = true;
+    expected_y[0].flags.grid_companion = 62;
+    expected_y[0].flags.blue_companion = 62;
+    try testing.expectEqualSlices(FeatureEdge, &expected_x, decoded.glyph.x);
+    try testing.expectEqualSlices(FeatureEdge, &expected_y, decoded.glyph.y);
     try testing.expectEqual(n, decoded.float_count);
 }
 

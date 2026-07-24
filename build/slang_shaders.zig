@@ -7,7 +7,7 @@
 //!
 //!   target      command                                              output
 //!   ─────────   ──────────────────────────────────────────────────   ─────────────────────────────
-//!   Vulkan      slangc -DSNAIL_TARGET_VULKAN -target spirv           generated/spirv/<f>.*.spv
+//!   Vulkan      slangc -DSNAIL_TARGET_VULKAN -target spirv -O2       generated/spirv/<f>.*.spv
 //!               -profile spirv_1_3 -default-image-format-unknown     (also compiled directly by the
 //!                                                                    demo Vulkan build, see below)
 //!   WGSL        slangc -DSNAIL_TARGET_WGSL -target wgsl              generated/wgsl/<f>.*.wgsl
@@ -16,7 +16,7 @@
 //!   Metal       slangc -DSNAIL_TARGET_METAL -target metal            generated/msl/<f>.*.metal
 //!               -ignore-capabilities -line-directive-mode none       (see msl_args)
 //!   GLSL 330    slangc -DSNAIL_TARGET_GL -target spirv               generated/glsl330/<f>.*.glsl
-//!               -profile spirv_1_3, then
+//!               -profile spirv_1_3 [-O0], then
 //!               spirv-cross --version 330 --no-420pack-extension
 //!   GLES 300    same SPIR-V leg,                                     generated/gles300/<f>.*.glsl
 //!               spirv-cross --version 300 --es, then the highp
@@ -39,6 +39,18 @@
 //!    texture we only ever `Load`.
 //!  - `-profile spirv_1_3`: demo devices are Vulkan 1.1 (same reason as the
 //!    ingestion path).
+//!  - `-O2` (Vulkan only): optimize the native-Slang IR before handing it
+//!    to the runtime driver. Slang's default -O1 substantially inflates the
+//!    coverage-heavy modules (the path fragment is ~172 KiB at -O1 versus
+//!    ~107 KiB at -O2 with v2026.5.2), making a genuinely cold NVIDIA
+//!    pipeline compile needlessly expensive. The GL legs use the separate
+//!    source-compile recipe described below.
+//!  - `-O0` (coverage-heavy GL/GLES families only): preserves Slang helper
+//!    functions through SPIR-V so SPIRV-Cross emits structured GLSL instead
+//!    of inlining the entire shader into one giant `main`. With v2026.5.2,
+//!    each painted fragment drops from ~298 KiB at default -O1 to ~44 KiB
+//!    at -O0. Regular text stays on the default recipe because its generated
+//!    stages are already compact.
 //!  - slangc's own `-target glsl` output is Vulkan-flavor GLSL only
 //!    (`texture2DArray` + GL_EXT_samplerless_texture_functions,
 //!    `layout(binding=N)`, `#version 450+`) and cannot be consumed by
@@ -87,8 +99,10 @@
 //!
 //! The naga-era via-glsl split (glslang loop shapes for naga's structurizer,
 //! spirv-opt ADCE, the cubic-solver / base-vertex / dual-source-index patch
-//! tools) is gone: SPIRV-Cross consumes slang's direct SPIR-V for every
-//! stage, loops and spirv_asm included, so all GL legs share one recipe.
+//! tools) is gone: SPIRV-Cross consumes Slang's direct SPIR-V for every
+//! stage, loops and spirv_asm included. Families differ only in whether the
+//! intermediate SPIR-V uses default optimization or the compile-size-driven
+//! GL/GLES `-O0` policy above.
 //!
 //! Artifacts are NOT checked in: every compile is a lazy build-graph Run
 //! step whose output lands in the zig cache. `createGeneratedModule` lays
@@ -137,6 +151,13 @@ pub const Family = struct {
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
+    /// Preserve helper functions in coverage-heavy GL/GLES output instead of
+    /// letting Slang's default optimization inline the whole program into one
+    /// enormous entry point. The runtime GL compiler still optimizes the
+    /// resulting program, but receives dramatically less source/IR to parse
+    /// (painted fragments are ~44 KiB at -O0 versus ~298 KiB at default -O1
+    /// with Slang 2026.5.2).
+    gl_o0: bool = false,
     /// Emit only the GL dialects (no spirv/wgsl artifacts): linear_resolve
     /// (Vulkan/WebGPU render to hardware-sRGB targets and have no resolve
     /// pass) and the game's material family (its Vulkan leg is compiled by
@@ -238,36 +259,36 @@ const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabiliti
 /// text.vert.* — identical source, identical interface).
 pub const families = [_]Family{
     .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
-    .{ .name = "colr", .source = "families/painted.slang", .defines = &.{"SNAIL_FAMILY_COLR"}, .stages = &.{fragment_stage} },
-    .{ .name = "path", .source = "families/painted.slang", .stages = &.{fragment_stage} },
-    .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage} },
-    .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage } },
+    .{ .name = "colr", .source = "families/painted.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "path", .source = "families/painted.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
     // The WGSL artifact carries a dual-source entry (`fragmentDualMain`,
     // @blend_src 0/1) synthesized after slangc by
     // build/wgsl_gen_dual_entry.zig; the plain `fragmentMain` entry keeps
     // MRT locations 0/1. naga validates the transformed artifact.
-    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
+    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
     // LCD subpixel variants of the hinted text families. Fragment-only:
     // tt_hinted_text_subpixel pairs with text.vert, autohint_subpixel with
     // autohint.vert (identical varying interfaces). Same dual-source and
     // WGSL post-generation transform as text_subpixel.
-    .{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
-    .{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .no_gles = true },
+    .{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
+    .{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
     // Canonical artifacts for every target. Desktop GL is a plain
     // `usamplerBuffer` texel buffer. GLES 3.0 has no texel buffers at any
     // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
     // compiles with -DSNAIL_TARGET_GLES and binds the emit words as a 2D
     // R32UI texture instead.
-    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gles_define = true },
+    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .gles_define = true },
     // The game demo's text-as-material shader: a caller-authored family
     // importing the library's text_sample module. GL dialects are wired as
     // anonymous imports next to the consumer (build.zig addGameShaderGl);
     // the Vulkan leg is compiled by the demo build directly (build.zig
     // addGameShaderSpirv), like the library families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true, .gles_define = true },
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true, .gles_define = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
-    .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_only = true },
+    .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
 };
 
 fn findFamily(comptime name: []const u8) Family {
@@ -383,7 +404,7 @@ fn slangcFamily(
 }
 
 fn vulkanStageSpv(b: *std.Build, comptime family: Family, stage: Stage) std.Build.LazyPath {
-    return slangcFamily(b, family, stage, &.{"SNAIL_TARGET_VULKAN"}, &.{ "-target", "spirv", "-profile", "spirv_1_3" }, b.fmt("{s}.{s}.spv", .{ family.name, stage.short }));
+    return slangcFamily(b, family, stage, &.{"SNAIL_TARGET_VULKAN"}, &.{ "-target", "spirv", "-profile", "spirv_1_3", "-O2" }, b.fmt("{s}.{s}.spv", .{ family.name, stage.short }));
 }
 
 /// A slang reflection JSON for one family+stage+target (an extra compile:
@@ -615,7 +636,10 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
             // fine through SPIRV-Cross), then spirv-cross per dialect.
             // `gles_define` families additionally compile a second SPIR-V
             // leg for the ES dialect (different record-store bindings).
-            const gl_args: []const []const u8 = &.{ "-target", "spirv", "-profile", "spirv_1_3" };
+            const gl_args: []const []const u8 = if (family.gl_o0)
+                &.{ "-target", "spirv", "-profile", "spirv_1_3", "-O0" }
+            else
+                &.{ "-target", "spirv", "-profile", "spirv_1_3" };
             const gl_spv = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_GL"}, gl_args, "gl-" ++ family.name ++ "." ++ stage.short ++ ".spv");
             const gles_spv = if (family.gles_define and !family.no_gles)
                 slangcFamily(b, family, stage, &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }, gl_args, "gles-" ++ family.name ++ "." ++ stage.short ++ ".spv")

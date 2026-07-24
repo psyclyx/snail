@@ -138,15 +138,16 @@ public SnailAutohintWarped snailAutohintWarpSample(
     bool fallbackY = yCount < 0;
 
     if (valid && (fallbackX || fallbackY)) {
+        // X and Y fitting are sequential; share one scratch set.
+        float bases[SNAIL_AH_FRAG_KNOTS];
+        float targets[SNAIL_AH_FRAG_KNOTS];
+        int sources[SNAIL_AH_FRAG_KNOTS];
         SnailAutohintPolicy policy;
         float stdX = snailWarpF(layer_tex, v.info, 0, 8);
         float stdY = snailWarpF(layer_tex, v.info, 0, 9);
         valid = snailDecodeAutohintPolicy(v.policy, policy) &&
             snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0;
         if (valid && fallbackX) {
-            float bases[SNAIL_AH_FRAG_KNOTS];
-            float targets[SNAIL_AH_FRAG_KNOTS];
-            int sources[SNAIL_AH_FRAG_KNOTS];
             bool fitValid = snailFitAutohintAxis<SNAIL_AH_FRAG_KNOTS, false>(layer_tex, v.info,
                 0, xRun, blueCount, stdX, snailWarpF(layer_tex, v.info, 0, 11),
                 scale.x, policy, xCount, bases, targets, sources);
@@ -154,9 +155,6 @@ public SnailAutohintWarped snailAutohintWarpSample(
             rc.x = snailInverseWarpAxis<SNAIL_AH_FRAG_KNOTS>(xCount, bases, targets, rc.x, slopeX);
         }
         if (valid && fallbackY) {
-            float bases[SNAIL_AH_FRAG_KNOTS];
-            float targets[SNAIL_AH_FRAG_KNOTS];
-            int sources[SNAIL_AH_FRAG_KNOTS];
             bool fitValid = snailFitAutohintAxis<SNAIL_AH_FRAG_KNOTS, false>(layer_tex, v.info,
                 1, yRun, blueCount, stdY, 0.0,
                 scale.y, policy, yCount, bases, targets, sources);

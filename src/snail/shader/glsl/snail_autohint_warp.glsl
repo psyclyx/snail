@@ -2,6 +2,15 @@
 // font/autohint/warp.zig fitAxis + inverseWarp. Immutable slab records contain
 // feature facts only; targets below exist only for the current draw invocation.
 
+#ifndef SNAIL_AUTOHINT_VERTEX
+// NVIDIA otherwise speculatively unrolls the complete 32-knot exceptional
+// fitter during glLinkProgram. Keep the normal vertex fitter under the
+// driver's default policy: it is hot (once per glyph instance), while this
+// fragment copy runs only for oversized records or perspective projection.
+// Other GLSL implementations ignore an unrecognized implementation pragma.
+#pragma optionNV(unroll none)
+#endif
+
 #ifdef SNAIL_AUTOHINT_VERTEX
 const int SNAIL_AH_MAX_KNOTS = 16;
 #else
@@ -105,7 +114,10 @@ float snailAhStandardWidth(float raw, float standard, float ratio) {
 }
 
 // Reads one immutable feature run and derives transient knots. `axis` is 0=x,
-// 1=y. Every loop has a compile-time bound for GLES 3.0 drivers.
+// 1=y. Counts are validated against SNAIL_AH_MAX_KNOTS before they bound a
+// loop. Keeping the count in the loop condition is important: fixed-bound
+// loops with an internal break invite desktop drivers to unroll the complete
+// 16/32-element fitter (including its nested searches) during program link.
 bool snailFitAutohintAxis(
     int axis, int run, int blueCount, float standardWidth, float left,
     float scale, SnailAutohintPolicy policy,
@@ -131,20 +143,12 @@ bool snailFitAutohintAxis(
     bool rounded[SNAIL_AH_MAX_KNOTS];
     bool syntheticApex[SNAIL_AH_MAX_KNOTS];
     int companion[SNAIL_AH_MAX_KNOTS];
-    #ifndef SNAIL_AUTOHINT_VERTEX
-    bool semanticsResolved[SNAIL_AH_MAX_KNOTS];
-    bool blueDirNegative[SNAIL_AH_MAX_KNOTS];
-    int gridCompanion[SNAIL_AH_MAX_KNOTS];
-    int blueCompanion[SNAIL_AH_MAX_KNOTS];
-    #endif
     int dir[SNAIL_AH_MAX_KNOTS];
     float targets[SNAIL_AH_MAX_KNOTS];
     bool hinted[SNAIL_AH_MAX_KNOTS];
     bool knotBlueFixed[SNAIL_AH_MAX_KNOTS];
     bool knotNaturalSpacing[SNAIL_AH_MAX_KNOTS];
-
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
+    for (int i = 0; i < n; ++i) {
         int f = run + 1 + 4 * i;
         pos[i] = snailWarpF(f, 0);
         width[i] = snailWarpF(f, 1);
@@ -154,68 +158,25 @@ bool snailFitAutohintAxis(
         uint flags = floatBitsToUint(snailWarpF(f, 3));
         rounded[i] = (flags & 1u) != 0u;
         syntheticApex[i] = (flags & 2u) != 0u;
-        #ifdef SNAIL_AUTOHINT_VERTEX
         if ((flags & 4u) == 0u) return false;
         dir[i] = (flags & 8u) != 0u ? -1 : 1;
         int encodedCompanion = int((flags >> (useBlues ? 10u : 4u)) & 63u);
         companion[i] = encodedCompanion >= 62 ? -1 : encodedCompanion;
         if (encodedCompanion >= 63 && rounded[i] && blue[i] >= 0) return false;
-        #else
-        semanticsResolved[i] = (flags & 4u) != 0u;
-        blueDirNegative[i] = (flags & 8u) != 0u;
-        gridCompanion[i] = int((flags >> 4u) & 63u);
-        blueCompanion[i] = int((flags >> 10u) & 63u);
-        #endif
         hinted[i] = false;
         if (!snailAhFinite(pos[i]) || !snailAhFinite(width[i]) || width[i] < 0.0 ||
-            stem[i] < -1 || stem[i] >= n || blue[i] < -1 || (blue[i] >= blueCount)) return false;
+            stem[i] < -1 || stem[i] >= n || blue[i] < -1 || blue[i] >= blueCount) return false;
     }
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= blueCount) break;
+    for (int i = 0; i < blueCount; ++i) {
         float ref = snailWarpF(12, 2 * i);
         float shoot = snailWarpF(12, 2 * i + 1);
         if (!snailAhFinite(ref) || !snailAhFinite(shoot)) return false;
     }
-    #ifndef SNAIL_AUTOHINT_VERTEX
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
-        if (stem[i] >= 0) {
-            int j = stem[i];
-            if (j >= n || j == i || stem[j] != i || !snailAhFinite(pos[j]) ||
-                pos[j] == pos[i] || !snailAhFinite(width[j]) || width[j] != width[i]) return false;
-        }
-    }
-    #endif
-
     float overshootLimit = (axis == 1 && policy.yOvershoot == 1) ? policy.overshootMinPx : 0.0;
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
+    for (int i = 0; i < n; ++i) {
         bool partnerAbove = stem[i] >= 0 && pos[stem[i]] > pos[i];
         bool validBlue = useBlues && blue[i] >= 0;
-        #ifdef SNAIL_AUTOHINT_VERTEX
         if (!useBlues) dir[i] = partnerAbove ? -1 : 1;
-        #else
-        bool bottomBlue = validBlue && snailWarpF(12, 2 * blue[i] + 1) < snailWarpF(12, 2 * blue[i]);
-        int companionDir = 1;
-        if (!semanticsResolved[i] && stem[i] < 0 && !validBlue && useBlues) {
-            float nearest = 3.402823466e38;
-            for (int k = 0; k < SNAIL_AH_MAX_KNOTS; ++k) {
-                if (k >= n) break;
-                if (blue[k] < 0) continue;
-                float gap = abs(pos[k] - pos[i]);
-                if (gap >= nearest) continue;
-                nearest = gap;
-                companionDir = snailWarpF(12, 2 * blue[k] + 1) < snailWarpF(12, 2 * blue[k]) ? 1 : -1;
-            }
-        }
-        dir[i] = semanticsResolved[i]
-            ? ((useBlues && blueDirNegative[i]) || (!useBlues && partnerAbove) ? -1 : 1)
-            : ((partnerAbove || bottomBlue) ? -1 : companionDir);
-        int encodedCompanion = useBlues ? blueCompanion[i] : gridCompanion[i];
-        companion[i] = !semanticsResolved[i] || encodedCompanion == 63
-            ? -2
-            : (encodedCompanion == 62 ? -1 : encodedCompanion);
-        #endif
         if (validBlue) {
             float ref = snailWarpF(12, 2 * blue[i]);
             float shoot = snailWarpF(12, 2 * blue[i] + 1);
@@ -247,8 +208,7 @@ bool snailFitAutohintAxis(
     int clusterRight = 0;
     float clusterDesiredRight = 0.0;
     int clusterStems = 0;
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
+    for (int i = 0; i < n; ++i) {
         int j = stem[i];
         if (j < 0 || j <= i) continue;
         float nominal = snailAhStandardWidth(width[i], standardWidth, ratio);
@@ -282,16 +242,14 @@ bool snailFitAutohintAxis(
     }
     if (relative && clusterStems > 1) {
         float shift = clusterDesiredRight - targets[clusterRight];
-        for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-            if (i >= n) break;
+        for (int i = 0; i < n; ++i) {
             if (hinted[i]) targets[i] += shift;
         }
     }
 
     // Preserve the weight next to a round blue-zone apex.
     float companionMax = stemMode == 1 ? maxPx : 1.6;
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
+    for (int i = 0; i < n; ++i) {
         bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
         if (!axisAligned || blue[i] < 0 || !rounded[i] || hinted[i]) continue;
         bool top = dir[i] > 0;
@@ -299,24 +257,13 @@ bool snailFitAutohintAxis(
         float bestGap = 3.402823466e38;
         if (best >= 0) {
             bestGap = top ? pos[i] - pos[best] : pos[best] - pos[i];
-        } else if (best == -2) {
-            for (int k = 0; k < SNAIL_AH_MAX_KNOTS; ++k) {
-                if (k >= n) break;
-                if (k == i || dir[k] == dir[i]) continue;
-                float gap = top ? pos[i] - pos[k] : pos[k] - pos[i];
-                if (gap <= 0.0 || gap >= bestGap) continue;
-                bestGap = gap;
-                best = k;
-            }
         }
         if (best < 0 || hinted[best] || blue[best] >= 0 || bestGap * scale >= companionMax) continue;
         float widthUnits = syntheticApex[best] ? bestGap : max(round(bestGap * scale), 1.0) * grid;
         targets[best] = top ? targets[i] - widthUnits : targets[i] + widthUnits;
         hinted[best] = true;
     }
-
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= n) break;
+    for (int i = 0; i < n; ++i) {
         bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
         if (!hinted[i] && !(axisAligned && blue[i] >= 0)) continue;
         knotBase[knotCount] = pos[i];
@@ -328,14 +275,12 @@ bool snailFitAutohintAxis(
     }
     if (axis == 0 && policy.xRegistration == 1 && knotCount > 0 && knotCount < SNAIL_AH_MAX_KNOTS &&
         left < knotBase[0] - 0.25 * grid) {
-        for (int i = SNAIL_AH_MAX_KNOTS - 1; i > 0; --i) {
-            if (i <= knotCount) {
-                knotBase[i] = knotBase[i - 1];
-                knotTarget[i] = knotTarget[i - 1];
-                knotBlueFixed[i] = knotBlueFixed[i - 1];
-                knotNaturalSpacing[i] = knotNaturalSpacing[i - 1];
-                knotSource[i] = knotSource[i - 1];
-            }
+        for (int i = knotCount; i > 0; --i) {
+            knotBase[i] = knotBase[i - 1];
+            knotTarget[i] = knotTarget[i - 1];
+            knotBlueFixed[i] = knotBlueFixed[i - 1];
+            knotNaturalSpacing[i] = knotNaturalSpacing[i - 1];
+            knotSource[i] = knotSource[i - 1];
         }
         knotBase[0] = left;
         knotTarget[0] = snailAhSnap(left, scale);
@@ -347,17 +292,15 @@ bool snailFitAutohintAxis(
     // Keep shared blue-zone targets fixed. If quantized interior features run
     // out of room below one, resolve their collisions inward before the
     // generic forward monotonicity repair can push the blue edge outward.
-    for (int b = SNAIL_AH_MAX_KNOTS - 1; b > 0; --b) {
-        if (b >= knotCount || !knotBlueFixed[b]) continue;
-        for (int j = SNAIL_AH_MAX_KNOTS - 1; j > 0; --j) {
-            if (j > b) continue;
+    for (int b = knotCount - 1; b > 0; --b) {
+        if (!knotBlueFixed[b]) continue;
+        for (int j = b; j > 0; --j) {
             if (knotBlueFixed[j - 1]) break;
             float spacing = knotNaturalSpacing[j - 1] ? 1e-6 : grid;
             knotTarget[j - 1] = min(knotTarget[j - 1], knotTarget[j] - spacing);
         }
     }
-    for (int i = 1; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= knotCount) break;
+    for (int i = 1; i < knotCount; ++i) {
         if (knotTarget[i] <= knotTarget[i - 1]) knotTarget[i] = knotTarget[i - 1] + grid;
     }
     // Fade to identity at large ppem — autohinting is a small-size tool, so above
@@ -368,13 +311,11 @@ bool snailFitAutohintAxis(
     if (policy.fadeEnabled != 0 && scale > policy.fadeStart) {
         float span = policy.fadeFull - policy.fadeStart;
         float fadeW = (span <= 0.0 || scale >= policy.fadeFull) ? 1.0 : (scale - policy.fadeStart) / span;
-        for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-            if (i >= knotCount) break;
+        for (int i = 0; i < knotCount; ++i) {
             knotTarget[i] += (knotBase[i] - knotTarget[i]) * fadeW;
         }
     }
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS; ++i) {
-        if (i >= knotCount) break;
+    for (int i = 0; i < knotCount; ++i) {
         if (!snailAhFinite(knotBase[i]) || !snailAhFinite(knotTarget[i])) { knotCount = 0; return false; }
     }
     return true;
@@ -387,8 +328,8 @@ float snailInverseWarpAxis(int count, float bases[SNAIL_AH_MAX_KNOTS],
     if (hinted <= targets[0]) return bases[0] + hinted - targets[0];
     if (hinted >= targets[count - 1]) return bases[count - 1] + hinted - targets[count - 1];
     int lo = 0;
-    for (int i = 0; i < SNAIL_AH_MAX_KNOTS - 1; ++i) {
-        if (i + 1 >= count || targets[i + 1] >= hinted) { lo = i; break; }
+    for (int i = 0; i < count - 1; ++i) {
+        if (targets[i + 1] >= hinted) { lo = i; break; }
     }
     float dt = targets[lo + 1] - targets[lo];
     float db = bases[lo + 1] - bases[lo];
