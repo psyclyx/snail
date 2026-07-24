@@ -38,6 +38,7 @@ pub const Simulation = struct {
     emoji_clock: f64 = 0,
     elapsed: f64 = 0,
     paused: bool = false,
+    hinting_label: []const u8 = "unhinted",
 
     pub fn init() Simulation {
         var self: Simulation = .{};
@@ -69,7 +70,20 @@ pub const Simulation = struct {
         _ = self.screen.putAscii(5, 0, "02  COMPLETE DIRTY LINES", .heading);
         _ = self.screen.putAscii(11, 0, "03  HOST-OWNED WRAPPING", .heading);
         _ = self.screen.putAscii(18, 0, "04  FALLBACK + COMBINING + WIDE CELLS", .heading);
-        _ = self.screen.putAscii(23, 0, "R reset   P pause   C backend   Esc quit", .dim);
+        _ = self.screen.putAscii(23, 0, "R reset   P pause   -/+ size   H hint   C backend   Esc quit", .dim);
+        self.writeHintingStatus();
+    }
+
+    pub fn setHintingLabel(self: *Simulation, label: []const u8) void {
+        self.hinting_label = label;
+        self.writeHintingStatus();
+    }
+
+    fn writeHintingStatus(self: *Simulation) void {
+        self.screen.clearRow(24);
+        var column = self.screen.putAscii(24, 0, "active hinting: ", .dim);
+        column = self.screen.putAscii(24, column, self.hinting_label, .warning);
+        _ = self.screen.putAscii(24, column, "  (primary mono face)", .dim);
     }
 
     pub fn update(self: *Simulation, dt: f64) !bool {
@@ -139,7 +153,7 @@ pub const Simulation = struct {
             },
             1 => {
                 _ = self.screen.putAscii(20, 0, "bold face:", .dim);
-                _ = self.screen.putAscii(20, 11, "different metrics, same cells", .heading);
+                _ = self.screen.putAscii(20, 11, "variable weight, same cell advance", .heading);
             },
             2 => {
                 _ = self.screen.putAscii(21, 0, "combined:", .dim);

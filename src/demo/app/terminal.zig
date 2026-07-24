@@ -50,7 +50,7 @@ pub fn main() !void {
     var last_time = wayland.getTime();
 
     std.debug.print(
-        "snail terminal text demo\nKeys: R reset, P pause, C cycle backend, Esc quit\nBackend: {s}\n",
+        "snail terminal text demo\nKeys: R reset, P pause, -/+ text size, H hinting, C cycle backend, Esc quit\nBackend: {s}\n",
         .{driver.backendName()},
     );
 
@@ -67,6 +67,25 @@ pub fn main() !void {
         if (window.isKeyPressed(wayland.KEY_P)) {
             simulation.paused = !simulation.paused;
             std.debug.print("simulation: {s}\n", .{if (simulation.paused) "paused" else "running"});
+        }
+        const equal_pressed = window.isKeyPressed(wayland.KEY_EQUAL);
+        const keypad_plus_pressed = window.isKeyPressed(wayland.KEY_KPPLUS);
+        const minus_pressed = window.isKeyPressed(wayland.KEY_MINUS);
+        const keypad_minus_pressed = window.isKeyPressed(wayland.KEY_KPMINUS);
+        const increase_size = equal_pressed or keypad_plus_pressed;
+        const decrease_size = minus_pressed or keypad_minus_pressed;
+        if (increase_size != decrease_size) {
+            const delta: f32 = if (increase_size) 1 else -1;
+            if (view.setTextSize(view.metrics.em + delta)) {
+                rebuild_picture = true;
+                std.debug.print("text size: {d:.0}px\n", .{view.metrics.em});
+            }
+        }
+        if (window.isKeyPressed(wayland.KEY_H)) {
+            const hinting = view.cycleHinting();
+            simulation.setHintingLabel(hinting.label());
+            rebuild_picture = true;
+            std.debug.print("hinting: {s}\n", .{hinting.label()});
         }
         if (window.isKeyPressed(wayland.KEY_C)) {
             const next = renderer_driver.nextKind(driver.kind());
