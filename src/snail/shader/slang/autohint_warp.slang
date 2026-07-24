@@ -126,6 +126,43 @@ public float snailAhStandardWidth(float raw, float standard, float ratio) {
     return (standard > 0.0 && abs(raw - standard) <= ratio * standard) ? standard : raw;
 }
 
+// Feature facts are immutable slab data, not independent transient state.
+// Preserve their packed record representation in one private table rather than
+// splitting them across a dozen 16/32-element arrays.
+public struct SnailAhFeature {
+    public float pos;
+    public float width;
+    public int stem;
+    public int blue;
+    public uint flags;
+};
+
+public float4 snailAhFeatureData(
+    Texture2D<float4> layer_tex, int2 info_base, int run, int i
+) {
+    int f = run + 1 + 4 * i;
+    return float4(
+        snailWarpF(layer_tex, info_base, f, 0),
+        snailWarpF(layer_tex, info_base, f, 1),
+        snailWarpF(layer_tex, info_base, f, 2),
+        snailWarpF(layer_tex, info_base, f, 3)
+    );
+}
+
+public SnailAhFeature snailAhFeature(float4 data) {
+    SnailAhFeature feature;
+    feature.pos = data.x;
+    feature.width = data.y;
+    uint refs = asuint(data.z);
+    feature.stem = int(refs << 16u) >> 16;
+    feature.blue = int(refs) >> 16;
+    feature.flags = asuint(data.w);
+    return feature;
+}
+
+public uint snailAhBit(int i) { return 1u << uint(i); }
+public bool snailAhBitSet(uint mask, int i) { return (mask & snailAhBit(i)) != 0u; }
+
 // Reads one immutable feature run and derives transient knots. `axis` is 0=x,
 // 1=y. Counts are validated against N before they bound a loop; keeping the
 // data-dependent count in the condition avoids fixed-bound unroll explosions
@@ -153,37 +190,22 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
     bool useBlues = axis == 1 && policy.yAlign == 2;
     if (axis == 0 && policy.xRegistration == 1 && !snailAhFinite(left)) return false;
 
-    float pos[N];
-    float width[N];
-    int stem[N];
-    int blue[N];
-    bool rounded[N];
-    bool syntheticApex[N];
-    int companion[N];
-    int dir[N];
+    float4 featureData[N];
     float targets[N];
-    bool hinted[N];
-    bool knotBlueFixed[N];
-    bool knotNaturalSpacing[N];
+    uint hintedMask = 0u;
+    uint knotBlueFixedMask = 0u;
+    uint knotNaturalSpacingMask = 0u;
 
     for (int i = 0; i < n; ++i) {
-        int f = run + 1 + 4 * i;
-        pos[i] = snailWarpF(layer_tex, info_base, f, 0);
-        width[i] = snailWarpF(layer_tex, info_base, f, 1);
-        uint refs = asuint(snailWarpF(layer_tex, info_base, f, 2));
-        stem[i] = int(refs << 16u) >> 16;
-        blue[i] = int(refs) >> 16;
-        uint flags = asuint(snailWarpF(layer_tex, info_base, f, 3));
-        rounded[i] = (flags & 1u) != 0u;
-        syntheticApex[i] = (flags & 2u) != 0u;
-        if ((flags & 4u) == 0u) return false;
-        dir[i] = (flags & 8u) != 0u ? -1 : 1;
-        int encodedCompanion = int((flags >> (useBlues ? 10u : 4u)) & 63u);
-        companion[i] = encodedCompanion >= 62 ? -1 : encodedCompanion;
-        if (encodedCompanion >= 63 && rounded[i] && blue[i] >= 0) return false;
-        hinted[i] = false;
-        if (!snailAhFinite(pos[i]) || !snailAhFinite(width[i]) || width[i] < 0.0 ||
-            stem[i] < -1 || stem[i] >= n || blue[i] < -1 || (blue[i] >= blueCount)) return false;
+        featureData[i] = snailAhFeatureData(layer_tex, info_base, run, i);
+        SnailAhFeature feature = snailAhFeature(featureData[i]);
+        if ((feature.flags & 4u) == 0u) return false;
+        int encodedCompanion = int((feature.flags >> (useBlues ? 10u : 4u)) & 63u);
+        bool rounded = (feature.flags & 1u) != 0u;
+        if (encodedCompanion >= 63 && rounded && feature.blue >= 0) return false;
+        if (!snailAhFinite(feature.pos) || !snailAhFinite(feature.width) || feature.width < 0.0 ||
+            feature.stem < -1 || feature.stem >= n ||
+            feature.blue < -1 || feature.blue >= blueCount) return false;
     }
     for (int i = 0; i < blueCount; ++i) {
         float ref = snailWarpF(layer_tex, info_base, 12, 2 * i);
@@ -192,23 +214,23 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
     }
     float overshootLimit = (axis == 1 && policy.yOvershoot == 1) ? policy.overshootMinPx : 0.0;
     for (int i = 0; i < n; ++i) {
-        bool partnerAbove = stem[i] >= 0 && pos[stem[i]] > pos[i];
-        bool validBlue = useBlues && blue[i] >= 0;
-        if (!useBlues) dir[i] = partnerAbove ? -1 : 1;
+        SnailAhFeature feature = snailAhFeature(featureData[i]);
+        bool validBlue = useBlues && feature.blue >= 0;
         if (validBlue) {
-            float ref = snailWarpF(layer_tex, info_base, 12, 2 * blue[i]);
-            float shoot = snailWarpF(layer_tex, info_base, 12, 2 * blue[i] + 1);
+            float ref = snailWarpF(layer_tex, info_base, 12, 2 * feature.blue);
+            float shoot = snailWarpF(layer_tex, info_base, 12, 2 * feature.blue + 1);
             // Preserve (y overshoot policy == 0): keep a round apex at its natural
             // position so the curve AA's into a round top instead of crushing flat
             // onto the snapped blue row. Suppress snaps it (crisper, flat).
-            if (rounded[i] && axis == 1 && policy.yOvershoot == 0) {
-                targets[i] = pos[i];
+            if ((feature.flags & 1u) != 0u && axis == 1 && policy.yOvershoot == 0) {
+                targets[i] = feature.pos;
             } else {
                 targets[i] = snailAhSnap(ref, scale);
-                if (rounded[i] && abs((shoot - ref) * scale) >= overshootLimit) targets[i] += shoot - ref;
+                if ((feature.flags & 1u) != 0u && abs((shoot - ref) * scale) >= overshootLimit)
+                    targets[i] += shoot - ref;
             }
         } else {
-            targets[i] = snailAhSnap(pos[i], scale);
+            targets[i] = snailAhSnap(feature.pos, scale);
         }
     }
 
@@ -227,41 +249,42 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
     float clusterDesiredRight = 0.0;
     int clusterStems = 0;
     for (int i = 0; i < n; ++i) {
-        int j = stem[i];
+        SnailAhFeature lower = snailAhFeature(featureData[i]);
+        int j = lower.stem;
         if (j < 0 || j <= i) continue;
-        float nominal = snailAhStandardWidth(width[i], standardWidth, ratio);
-        float widthUnits = width[i];
+        SnailAhFeature upper = snailAhFeature(featureData[j]);
+        float nominal = snailAhStandardWidth(lower.width, standardWidth, ratio);
+        float widthUnits = lower.width;
         if (stemMode == 2 || (stemMode == 1 && nominal * scale < maxPx))
             widthUnits = max(round(nominal * scale), 1.0) * grid;
         if (relative) {
-            if (anchorSet) targets[i] = anchorTarget + round((pos[i] - anchorBase) * scale) * grid;
+            if (anchorSet) targets[i] = anchorTarget + round((lower.pos - anchorBase) * scale) * grid;
             else {
-                targets[i] = snailAhSnap(pos[i], scale);
+                targets[i] = snailAhSnap(lower.pos, scale);
                 anchorSet = true;
-                clusterBase = pos[i];
+                clusterBase = lower.pos;
                 clusterTarget = targets[i];
             }
             targets[j] = targets[i] + widthUnits;
-            anchorBase = pos[i];
+            anchorBase = lower.pos;
             anchorTarget = targets[i];
             clusterRight = j;
-            clusterDesiredRight = clusterTarget + round((pos[i] - clusterBase) * scale) * grid + widthUnits;
+            clusterDesiredRight = clusterTarget + round((lower.pos - clusterBase) * scale) * grid + widthUnits;
             clusterStems += 1;
         } else {
             bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
-            bool lowerBlue = axisAligned && blue[i] >= 0;
-            bool upperBlue = axisAligned && blue[j] >= 0;
-            if (!alignPositions) targets[i] = pos[i];
+            bool lowerBlue = axisAligned && lower.blue >= 0;
+            bool upperBlue = axisAligned && upper.blue >= 0;
+            if (!alignPositions) targets[i] = lower.pos;
             if (upperBlue && !lowerBlue && alignPositions) targets[i] = targets[j] - widthUnits;
             else targets[j] = targets[i] + widthUnits;
         }
-        hinted[i] = true;
-        hinted[j] = true;
+        hintedMask |= snailAhBit(i) | snailAhBit(j);
     }
     if (relative && clusterStems > 1) {
         float shift = clusterDesiredRight - targets[clusterRight];
         for (int i = 0; i < n; ++i) {
-            if (hinted[i]) targets[i] += shift;
+            if (snailAhBitSet(hintedMask, i)) targets[i] += shift;
         }
     }
 
@@ -269,26 +292,37 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
     float companionMax = stemMode == 1 ? maxPx : 1.6;
     for (int i = 0; i < n; ++i) {
         bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
-        if (!axisAligned || blue[i] < 0 || !rounded[i] || hinted[i]) continue;
-        bool top = dir[i] > 0;
-        int best = companion[i];
-        float bestGap = 3.402823466e38;
-        if (best >= 0) {
-            bestGap = top ? pos[i] - pos[best] : pos[best] - pos[i];
+        SnailAhFeature apex = snailAhFeature(featureData[i]);
+        if (!axisAligned || apex.blue < 0 || (apex.flags & 1u) == 0u ||
+            snailAhBitSet(hintedMask, i)) continue;
+        bool top;
+        if (useBlues) {
+            top = (apex.flags & 8u) == 0u;
+        } else {
+            bool partnerAbove = apex.stem >= 0 &&
+                snailAhFeature(featureData[apex.stem]).pos > apex.pos;
+            top = !partnerAbove;
         }
-        if (best < 0 || hinted[best] || blue[best] >= 0 || bestGap * scale >= companionMax) continue;
-        float widthUnits = syntheticApex[best] ? bestGap : max(round(bestGap * scale), 1.0) * grid;
+        int encodedCompanion = int((apex.flags >> (useBlues ? 10u : 4u)) & 63u);
+        int best = encodedCompanion >= 62 ? -1 : encodedCompanion;
+        if (best < 0 || snailAhBitSet(hintedMask, best)) continue;
+        SnailAhFeature mate = snailAhFeature(featureData[best]);
+        float bestGap = top ? apex.pos - mate.pos : mate.pos - apex.pos;
+        if (mate.blue >= 0 || bestGap * scale >= companionMax) continue;
+        float widthUnits = (mate.flags & 2u) != 0u ?
+            bestGap : max(round(bestGap * scale), 1.0) * grid;
         targets[best] = top ? targets[i] - widthUnits : targets[i] + widthUnits;
-        hinted[best] = true;
+        hintedMask |= snailAhBit(best);
     }
 
     for (int i = 0; i < n; ++i) {
         bool axisAligned = axis == 0 ? policy.xAlign != 0 : policy.yAlign != 0;
-        if (!hinted[i] && !(axisAligned && blue[i] >= 0)) continue;
-        knotBase[knotCount] = pos[i];
+        SnailAhFeature feature = snailAhFeature(featureData[i]);
+        if (!snailAhBitSet(hintedMask, i) && !(axisAligned && feature.blue >= 0)) continue;
+        knotBase[knotCount] = feature.pos;
         knotTarget[knotCount] = targets[i];
-        knotBlueFixed[knotCount] = axisAligned && blue[i] >= 0;
-        knotNaturalSpacing[knotCount] = syntheticApex[i];
+        if (axisAligned && feature.blue >= 0) knotBlueFixedMask |= snailAhBit(knotCount);
+        if ((feature.flags & 2u) != 0u) knotNaturalSpacingMask |= snailAhBit(knotCount);
         knotSource[knotCount] = i;
         ++knotCount;
     }
@@ -297,14 +331,12 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
         for (int i = knotCount; i > 0; --i) {
             knotBase[i] = knotBase[i - 1];
             knotTarget[i] = knotTarget[i - 1];
-            knotBlueFixed[i] = knotBlueFixed[i - 1];
-            knotNaturalSpacing[i] = knotNaturalSpacing[i - 1];
             knotSource[i] = knotSource[i - 1];
         }
+        knotBlueFixedMask <<= 1u;
+        knotNaturalSpacingMask <<= 1u;
         knotBase[0] = left;
         knotTarget[0] = snailAhSnap(left, scale);
-        knotBlueFixed[0] = false;
-        knotNaturalSpacing[0] = false;
         knotSource[0] = SNAIL_AH_LEFT_SOURCE;
         ++knotCount;
     }
@@ -312,10 +344,10 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
     // out of room below one, resolve their collisions inward before the
     // generic forward monotonicity repair can push the blue edge outward.
     for (int b = knotCount - 1; b > 0; --b) {
-        if (!knotBlueFixed[b]) continue;
+        if (!snailAhBitSet(knotBlueFixedMask, b)) continue;
         for (int j = b; j > 0; --j) {
-            if (knotBlueFixed[j - 1]) break;
-            float spacing = knotNaturalSpacing[j - 1] ? 1e-6 : grid;
+            if (snailAhBitSet(knotBlueFixedMask, j - 1)) break;
+            float spacing = snailAhBitSet(knotNaturalSpacingMask, j - 1) ? 1e-6 : grid;
             knotTarget[j - 1] = min(knotTarget[j - 1], knotTarget[j] - spacing);
         }
     }

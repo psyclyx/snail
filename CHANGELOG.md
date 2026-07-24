@@ -109,9 +109,12 @@ Treat this as a from-scratch migration.
   complete curve evaluator seven times. The cold 32-knot fragment fallback
   explicitly stays rolled on NVIDIA; otherwise the linker speculatively
   expands its data-dependent passes even though ordinary records use the
-  vertex fit. With the NVIDIA disk cache disabled on an RTX 3090 (driver
-  595.84), the reference renderer's full desktop GL shader set links in about
-  2.27 seconds cold versus roughly 16.3 seconds before these changes; no
+  vertex fit. The fitter retains immutable feature records as one packed local
+  table and represents transient hinted/blue/natural membership as bitmasks,
+  avoiding scalar expansion of eleven parallel arrays while also reducing
+  private state and runtime. With the NVIDIA disk cache disabled on an RTX 3090
+  (driver 595.84), the reference renderer's full desktop GL shader set links in
+  about 2.27 seconds cold versus roughly 16.3 seconds before these changes; no
   autohint program exceeds 0.66 seconds.
 - Upload planning distinguishes exact snapshots, direct append-only children,
   branches, and unrelated atlases using full snapshot lineage. Delta plans
