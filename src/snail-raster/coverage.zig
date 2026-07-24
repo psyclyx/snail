@@ -376,6 +376,54 @@ test "line winding polarity cancels an adjacent quadratic" {
     try std.testing.expectEqual(@as(f32, 0.0), vertical.cov);
 }
 
+test "weight-one conic winding matches its quadratic" {
+    const horizontal_quad = CurveSegment{
+        .kind = .quadratic,
+        .p0 = Vec2.new(2.0, -1.0),
+        .p1 = Vec2.new(3.0, -0.5),
+        .p2 = Vec2.new(4.0, 1.0),
+    };
+    var horizontal_conic = horizontal_quad;
+    horizontal_conic.kind = .conic;
+
+    const vertical_quad = CurveSegment{
+        .kind = .quadratic,
+        .p0 = Vec2.new(-1.0, 2.0),
+        .p1 = Vec2.new(-0.5, 3.0),
+        .p2 = Vec2.new(1.0, 4.0),
+    };
+    var vertical_conic = vertical_quad;
+    vertical_conic.kind = .conic;
+
+    var hq = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var hc = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var vq = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var vc = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    _ = accumulateGlyphCoverageSegment(&hq, horizontal_quad, .zero, 1.0, true);
+    _ = accumulateGlyphCoverageSegment(&hc, horizontal_conic, .zero, 1.0, true);
+    _ = accumulateGlyphCoverageSegment(&vq, vertical_quad, .zero, 1.0, false);
+    _ = accumulateGlyphCoverageSegment(&vc, vertical_conic, .zero, 1.0, false);
+    try std.testing.expectEqual(hq, hc);
+    try std.testing.expectEqual(vq, vc);
+
+    var cold: std.ArrayList(PreparedAxisCurveCold) = .empty;
+    defer cold.deinit(std.testing.allocator);
+    const prepared_hq = try prepareAxisCurve(std.testing.allocator, &cold, horizontal_quad, true);
+    const prepared_hc = try prepareAxisCurve(std.testing.allocator, &cold, horizontal_conic, true);
+    const prepared_vq = try prepareAxisCurve(std.testing.allocator, &cold, vertical_quad, false);
+    const prepared_vc = try prepareAxisCurve(std.testing.allocator, &cold, vertical_conic, false);
+    var phq = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var phc = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var pvq = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    var pvc = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    _ = accumulatePreparedCurveCoverage(&phq, &prepared_hq, cold.items, .zero, 1.0, true);
+    _ = accumulatePreparedCurveCoverage(&phc, &prepared_hc, cold.items, .zero, 1.0, true);
+    _ = accumulatePreparedCurveCoverage(&pvq, &prepared_vq, cold.items, .zero, 1.0, false);
+    _ = accumulatePreparedCurveCoverage(&pvc, &prepared_vc, cold.items, .zero, 1.0, false);
+    try std.testing.expectEqual(phq, phc);
+    try std.testing.expectEqual(pvq, pvc);
+}
+
 inline fn accumulateGlyphCoverageSegment(
     result: *CoveragePair,
     segment: CurveSegment,
@@ -430,7 +478,7 @@ inline fn accumulateGlyphCoverageSegment(
                 (point.x - sample_rc.x) * ppe
             else
                 (point.y - sample_rc.y) * ppe;
-            appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+            appendCoverageContribution(result, distance, crossingSignFromDerivative(derivative_axis));
         }
         return .continue_scan;
     }
@@ -605,7 +653,7 @@ pub inline fn accumulatePreparedCurveCoverage(
             const derivative_axis = if (horizontal) root_deriv else -root_deriv;
             if (@abs(derivative_axis) <= 1e-5) continue;
             const distance = (along - sample_along) * ppe;
-            appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+            appendCoverageContribution(result, distance, crossingSignFromDerivative(derivative_axis));
         }
         return .continue_scan;
     }
@@ -929,7 +977,7 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
                 const root_deriv = derivativePreparedConicRoot(cold, t);
                 if (@abs(root_deriv) <= 1e-5) continue;
                 entry.along[idx] = evaluatePreparedConicAlong(cold, t);
-                entry.sign[idx] = if (root_deriv > 0.0) 1.0 else -1.0;
+                entry.sign[idx] = crossingSignFromDerivative(root_deriv);
             }
             return entry;
         },
@@ -1171,7 +1219,7 @@ fn classifySaturatedBelow(curve: *const PreparedAxisCurve) ?SaturatedBelowEntry 
     switch (curve.kind) {
         .line => {
             const p2 = curve.p0_root + curve.a_root;
-            const sign: f32 = if (curve.a_root < 0.0) 1.0 else -1.0;
+            const sign = crossingSignFromDerivative(-curve.a_root);
             return .{ .x_lo = @min(curve.p0_root, p2), .x_hi = @max(curve.p0_root, p2), .sign = sign };
         },
         .quadratic => {
@@ -1182,7 +1230,7 @@ fn classifySaturatedBelow(curve: *const PreparedAxisCurve) ?SaturatedBelowEntry 
                 if (t_crit > 1e-5 and t_crit < 1.0 - 1e-5) return null;
             }
             if (@abs(curve.p2_root - curve.p0_root) < 1e-10) return null;
-            const sign: f32 = if (curve.p2_root < curve.p0_root) 1.0 else -1.0;
+            const sign = crossingSignFromDerivative(curve.p0_root - curve.p2_root);
             return .{ .x_lo = @min(curve.p0_root, curve.p2_root), .x_hi = @max(curve.p0_root, curve.p2_root), .sign = sign };
         },
         .conic => {
@@ -1194,10 +1242,32 @@ fn classifySaturatedBelow(curve: *const PreparedAxisCurve) ?SaturatedBelowEntry 
             const min_p = @min(curve.p0_root, curve.p2_root);
             const max_p = @max(curve.p0_root, curve.p2_root);
             if (curve.p1_root < min_p - 1e-5 or curve.p1_root > max_p + 1e-5) return null;
-            const sign: f32 = if (curve.p2_root < curve.p0_root) 1.0 else -1.0;
+            const sign = crossingSignFromDerivative(curve.p0_root - curve.p2_root);
             return .{ .x_lo = min_p, .x_hi = max_p, .sign = sign };
         },
         .cubic => unreachable,
+    }
+}
+
+test "saturated vertical polarity matches quadratic winding" {
+    const kinds = [_]bezier.CurveKind{ .line, .quadratic, .conic };
+    for (kinds) |kind| {
+        const forward = CurveSegment{
+            .kind = kind,
+            .p0 = Vec2.new(-1.0, 2.0),
+            .p1 = Vec2.new(0.0, 3.0),
+            .p2 = Vec2.new(1.0, 4.0),
+        };
+        const reverse = CurveSegment{
+            .kind = kind,
+            .p0 = forward.p2,
+            .p1 = forward.p1,
+            .p2 = forward.p0,
+        };
+        const forward_entry = classifySaturatedBelow(&PreparedAxisCurve.fromSegment(forward, false)).?;
+        const reverse_entry = classifySaturatedBelow(&PreparedAxisCurve.fromSegment(reverse, false)).?;
+        try std.testing.expectEqual(@as(f32, 1.0), forward_entry.sign);
+        try std.testing.expectEqual(@as(f32, -1.0), reverse_entry.sign);
     }
 }
 

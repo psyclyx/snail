@@ -88,7 +88,7 @@ fn lineContrib(cov: *f32, wgt: *f32, seg: Seg, srx: f32, sry: f32, ppe: f32, hor
     const derivativeAxis = if (horizontal) (p2y - p0y) else (p0x - p2x);
     if (@abs(derivativeAxis) <= kParamEps) return;
     const distance = (if (horizontal) (p0x + (p2x - p0x) * t) else (p0y + (p2y - p0y) * t)) * ppe;
-    appendCoverage(cov, wgt, distance, if (derivativeAxis > 0.0) 1.0 else -1.0);
+    appendCoverage(cov, wgt, distance, if (derivativeAxis < 0.0) 1.0 else -1.0);
 }
 
 fn conicDeriv(cov: *f32, wgt: *f32, seg: Seg, srx: f32, sry: f32, ppe: f32, horizontal: bool) void {
@@ -164,7 +164,7 @@ fn conicDerivRoot(cov: *f32, wgt: *f32, t: f32, endRootDelta: f32, sampleAlong: 
     if (verbose) std.debug.print("        root t={d:.5} endDelta={e:.3} derivAxis={e:.3} along={d:.5} isNearEnd={} killByEndSkip={}\n", .{ t, endRootDelta, derivAxis, along, t >= 1.0 - kParamEps, (t >= 1.0 - kParamEps and @abs(endRootDelta) <= kCoordEps) });
     if (@abs(derivAxis) <= kParamEps) return;
     const dist = (along - sampleAlong) * ppe;
-    appendCoverage(cov, wgt, dist, if (derivAxis > 0.0) 1.0 else -1.0);
+    appendCoverage(cov, wgt, dist, if (derivAxis < 0.0) 1.0 else -1.0);
 }
 
 fn conicAlongDist(seg: Seg, t: f32, p0A: f32, p1A: f32, p2A: f32, sampleAlong: f32, ppe: f32) f32 {

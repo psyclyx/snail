@@ -236,7 +236,7 @@ void accumulateConicRoot(inout float cov,
     if (abs(derivAxis) <= kParamEps) return;
 
     float dist = (along - sampleAlong) * ppe;
-    appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
+    appendCoverageContribution(cov, wgt, dist, derivAxis < 0.0 ? 1.0 : -1.0);
 }
 
 void accumulateConicCoverage(
