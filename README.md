@@ -1,150 +1,113 @@
 # snail
 
-Text and vector rendering via direct Bezier curve evaluation, built to embed in your engine.
+Text and vector rendering from Bézier curves, built to embed in an engine.
 
 <img src="assets/banner.png?raw=true" alt="snail banner: every size fits, illustrated by a blue-gray vector snail carrying a detailed golden-ratio shell construction" width="1280">
 
-snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform.
+snail stores glyph outlines and vector paths as curves, then evaluates those
+curves while drawing. It does not pre-render glyphs into bitmap atlases or
+signed distance fields. An unhinted record has no baked pixel resolution: the
+same prepared data can be reused across sizes, rotations, affine transforms,
+and projective transforms on the GPU.
 
-snail is a library, not a renderer: it owns no GPU objects or threads and
-provides no automatic glyph-residency or eviction policy. It prepares data on
-the CPU and hands you texture contents, typed draw records, reusable native
-Slang modules, and complete generated shader stages; your engine owns the GPU
-textures, pipelines, uploads, and draw calls. An optional software renderer
-(`snail-raster`) covers hosts without a GPU.
+snail does not provide or own a GPU backend. The core library prepares CPU
+data and emits texture uploads, typed draw records, native Slang modules, and
+complete generated shader stages. Your engine owns GPU textures, pipelines,
+uploads, command buffers, and draw calls. The optional `snail-raster` module
+is an affine-only CPU backend.
 
 This is alpha-quality software; see [Status](#status).
 
-## Algorithm
+## Start here
 
-This is an implementation of the [Slug algorithm](https://sluglibrary.com/):
+### Text rendering in one minute
 
-- Eric Lengyel, ["GPU-Centered Font Rendering Directly from Glyph Outlines"](https://jcgt.org/published/0006/02/02/), JCGT 2017
-- Eric Lengyel, ["A Decade of Slug"](https://terathon.com/blog/decade-slug.html), 2026
-- [Reference HLSL shaders](https://github.com/EricLengyel/Slug) (MIT / Apache-2.0)
+A **character** is part of a text encoding; a **glyph** is a drawable shape
+chosen from a font. They are not one-to-one: a ligature can turn several
+characters into one glyph, while a base character plus marks can produce
+several positioned glyphs.
 
-The Slug patent (US 10,373,352) was [dedicated to the public domain](https://terathon.com/blog/decade-slug.html) in March 2026. This implementation is original code, not derived from the Slug Library product. Licensed under MIT.
+Text rendering therefore has two separate jobs:
 
-### How it works
+1. **Shaping** turns UTF-8 text into glyph IDs, positions, and advances,
+   following script, language, direction, OpenType features, and font
+   fallback. snail uses HarfBuzz for this.
+2. **Rasterization** determines how much of each screen pixel those glyphs
+   cover. snail does this from the glyphs' mathematical outlines.
 
-Rendering splits into a **preparation** phase (CPU, once per glyph or path)
-and a **draw** phase (every frame, in a shader or the CPU rasterizer).
-Outline geometry is never rasterized ahead of time — the atlas stores curves
-and their lookup data. Image paints remain caller-provided raster images. The
-README visuals below are rendered by snail itself; `zig build
-run-algorithm-diagrams` writes their TGA source renders to `zig-out/` (see
-[Build](#build) for the conversion step).
+A font outline is one or more closed **contours** made from lines and Bézier
+curves. Font coordinates are measured relative to the **em**, the font's
+design-space unit square. **ppem** means pixels per em: roughly the rendered
+text size in device pixels. **Hinting** moves outline features onto the pixel
+grid at small sizes; unhinted outlines retain their natural geometry.
 
-**1. Prepare: outlines stay curves.** TrueType glyphs are quadratic Béziers
-in em coordinates; CFF/CFF2 glyphs and general vector paths may also contain
-cubics, while paths additionally support lines and rational conics. During
-preparation, each cubic is split wherever its direction or bending behavior
-changes, then replaced by a chain of simpler quadratic curves. The original
-endpoints remain exact, neighboring pieces share the same join, and pieces are
-subdivided until their measured deviation is below the precision of the packed
-curve data. The resulting line, quadratic, and conic segments are packed —
-four texels each — into the curve texture. Unhinted records are ppem-independent
-and reusable at every size and transform. TrueType grid-fit records are
-ppem-specific.
+The word **atlas** here means a packed GPU lookup store, not a bitmap glyph
+sheet. snail's atlas contains curves, band indexes, and optional paint
+records.
 
-<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
+| Work | Owner |
+|---|---|
+| Paragraph bidi, line breaking, wrapping, cursor/grapheme policy | Host |
+| UTF-8 → positioned glyphs, style selection, font fallback | snail + HarfBuzz |
+| Glyph/path preparation and persistent record storage | snail on the CPU |
+| GPU resources, uploads, pipelines, and submission | Host |
+| Optional affine software rendering | `snail-raster` |
 
-**2. Prepare: bands index the curves.** The glyph's box is sliced into
-horizontal and vertical bands; each band lists only the segments whose
-bounds overlap it. This band texture is the lookup structure that makes
-per-fragment evaluation cheap.
+snail is aimed at text or vector art that changes scale or orientation,
+especially world-space and perspective-projected content. The tradeoff is
+that the fragment shader solves candidate curve intersections instead of
+performing a small fixed number of bitmap/SDF samples. Benchmark the actual
+content and target hardware; a conventional cached bitmap renderer can be a
+better fit for static, fixed-size UI text.
 
-<img src="assets/algorithm-bands.png?raw=true" alt="horizontal and vertical bands over the glyph, one band highlighted with the curves it references" width="640">
+### Supported scope
 
-Curves (RGBA16F), bands (RG16UI), and layer-info rows (RGBA32F — bounds,
-band transforms, paint records, color-font layers) are the whole GPU
-footprint, plus an optional host-formatted image array for image paints.
-The upload planner emits the texel regions; the host copies them into
-textures it owns.
+- TrueType, CFF, and CFF2 outlines in OpenType containers, including font
+  collections and selected variable-font instances.
+- HarfBuzz shaping with styled face chains, fallback, explicit or inferred
+  direction/script/language, OpenType features, and UTF-8 source ranges.
+- Unhinted rendering, a resolution-independent draw-time autohinter, and
+  TrueType bytecode hinting.
+- General paths containing lines, quadratics, cubics, and rational conics;
+  fills, strokes, solid colors, linear/radial/conic gradients, and images.
+- COLRv0 color fonts. Other color-font formats are not currently supported.
+- Grayscale analytic AA and optional LCD subpixel AA.
 
-**3. Draw: one instanced quad per emitted record.** Each placed shape whose
-atlas record contains curves becomes one instance of a quad bounding the
-outline under its transform; empty records produce no draw work. Before
-projection, the vertex shader dynamically dilates the quad in device space
-far enough to cover the analytic-AA or LCD-filter footprint, including under
-perspective. `emit` produces typed instances and coalesced batches, one
-instanced draw per batch. A fragment maps its position back to glyph-local
-coordinates through the inverse transform, which is why any affine or
-perspective transform (and either y-axis convention) renders exactly on the
-GPU pipelines: all the math from here on happens in the record's own space.
-The optional CPU rasterizer is affine-only and reports `NonAffineMvp` for a
-perspective MVP.
-
-<img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="640">
-
-**4. Draw: the sample picks band spans.** The fragment's local footprint
-selects a span of horizontal bands and a span of vertical bands. The
-evaluator visits every touched band and deduplicates curves shared by those
-bands, leaving a handful of candidate segments instead of the whole glyph.
-
-<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band spans highlighted and their candidate curves emphasized" width="640">
-
-**5. Draw: solve ray roots per candidate.** Cast axis-aligned rays through
-the sample and solve the ray/curve equation for each candidate. Every font
-and path now reaches this stage as lines, quadratics, or rational conics, so
-the shader needs no cubic equation solver. For each candidate, it checks which
-side of the ray the curve's defining points lie on. That small pattern tells
-the evaluator whether the curve crosses the ray zero, one, or two times before
-it solves for the exact crossing positions. A crossing at a shared endpoint
-belongs to only one of its two neighboring segments, preventing vertices from
-being counted twice. Each crossing is signed by the direction in which the
-curve passes through the ray.
-
-<img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
-
-**6. Draw: signed roots sum to winding.** The crossing signs accumulate
-into a winding number. The horizontal and vertical estimates are combined
-first for robustness near tangencies; the fill rule (`non_zero` or
-`even_odd`) is then applied once to the resolved winding coverage. The hole's
-crossings cancel to zero on their own.
-
-<img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="640">
-
-**7. Draw: roots near the pixel become coverage.** A root within half a
-pixel of the sample contributes fractional coverage instead of a binary
-in/out — analytic antialiasing without a prefiltered bitmap. Coverage
-multiplies the paint resolved from the layer-info record (solid, gradient, or
-image) and composites as premultiplied linear. Grayscale AA takes one
-analytic sample per pixel. LCD modes take seven analytic samples along the
-display's stripe axis and apply a five-tap filter to form RGB coverage.
-
-<img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by their true fractional coverage" width="640">
+snail does not perform paragraph bidi, line breaking, wrapping, Unicode
+grapheme or terminal-width policy, cursor movement, or image-file decoding.
 
 ## The pipeline
 
-Everything is **prepare → record → upload → draw**. The `Atlas` is the store
-of prepared records — a persistent, value-typed CPU artifact. Preparation
-and residency are explicit: there is no hidden application-level glyph cache
-or automatic eviction policy. `TtHintVm` deliberately retains reusable
-per-font scratch and a ppem-independent parsed-outline cache; upload planners
-and `snail-raster`'s `DeviceAtlas` retain caller-owned upload/device-cache
-state.
+Everything is **shape → record → upload → emit → draw**.
+
+`Atlas` is a persistent, value-typed CPU store. Recording and residency are
+explicit: there is no hidden application-level glyph cache or eviction
+policy.
 
 ```zig
 const snail = @import("snail");
 
-// Prepare: parse fonts, shape text.
-var font = try snail.Font.init(font_bytes);            // borrows the bytes
-var faces = try snail.Faces.build(alloc, &.{.{ .font = &font, .font_id = 0 }});
+// Shape: parse fonts and turn UTF-8 into positioned glyphs.
+var font = try snail.Font.init(font_bytes); // borrows font_bytes
+var faces = try snail.Faces.build(alloc, &.{
+    .{ .font = &font, .font_id = 0 },
+});
 defer faces.deinit();
 var shaped = try snail.shape(alloc, &faces, "Hello, world", .{});
 defer shaped.deinit();
 
-// Record: commit prepared glyph records into the store.
+// Record: prepare missing glyphs and commit them to the persistent store.
 var pool = try snail.PagePool.init(alloc, .{
-    .max_layers = 8, .curve_words_per_page = 1 << 17, .band_words_per_page = 1 << 14,
+    .max_layers = 8,
+    .curve_words_per_page = 1 << 17,
+    .band_words_per_page = 1 << 14,
 });
 defer pool.deinit();
 var atlas = try snail.Atlas.init(alloc, pool);
 defer atlas.deinit();
 try snail.recordUnhintedRun(&atlas, alloc, &faces, &shaped, .{});
 
-// Upload: plan backend-neutral texel regions, copy them into YOUR textures.
+// Upload: copy backend-neutral regions into textures owned by your engine.
 const upload_options: snail.atlas_upload.Options = .{
     .max_bindings = 16,
     .layer_info_height = 64,
@@ -152,227 +115,203 @@ const upload_options: snail.atlas_upload.Options = .{
     .max_image_width = 2048,
     .max_image_height = 2048,
 };
-var planner = try snail.atlas_upload.OwnedPlanner.init(alloc, pool, upload_options);
+var planner = try snail.atlas_upload.OwnedPlanner.init(
+    alloc, pool, upload_options,
+);
 defer planner.deinit();
 const upload = try planner.plan(&atlas);
-for (upload.regions) |r| try myEngine.texSubImage(r); // curve/band/layer_info/image
-const binding = upload.binding;
-// On a direct append-only child, planDelta emits only changed regions.
-// Side-data growth must fit this binding's original fixed reservation;
-// release and plan a fresh binding when it does not.
+for (upload.regions) |region| try myEngine.texSubImage(region);
 
-// Place + emit: shaped run -> Shapes -> typed instances and batches.
+// Emit: place glyphs, then produce typed instances and coalesced batches.
 const shapes = try snail.placeRunAlloc(alloc, &shaped, null, .{
-    .baseline = .{ .x = 48, .y = 92 }, .em = 34,
+    .baseline = .{ .x = 48, .y = 92 },
+    .em = 34,
 });
 defer alloc.free(shapes);
-_ = try snail.emit.emit(instances, batches, &ni, &nb,
-    binding, &atlas, shapes, world_xform, .{ 1, 1, 1, 1 });
+_ = try snail.emit.emit(
+    instances, batches, &instance_count, &batch_count,
+    upload.binding, &atlas, shapes, world_xform, .{ 1, 1, 1, 1 },
+);
 const records: snail.render.records.DrawRecords = .{
-    .instances = instances[0..ni], .batches = batches[0..nb],
+    .instances = instances[0..instance_count],
+    .batches = batches[0..batch_count],
 };
 
-// Draw: your pipeline, your command buffer. One draw per batch and one quad
-// per instance, using the generated stages from @import("snail_shaders").
+// Draw: bind the generated stages from @import("snail_shaders").
+// Submit one instanced draw per batch and one quad per instance.
 ```
 
-If applying a successful `plan`/`planDelta` result fails, call
-`planner.invalidateUploads()`, then retry the allocated slot with
-`planDelta(binding, &atlas)`. Alternatively, release that binding before a
-fresh `plan`. A returned `Binding` is valid only for the issuing planner/device
-cache: identity includes the `PagePool`, the planner's `source_id`, a 64-bit
-slot generation, and both storage offsets. Do not synthesize or partially
-compare bindings in a device cache.
+The complete raw-OpenGL version is
+[`src/demo/app/minimal_gl.zig`](src/demo/app/minimal_gl.zig), runnable with
+`zig build run-minimal-gl`. Reference GPU integrations live under
+[`src/demo/render/gl`](src/demo/render/gl) and
+[`src/demo/render/vulkan`](src/demo/render/vulkan). The software-renderer
+flow and the detailed upload, lifetime, color, threading, and ABI contracts
+are in [Embedding snail](INTEGRATION.md).
 
-The complete, runnable version of this flow against a raw GL context is
-[`src/demo/app/minimal_gl.zig`](src/demo/app/minimal_gl.zig) (`zig build
-run-minimal-gl`) — it exercises the record verbs, paths, COLR, and the
-delta-upload hot path. For a full engine-shaped integration (descriptor
-layouts, multi-pass, Vulkan), read the demo's reference callers in
-[`src/demo/render/gl/`](src/demo/render/gl) and
-[`src/demo/render/vulkan/`](src/demo/render/vulkan). The software-renderer
-flow is `snail-raster`'s `DeviceAtlas.upload` + `draw`:
+`PagePool` is the resident page budget. Recording is idempotent and returns
+`error.OutOfLayers` when a new record cannot acquire a page. The host chooses
+what to evict; `Atlas.compact(..., filter)` rebuilds a retained working set.
+Compaction needs free-page headroom because it acquires replacement pages
+before the old snapshot releases its pages.
 
-```zig
-const raster = @import("snail-raster");
+On a direct append-only atlas child, `planDelta` emits only changed page
+regions and appended side data. Layer-info and image storage are fixed
+reservations made by the original plan; release and create a fresh binding
+if later side data no longer fits.
 
-var device = try raster.DeviceAtlas.init(alloc, pool, .{});
-defer device.deinit();
-var bindings: [1]snail.render.records.Binding = undefined;
-try device.upload(alloc, &.{&atlas}, &bindings);
+## Algorithm
 
-// Bindings are cache-specific, so emit against the DeviceAtlas binding.
-var raster_ni: usize = 0;
-var raster_nb: usize = 0;
-_ = try snail.emit.emit(instances, batches, &raster_ni, &raster_nb,
-    bindings[0], &atlas, shapes, world_xform, .{ 1, 1, 1, 1 });
-const raster_records: raster.DrawRecords = .{
-    .instances = instances[0..raster_ni], .batches = batches[0..raster_nb],
-};
+snail implements the core coverage method described by Eric Lengyel:
 
-var renderer = try raster.Renderer.init(pixels, width, height, stride, .rgba8_unorm);
-try raster.draw(&renderer, .{
-    .mvp = mvp,
-    .surface = .{
-        .pixel_width = width,
-        .pixel_height = height,
-        .encoding = .srgb,
-        .format = .rgba8_unorm,
-    },
-}, raster_records, &.{&device}, null);
-```
+- ["GPU-Centered Font Rendering Directly from Glyph Outlines"](https://jcgt.org/published/0006/02/02/), JCGT 2017
+- ["A Decade of Slug"](https://terathon.com/blog/decade-slug.html), 2026
+- [Public reference HLSL shaders](https://github.com/EricLengyel/Slug)
 
-`Renderer.init` and `reinitBuffer` validate the caller-owned byte length and
-stride. Every draw also validates the declared surface size and selected
-`PixelFormat`; choose a stride of at least
-`width * format.bytesPerPixel()`. `DeviceAtlas.upload` requires exactly one
-output binding per input atlas. If a multi-atlas call fails, none of the
-bindings it planned remain live and every output entry from that call is
-unusable, though successfully prepared shared page data may remain cached.
-`raster.draw` supports affine scene-to-pixel transforms; a perspective MVP
-returns `NonAffineMvp`.
+The Slug patent (US 10,373,352) was permanently dedicated to the public
+domain effective March 17, 2026. snail is original code rather than code
+copied from the Slug Library product or public reference shaders, and is
+licensed under MIT.
 
-### Capacity and eviction
+### How it works
 
-The `PagePool` is the residency budget. Recording is idempotent (existing
-keys are skipped) and fails with `error.OutOfLayers` when the pool is
-exhausted — that is your eviction moment, and the policy is yours:
-`Atlas.compact(alloc, scratch, filter)` rebuilds the store full-fidelity,
-keeping only records the `RecordFilter` accepts (pass `null` to keep
-everything, i.e. pure defragmentation). Compact acquires new pages before
-releasing old ones, so evict while `pool.stats().pages_free` still provides
-headroom, not only after failure. `PagePool.config()` returns the immutable
-capacity configuration. Atlas page handles are opaque: storage, reservation,
-publication, reference counting, and recycling stay private, and renderer
-integrations receive immutable `atlas_upload.Region` copies.
-`src/support/working_set.zig` is a worked example (demo-only, not shipped).
+Rendering splits into a **preparation** phase on the CPU, once per record,
+and a **draw** phase for every covered fragment. Outlines are not rasterized
+ahead of time: the atlas stores curves and indexes. Caller-provided image
+paints remain raster images.
 
-Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
-copies the atlas's flat page-pointer and paint-side-data arrays once. Bulk
-callers should not put it in a one-entry loop: pass one entry slice, or use
-`extendBatchesInPlace` to consume several producer slices in one transaction
-without allocating a flattened array.
+**1. Prepare: outlines remain curves.** TrueType outlines use lines and
+quadratic Béziers. CFF/CFF2 outlines and caller-authored paths can contain
+cubics; paths can also contain rational conics. Cubics are split at axis
+extrema and inflections, then adaptively approximated by tangent-preserving
+quadratic chains. Endpoints and joins are preserved, and the approximation
+uses a conservative error bound with a default tolerance of `1/8192` in
+prepared coordinates (one em for normalized font outlines) and a maximum
+subdivision depth of 10.
 
-## Contracts
+Every prepared line, quadratic, or conic segment occupies four `RGBA16F`
+texels. Unhinted and autohint records are ppem-independent. TrueType
+grid-fitted curve records are ppem-specific.
 
-These are the fixed points a host must know. Everything else is explicit
-per-call configuration.
+<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
 
-**Colors are linear.** Every `[4]f32` color crossing the API is linear light
-with straight (non-premultiplied) alpha. snail never interprets your colors;
-gradients interpolate and tints multiply in linear light, and fragment output
-is **premultiplied linear** — encode via an sRGB framebuffer or a resolve
-pass (blend state: `ONE, ONE_MINUS_SRC_ALPHA`). For targets without
-hardware sRGB encode, `snail-shaders` ships the generated linear-resolve
-stages (float-intermediate seed/encode with premultiplication handled
-correctly); the demo GL renderers show the orchestration. If a display expects
-sRGB pixels from a linear attachment, encode both shader output and clear
-colors consistently. `TargetEncoding` expresses that attachment/storage
-combination. Translucent layers must still be blended in a linear intermediate
-and encoded once at the end; encoding each layer before blending makes the
-overlap too dark. If you author in sRGB, convert once at the boundary with
-`snail.color.srgbToLinearColor`.
-Font palette colors (CPAL, spec-defined sRGB) are converted at extraction.
+**2. Prepare: bands index the curves.** The record's box is divided into
+equal horizontal and vertical bands. Each band lists the segments whose
+bounds overlap it, sorted by decreasing maximum coordinate so the evaluator
+can stop once the remaining curves lie more than half a pixel behind the
+sample.
 
-**Y axis is yours.** Glyph geometry is stored y-up (font units);
-`RunPlacement.y_axis` selects the scene orientation (`.down` default for
-top-left-origin UI, `.up` for y-up worlds). Coverage is
-orientation-independent, so both fill identically. `mvpToScenePixel` maps an
-MVP to viewport pixels with a top-left origin — that's the framebuffer texel
-convention, separate from the scene axis.
+The current packer chooses 1–12 bands per axis from the logical curve count;
+the packed record format accepts up to 16. A curve that crosses several bands
+appears in each of their lists and records its first member band for
+draw-time deduplication.
 
-**Image texels are opaque.** `Image` holds raw texel bytes; snail never
-decodes them. The contract is that *sampling yields linear color* — bind an
-sRGB texture format for sRGB bytes, or a UNORM/float format for
-pre-linearized data. `atlas_upload.Options.image_bytes_per_texel` declares the
-host array format (4 by default); every planned image must match it and fit
-`max_image_width` × `max_image_height`. `snail-raster` uses 4-byte RGBA,
-sRGB-encoded, straight alpha.
+<img src="assets/algorithm-bands.png?raw=true" alt="horizontal and vertical bands over the glyph, one band highlighted with the curves it references" width="640">
 
-**Shader targets.** The native Slang modules in `src/snail/shader/slang/`
-are the source of truth. From them, the separate `snail-shaders` module
-(`@import("snail_shaders")`) provides complete shaders for every supported
-family/target combination across Vulkan SPIR-V, WGSL, GLSL 330, GLES 300,
-D3D11 HLSL, and Metal MSL (generated/cross-checked on Linux and exercised by
-the macOS GPU CI gate) — plus the binding-name contracts loaders bind by.
-Artifacts are not checked in: they are generated at build time, in the zig
-cache, only for builds that actually import the module — and per-target
-scopes of the same API (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`,
-`-msl`) materialize only their selected runtime shader targets. Each scope
-also generates the small shared parameter-ABI reflection module, whose
-`slangc` reflection passes cover WGSL and the shared Vulkan families.
-Consumer scopes do not run `naga` validation, so e.g. a WebGPU consumer needs
-`slangc` alone; the direct GLSL/GLES path also needs no second shader
-compiler. Consumers of `snail`/`snail-raster` alone never need `slangc`.
-Composition is
-Slang-level too: a caller-authored family can `import text_sample` and
-sample glyph coverage inside its own material shader — the game demo's
-[`game_material.slang`](src/demo/game/slang/game_material.slang) is the
-worked example. For OpenGL, prefer the driver-oriented complete stages in
-the `snail-shaders-glsl330` / `snail-shaders-gl` module scopes. Slang emits
-them directly, preserving authored helpers and structured control flow;
-`colrFrag*` is specialized for solid-layer COLRv0 glyphs while `pathFrag*`
-retains the general conic/gradient/image path engine. Cubics never enter a
-generated stage: the historical general-path entry is a compatibility alias
-for the conic-capable evaluator. Compile only the families a renderer actually
-draws; the reference GL/GLES renderer does this lazily. `run-minimal-gl`
-demonstrates the generated-GL consumer route. WebGPU is validated by the
-`run-minimal-wgpu` example against the GL reference.
+The atlas textures are curves (`RGBA16F`), bands (`RG16UI`), and layer-info
+rows (`RGBA32F`), plus an optional host-formatted image array. Instance data,
+the shared parameter block, samplers, pipelines, and command state are
+separate host resources.
 
-**Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded
-f16 local bbox, affine transform/origin, glyph words, four payload words, and
-linear-f16 color/tint. All 256 atlas layers are directly representable; packed
-records are validated before a backend consumes them. Curves are RGBA16F,
-bands RG16UI, layer-info RGBA32F, plus the host-formatted image array. Layouts
-are versioned and documented in
-`snail.render` (byte-layout contract for caller-owned renderers), the
-`snail-shaders` module (per-target binding/name contracts of the generated
-shaders), and the canonical Slang modules under `src/snail/shader/slang`.
+**3. Draw: emit one quad per non-empty instance.** A placed shape with curves
+becomes one instance of a bounding quad; empty records produce no instance.
+The vertex shader dynamically dilates the quad far enough in device space to
+cover the grayscale-AA or LCD-filter footprint, including under perspective.
 
-**Ownership and lifetimes.** Every allocating call takes an explicit
-allocator; the core preparation APIs keep no global or thread-local mutable
-state. `Atlas` is value-typed
-and persistent — `extend`/`compact` return new snapshots sharing retained,
-refcounted page storage while preserving prior logical snapshot contents, and
-lookups return records **by value**, so there is no entry-vs-eviction lifetime
-hazard. Upload `Region`s alias planner scratch
-(`layer_info`), live page memory (`curve`/`band`), or caller-owned `Image`
-texels: apply them before the next `plan`/`planDelta`, and keep the atlas and
-images alive and unchanged until the copies finish. A `PagePool` must outlive
-every atlas, binding planner, and device cache created from it. `Font` borrows
-the font bytes you pass it.
+The fragment receives the corresponding record-local position and
+derivatives. GPU pipelines support affine and projective transforms; the CPU
+rasterizer supports affine transforms only and reports `NonAffineMvp` for a
+perspective MVP.
 
-**Validation is part of the API.** `PagePool.init`, `Atlas.init`, upload
-planner sizing/initialization, and software-renderer attachment are fallible.
-Atlas insertion rejects malformed curve/band payloads; paints reject non-finite
-parameters, invalid alpha/radius/image payloads, and strokes with invalid
-widths or miter limits; paths reject non-finite geometry, invalid
-rational-conic weights, and unrepresentable complexity;
-`emit` rejects stale/foreign atlas records, invalid transforms, colors,
-policies, cursors, and insufficient output. Atlas insertion, draw emission,
-device resize, and renderer buffer replacement preflight or stage their work
-so failure leaves their published state unchanged; a failed multi-atlas upload
-releases every binding it planned but may retain prepared shared-page work.
-Fixed-size multi-segment path commands reserve their complete append capacity
-before mutation; lower-level adaptive construction remains explicitly
-incremental. Propagate typed errors instead of treating them as asserts.
+<img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="640">
 
-**Threading.** The core `snail` module does not create threads. Separate atlas handles, including
-children of the same persistent snapshot, may be extended and destroyed on
-different threads: shared HAMT/page references are atomic, `PagePool`
-acquisition and identity minting are synchronized, and initialized curve/band
-ranges are published as one ordered pair. Do not mutate or destroy the *same*
-handle concurrently. Each concurrent build must also use a distinct allocator
-or an allocator whose implementation is thread-safe; atomic atlas references
-cannot make a caller's allocator safe. Planners and other mutable values remain
-single-threaded unless documented. `snail-raster` has an optional caller-driven
-`ThreadPool`.
+**4. Draw: the pixel footprint selects band spans.** This is a deliberate
+departure from the public Slug shader. That shader selects one horizontal
+band and one vertical band. snail instead maps both edges of the fragment's
+record-local pixel footprint to band indexes and visits every band between
+them.
+
+This is not limited to two band lists: an extremely minified footprint can
+span every band on either axis. Curves duplicated across touched bands are
+evaluated once, at `max(first_member_band, first_touched_band)`.
+
+<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample footprint with its horizontal and vertical band spans highlighted and their candidate curves emphasized" width="640">
+
+**5. Draw: classify and solve ray crossings.** The evaluator casts
+axis-aligned rays through the sample. For a quadratic, the signs of its three
+sample-relative control coordinates index Slug's `0x2E74` eligibility table.
+That exact classification says whether zero, one, or two roots contribute
+before the polynomial roots are used for their crossing positions.
+
+snail normalizes sample-relative coordinates within `1/65536` of zero to
+positive zero so adjacent segments retain one half-open shared-endpoint
+decision after f16 storage and transform/subtraction drift. The quadratic
+solver uses a cancellation-resistant Vieta form. Lines use the same
+half-open sign convention; rational conics use the quadratic eligibility
+code on their weighted control values before solving their rational
+crossings.
+
+<img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
+
+**6. Draw: signed crossings produce winding coverage.** A crossing adds or
+subtracts according to its direction. Horizontal and vertical results are
+combined using edge-proximity weights, with a conservative fallback near
+tangencies. General paths then apply their `non_zero` or `even_odd` fill rule
+once to the resolved winding coverage. Oppositely wound hole contours cancel
+without special hole handling.
+
+<img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="640">
+
+**7. Draw: nearby crossings become fractional coverage.** A crossing within
+half a device pixel of the sample contributes a fraction rather than a
+binary inside/outside value. This is analytic antialiasing without a
+prefiltered glyph image.
+
+Coverage multiplies the resolved solid, gradient, or image paint, producing
+premultiplied linear color. The stage can leave that value linear for a
+linear or hardware-sRGB attachment, or encode it when sRGB pixels must be
+written through a linear attachment. Grayscale AA evaluates one analytic
+sample per pixel. LCD modes evaluate seven samples at one-third-pixel phases
+along the display stripe axis, then use a five-tap filter to form RGB
+coverage.
+
+<img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by fractional analytic coverage" width="640">
+
+The diagrams are rendered by snail itself. `zig build
+run-algorithm-diagrams` writes their TGA sources to `zig-out/`.
+
+### Differences from the public Slug reference
+
+The winding method, `0x2E74` root eligibility, directional coverage
+combination, half-pixel analytic ramp, sorted-curve early-out, `RG16UI` band
+data, and dynamic dilation follow the current public reference.
+
+| Public reference shader | snail |
+|---|---|
+| Selects one horizontal and one vertical band list at the sample center | Visits every band touched by the local pixel footprint and deduplicates shared curves |
+| Evaluates quadratic Béziers | Evaluates lines, quadratics, and rational conics; cubics are lowered on the CPU |
+| Stores a quadratic in two curve texels, often sharing endpoints | Reserves four texels per segment for packed anchors/deltas, kind, and conic weights |
+| Uses raw floating-point sign bits for root eligibility | Snaps values within `1/65536` of the ray to positive zero before using the same table |
+| Uses the direct quadratic formula | Uses a cancellation-resistant, order-preserving Vieta form |
+| Accepts a caller-built bounding polygon | `emit` always produces a simple quad and the vertex shader dilates its four corners |
+| Covers the core GPU quadratic renderer | Adds shaping, fallback, CFF/CFF2, paths and paints, hinting, LCD modes, persistent atlas/upload APIs, and a CPU backend |
+
+The band-span behavior is implemented in
+[`coverage_common.slang`](src/snail/shader/slang/coverage_common.slang) and
+used by regular text, COLRv0, hinted text, subpixel text, sampled text, and
+general paths. The CPU mirror is
+[`src/snail-raster/coverage.zig`](src/snail-raster/coverage.zig). Band
+construction and its 12-band heuristic are in
+[`band_texture.zig`](src/snail/format/band_texture.zig).
 
 ## Text and hinting
 
-`Faces.build` + `shape()` produce a `ShapedText` (HarfBuzz shaping, style
-selection, fallback chains, OpenType features, source-range metadata).
-Direction, script, and language can be explicit or left for HarfBuzz to infer:
+`Faces.build` creates reusable HarfBuzz shaping state over caller-owned
+`Font` values. `shape()` performs style selection, fallback itemization, and
+shaping, returning glyph IDs, em-space positions, resolved `font_id` values,
+and half-open UTF-8 source-byte ranges.
+
+Direction, script, and language can be explicit or inferred:
 
 ```zig
 const features = [_]snail.OpenTypeFeature{
@@ -388,173 +327,119 @@ var shaped = try snail.shape(alloc, &faces, text, .{
 defer shaped.deinit();
 ```
 
-`direction` is run-level shaping direction, not paragraph bidi layout.
-Feature ranges and each glyph's half-open `source_start..source_end` are UTF-8
-byte offsets into the original input. Cluster ranges are complete in both LTR
-and RTL output; glyph order follows HarfBuzz within each fallback-font run.
-Every face supplies a stable `font_id`; all `Faces` values that feed the same
-atlas must use the same id for the same font instance. Conflicting ids and
-empty face sets are rejected. The fallback itemizer keeps font-sensitive
-Unicode marks (using HarfBuzz's Unicode database), emoji, and Indic sequences
-together; it is not a general-purpose UAX #29 segmenter. Invalid UTF-8,
-feature ranges, empty/oversized language strings, ppem values, and missing
-ppem for an advance provider are reported as errors. `Faces.fontIdForFace`
-and `Faces.fontForFace` return `null` for an invalid index; HarfBuzz and
-fallback-chain ownership stays in type-erased storage inside `Faces` rather
-than leaking through inferable fields.
+`direction` is run-level shaping direction, not paragraph bidi. Glyph order
+follows HarfBuzz within each fallback-font run. The fallback itemizer keeps
+its supported font-sensitive marks, emoji sequences, and Indic sequences
+together; it is not a general UAX #29 segmenter.
 
-`placeRun`/`placeRunAlloc` turn a run into `Shape`s under one of three modes,
-each pairing a record namespace with a population verb:
+Every face has a caller-assigned `font_id`. Within one retained atlas, the
+same ID must always identify the same stable `Font` pointer, including its
+selected face and variable coordinates.
 
-| `HintMode` | Records | Character |
+Choose a hinting path according to the content:
+
+| Mode | Use it for | Record and placement behavior |
 |---|---|---|
-| `.unhinted` | `recordUnhintedRun` | ppem-independent; cacheable at any subpixel position; COLR via composite records (default) or per-layer fanout (`ColrHandling.layers` + `colr = true`) |
-| `.autohint = policy` | `recordAutohintRun` | one immutable per-glyph analysis, ppem-independent; the fitting `AutohintPolicy` is draw-time instance state (GPU runtime warp / CPU parity) |
-| `.tt_hint = .{ .ppem_26_6 }` | `recordTtHintRun` | authentic TrueType bytecode via the pure `TtHintVm`; per-ppem curve records, hinted advances recorded for free |
+| `.unhinted` | Scalable or transformed content; the default | `recordUnhintedRun`; one ppem-independent curve record reusable at subpixel positions |
+| `.autohint = policy` | Small UI/terminal text without relying on font bytecode | `recordAutohintRun`; one ppem-independent analysis, fitted at draw time by the instance policy |
+| `.tt_hint = .{ .ppem_26_6 }` | TrueType fonts whose native instructions should control small-size fitting | `recordTtHintRun`; ppem-specific curves and advances produced by `TtHintVm` |
 
-### Terminal-style cell grids
+TrueType bytecode hinting applies only to TrueType outlines and rejects a
+selected variable-font instance. The autohinter is outline-format agnostic
+and supports TrueType, CFF/CFF2, and selected variable instances.
 
-For terminals, font advances should not determine columns. Shape each dirty
-style run normally, then describe the host's cells with source-byte ranges and
-explicit column numbers:
+Strong x-axis autohint policies and TrueType hinting need integer
+device-pixel glyph origins. Use `RunSnap.origins` for proportional text or
+`.columns` for monospace grids, supplying
+`world_to_pixel = mvpToScenePixel(mvp, fb_width, fb_height)`. Snapped shapes
+are tied to that transform; unsnapped shapes remain content-only.
 
-```zig
-const text = "A🌍e\u{301}";
-const cells = [_]snail.Cell{
-    .{ .source = .{ .start = 0, .end = 1 }, .column = 0 },
-    .{ .source = .{ .start = 1, .end = 5 }, .column = 1 }, // wide: next is 3
-    .{ .source = .{ .start = 5, .end = 8 }, .column = 3 },
-};
-var shaped = try snail.shape(alloc, &faces, text, .{});
-defer shaped.deinit();
+For measurement with TrueType-hinted advances,
+`recordTtAdvanceRun` stores page-free advance records and
+`TtAdvanceSource` feeds them back into `shape()` as an `AdvanceProvider`.
 
-// Batch all dirty runs into one idempotent atlas transaction in real code.
-try snail.recordUnhintedRuns(
-    &atlas, persistent_alloc, &faces, &.{&shaped}, .{ .colr = .layers },
-);
-const shapes = try snail.placeCellRunAlloc(alloc, &shaped, &faces, &cells, .{
-    .baseline = .{ .x = 24, .y = 40 },
-    .cell_width = 10,
-    .em = 18,
-    .snap = .grid,
-    .world_to_pixel = world_to_pixel,
-    .colr = true,
-});
-defer alloc.free(shapes);
-```
+Terminal integrations should use `placeCellRun`, which preserves HarfBuzz
+cluster offsets while the host supplies exact source ranges and columns. See
+[Terminal-style cell grids](TERMINAL.md) and the
+[`run-terminal`](src/demo/app/terminal.zig) example.
 
-`placeCellRun` anchors each HarfBuzz cluster to its assigned cell while
-preserving mark, ligature, and fallback-face offsets inside that cluster.
-Per-cell color and `HintMode` are retained. A wide cell is simply followed by
-a later column; snail deliberately does not decide Unicode width,
-grapheme/cursor policy, tabs, line wrapping, paragraph bidi, or scrollback.
-Those remain properties of the caller's screen model.
+General paths use the same atlas and draw pipeline. Author a `Path`, call
+`prepare`, obtain fill or stroke curves, and place the result with a
+transform. Paint remapping can fail: radial records accept similarities and
+conic records accept orientation-preserving similarities; an ellipse, shear,
+or reversed conic sweep returns `UnsupportedTransform`.
 
-The demo keeps the baseline and cell advance pixel-aligned in every mode.
-Unhinted and y-only autohinting use `CellSnap.grid`; the default two-axis
-autohinter and TrueType mode use `CellSnap.glyph_origins` so their fitted
-x-stems do not land at fractional device positions. Only cells resolved to
-the primary mono face switch record modes; fallback scripts, the selected
-bold variable face, and COLRv0 emoji remain unhinted in the same placed run.
+## Integration contracts
 
-A practical update loop retains `Font` storage, `Faces`, `PagePool`, and
-`Atlas`; shapes only changed row/style runs; records those runs with the
-matching plural verb (`recordUnhintedRuns`, `recordAutohintRuns`, or
-`recordTtHintRuns`); rebuilds the cheap placed picture; and applies
-`planDelta`/`DeviceAtlas.uploadDelta` to the existing binding. Hinted modes
-still record unhinted bases first for fallback and analysis dependencies.
-Recording is idempotent, so repeated characters add no atlas work. Stable
-`font_id` values must identify the same stable `Font` pointers everywhere
-that feeds an atlas. Adding or reordering fallback faces requires building a
-new `Faces` value; already-recorded atlas keys remain valid when those
-identities stay stable.
+The full contracts are in [Embedding snail](INTEGRATION.md). The points
+most likely to affect a first integration are:
 
-The current color-font path is COLRv0. Dynamic terminals can use
-`ColrHandling.layers` plus cell placement's `colr = true`: this expands solid
-palette layers into ordinary glyph shapes and avoids growing
-binding-relative paint side data. Composite COLR records, images, and other
-paint data can instead require a fresh binding if their fixed side-data
-reservation is exceeded. Atlas exhaustion remains a host policy decision:
-compact/evict with working-set headroom or rotate to a new pool.
+- **Colors:** paint, tint, placement, and instance `[4]f32` colors are
+  linear-light with straight alpha. Coverage first produces premultiplied
+  linear color; the target policy decides whether the stage encodes it.
+  `LinearResolve.Backdrop.clear` is the explicit sRGB-input exception. CPAL
+  colors are converted from sRGB during extraction.
+- **Y axis:** font geometry is y-up; placement selects a y-down or y-up scene.
+- **Images:** the core stores opaque tightly packed texels. The backend must
+  sample them as linear color with straight alpha.
+- **Lifetimes:** `Font` borrows bytes; `Faces` borrows `Font` pointers;
+  upload regions borrow planner, atlas, or image memory; `PagePool` outlives
+  every related atlas/planner/device cache.
+- **Threading:** separate atlas handles may be used on separate threads, but
+  the same mutable handle may not. `Faces`, `TtHintVm`, and planners are
+  single-threaded unless documented otherwise.
+- **CPU transform limit:** `snail-raster` supports affine transforms, not
+  perspective.
 
-The complete worked example is
-[`src/demo/app/terminal.zig`](src/demo/app/terminal.zig), with the independent
-[cell model](src/demo/terminal/screen.zig),
-[simulation](src/demo/terminal/simulation.zig), and
-[snail-backed view](src/demo/terminal/view.zig). Run it with
-`zig build run-terminal` (`R` resets, `P` pauses, `-`/`+` changes text size,
-`H` cycles unhinted/auto-y/auto-df/TrueType hinting, and `C` cycles
-renderers).
-
-Grid-fit hinting needs integer device-pixel origins: pair strong policies or
-`tt_hint` with `RunSnap.origins` (proportional) or `.columns` (monospace
-terminals), passing `world_to_pixel = mvpToScenePixel(mvp, fb_w, fb_h)`.
-Snapped runs are tied to that transform (per-frame); unsnapped runs are
-content-only and cacheable. For hinted measurement without drawing,
-`recordTtAdvanceRun` stores advances only, and `TtAdvanceSource` feeds them
-back into `shape()` as an `AdvanceProvider` (VM fallback failures are
-observable via `last_error`/`fallback_count`).
-
-Paths (`Path` → `PreparedPath`) and image/gradient paints ride the same
-store: author paths in a unit frame and place them with a transform, exactly
-like glyphs. Paint remapping is fallible: radial records accept similarities,
-and conic records accept orientation-preserving similarities; transforms that
-would produce an ellipse, shear, or reversed conic sweep report
-`UnsupportedTransform`.
-`snail.snap` has pure pixel-grid helpers for rect edges and baselines.
+Generated complete shaders cover Vulkan SPIR-V, WGSL, GLSL 330, GLES 300,
+D3D11 HLSL, and Metal MSL. The authored source of truth is
+[`src/snail/shader/slang`](src/snail/shader/slang). The render ABI is
+versioned; each packed instance is 72 bytes (18 words), and all 256 atlas
+layers are representable.
 
 ## Modules
 
-- **`snail`** — everything above: fonts, shaping, placement, atlas store,
-  upload planning, emit, render/shader contracts. Links libc and system
-  HarfBuzz; no GPU or windowing dependencies.
-- **`snail-raster`** — optional software renderer: `DeviceAtlas` (host-side
-  texture analog), `Renderer`, `draw`, explicit `TargetEncoding`/`PixelFormat`,
-  linear-light blending, and optional subpixel AA. Its runtime fitter is wired
-  as package-private build support and adds no caller-visible module.
-- `src/demo`, `src/support`, `src/tools` — demos, reference GPU callers, and
-  internal conveniences. Not published; copy freely.
+- **`snail`** — fonts, shaping, placement, paths, paints, atlas storage,
+  upload planning, draw emission, and render contracts. It links libc and
+  system HarfBuzz, with no GPU or window-system dependency.
+- **`snail-raster`** — optional software `DeviceAtlas`, `Renderer`, and
+  `draw`, including linear-light blending and subpixel AA.
+- **`snail-shaders*`** — generated complete stages and reflected binding
+  contracts. Import only the target scope needed by the host.
+- `src/demo`, `src/support`, and `src/tools` — unpublished demos, reference
+  callers, probes, and conveniences.
 
-Public-surface encapsulation is enforced by the source-only
-[`src/tests/public_renderer_api.zig`](src/tests/public_renderer_api.zig) gate
-and the generated-artifact
-[`src/tests/public_shader_api.zig`](src/tests/public_shader_api.zig) gate,
-which compile-error if internals leak or module boundaries regress.
+Public module boundaries are gated by
+[`src/tests/public_renderer_api.zig`](src/tests/public_renderer_api.zig) and
+[`src/tests/public_shader_api.zig`](src/tests/public_shader_api.zig).
 
 ## Build
 
-Requires [Zig 0.16](https://ziglang.org/download/) and HarfBuzz (via
-pkg-config). The complete shader-contract suite additionally needs `slangc`
-and `naga`. Interactive demos need their corresponding window
-system and graphics APIs (Wayland + EGL/OpenGL or Vulkan on Linux).
+The core requires [Zig 0.16](https://ziglang.org/download/) and HarfBuzz via
+pkg-config. Shader generation requires `slangc`; the repository's complete
+shader-validation suite also uses `naga`. Interactive demos require the
+corresponding window system and graphics API.
 
 ```sh
-zig build test-core               # library/raster tests; no shader-generation tools required
-zig build test                    # complete suite, including generated-shader and public-API gates
-zig build run                     # interactive Wayland banner demo (C cycles backends)
-zig build run-terminal            # incremental cell-grid text, fallback, wrapping, and emoji
-zig build run-game                # interactive 3D scene: world-space text, custom material shader, live backend HUD
-zig build run-minimal-gl          # one-file public-API GL example → zig-out/minimal-gl.tga
-zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → zig-out/minimal-wgpu.tga
-zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga
-zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-gated in CI) → zig-out/minimal-metal.tga
-zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
-zig build gen-shaders             # materialize generated shader artifacts into zig-out/shaders (needs slang+naga)
-zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
-zig build run-game-screenshot     # game scene across GL/GLES, including the linear-window fallback
-zig build run-algorithm-diagrams  # render README TGA sources into zig-out/ (snail rendering itself)
-zig build run-backend-compare     # CPU vs GL divergence gate
-zig build run-gamma-probe         # linear-blending / encode round-trip gate
-zig build run-composite-probe     # perspective coverage-hole gate (GL)
-zig build run-coverage-parity     # affine coverage-hole gate (CPU rasterizer)
-zig build install-perf            # performance regression runners
+zig build test-core               # core + software renderer; no shader tools
+zig build test                    # complete generated-shader/API suite
+zig build run-minimal-gl          # public-API GL example → zig-out/minimal-gl.tga
+zig build run-terminal            # incremental terminal cell grid
+zig build run-game                # perspective text in a custom material
+zig build run-banner-screenshot   # headless CPU reference render
+zig build run-backend-compare     # CPU/GL divergence gate
+zig build gen-shaders             # materialize every generated shader target
 ```
 
-With Nix: `nix-build -A demo`, or `nix-shell` for a dev shell with all
-dependencies.
+Other useful gates include `run-minimal-wgpu`, `run-minimal-d3d11`,
+`run-minimal-metal`, `check-metal-demo`, `run-composite-probe`,
+`run-coverage-parity`, and `run-gamma-probe`. Run `zig build -l` for the full
+list.
 
-To update the checked-in README images after rendering their TGA sources
-(requires ImageMagick):
+With Nix: `nix-build -A demo`, or enter `nix-shell` for the complete
+development toolchain.
+
+To regenerate the README images after rendering their TGA sources:
 
 ```sh
 magick zig-out/banner.tga assets/banner.png
@@ -570,42 +455,32 @@ zig fetch --save git+https://github.com/psyclyx/snail
 ```
 
 ```zig
-const snail_dep = b.dependency("snail", .{ .target = target, .optimize = optimize });
+const snail_dep = b.dependency("snail", .{
+    .target = target,
+    .optimize = optimize,
+});
 exe.root_module.addImport("snail", snail_dep.module("snail"));
-// Optional software renderer:
 exe.root_module.addImport("snail-raster", snail_dep.module("snail-raster"));
-// GPU shader stages; choose the scope that matches your backend:
 exe.root_module.addImport(
     "snail_shaders",
     snail_dep.module("snail-shaders-glsl330"),
 );
 ```
 
-Other generated-shader scopes are `snail-shaders-gl` (GLSL 330 + GLES 300),
-`snail-shaders-wgsl`, `snail-shaders-hlsl`, and `snail-shaders-msl`. The
-aggregate `snail-shaders` scope includes every target, including Vulkan
-SPIR-V. Omit the shader import when using only `snail` or `snail-raster`.
-
-Workspace builds that import `snail/build.zig` directly can call `module()` /
-`rasterModule()` instead.
+Other shader scopes are `snail-shaders-gl` (GLSL 330 + GLES 300),
+`snail-shaders-wgsl`, `snail-shaders-hlsl`, and `snail-shaders-msl`.
+`snail-shaders` includes every target, including Vulkan SPIR-V. Omit shader
+imports when using only `snail` or `snail-raster`.
 
 ## Status
 
-Alpha. The embeddable-only rewrite is complete (see
-[CHANGELOG](CHANGELOG.md)); the Zig API is settling but breaking changes are
-still expected. A C API against the current primitives is planned. Rendering
-correctness is gated in CI (GitHub Actions; the toolchain is the same
-nix-pinned `shell.nix` used for local development). Separate Linux jobs run
-the unit and generated-artifact tests; CPU-vs-GL comparison; coverage,
-composite, parity, and gamma probes; GL/GLES screenshots under llvmpipe;
-Vulkan and game-scene screenshots under lavapipe; WebGPU; and D3D11 under
-Wine. Release-mode consumer builds and the Nix package are also built.
-A Windows job runs the cross-built D3D11 and CPU artifacts on the native
-runtime without installing a second toolchain. A macOS job reruns the tests
-and CPU gate, compiles and executes the generated MSL on a real Metal GPU,
-and gates WebGPU through Metal. Backend images are compared against the
-appropriate checked-in or CPU-rendered references with documented
-tolerances in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+Alpha. The embeddable-only rewrite is complete; the Zig API is settling but
+breaking changes remain possible. See the [changelog](CHANGELOG.md).
+
+CI runs the unit/public-API suites and generated shader contracts; CPU/GPU
+image comparison; coverage, composite, gamma, and screenshot probes; Vulkan,
+WebGPU, D3D11, and software consumer builds; and real Metal execution on
+macOS. The pinned local toolchain is the same one described by `shell.nix`.
 
 ## License
 

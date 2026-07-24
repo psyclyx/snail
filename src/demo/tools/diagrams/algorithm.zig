@@ -526,8 +526,8 @@ fn diagramCurves(ctx: *Ctx) !void {
     }
     _ = try ctx.text("4 texels per segment,", 184, 118, label_em, muted, .regular);
     _ = try ctx.text("em coordinates, f16", 184, 129, label_em, muted, .regular);
-    _ = try ctx.text("16 segments = one glyph", 184, 147, label_em, ink, .regular);
-    _ = try ctx.text("record, any size", 184, 158, label_em, ink, .regular);
+    _ = try ctx.text("16 segments = one", 184, 147, label_em, ink, .regular);
+    _ = try ctx.text("unhinted glyph record", 184, 158, label_em, ink, .regular);
 }
 
 // ── Diagram 2: bands ────────────────────────────────────────────────
@@ -652,27 +652,61 @@ fn diagramQuad(ctx: *Ctx) !void {
 const sample_pt = Vec2{ .x = 76, .y = 72 }; // inside the ring, centered in its bands
 
 fn diagramPickBands(ctx: *Ctx) !void {
-    try title(ctx, "4. Draw: the sample picks two bands");
+    try title(ctx, "4. Draw: the pixel footprint picks band spans");
 
     try ctx.panel(.{ .x = 13, .y = 30, .w = 180, .h = 158 });
     const place = glyphPlace(48, 42, 1.05);
     const band_count: f32 = 6;
+    const footprint_half = Vec2{ .x = 8, .y = 10.5 };
+    const footprint_lo = Vec2{
+        .x = sample_pt.x - footprint_half.x,
+        .y = sample_pt.y - footprint_half.y,
+    };
+    const footprint_hi = Vec2{
+        .x = sample_pt.x + footprint_half.x,
+        .y = sample_pt.y + footprint_half.y,
+    };
     const tl = mapPt(place, .{ .x = 0, .y = 0 });
     const br = mapPt(place, .{ .x = glyph_w, .y = glyph_h });
 
-    // The sample's h band (row) and v band (column).
-    const hband: f32 = @floor(sample_pt.y / glyph_h * band_count);
-    const vband: f32 = @floor(sample_pt.x / glyph_w * band_count);
+    // Highlight every row and column touched by this deliberately enlarged
+    // record-local pixel footprint. It straddles a boundary on each axis.
+    const hband_first: u32 = @intFromFloat(@floor(footprint_lo.y / glyph_h * band_count));
+    const hband_last: u32 = @intFromFloat(@floor(footprint_hi.y / glyph_h * band_count));
+    const vband_first: u32 = @intFromFloat(@floor(footprint_lo.x / glyph_w * band_count));
+    const vband_last: u32 = @intFromFloat(@floor(footprint_hi.x / glyph_w * band_count));
     const bh = (br.y - tl.y) / band_count;
     const bw = (br.x - tl.x) / band_count;
-    try ctx.fillRect(.{ .x = tl.x, .y = tl.y + hband * bh, .w = br.x - tl.x, .h = bh }, blue_soft);
-    try ctx.fillRect(.{ .x = tl.x + vband * bw, .y = tl.y, .w = bw, .h = br.y - tl.y }, teal_soft);
+    for (hband_first..hband_last + 1) |band| {
+        try ctx.fillRect(.{
+            .x = tl.x,
+            .y = tl.y + @as(f32, @floatFromInt(band)) * bh,
+            .w = br.x - tl.x,
+            .h = bh,
+        }, blue_soft);
+    }
+    for (vband_first..vband_last + 1) |band| {
+        try ctx.fillRect(.{
+            .x = tl.x + @as(f32, @floatFromInt(band)) * bw,
+            .y = tl.y,
+            .w = bw,
+            .h = br.y - tl.y,
+        }, teal_soft);
+    }
 
     try emBox(ctx, place, 1);
     try ctx.glyphStroke(place, 1.2, faint);
 
-    const h_members = bandRange(true, hband * glyph_h / band_count, (hband + 1) * glyph_h / band_count);
-    const v_members = bandRange(false, vband * glyph_w / band_count, (vband + 1) * glyph_w / band_count);
+    const h_members = bandRange(
+        true,
+        @as(f32, @floatFromInt(hband_first)) * glyph_h / band_count,
+        @as(f32, @floatFromInt(hband_last + 1)) * glyph_h / band_count,
+    );
+    const v_members = bandRange(
+        false,
+        @as(f32, @floatFromInt(vband_first)) * glyph_w / band_count,
+        @as(f32, @floatFromInt(vband_last + 1)) * glyph_w / band_count,
+    );
     var candidates: u32 = 0;
     for (glyph_segments, h_members, v_members) |q, hm, vm| {
         if (hm) try ctx.segStroke(q, place, 2.0, blue);
@@ -680,6 +714,12 @@ fn diagramPickBands(ctx: *Ctx) !void {
         if (hm or vm) candidates += 1;
     }
     const sp = mapPt(place, sample_pt);
+    const fp_tl = mapPt(place, footprint_lo);
+    const fp_br = mapPt(place, footprint_hi);
+    try ctx.line(fp_tl, .{ .x = fp_br.x, .y = fp_tl.y }, 1.1, amber);
+    try ctx.line(.{ .x = fp_br.x, .y = fp_tl.y }, fp_br, 1.1, amber);
+    try ctx.line(fp_br, .{ .x = fp_tl.x, .y = fp_br.y }, 1.1, amber);
+    try ctx.line(.{ .x = fp_tl.x, .y = fp_br.y }, fp_tl, 1.1, amber);
     try ctx.fillCircle(sp.x, sp.y, 2.6, amber);
 
     try ctx.panel(.{ .x = 205, .y = 30, .w = 102, .h = 158 });
@@ -687,10 +727,11 @@ fn diagramPickBands(ctx: *Ctx) !void {
     var buf: [32]u8 = undefined;
     const c1 = try std.fmt.bufPrint(&buf, "{d} of 16 curves", .{candidates});
     _ = try ctx.text(c1, 214, 62, label_em, ink, .regular);
-    _ = try ctx.text("in the sample's", 214, 73, label_em, ink, .regular);
-    _ = try ctx.text("two bands", 214, 84, label_em, ink, .regular);
-    _ = try ctx.text("the rest are", 214, 104, label_em, muted, .regular);
-    _ = try ctx.text("never touched", 214, 115, label_em, muted, .regular);
+    _ = try ctx.text("across every", 214, 73, label_em, ink, .regular);
+    _ = try ctx.text("touched band", 214, 84, label_em, ink, .regular);
+    _ = try ctx.text("duplicates count once", 214, 104, label_em, muted, .regular);
+    _ = try ctx.text("the rest are", 214, 119, label_em, muted, .regular);
+    _ = try ctx.text("never evaluated", 214, 130, label_em, muted, .regular);
 }
 
 // ── Diagram 5: ray roots ────────────────────────────────────────────
@@ -886,8 +927,7 @@ fn diagramCoverage(ctx: *Ctx) !void {
 
     const cap_y = gy0 + @as(f32, @floatFromInt(rows)) * cell + 14;
     _ = try ctx.text("one cell = one device pixel", 26, cap_y, label_em, muted, .regular);
-    _ = try ctx.text("coverage times paint,", 196, cap_y, label_em, muted, .regular);
-    _ = try ctx.text("premultiplied linear out", 196, cap_y + 11, label_em, muted, .regular);
+    _ = try ctx.text("paint × coverage = premul", 196, cap_y, label_em, muted, .regular);
 }
 
 // ── README hero: a dedicated snail composition, not the demo scene ───
