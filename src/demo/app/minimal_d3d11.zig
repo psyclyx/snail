@@ -89,9 +89,13 @@ const Gpu = struct {
 /// Runtime-compile one HLSL artifact with d3dcompiler_47 (under Wine the
 /// built-in FXC-class compiler) and return the bytecode blob.
 fn compileHlsl(source: [:0]const u8, entry: [:0]const u8, target: [:0]const u8, label: []const u8) !*c.ID3DBlob {
+    return compileHlslFlags(source, entry, target, label, @intCast(c.D3DCOMPILE_ENABLE_STRICTNESS));
+}
+
+fn compileHlslFlags(source: [:0]const u8, entry: [:0]const u8, target: [:0]const u8, label: []const u8, flags: c.UINT) !*c.ID3DBlob {
     var blob: ?*c.ID3DBlob = null;
     var errors: ?*c.ID3DBlob = null;
-    const hr = c.D3DCompile(source.ptr, source.len, null, null, null, entry.ptr, target.ptr, c.D3DCOMPILE_ENABLE_STRICTNESS, 0, &blob, &errors);
+    const hr = c.D3DCompile(source.ptr, source.len, null, null, null, entry.ptr, target.ptr, flags, 0, &blob, &errors);
     if (errors) |e| {
         const ptr: [*]const u8 = @ptrCast(e.*.lpVtbl.*.GetBufferPointer.?(e).?);
         const len = e.*.lpVtbl.*.GetBufferSize.?(e);
@@ -164,7 +168,16 @@ const Pipelines = struct {
         self.regular_ps = try createPs(device, slang_gen.textHlsl(.fragment), "text.frag");
         self.autohint_ps = try createPs(device, slang_gen.autohintHlsl(.fragment), "autohint.frag");
         self.tt_ps = try createPs(device, slang_gen.ttHintedFragHlsl(), "tt_hinted_text.frag");
-        self.path_ps = try createPs(device, slang_gen.pathFragHlsl(), "path.frag");
+        // Microsoft's FXC optimizer ICEs with "argument pulled into unrelated
+        // predicate" on this accepted SM5 source. Keep optimization enabled
+        // for every other stage and compile only the general-path fragment
+        // through FXC's strict, unoptimized path.
+        self.path_ps = try createPsFlags(
+            device,
+            slang_gen.pathFragHlsl(),
+            "path.frag",
+            @intCast(c.D3DCOMPILE_ENABLE_STRICTNESS | c.D3DCOMPILE_SKIP_OPTIMIZATION),
+        );
         self.colr_ps = try createPs(device, slang_gen.colrFragHlsl(), "colr.frag");
         return self;
     }
@@ -189,7 +202,11 @@ const Pipelines = struct {
     }
 
     fn createPs(device: *c.ID3D11Device, source: [:0]const u8, label: []const u8) !*c.ID3D11PixelShader {
-        const blob = try compileHlsl(source, slang_gen.hlsl_fragment_entry, "ps_5_0", label);
+        return createPsFlags(device, source, label, @intCast(c.D3DCOMPILE_ENABLE_STRICTNESS));
+    }
+
+    fn createPsFlags(device: *c.ID3D11Device, source: [:0]const u8, label: []const u8, flags: c.UINT) !*c.ID3D11PixelShader {
+        const blob = try compileHlslFlags(source, slang_gen.hlsl_fragment_entry, "ps_5_0", label, flags);
         defer release(@as(?*c.ID3DBlob, blob));
         const bytes = blobBytes(blob);
         var ps: ?*c.ID3D11PixelShader = null;

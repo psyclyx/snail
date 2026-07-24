@@ -448,17 +448,18 @@ jobs:
       - name: Cross-compile check of the Metal demo
         run: nix-shell --run "zig build check-metal-demo -Dcpu=baseline"
 
-      # CPU rasterizer against the checked-in Linux CPU reference (same
-      # >4%-channel rule as pixelgate). x86_64 measured bit-identical
-      # (Wine); aarch64 is expected to match — if this gate ever trips at
-      # a handful of pixels, suspect libm last-ulp drift and record it.
+      # CPU rasterizer against the checked-in canonical CPU reference (same
+      # >4%-channel rule as pixelgate). The former reference predated the
+      # coverage-solver fixes and was 309 pixels stale on both current x86_64
+      # and macOS/aarch64 runs. Keep this at zero so the reference must be
+      # deliberately regenerated when coverage changes.
       - name: CPU rasterizer screenshot
         run: nix-shell --run "zig build run-screenshot -Dcpu=baseline"
 
       - name: Gate the CPU render
         run: |
           n=$(nix-shell --run 'magick src/demo/tools/screenshots/demo_cpu_reference.tga zig-out/demo-screenshot.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
-          echo "pixels over 4% channel delta: $n (threshold 0; x86_64 is bit-identical)"
+          echo "pixels over 4% channel delta: $n (threshold 0; canonical CPU reference)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
           esac

@@ -300,10 +300,10 @@ pub const PassBuilder = struct {
     }
 
     /// Filled rounded rect + a separate center-stroke border, as two independent
-    /// shapes. Unlike `addRoundedRectWithInsideStroke` (the `fill_stroke_inside`
-    /// composite), this leaves no coverage residue under perspective — the
-    /// composite clips a center-stroke to the fill interior *per fragment*, and
-    /// combining two coverage fields at grazing angles produces specks/seams.
+    /// shapes. This is useful as a coverage-control case; depth-tested or
+    /// translucent surfaces should normally use
+    /// `addRoundedRectWithInsideStroke` so the coplanar layers are composed in
+    /// one fragment.
     pub fn addRoundedRectFilledStroked(
         self: *PassBuilder,
         rect: snail.Rect,
