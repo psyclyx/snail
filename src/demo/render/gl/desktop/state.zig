@@ -37,8 +37,8 @@ fn kindHasSubpixelProgram(kind: ShapeKind) bool {
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
 const LinearResolveState = linear_resolve.StateFor(gl, .{
-    .vertex_shader = shaders.native_linear_resolve_vertex_shader,
-    .fragment_shader = shaders.native_linear_resolve_fragment_shader,
+    .vertex_shader = shaders.linear_resolve_vertex_shader,
+    .fragment_shader = shaders.linear_resolve_fragment_shader,
     .dst_format = .intermediate,
     .linkProgram = gl_programs.linkProgram,
 });
@@ -51,7 +51,6 @@ pub const Backend = gl_backend.Backend;
 
 const ProgramState = gl_programs.ProgramState;
 const deleteProgramState = gl_programs.deleteProgramState;
-const loadProgramState = gl_programs.loadProgramState;
 
 // ── Streaming constants ──
 
@@ -127,34 +126,16 @@ fn TextStateFor(comptime backend: Backend) type {
 
             // Link all draw programs during renderer init so draw never compiles or links.
             //
-            // Structured catalog programs are the shipping GL path. Keep the
-            // portable Slang -> SPIR-V -> GLSL translation available as an
-            // explicit regression probe.
-            const composed = std.c.getenv("SNAIL_GL_NATIVE_TRANSLATED") == null;
-            if (composed) {
-                self.text_program = try loadProgramState("text-composed", shaders.vertex_shader, shaders.fragment_shader_text, false);
-                self.path_program = try loadProgramState("painted-composed", shaders.vertex_shader, shaders.fragment_shader_path, false);
-                self.tt_hinted_text_program = try loadProgramState("hinted-text-composed", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
-                self.autohint_program = try loadProgramState("autohint-composed", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
-            } else {
-                self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
-                self.path_program = try gl_programs.loadNativeProgramState("painted-native", shaders.native_text_vertex_shader, shaders.native_path_fragment_shader);
-                self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
-                self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
-            }
+            self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
+            self.path_program = try gl_programs.loadNativeProgramState("painted", shaders.vertex_shader, shaders.fragment_shader_path);
+            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
+            self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
             if (self.supports_dual_source_blend) {
-                if (composed) {
-                    self.text_subpixel_dual_program = try loadProgramState("text-subpixel-composed", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual, true);
-                    self.tt_hinted_subpixel_dual_program = try loadProgramState("hinted-subpixel-composed", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_subpixel_dual, true);
-                    self.autohint_subpixel_dual_program = try loadProgramState("autohint-subpixel-composed", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint_subpixel_dual, true);
-                } else {
-                    // Native subpixel fragments carry their own
-                    // layout(location = 0, index = N) qualifiers, so no
-                    // glBindFragDataLocationIndexed calls are needed.
-                    self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel-native", shaders.native_text_vertex_shader, shaders.native_subpixel_fragment_shader);
-                    self.tt_hinted_subpixel_dual_program = try gl_programs.loadNativeProgramState("hinted-subpixel-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_subpixel_fragment_shader);
-                    self.autohint_subpixel_dual_program = try gl_programs.loadNativeProgramState("autohint-subpixel-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_subpixel_fragment_shader);
-                }
+                // Subpixel fragments carry layout(location = 0, index = N)
+                // qualifiers, so no glBindFragDataLocationIndexed calls are needed.
+                self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual);
+                self.tt_hinted_subpixel_dual_program = try gl_programs.loadNativeProgramState("hinted-subpixel", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_subpixel_dual);
+                self.autohint_subpixel_dual_program = try gl_programs.loadNativeProgramState("autohint-subpixel", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint_subpixel_dual);
             }
             try self.linear_resolve.init();
 

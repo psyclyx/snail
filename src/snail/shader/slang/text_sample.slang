@@ -14,6 +14,8 @@
 //    parameters.
 module text_sample;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -106,8 +108,8 @@ public float4 snailTextSamplePremulLinearWithFootprint<T : ISnailTextRecords>(
     int glyph_count,
     int layer_base,
     float coverage_exponent,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
     float2 scene_pos,
     float2 scene_dx,
     float2 scene_dy)
@@ -155,8 +157,8 @@ public float4 snailTextSamplePremulLinear<T : ISnailTextRecords>(
     int glyph_count,
     int layer_base,
     float coverage_exponent,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
     float2 scene_pos)
 {
     return snailTextSamplePremulLinearWithFootprint(records, words_per_glyph, glyph_count,

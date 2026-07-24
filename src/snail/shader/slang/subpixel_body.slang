@@ -9,6 +9,8 @@
 // no-transfer evalGlyphCoverage, the 5-tap filter, the blend packing).
 module subpixel_body;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -38,7 +40,7 @@ float3 applyCoverageTransfer3(float3 cov, float coverage_exponent) {
 
 // Clamped, no-transfer variant of the glyph coverage evaluation (the
 // subpixel filter applies the transfer after filtering).
-float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, int2 band_max, float4 banding, int layer, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
+float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
     CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, band_max.y);
     CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, band_max.x);
 
@@ -109,7 +111,7 @@ float2 subpixelCoverageEdgePixels(float2 display_dx, float2 display_dy, int subp
         : dx + dy * (1.0 / 3.0);
 }
 
-float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_max, float4 banding, int layer, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
+float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
     float2 ppe = float2(1.0 / max(display_epp.x, 1.0 / 65536.0), 1.0 / max(display_epp.y, 1.0 / 65536.0));
     return evalGlyphCoverageRaw(rc, display_epp, ppe, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
 }
@@ -117,7 +119,7 @@ float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_m
 // Deriv-parameterized evaluator: callers with a remapped sample space
 // (autohint's inverse warp) pass display-space derivatives already scaled
 // into that space; the plain wrapper below feeds raw ddx/ddy.
-public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
+public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
     float2 sample_step = ((subpixel_order <= 2) ? display_dx : display_dy) * (1.0 / 3.0);
     float2 display_epp = subpixelCoverageEdgePixels(display_dx, display_dy, subpixel_order);
     // One evaluator call site avoids cloning the complete coverage call graph
@@ -143,7 +145,7 @@ public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx,
     return float4(applyCoverageTransfer3(coverage.rgb, coverage_exponent), applyCoverageTransfer(coverage.a, coverage_exponent));
 }
 
-public float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex) {
+public float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
     return snailEvalGlyphCoverageSubpixelDerivs(rc, ddx(rc), ddy(rc), glyph_loc, band_max, banding, layer, subpixel_order, coverage_exponent, curve_tex, band_tex);
 }
 
@@ -175,8 +177,8 @@ public SubpixelResult snailPackSubpixelResult(float4 color, float4 cov_alpha, in
 
 public SubpixelResult snailSubpixelFragment(
     SubpixelVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
     int layer_base,
     int subpixel_order,
     int output_srgb,

@@ -17,6 +17,8 @@
 // premultiplied linear paint — the module's contract, nothing more.
 module text_sample_family;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -32,28 +34,28 @@ public struct SnailTextSampleParams {
 
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailTextSampleParams> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 [[vk::binding(4, 0)]] StructuredBuffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }
 };
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailTextSampleParams> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 [[vk::binding(4, 0)]] StructuredBuffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }
 };
 #elif defined(SNAIL_TARGET_GLES)
 ConstantBuffer<SnailTextSampleParams> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
 // GLES 3.0: 2D R32UI texture, row-major at a fixed width (the upload side
 // pads the tail row with zeros; the composed catalog's
 // SNAIL_TEXT_RECORDS_TEX_WIDTH contract).
-Texture2D<uint> u_snail_text_records;
+SnailUintTexture2D u_snail_text_records;
 static const int SNAIL_TEXT_RECORDS_TEX_WIDTH = 1024;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) {
@@ -65,8 +67,8 @@ struct Records : ISnailTextRecords {
       // usamplerBuffer / t2 / MSL texture_buffer<uint> at [[texture(2)]],
       // which needs MSL 2.1+ at pipeline compile time).
 ConstantBuffer<SnailTextSampleParams> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
 Buffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }

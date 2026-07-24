@@ -6,6 +6,8 @@
 // curve/band atlas) feeding the regular-text 7-tap subpixel evaluator.
 module tt_hinted_subpixel;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -15,9 +17,9 @@ import subpixel_body;
 
 public SubpixelResult snailTtHintedSubpixelFragment(
     TtHintedVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
-    Texture2D<float4> layer_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    SnailFloatTexture2D layer_tex,
     int layer_base,
     int subpixel_order,
     int output_srgb,

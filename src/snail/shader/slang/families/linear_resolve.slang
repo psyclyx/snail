@@ -6,14 +6,14 @@
 // the behavioral spec: every epsilon, literal, and operation order is
 // preserved.
 //
-// Only the naga GL dialects are generated (gl_only): Vulkan and WebGPU
+// Only the direct GL dialects are generated (gl_only): Vulkan and WebGPU
 // demo paths have no linear-resolve pass — hardware sRGB targets cover
-// them. Both stages are loop-free, so the GL legs stay on direct SPIR-V
-// (vertex keeps the spirv_asm raw-VertexIndex load; fragment needs no
-// via-glsl). The mode dispatch is an if/else, not a select: only the pass's
+// them. The mode dispatch is an if/else, not a select: only the pass's
 // own texture is bound during a pass (the other unit holds texture 0) and
 // the dead branch must not sample it.
 module linear_resolve;
+
+import resource_types;
 
 import color_common;
 
@@ -22,16 +22,35 @@ public struct SnailLinearResolveParams {
 };
 
 ConstantBuffer<SnailLinearResolveParams> pc;
-Texture2D<float4> u_linear_tex;
-SamplerState u_linear_sampler;
-Texture2D<float4> u_dst_tex;
-SamplerState u_dst_sampler;
+SnailFloatTexture2D u_linear_tex;
+#if defined(SNAIL_TARGET_GL)
+static const SnailSamplerState u_linear_sampler = 0;
+#else
+SnailSamplerState u_linear_sampler;
+#endif
+SnailFloatTexture2D u_dst_tex;
+#if defined(SNAIL_TARGET_GL)
+static const SnailSamplerState u_dst_sampler = 0;
+#else
+SnailSamplerState u_dst_sampler;
+#endif
 
 struct VsOutput {
     float4 position : SV_Position;
     [[vk::location(0)]] float2 uv;
 };
 
+#if defined(SNAIL_TARGET_GL)
+[shader("vertex")]
+VsOutput vertexMain(uint vertex_index: SV_VertexID) {
+    float2 pos = float2((vertex_index == 1) ? 3.0 : -1.0,
+                        (vertex_index == 2) ? 3.0 : -1.0);
+    VsOutput o;
+    o.uv = pos * 0.5 + 0.5;
+    o.position = float4(pos, 0.0, 1.0);
+    return o;
+}
+#else
 int snailRawVertexIndex() {
     return spirv_asm {
         result:$$int = OpLoad builtin(VertexIndex:int);
@@ -48,6 +67,7 @@ VsOutput vertexMain() {
     o.position = float4(pos, 0.0, 1.0);
     return o;
 }
+#endif
 
 // sRGB-encoded premultiplied -> linear premultiplied (destination seed).
 float4 snailLinearResolveSeed(float4 dst_premul) {
@@ -67,7 +87,7 @@ float4 snailLinearResolveEncode(float4 linear_premul) {
 [shader("fragment")]
 float4 fragmentMain(VsOutput input) : SV_Target {
     if (pc.mode == 0) {
-        return snailLinearResolveSeed(u_dst_tex.Sample(u_dst_sampler, input.uv));
+        return snailLinearResolveSeed(snailSample2D(u_dst_tex, u_dst_sampler, input.uv));
     }
-    return snailLinearResolveEncode(u_linear_tex.Sample(u_linear_sampler, input.uv));
+    return snailLinearResolveEncode(snailSample2D(u_linear_tex, u_linear_sampler, input.uv));
 }

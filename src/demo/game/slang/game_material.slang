@@ -31,6 +31,8 @@
 // (gl_material.zig:Params mirrors the layout).
 module game_material;
 
+import resource_types;
+
 import text_sample;
 
 // Record stride in u32 words. Must match snail's packed instance layout
@@ -57,8 +59,8 @@ public struct GameMaterialParams {
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<GameMaterialParams> pc;
 // snail's atlas plane (set 0) — reuse the device-atlas descriptor set.
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 // Caller-owned records SSBO (set 1).
 [[vk::binding(0, 1)]] StructuredBuffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
@@ -66,12 +68,12 @@ struct Records : ISnailTextRecords {
 };
 #elif defined(SNAIL_TARGET_GLES)
 ConstantBuffer<GameMaterialParams> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
 // GLES 3.0 records storage: emit words in a 2D R32UI texture, addressed
 // row-major at a fixed width (the upload side in gl_material.zig pads the
 // tail row with zeros at the same width).
-Texture2D<uint> u_snail_text_records;
+SnailUintTexture2D u_snail_text_records;
 static const int SNAIL_TEXT_RECORDS_TEX_WIDTH = 1024;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) {
@@ -81,8 +83,8 @@ struct Records : ISnailTextRecords {
 };
 #else // Desktop GL: R32UI texel buffer.
 ConstantBuffer<GameMaterialParams> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
 Buffer<uint> u_snail_text_records;
 struct Records : ISnailTextRecords {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }

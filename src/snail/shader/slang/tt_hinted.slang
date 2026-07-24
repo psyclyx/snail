@@ -8,12 +8,14 @@
 // while retaining a distinct program family.
 module tt_hinted;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
 import text_coverage;
 
-public int2 offsetTtHintedInfoLoc(Texture2D<float4> layer_tex, int2 base, int offset) {
+public int2 offsetTtHintedInfoLoc(SnailFloatTexture2D layer_tex, int2 base, int offset) {
     uint uw, uh;
     layer_tex.GetDimensions(uw, uh);
     int width = int(uw);
@@ -31,9 +33,9 @@ public struct TtHintedVaryings {
 
 public float4 snailTtHintedTextFragment(
     TtHintedVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
-    Texture2D<float4> layer_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    SnailFloatTexture2D layer_tex,
     int layer_base,
     int output_srgb,
     float coverage_exponent,

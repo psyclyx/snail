@@ -20,8 +20,8 @@ const TextRenderMode = enum { grayscale };
 pub const LinearResolveRestore = gl_common.LinearResolveRestore;
 
 const LinearResolveState = linear_resolve.StateFor(gl, .{
-    .vertex_shader = shaders.native_linear_resolve_vertex_shader,
-    .fragment_shader = shaders.native_linear_resolve_fragment_shader,
+    .vertex_shader = shaders.linear_resolve_vertex_shader,
+    .fragment_shader = shaders.linear_resolve_fragment_shader,
     .dst_format = .srgb8,
     .linkProgram = gl_programs.linkProgram,
 });
@@ -34,7 +34,6 @@ pub const Backend = gl_backend.Backend;
 
 const ProgramState = gl_programs.ProgramState;
 const deleteProgramState = gl_programs.deleteProgramState;
-const loadProgramState = gl_programs.loadProgramState;
 
 // ── GLES30 streaming constants ──
 
@@ -62,20 +61,12 @@ pub const Gles30TextState = struct {
     pub fn init(self: *Gles30TextState) !void {
         self.backend = gl_backend.detect(gl);
 
-        // Link all draw programs during renderer init so draw never compiles or links.
-        // Structured catalog programs are the shipping GL path; see desktop.
-        const composed = std.c.getenv("SNAIL_GL_NATIVE_TRANSLATED") == null;
-        if (composed) {
-            self.text_program = try loadProgramState("text-composed", shaders.vertex_shader, shaders.fragment_shader_text, false);
-            self.path_program = try loadProgramState("painted-composed", shaders.vertex_shader, shaders.fragment_shader_path, false);
-            self.tt_hinted_text_program = try loadProgramState("hinted-text-composed", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text, false);
-            self.autohint_program = try loadProgramState("autohint-composed", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint, false);
-        } else {
-            self.text_program = try gl_programs.loadNativeProgramState("text-native", shaders.native_text_vertex_shader, shaders.native_text_fragment_shader);
-            self.path_program = try gl_programs.loadNativeProgramState("painted-native", shaders.native_text_vertex_shader, shaders.native_path_fragment_shader);
-            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text-native", shaders.native_text_vertex_shader, shaders.native_tt_hinted_fragment_shader);
-            self.autohint_program = try gl_programs.loadNativeProgramState("autohint-native", shaders.native_autohint_vertex_shader, shaders.native_autohint_fragment_shader);
-        }
+        // Link all Slang-generated programs during renderer init so draw
+        // never compiles or links.
+        self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
+        self.path_program = try gl_programs.loadNativeProgramState("painted", shaders.vertex_shader, shaders.fragment_shader_path);
+        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
+        self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
         try self.linear_resolve.init();
 
         self.initGles30();
@@ -198,7 +189,7 @@ pub const Gles30TextState = struct {
             gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.image_array_tex);
         }
         // Sampler unit pinning + u_layer_base = 0 are baked at link
-        // time by loadProgramState; no per-draw glUniform1i needed.
+        // time by the program loader; no per-draw glUniform1i needed.
 
         // Native-Slang text program: every per-draw parameter lives in one
         // 96-byte UBO block; loose-uniform locs are all -1 for it.

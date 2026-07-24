@@ -20,9 +20,9 @@
 //! Zig analyzes declarations lazily, so in a scoped module the accessors
 //! of absent targets are simply never analyzed; referencing one fails to
 //! compile with the missing `generated/<target>/` path. Each module
-//! depends on exactly its own targets' toolchain steps: every target
-//! needs `slangc`, only glsl330/gles300 add `spirv-cross` (the nix shell
-//! provides both). `zig build gen-shaders` optionally materializes the
+//! depends on exactly its own targets' toolchain steps: every target needs
+//! `slangc`; direct GLSL/GLES use only an in-tree mechanical normalizer.
+//! `zig build gen-shaders` optionally materializes the
 //! full matrix into zig-out/shaders/ for inspection.
 //!
 //! ## Interface contracts
@@ -44,15 +44,12 @@
 //!    `@group(0)` bindings 0/1 (the WGSL catalog's binding contract; no
 //!    samplers — the text family only `Load`s). Entry points keep their
 //!    Slang names: `vertexMain` / `fragmentMain`.
-//!  - `glsl330` / `gles300` (SPIRV-Cross-translated): every stage of every
+//!  - `glsl330` / `gles300` (direct Slang GLSL, dialect-normalized): every stage of every
 //!    family declares ONE std140 uniform block named
-//!    `SnailPushConstants_std140` (identical definition in both stages, so
+//!    `block_SnailPushConstants_0` (identical definition in both stages, so
 //!    the linker merges them — bind the single block index to one binding
-//!    point backed by a single 96-byte UBO). Texture access goes through
-//!    SPIRV-Cross's combined samplers: Load-only textures pair with the
-//!    generated dummy sampler (`SPIRV_Cross_Combined<tex>SPIRV_Cross_
-//!    DummySampler`), Sample sites with the real one
-//!    (`SPIRV_Cross_Combined<tex><sampler>`). Varyings are renamed to the
+//!    point backed by a single 96-byte UBO). GL-specialized Slang resource
+//!    aliases emit ordinary combined samplers named `u_*_0`. Varyings are renamed to the
 //!    location-keyed `snail_io<N>` table at generation time (GLSL <4.10
 //!    links varyings by name). Vertex inputs keep locations 0..6 of the
 //!    instance stream; entry point is `main`.
@@ -95,21 +92,17 @@ pub const reflection = @import("reflection.zig");
 
 /// GLSL uniform-block name the GL hosts resolve with
 /// `glGetUniformBlockIndex`. Both stages of every family declare the same
-/// block (SPIRV-Cross names it after the Slang struct + layout suffix), so
+/// block, so
 /// one lookup covers the program.
-pub const glsl_vertex_block_name = "SnailPushConstants_std140";
-pub const glsl_fragment_block_name = "SnailPushConstants_std140";
+pub const glsl_vertex_block_name = "block_SnailPushConstants_0";
+pub const glsl_fragment_block_name = "block_SnailPushConstants_0";
 
-/// GLSL combined-sampler uniform names. SPIRV-Cross fuses each texture
-/// with the sampler it is used with: Load-only textures get the generated
-/// dummy sampler, Sample sites the real `u_image_sampler`. u_image_tex is
-/// both Loaded (GetDimensions/texelFetch) and Sampled, so TWO combined
-/// uniforms exist for it — bind both to the image texture unit.
-pub const glsl_curve_tex_name = "SPIRV_Cross_Combinedu_curve_texSPIRV_Cross_DummySampler";
-pub const glsl_band_tex_name = "SPIRV_Cross_Combinedu_band_texSPIRV_Cross_DummySampler";
-pub const glsl_layer_tex_name = "SPIRV_Cross_Combinedu_layer_texSPIRV_Cross_DummySampler";
-pub const glsl_image_tex_name = "SPIRV_Cross_Combinedu_image_texSPIRV_Cross_DummySampler";
-pub const glsl_image_tex_sampled_name = "SPIRV_Cross_Combinedu_image_texu_image_sampler";
+/// GLSL combined-sampler uniform names emitted by Slang's direct backend.
+pub const glsl_curve_tex_name = "u_curve_tex_0";
+pub const glsl_band_tex_name = "u_band_tex_0";
+pub const glsl_layer_tex_name = "u_layer_tex_0";
+pub const glsl_image_tex_name = "u_image_tex_0";
+pub const glsl_image_tex_sampled_name = glsl_image_tex_name;
 /// The autohint VERTEX stage also reads the layer-info texture; its
 /// Load-only combined sampler carries the same name as the fragment's, so
 /// the linker merges them (one uniform, one unit).
@@ -250,11 +243,10 @@ pub fn autohintSubpixelFragWgsl() [:0]const u8 {
 // ── Linear resolve (GL hosts only: fullscreen seed/encode pass) ──
 
 /// Fragment parameter block: one std140 int (`mode`).
-pub const glsl_linear_resolve_block_name = "SnailLinearResolveParams_std140";
-/// Combined samplers (SPIRV-Cross fuses each texture with the
-/// SamplerState it is sampled through).
-pub const glsl_linear_resolve_linear_tex_name = "SPIRV_Cross_Combinedu_linear_texu_linear_sampler";
-pub const glsl_linear_resolve_dst_tex_name = "SPIRV_Cross_Combinedu_dst_texu_dst_sampler";
+pub const glsl_linear_resolve_block_name = "block_SnailLinearResolveParams_0";
+/// Direct-GLSL combined samplers.
+pub const glsl_linear_resolve_linear_tex_name = "u_linear_tex_0";
+pub const glsl_linear_resolve_dst_tex_name = "u_dst_tex_0";
 
 pub fn linearResolveGlsl330(comptime stage: Stage) [:0]const u8 {
     return switch (stage) {
@@ -275,18 +267,15 @@ pub fn linearResolveGles300(comptime stage: Stage) [:0]const u8 {
 // family importing the same text_sample module, see
 // src/demo/game/slang/game_material.slang) ──
 //
-// The desktop GL dialect exists since the SPIRV-Cross leg (naga's SPIR-V
-// front end rejected the texel buffer): the record buffer stays a plain
-// `usamplerBuffer u_snail_text_records`, the parameter block is
-// `SnailTextSampleParams_std140`. The GLES 3.0 dialect compiles with
+// The desktop GL record buffer is a plain `usamplerBuffer`; the GLES 3.0
+// dialect compiles with
 // -DSNAIL_TARGET_GLES: texel buffers are ES 3.1+ (GL_EXT_texture_buffer
 // itself requires ES 3.1), so the emit words bind as a 2D R32UI texture
-// addressed row-major at a fixed width of 1024 texels (the combined
-// sampler carries the SPIRV-Cross dummy-sampler name).
+// addressed row-major at a fixed width of 1024 texels.
 
-pub const glsl_text_sample_block_name = "SnailTextSampleParams_std140";
-pub const glsl_text_sample_records_name = "u_snail_text_records";
-pub const gles_text_sample_records_name = "SPIRV_Cross_Combinedu_snail_text_recordsSPIRV_Cross_DummySampler";
+pub const glsl_text_sample_block_name = "block_SnailTextSampleParams_0";
+pub const glsl_text_sample_records_name = "u_snail_text_records_0";
+pub const gles_text_sample_records_name = "u_snail_text_records_0";
 /// Row width (in u32 texels) of the GLES R32UI records texture; must match
 /// SNAIL_TEXT_RECORDS_TEX_WIDTH in the Slang source.
 pub const gles_text_sample_records_width = 1024;
@@ -604,7 +593,7 @@ test "generated artifacts carry the documented interface names" {
     }
     // Baseline GL 3.3 / GLES 3.0 do not provide explicit 16-bit arithmetic.
     // Compact autohint policy decode must remain entirely 32-bit in Slang so
-    // SPIRV-Cross never emits a mandatory extension prologue or narrow GLSL
+    // Slang must never emit a mandatory extension prologue or narrow GLSL
     // conversion type. Check every affected stage, including the desktop-only
     // subpixel fragment.
     inline for (.{
@@ -634,14 +623,13 @@ test "generated artifacts carry the documented interface names" {
     }) |spv| try expectNo16BitArithmeticSpv(spv);
     try std.testing.expect(std.mem.indexOf(u8, autohintWgsl(.vertex), "fn " ++ wgsl_vertex_entry) != null);
     // Subpixel families: dual-source output qualifiers must survive to the
-    // GL 3.3 artifacts (SPIRV-Cross leaves the index-0 output implicit —
-    // the GL default — and qualifies only the blend output), the SPIR-V
+    // GL 3.3 artifacts, the SPIR-V
     // must exist, and the WGSL artifacts must carry BOTH entries (plain
     // MRT fragmentMain + the post-generation dual-source entry with the
     // dual_source_blending extension enabled).
     inline for (.{ subpixelFragGlsl330(), ttHintedSubpixelFragGlsl330(), autohintSubpixelFragGlsl330() }) |src| {
-        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0) out") != null);
-        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0, index = 1) out") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0)") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "layout(location = 0, index = 1)") != null);
     }
     inline for (.{ subpixelFragSpv(), ttHintedSubpixelFragSpv(), autohintSubpixelFragSpv() }) |spv| {
         try std.testing.expect(std.mem.readInt(u32, spv[0..4], .little) == 0x0723_0203);
@@ -669,8 +657,7 @@ test "generated artifacts carry the documented interface names" {
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), "usamplerBuffer " ++ glsl_text_sample_records_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGlsl330(), glsl_text_sample_block_name) != null);
     // Text-sample GLES dialect: no texel buffer exists in ES 3.0 — the
-    // records bind as a 2D R32UI texture through the combined dummy
-    // sampler, and the default float precision must be highp.
+    // records bind as a 2D R32UI texture, and default float precision is highp.
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "usampler2D " ++ gles_text_sample_records_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), glsl_text_sample_block_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "usamplerBuffer") == null);
@@ -762,8 +749,7 @@ test "generated artifacts carry the documented interface names" {
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragMsl(), "texture_buffer<uint") != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragMsl(), "[[texture(2)]]") != null);
     try std.testing.expect(std.mem.startsWith(u8, textGles300(.fragment), "#version 300 es"));
-    // The GLES default float precision must be highp (the es-highp patch;
-    // SPIRV-Cross emits mediump and locals inherit the default).
+    // The direct GLES patch pins the default float precision to highp.
     try std.testing.expect(std.mem.indexOf(u8, textGles300(.fragment), "precision highp float;") != null);
     try std.testing.expect(std.mem.indexOf(u8, textGles300(.fragment), "precision mediump float;") == null);
     try std.testing.expect(std.mem.startsWith(u8, textGlsl330(.fragment), "#version 330"));

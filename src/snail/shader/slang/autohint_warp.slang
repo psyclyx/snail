@@ -15,6 +15,8 @@
 //    SNAIL_TARGET_WGSL, mirroring the catalog's SNAIL_WGSL variant.
 module autohint_warp;
 
+import resource_types;
+
 public static const int SNAIL_AH_LEFT_SOURCE = 32;
 
 public struct SnailAutohintPolicy {
@@ -44,7 +46,7 @@ public bool snailAhFinite(float v) { return abs(v) <= 3.402823e38; }
 public bool snailAhFinite(float v) { return !isnan(v) && !isinf(v); }
 #endif
 
-public int2 snailAhLayerLoc(Texture2D<float4> layer_tex, int2 base, int offset) {
+public int2 snailAhLayerLoc(SnailFloatTexture2D layer_tex, int2 base, int offset) {
     uint uw, uh;
     layer_tex.GetDimensions(uw, uh);
     int width = int(uw);
@@ -52,7 +54,7 @@ public int2 snailAhLayerLoc(Texture2D<float4> layer_tex, int2 base, int offset) 
     return int2(texel % width, texel / width);
 }
 
-public float snailWarpF(Texture2D<float4> layer_tex, int2 info_base, int block, int i) {
+public float snailWarpF(SnailFloatTexture2D layer_tex, int2 info_base, int block, int i) {
     int f = block + i;
     float4 t = layer_tex.Load(int3(snailAhLayerLoc(layer_tex, info_base, f >> 2), 0));
     int c = f & 3;
@@ -138,7 +140,7 @@ public struct SnailAhFeature {
 };
 
 public float4 snailAhFeatureData(
-    Texture2D<float4> layer_tex, int2 info_base, int run, int i
+    SnailFloatTexture2D layer_tex, int2 info_base, int run, int i
 ) {
     int f = run + 1 + 4 * i;
     return float4(
@@ -168,7 +170,7 @@ public bool snailAhBitSet(uint mask, int i) { return (mask & snailAhBit(i)) != 0
 // data-dependent count in the condition avoids fixed-bound unroll explosions
 // in desktop GL linkers.
 public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
-    Texture2D<float4> layer_tex, int2 info_base,
+    SnailFloatTexture2D layer_tex, int2 info_base,
     int axis, int run, int blueCount, float standardWidth, float left,
     float scale, SnailAutohintPolicy policy,
     out int knotCount, out float knotBase[N],

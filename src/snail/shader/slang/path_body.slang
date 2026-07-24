@@ -6,6 +6,8 @@
 // Structural differences from GLSL (plumbing only, math unchanged):
 //  - the four textures (+ the image sampler) and the per-draw scalars are
 //    explicit function parameters (no cross-module preprocessor state);
+
+import resource_types;
 //    the family entry file owns the global bindings.
 //  - `texelFetch(tex, ivec3(l, a), 0)` becomes `tex.Load(int4(l, a, 0))`;
 //    `texture(u_image_tex, vec3(uv, layer))` becomes
@@ -31,7 +33,7 @@ public struct PaintedParams {
     public int mask_output;
 };
 
-int2 offsetLayerLoc(Texture2D<float4> layer_tex, int2 base, int offset) {
+int2 offsetLayerLoc(SnailFloatTexture2D layer_tex, int2 base, int offset) {
     uint uw, uh;
     layer_tex.GetDimensions(uw, uh);
     int width = int(uw);
@@ -147,7 +149,7 @@ float2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, f
 // is no longer reachable from the path producer: every path glyph and
 // every freed vector picture goes through `encodeDirectSingleGlyphCurves`
 // / `prefer_direct_encoding = true`, so segments are always direct.
-SegmentData fetchSegment(Texture2DArray<float4> curve_tex, int2 loc, int layer, int kind) {
+SegmentData fetchSegment(SnailFloatTexture2DArray curve_tex, int2 loc, int layer, int kind) {
     float4 tex0 = curve_tex.Load(int4(loc, layer, 0));
     float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(loc, 1), layer, 0));
     SegmentData seg;
@@ -454,7 +456,7 @@ bool accumulateAxisCoverageSegment(inout float cov, inout float wgt, float2 samp
     return true;
 }
 
-float2 evalAxisCoverageBands(Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex, float2 sampleRc, float ppe, int2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {
+float2 evalAxisCoverageBands(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float2 sampleRc, float ppe, int2 gLoc, int headerBase, int firstBand, int lastBand, int layer, bool horizontal) {
     float cov = 0.0;
     float wgt = 0.0;
     bool dedup = firstBand != lastBand;
@@ -478,7 +480,7 @@ float2 evalAxisCoverageBands(Texture2DArray<float4> curve_tex, Texture2DArray<ui
     return float2(cov, wgt);
 }
 
-float evalPathGlyphCoverage(Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex, float2 rc, float2 epp, float2 ppe,
+float evalPathGlyphCoverage(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float2 rc, float2 epp, float2 ppe,
                             int2 gLoc, int2 bandMax, float4 banding, int texLayer, int fill_rule, float coverage_exponent) {
     // Band-span epsilon: the GLSL body's coverageBandSpan uses kParamEps
     // (1e-5), the same value as coverage_common's
@@ -509,7 +511,7 @@ float wrapPaintT(float t, float extendMode) {
     return clamp(t, 0.0, 1.0);
 }
 
-float4 sampleImagePaintTex(Texture2DArray<float4> image_tex, SamplerState image_sampler, float2 uv, int layer, int filterMode) {
+float4 sampleImagePaintTex(SnailFloatTexture2DArray image_tex, SnailSamplerState image_sampler, float2 uv, int layer, int filterMode) {
     if (filterMode == 1) {
         uint uw, uh, ue;
         image_tex.GetDimensions(uw, uh, ue);
@@ -517,7 +519,7 @@ float4 sampleImagePaintTex(Texture2DArray<float4> image_tex, SamplerState image_
         int2 texel = clamp(int2(uv * float2(size)), int2(0), size - int2(1));
         return image_tex.Load(int4(texel, layer, 0));
     }
-    return image_tex.Sample(image_sampler, float3(uv, float(layer)));
+    return snailSample2DArray(image_tex, image_sampler, float3(uv, float(layer)));
 }
 
 struct PathPaintSample {
@@ -547,7 +549,7 @@ float4 ditherPremultipliedColor(float4 color, float2 frag_coord, float dither_sc
     return float4(srgbToLinear(srgb), color.a);
 }
 
-PathPaintSample samplePathPaint(Texture2D<float4> layer_tex, Texture2DArray<float4> image_tex, SamplerState image_sampler, float2 rc, int2 infoBase, float4 info) {
+PathPaintSample samplePathPaint(SnailFloatTexture2D layer_tex, SnailFloatTexture2DArray image_tex, SnailSamplerState image_sampler, float2 rc, int2 infoBase, float4 info) {
     int paintKind = int(-info.w + 0.5);
     float4 data0 = layer_tex.Load(int3(offsetLayerLoc(layer_tex, infoBase, 2), 0));
     if (paintKind == SNAIL_PAINT_KIND_SOLID) {
@@ -609,7 +611,7 @@ PathPaintSample samplePathPaint(Texture2D<float4> layer_tex, Texture2DArray<floa
     return s;
 }
 
-PathCompositeSample compositePathGroup(Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex, Texture2D<float4> layer_tex, Texture2DArray<float4> image_tex, SamplerState image_sampler, float2 rc, float2 epp, float2 ppe, int2 infoBase, float4 header, int texLayer, float4 tint, float coverage_exponent) {
+PathCompositeSample compositePathGroup(SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, SnailFloatTexture2D layer_tex, SnailFloatTexture2DArray image_tex, SnailSamplerState image_sampler, float2 rc, float2 epp, float2 ppe, int2 infoBase, float4 header, int texLayer, float4 tint, float coverage_exponent) {
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
     float4 result = float4(0.0);
@@ -671,11 +673,11 @@ public struct PaintedVaryings {
 public float4 snailPaintedFragment(
     PaintedVaryings v,
     float2 frag_coord,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
-    Texture2D<float4> layer_tex,
-    Texture2DArray<float4> image_tex,
-    SamplerState image_sampler,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    SnailFloatTexture2D layer_tex,
+    SnailFloatTexture2DArray image_tex,
+    SnailSamplerState image_sampler,
     PaintedParams p)
 {
     float2 rc = v.texcoord;

@@ -34,6 +34,8 @@
 // binding contract); GL as a named uniform block.
 module text;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -54,16 +56,16 @@ public struct SnailPushConstants {
 
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 #else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
 #endif
 
 struct VsInput {
@@ -98,7 +100,12 @@ struct VsOutput {
 // targets SV_VertexID is simply the native semantic ([[vertex_id]] in MSL;
 // spirv_asm cannot compile on either: "unexpected IR opcode during code
 // emit").
-#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
+#if defined(SNAIL_TARGET_GL)
+[shader("vertex")]
+VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
+    return vertexBody(input, vertex_index);
+}
+#elif defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);

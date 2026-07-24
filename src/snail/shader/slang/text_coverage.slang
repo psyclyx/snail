@@ -10,6 +10,8 @@
 //  - the coverage-transfer exponent is threaded through as a parameter.
 module text_coverage;
 
+import resource_types;
+
 import coverage_common;
 
 public int2 decodeBandCurveLoc(uint2 ref) {
@@ -71,7 +73,7 @@ public float2 solveVertPoly(float4 p12, float2 p3) {
 // Accumulate one quadratic's horizontal coverage contribution. Returns
 // false when the curve's max-along is behind sampleRc, so ordered band
 // scans can stop early.
-public bool accumulateHorizContribution(inout float xcov, inout float xwgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, Texture2DArray<float4> curve_tex) {
+public bool accumulateHorizContribution(inout float xcov, inout float xwgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailFloatTexture2DArray curve_tex) {
     float4 tex0 = curve_tex.Load(int4(cLoc, texLayer, 0));
     float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(cLoc, 1), texLayer, 0));
     float4 p12 = float4(tex0.xy, tex0.zw) - float4(rc, rc);
@@ -86,7 +88,7 @@ public bool accumulateHorizContribution(inout float xcov, inout float xwgt, floa
     return true;
 }
 
-public bool accumulateVertContribution(inout float ycov, inout float ywgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, Texture2DArray<float4> curve_tex) {
+public bool accumulateVertContribution(inout float ycov, inout float ywgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailFloatTexture2DArray curve_tex) {
     float4 tex0 = curve_tex.Load(int4(cLoc, texLayer, 0));
     float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(cLoc, 1), texLayer, 0));
     float4 p12 = float4(tex0.xy, tex0.zw) - float4(rc, rc);
@@ -101,7 +103,7 @@ public bool accumulateVertContribution(inout float ycov, inout float ywgt, float
     return true;
 }
 
-public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int2 bandMax, float4 banding, int texLayer, Texture2DArray<float4> curve_tex, Texture2DArray<uint2> band_tex, float coverage_exponent) {
+public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int2 bandMax, float4 banding, int texLayer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float coverage_exponent) {
     // Evaluate every band the pixel footprint touches and de-duplicate
     // curves that span multiple bands by counting them only at their
     // owner band. Mirrors the path-shader fix from commit 94d76bd.

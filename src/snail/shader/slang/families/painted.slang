@@ -17,10 +17,11 @@
 //    descriptor by an image-only and a sampler-only variable.
 //  - WGSL: the sampler lives at @group(1) @binding(3), the catalog's
 //    split-sampler contract (filtering sampler slot).
-//  - GL: no explicit bindings; slangc fuses Texture+SamplerState back into
-//    a combined sampler and the generated names are recorded in
-//    snail_shaders.
+//  - GL: combined sampler aliases lower directly to GLSL sampler objects;
+//    generated names are recorded in snail_shaders.
 module painted;
+
+import resource_types;
 
 import render_abi;
 import color_common;
@@ -41,25 +42,29 @@ public struct SnailPushConstants {
 
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-[[vk::binding(2, 0)]] Texture2D<float4> u_layer_tex;
-[[vk::binding(3, 0)]] Texture2DArray<float4> u_image_tex;
-[[vk::binding(3, 0)]] SamplerState u_image_sampler;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
+[[vk::binding(3, 0)]] SnailFloatTexture2DArray u_image_tex;
+[[vk::binding(3, 0)]] SnailSamplerState u_image_sampler;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] Texture2DArray<float4> u_curve_tex;
-[[vk::binding(1, 0)]] Texture2DArray<uint2> u_band_tex;
-[[vk::binding(2, 0)]] Texture2D<float4> u_layer_tex;
-[[vk::binding(3, 0)]] Texture2DArray<float4> u_image_tex;
-[[vk::binding(3, 1)]] SamplerState u_image_sampler;
+[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
+[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
+[[vk::binding(3, 0)]] SnailFloatTexture2DArray u_image_tex;
+[[vk::binding(3, 1)]] SnailSamplerState u_image_sampler;
 #else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
-Texture2DArray<float4> u_curve_tex;
-Texture2DArray<uint2> u_band_tex;
-Texture2D<float4> u_layer_tex;
-Texture2DArray<float4> u_image_tex;
-SamplerState u_image_sampler;
+SnailFloatTexture2DArray u_curve_tex;
+SnailUint2Texture2DArray u_band_tex;
+SnailFloatTexture2D u_layer_tex;
+SnailFloatTexture2DArray u_image_tex;
+#if defined(SNAIL_TARGET_GL)
+static const SnailSamplerState u_image_sampler = 0;
+#else
+SnailSamplerState u_image_sampler;
+#endif
 #endif
 
 struct VsInput {
@@ -83,7 +88,12 @@ struct VsOutput {
 
 // Raw-VertexIndex loading: same trap and same workaround as
 // families/text.slang (SV_VertexID is D3D-semantics on SPIR-V targets).
-#if defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
+#if defined(SNAIL_TARGET_GL)
+[shader("vertex")]
+VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
+    return vertexBody(input, vertex_index);
+}
+#elif defined(SNAIL_TARGET_WGSL) || defined(SNAIL_TARGET_D3D11) || defined(SNAIL_TARGET_METAL)
 [shader("vertex")]
 VsOutput vertexMain(VsInput input, uint vertex_index: SV_VertexID) {
     VsOutput o = vertexBody(input, vertex_index);

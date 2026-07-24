@@ -6,6 +6,8 @@
 // preserved.
 module autohint_frag;
 
+import resource_types;
+
 import render_abi;
 import color_common;
 import coverage_common;
@@ -47,13 +49,13 @@ int snailAhFastCount(uint4 words) {
     return count;
 }
 
-float snailAhFastBase(Texture2D<float4> layer_tex, int2 info_base, int run, float left, uint4 sources, int idx) {
+float snailAhFastBase(SnailFloatTexture2D layer_tex, int2 info_base, int run, float left, uint4 sources, int idx) {
     uint source = snailAhFastSource(sources, idx);
     return source == uint(SNAIL_AH_LEFT_SOURCE) ? left : snailWarpF(layer_tex, info_base, run + 1 + 4 * int(source), 0);
 }
 
 float snailInverseFastAxis(
-    Texture2D<float4> layer_tex,
+    SnailFloatTexture2D layer_tex,
     int2 info_base,
     int count,
     float4 targets[4],
@@ -106,7 +108,7 @@ public struct SnailAutohintWarped {
 
 public SnailAutohintWarped snailAutohintWarpSample(
     AutohintVaryings v,
-    Texture2D<float4> layer_tex,
+    SnailFloatTexture2D layer_tex,
     int layer_base)
 {
     SnailAutohintWarped w;
@@ -177,9 +179,9 @@ public SnailAutohintWarped snailAutohintWarpSample(
 
 public float4 snailAutohintFragment(
     AutohintVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
-    Texture2D<float4> layer_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
+    SnailFloatTexture2D layer_tex,
     int layer_base,
     int output_srgb,
     float coverage_exponent,

@@ -15,12 +15,10 @@
 //!               -profile sm_5_0 -line-directive-mode none            (see hlsl_args for the trap notes)
 //!   Metal       slangc -DSNAIL_TARGET_METAL -target metal            generated/msl/<f>.*.metal
 //!               -ignore-capabilities -line-directive-mode none       (see msl_args)
-//!   GLSL 330    slangc -DSNAIL_TARGET_GL -target spirv               generated/glsl330/<f>.*.glsl
-//!               -profile spirv_1_3 [-O0], then
-//!               spirv-cross --version 330 --no-420pack-extension
-//!   GLES 300    same SPIR-V leg,                                     generated/gles300/<f>.*.glsl
-//!               spirv-cross --version 300 --es, then the highp
-//!               default-precision patch (build/glsl_patch_es_highp.zig)
+//!   GLSL 330    slangc -DSNAIL_TARGET_GL -target glsl                generated/glsl330/<f>.*.glsl
+//!   GLES 300    slangc -DSNAIL_TARGET_GL -DSNAIL_TARGET_GLES         generated/gles300/<f>.*.glsl
+//!               both direct outputs pass through the mechanical dialect /
+//!               interface normalizer (build/glsl_patch_direct.zig)
 //!
 //! Flag notes (the traps, empirically verified against v2026.5.2):
 //!
@@ -45,64 +43,37 @@
 //!    ~107 KiB at -O2 with v2026.5.2), making a genuinely cold NVIDIA
 //!    pipeline compile needlessly expensive. The GL legs use the separate
 //!    source-compile recipe described below.
-//!  - `-O0` (coverage-heavy GL/GLES families only): preserves Slang helper
-//!    functions through SPIR-V so SPIRV-Cross emits structured GLSL instead
-//!    of inlining the entire shader into one giant `main`. With v2026.5.2,
-//!    each painted fragment drops from ~298 KiB at default -O1 to ~44 KiB
-//!    at -O0. Regular text stays on the default recipe because its generated
-//!    stages are already compact.
-//!  - slangc's own `-target glsl` output is Vulkan-flavor GLSL only
-//!    (`texture2DArray` + GL_EXT_samplerless_texture_functions,
-//!    `layout(binding=N)`, `#version 450+`) and cannot be consumed by
-//!    OpenGL 3.3 / GLES 3.0 contexts, so the GL family goes SPIR-V →
-//!    SPIRV-Cross. SPIRV-Cross performs no clip-space conversion (the
-//!    behavior naga needed `--keep-coordinate-space` to opt into).
-//!  - SPIRV-Cross names varyings from each leg's own OpNames
-//!    (`entryPointParam_vertexMain_*` from the vertex, `input_*` from the
-//!    fragment) and GLSL 330 / ES 300 link varyings BY NAME:
-//!    `--rename-interface-variable {out,in} <loc> snail_io<loc>` pins both
-//!    stages of every family to one location-keyed name table (renames for
-//!    locations a stage does not declare are ignored).
-//!  - `--no-420pack-extension` (desktop leg): SPIRV-Cross otherwise emits
-//!    `layout(binding = N)` under GL_ARB_shading_language_420pack; the
-//!    loaders bind samplers by name (`SPIRV_Cross_Combined*`, see
-//!    src/snail/shader/generated_root.zig) exactly like the composed
-//!    catalog's loose `u_*` samplers.
+//!  - `-O0` (coverage-heavy GL/GLES families only) preserves authored
+//!    helper boundaries in Slang's direct GLSL backend.
+//!  - `-target glsl` preserves the source's structured control flow, but
+//!    Slang v2026.5.2 emits Vulkan-flavor surface syntax (`#version 450`,
+//!    resource bindings, and varying locations) even for `glsl_330`.
+//!    build/glsl_patch_direct.zig mechanically selects the shipping dialect,
+//!    removes bindings, promotes GLES defaults to highp, and pins both
+//!    stages' varyings to `snail_io<location>`. It performs no IR translation.
 //!  - Portable binary16 decode: the compact autohint policy is unpacked in
 //!    Slang with uint32/float32 operations, not `f16tof32`. That intrinsic
-//!    survives the SPIR-V leg as real 16-bit operations, making SPIRV-Cross
-//!    emit mandatory Int16/FP16 extensions unavailable in baseline GL 3.3
+//!    can otherwise become real 16-bit operations unavailable in baseline GL 3.3
 //!    and GLES 3.0. Generated-artifact tests reject those capabilities and
 //!    narrow GLSL types so this cannot silently regress with source/toolchain
 //!    changes.
-//!  - GLES default precision: SPIRV-Cross fragments open with `precision
-//!    mediump float;` and only qualify globals explicitly — locals inherit
-//!    the default. build/glsl_patch_es_highp.zig promotes the default to
-//!    highp (the catalog's precision; coverage math needs fp32).
+//!  - GLES default precision is inserted as highp by the direct patcher
+//!    (the catalog's precision; coverage math needs fp32).
 //!  - `-target wgsl` works DIRECTLY for native Slang (entry names are the
 //!    Slang function names, e.g. `vertexMain`): the GLSL-ingestion bugs
 //!    (miscompiled texelFetch, renumbered stage IO) do not apply, and the
 //!    output validates with naga as-is. No spirv-opt / naga pipeline needed.
 //!  - `SV_VertexID` is avoided in the family source for SPIR-V targets:
-//!    Slang lowers it to `VertexIndex - BaseVertex` (D3D semantics), which
-//!    needs the DrawParameters capability (an unenabled Vulkan device
-//!    feature); through SPIRV-Cross's ES backend BaseVertex is a hard error
-//!    ("BaseVertex not supported in ES profile"). families/*.slang load the
-//!    raw VertexIndex builtin via `spirv_asm` instead — SPIRV-Cross turns it
-//!    into plain `gl_VertexID` (WGSL keeps SV_VertexID: its vertex_index is
-//!    raw).
+//!    Slang lowers it to `VertexIndex - BaseVertex` for SPIR-V. Vulkan
+//!    families therefore use raw VertexIndex via `spirv_asm`; the direct GL
+//!    target uses native `gl_VertexID`.
 //!  - `-warnings-disable 39001`: the paint-record families alias one
 //!    COMBINED_IMAGE_SAMPLER descriptor (set 0, binding 3) with an
 //!    image-only and a sampler-only variable — spec-legal, and exactly what
 //!    the existing descriptor-set layout provides. slangc warns about the
 //!    deliberate overlap.
 //!
-//! The naga-era via-glsl split (glslang loop shapes for naga's structurizer,
-//! spirv-opt ADCE, the cubic-solver / base-vertex / dual-source-index patch
-//! tools) is gone: SPIRV-Cross consumes Slang's direct SPIR-V for every
-//! stage, loops and spirv_asm included. Families differ only in whether the
-//! intermediate SPIR-V uses default optimization or the compile-size-driven
-//! GL/GLES `-O0` policy above.
+//! The GL artifacts no longer round-trip through SPIR-V/SPIRV-Cross.
 //!
 //! Artifacts are NOT checked in: every compile is a lazy build-graph Run
 //! step whose output lands in the zig cache. `createGeneratedModule` lays
@@ -116,8 +87,8 @@
 //! module's WriteFiles dir is never analyzed and its `@embedFile` never
 //! fires, as long as the consumer doesn't call it. A module therefore
 //! depends on exactly its own targets' Run steps: a WGSL-only consumer
-//! runs slangc but never spirv-cross; builds that never touch generated
-//! shaders need neither. `zig build gen-shaders` optionally materializes
+//! runs only slangc; builds that never touch generated shaders need no shader
+//! compiler. `zig build gen-shaders` optionally materializes
 //! the full matrix into zig-out/shaders/ for inspection.
 
 const std = @import("std");
@@ -151,12 +122,7 @@ pub const Family = struct {
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
-    /// Preserve helper functions in coverage-heavy GL/GLES output instead of
-    /// letting Slang's default optimization inline the whole program into one
-    /// enormous entry point. The runtime GL compiler still optimizes the
-    /// resulting program, but receives dramatically less source/IR to parse
-    /// (painted fragments are ~44 KiB at -O0 versus ~298 KiB at default -O1
-    /// with Slang 2026.5.2).
+    /// Preserve authored helper boundaries in coverage-heavy direct GLSL.
     gl_o0: bool = false,
     /// Emit only the GL dialects (no spirv/wgsl artifacts): linear_resolve
     /// (Vulkan/WebGPU render to hardware-sRGB targets and have no resolve
@@ -166,11 +132,6 @@ pub const Family = struct {
     /// Skip the GLES 3.0 artifact (subpixel: ES 3.0 has no dual-source
     /// blending).
     no_gles: bool = false,
-    /// The GLES 3.0 dialect compiles its own SPIR-V leg with an additional
-    /// -DSNAIL_TARGET_GLES: record-store families bind a 2D R32UI texture
-    /// there instead of the desktop texel buffer (Buffer<uint> has no ES
-    /// 3.0 translation — GL_EXT_texture_buffer requires ES 3.1).
-    gles_define: bool = false,
 };
 
 /// slangc arguments for the D3D11 HLSL leg (SM 5.0, FXC/d3dcompiler_47
@@ -279,13 +240,13 @@ pub const families = [_]Family{
     // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
     // compiles with -DSNAIL_TARGET_GLES and binds the emit words as a 2D
     // R32UI texture instead.
-    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .gles_define = true },
+    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
     // The game demo's text-as-material shader: a caller-authored family
     // importing the library's text_sample module. GL dialects are wired as
     // anonymous imports next to the consumer (build.zig addGameShaderGl);
     // the Vulkan leg is compiled by the demo build directly (build.zig
     // addGameShaderSpirv), like the library families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true, .gles_define = true },
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
     .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
@@ -324,32 +285,24 @@ fn addModuleInputs(b: *std.Build, cmd: *std.Build.Step.Run, dir_path: []const u8
 /// every generation Run step that would invoke it gets a Fail-step
 /// dependency so consumers abort with a message naming exactly what is
 /// missing for which targets, instead of a raw exec error. The gates are
-/// PER TOOL because the targets need different tools: every target's
-/// compile is slangc, but only the glsl330/gles300 dialects add a
-/// spirv-cross translation — a WGSL/HLSL/MSL/SPIR-V consumer must build
-/// with spirv-cross absent. Consumers that never depend on generated
+/// PER TOOL because WGSL's dual-source validation additionally needs naga;
+/// every generated target otherwise needs only slangc. Consumers that never depend on generated
 /// shaders are untouched (the Fail steps, like the Run steps, only
 /// execute when depended on). Cached per build graph.
 var toolchain_gate_cache: ?struct {
     owner: *std.Build,
     slangc_fail: ?*std.Build.Step,
-    spirv_cross_fail: ?*std.Build.Step,
     naga_fail: ?*std.Build.Step,
 } = null;
 
 fn toolchainGates(b: *std.Build) *@TypeOf(toolchain_gate_cache.?) {
     if (toolchain_gate_cache) |*g| if (g.owner == b) return g;
     const slangc_missing = if (b.findProgram(&.{"slangc"}, &.{})) |_| false else |_| true;
-    const spirv_cross_missing = if (b.findProgram(&.{"spirv-cross"}, &.{})) |_| false else |_| true;
     const naga_missing = if (b.findProgram(&.{"naga"}, &.{})) |_| false else |_| true;
     toolchain_gate_cache = .{
         .owner = b,
         .slangc_fail = if (slangc_missing)
             &b.addFail("generated shaders (all targets: spirv/wgsl/hlsl/msl/glsl330/gles300) need slangc; enter nix-shell or install shader-slang").step
-        else
-            null,
-        .spirv_cross_fail = if (spirv_cross_missing)
-            &b.addFail("the glsl330/gles300 generated-shader targets need spirv-cross; enter nix-shell or install SPIRV-Cross (the spirv/wgsl/hlsl/msl targets need only slangc)").step
         else
             null,
         .naga_fail = if (naga_missing)
@@ -364,14 +317,9 @@ fn attachSlangcGate(b: *std.Build, step: *std.Build.Step) void {
     if (toolchainGates(b).slangc_fail) |fail| step.dependOn(fail);
 }
 
-fn attachSpirvCrossGate(b: *std.Build, step: *std.Build.Step) void {
-    if (toolchainGates(b).spirv_cross_fail) |fail| step.dependOn(fail);
-}
-
 /// slangc invocation for one entry point of one family. `target_defines`
 /// select the per-target resource-binding flavor in the family source (the
-/// GLES leg of `gles_define` families passes SNAIL_TARGET_GL +
-/// SNAIL_TARGET_GLES).
+/// GLES legs pass SNAIL_TARGET_GL + SNAIL_TARGET_GLES.
 fn slangcFamily(
     b: *std.Build,
     comptime family: Family,
@@ -489,8 +437,7 @@ pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, f
 
 /// The generated-artifact targets. `createGeneratedModule` scopes a
 /// module to a subset so its consumers depend on (and run) exactly that
-/// subset's generation steps: all targets are compiled by slangc; the
-/// glsl330/gles300 dialects additionally run spirv-cross.
+/// subset's generation steps: all targets are compiled directly by slangc.
 pub const Target = enum { spirv, wgsl, hlsl, msl, glsl330, gles300 };
 
 /// One generated artifact: its target, its path under the module's
@@ -537,17 +484,17 @@ fn nagaValidation(b: *std.Build, wgsl: std.Build.LazyPath) *std.Build.Step {
     return &run.step;
 }
 
-/// Wire every slangc/spirv-cross invocation as lazy Run steps and return
+/// Wire every slangc invocation as lazy Run steps and return
 /// their outputs. Nothing here executes unless a consumer depends on the
 /// LazyPaths, so builds that never touch generated shaders never need the
 /// toolchain on PATH.
 pub fn collectArtifacts(b: *std.Build) Artifacts {
     var library: std.ArrayList(Entry) = .empty;
     var game: std.ArrayList(Entry) = .empty;
-    const es_highp_patch_tool = b.addExecutable(.{
-        .name = "glsl-patch-es-highp",
+    const direct_glsl_patch_tool = b.addExecutable(.{
+        .name = "glsl-patch-direct",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("build/glsl_patch_es_highp.zig"),
+            .root_source_file = b.path("build/glsl_patch_direct.zig"),
             .target = b.graph.host,
             .optimize = .Debug,
         }),
@@ -632,49 +579,34 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 appendEntry(b, list, .msl, "msl/" ++ family.name ++ "." ++ stage.short ++ ".metal", msl);
             }
 
-            // GL family — one direct SPIR-V leg (loops and spirv_asm both
-            // fine through SPIRV-Cross), then spirv-cross per dialect.
-            // `gles_define` families additionally compile a second SPIR-V
-            // leg for the ES dialect (different record-store bindings).
+            // GL family — Slang's direct GLSL backend preserves the authored
+            // helper/control-flow shape. A mechanical post-pass selects the
+            // 330-core / 300-es surface dialect and location-keyed varying
+            // names; there is no SPIR-V translation in this path.
             const gl_args: []const []const u8 = if (family.gl_o0)
-                &.{ "-target", "spirv", "-profile", "spirv_1_3", "-O0" }
+                &.{ "-target", "glsl", "-profile", "glsl_330", "-O0", "-line-directive-mode", "none", "-warnings-disable", "41012" }
             else
-                &.{ "-target", "spirv", "-profile", "spirv_1_3" };
-            const gl_spv = slangcFamily(b, family, stage, &.{"SNAIL_TARGET_GL"}, gl_args, "gl-" ++ family.name ++ "." ++ stage.short ++ ".spv");
-            const gles_spv = if (family.gles_define and !family.no_gles)
-                slangcFamily(b, family, stage, &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }, gl_args, "gles-" ++ family.name ++ "." ++ stage.short ++ ".spv")
-            else
-                gl_spv;
+                &.{ "-target", "glsl", "-profile", "glsl_330", "-line-directive-mode", "none", "-warnings-disable", "41012" };
             inline for (.{ "glsl330", "gles300" }) |out_dir| {
                 const es = comptime std.mem.eql(u8, out_dir, "gles300");
                 const skip_dialect = family.no_gles and es;
                 if (!skip_dialect) {
-                    const cross = b.addSystemCommand(&.{"spirv-cross"});
-                    attachSpirvCrossGate(b, &cross.step);
-                    cross.addFileArg(if (es) gles_spv else gl_spv);
-                    if (es) {
-                        cross.addArgs(&.{ "--version", "300", "--es" });
-                    } else {
-                        cross.addArgs(&.{ "--version", "330", "--no-420pack-extension" });
-                    }
-                    // One location-keyed varying name table for every
-                    // family: GLSL <4.10 links varyings by NAME, and the
-                    // two stages' SPIR-V legs carry different OpNames.
-                    // Locations a stage does not declare are ignored.
-                    const dir = if (comptime std.mem.eql(u8, stage.short, "vert")) "out" else "in";
-                    const locs = [_][]const u8{ "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13", "14" };
-                    inline for (locs) |loc_str| {
-                        cross.addArgs(&.{ "--rename-interface-variable", dir, loc_str, b.fmt("snail_io{s}", .{loc_str}) });
-                    }
-                    cross.addArg("--output");
-                    var glsl = cross.addOutputFileArg(out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
-                    if (es) {
-                        // Promote the fragment default precision to highp
-                        // (SPIRV-Cross emits mediump; locals inherit it).
-                        const patch = b.addRunArtifact(es_highp_patch_tool);
-                        patch.addFileArg(glsl);
-                        glsl = patch.addOutputFileArg("highp-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
-                    }
+                    const defines: []const []const u8 = if (es)
+                        &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }
+                    else
+                        &.{"SNAIL_TARGET_GL"};
+                    const raw = slangcFamily(
+                        b,
+                        family,
+                        stage,
+                        defines,
+                        gl_args,
+                        "direct-" ++ out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl",
+                    );
+                    const patch = b.addRunArtifact(direct_glsl_patch_tool);
+                    patch.addArgs(&.{ out_dir, stage.short });
+                    patch.addFileArg(raw);
+                    const glsl = patch.addOutputFileArg(out_dir ++ "-" ++ family.name ++ "." ++ stage.short ++ ".glsl");
                     appendEntry(b, list, if (es) .gles300 else .glsl330, out_dir ++ "/" ++ family.name ++ "." ++ stage.short ++ ".glsl", glsl);
                 }
             }
@@ -739,7 +671,7 @@ pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Art
 /// game's material family) for inspection. Never writes into src/ —
 /// consumers embed straight from the build cache via `snail-shaders`.
 pub fn addGenShadersStep(b: *std.Build, artifacts: Artifacts) void {
-    const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + spirv-cross + naga)");
+    const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + naga)");
     step.dependOn(&b.addInstallFile(artifacts.reflection_zig, "shaders/reflection.zig").step);
     for (artifacts.library) |e| {
         step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);

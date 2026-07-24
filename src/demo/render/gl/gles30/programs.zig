@@ -112,10 +112,8 @@ pub fn loadNativeProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_
     gl.glBufferData(gl.GL_UNIFORM_BUFFER, @sizeOf(gl_common.NativeTextPushBlock), null, gl.GL_DYNAMIC_DRAW);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
 
-    // u_image_tex is both Loaded and Sampled, so SPIRV-Cross emits a
-    // second combined uniform for the Sample sites; pin it to the same
-    // image unit. (The autohint vertex stage's layer read shares the
-    // fragment's combined-sampler name — the linker merged them above.)
+    // Direct Slang GLSL uses one combined image sampler for both Load and
+    // Sample sites. Keep the compatibility alias pinned to the same unit.
     const image_sampled_loc = gl.glGetUniformLocation(handle, slang_gen.glsl_image_tex_sampled_name);
 
     var prev_program: gl.GLint = 0;

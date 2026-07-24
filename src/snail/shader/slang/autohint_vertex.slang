@@ -4,6 +4,8 @@
 // epsilon, literal, and operation order is preserved.
 module autohint_vertex;
 
+import resource_types;
+
 import color_common;
 import vertex;
 import autohint_warp;
@@ -102,7 +104,7 @@ public AutohintVertexResult snailAutohintVertex(
     float2 viewport,
     int subpixel_order,
     uint4 packed_policy,
-    Texture2D<float4> layer_tex)
+    SnailFloatTexture2D layer_tex)
 {
     TextVertexResult base = snailTextVertex(input, vertex_index, mvp, viewport, subpixel_order);
 

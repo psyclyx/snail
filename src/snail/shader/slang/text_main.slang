@@ -3,6 +3,8 @@
 // literal, and operation order is preserved.
 module text_main;
 
+import resource_types;
+
 import render_abi;
 import coverage_common;
 import color_common;
@@ -18,8 +20,8 @@ public struct TextVaryings {
 
 public float4 snailTextFragment(
     TextVaryings v,
-    Texture2DArray<float4> curve_tex,
-    Texture2DArray<uint2> band_tex,
+    SnailFloatTexture2DArray curve_tex,
+    SnailUint2Texture2DArray band_tex,
     int layer_base,
     int output_srgb,
     float coverage_exponent,
