@@ -6,5 +6,5 @@ import path_family;
 
 [shader("fragment")]
 float4 fragmentMain(PaintedFragmentInput input) : SV_Target {
-    return pathFragment<false, false>(input);
+    return pathFragment<false>(input);
 }

@@ -588,7 +588,8 @@ test "classified path artifacts contain only compatible curve solvers" {
         try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") == null);
     }
     inline for (.{ pathFragGlsl330(), pathFragGles300() }) |src| {
-        try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "accumulateConicCoverage") != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, "solveMonotonicCubicRoot") == null);
     }
 }
 

@@ -43,42 +43,8 @@ struct SegmentData {
     float2 p0;
     float2 p1;
     float2 p2;
-    float2 p3;
     float3 weights;
 };
-
-bool solveMonotonicCubicRoot(float a, float b, float cVal, float d, float endDelta, out float tOut) {
-    // Path preparation splits cubics at x/y extrema, so each uploaded cubic is
-    // monotonic along both sampling axes and can contribute at most one root.
-    tOut = 0.0;
-    float f0 = d;
-    // Use the uploaded p3 directly. Reconstructing f(1) through a+b+c+d
-    // loses enough precision near shallow extrema to corrupt the bracket.
-    float f1 = endDelta;
-    if ((f0 < -kCoordEps && f1 < -kCoordEps) || (f0 > kCoordEps && f1 > kCoordEps)) return false;
-
-    float lo = 0.0;
-    float hi = 1.0;
-    float t = 0.5;
-    bool increasing = f1 >= f0;
-    for (int i = 0; i < 16; i++) {
-        float f = ((a * t + b) * t + cVal) * t + d;
-        if ((increasing && f < 0.0) || (!increasing && f > 0.0)) {
-            lo = t;
-        } else {
-            hi = t;
-        }
-        float deriv = (3.0 * a * t + 2.0 * b) * t + cVal;
-        float next = (lo + hi) * 0.5;
-        if (abs(deriv) >= 1e-6) {
-            float newton = t - f / deriv;
-            if (newton > lo && newton < hi) next = newton;
-        }
-        t = next;
-    }
-    tOut = t;
-    return true;
-}
 
 float2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, float p2x, float p2y, float ppeX) {
     float ax = p0x - p1x * 2.0 + p2x;
@@ -159,7 +125,6 @@ SegmentData fetchSegment<let HAS_CONIC : bool>(
     seg.p0 = tex0.xy;
     seg.p1 = tex0.zw;
     seg.p2 = tex1.xy;
-    seg.p3 = tex1.zw;
     if (HAS_CONIC && kind == 1) {
         float4 tex2 = curve_tex.Load(int4(offsetCurveLoc(loc, 2), layer, 0));
         seg.weights = float3(tex2.w, tex2.x, tex2.y);
@@ -169,28 +134,21 @@ SegmentData fetchSegment<let HAS_CONIC : bool>(
     return seg;
 }
 
-float segmentMaxX<let HAS_CUBIC : bool>(SegmentData seg) {
+float segmentMaxX(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.x, seg.p2.x);
-    if (HAS_CUBIC && seg.kind == 2)
-        return max(max(seg.p0.x, seg.p1.x), max(seg.p2.x, seg.p3.x));
     return max(max(seg.p0.x, seg.p1.x), seg.p2.x);
 }
 
-float segmentMaxY<let HAS_CUBIC : bool>(SegmentData seg) {
+float segmentMaxY(SegmentData seg) {
     if (seg.kind == 3) return max(seg.p0.y, seg.p2.y);
-    if (HAS_CUBIC && seg.kind == 2)
-        return max(max(seg.p0.y, seg.p1.y), max(seg.p2.y, seg.p3.y));
     return max(max(seg.p0.y, seg.p1.y), seg.p2.y);
 }
 
-float segmentEndRootDelta<let HAS_CUBIC : bool>(
+float segmentEndRootDelta(
     SegmentData seg,
     float2 sampleRc,
     bool horizontal)
 {
-    if (HAS_CUBIC && seg.kind == 2) {
-        return horizontal ? seg.p3.y - sampleRc.y : seg.p3.x - sampleRc.x;
-    }
     return horizontal ? seg.p2.y - sampleRc.y : seg.p2.x - sampleRc.x;
 }
 
@@ -200,27 +158,12 @@ bool rootHullCanCross3(float p0, float p1, float p2, float sampleRoot) {
     return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
 }
 
-bool rootHullCanCross4(float p0, float p1, float p2, float p3, float sampleRoot) {
-    float minRoot = min(min(p0, p1), min(p2, p3));
-    float maxRoot = max(max(p0, p1), max(p2, p3));
-    return minRoot - sampleRoot <= kCoordEps && maxRoot - sampleRoot >= -kCoordEps;
-}
-
-bool segmentRootHullCanCross<let HAS_CUBIC : bool>(
+bool segmentRootHullCanCross(
     SegmentData seg,
     float2 sampleRc,
     bool horizontal)
 {
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
-    if (HAS_CUBIC && seg.kind == 2) {
-        return rootHullCanCross4(
-            horizontal ? seg.p0.y : seg.p0.x,
-            horizontal ? seg.p1.y : seg.p1.x,
-            horizontal ? seg.p2.y : seg.p2.x,
-            horizontal ? seg.p3.y : seg.p3.x,
-            sampleRoot
-        );
-    }
     return rootHullCanCross3(
         horizontal ? seg.p0.y : seg.p0.x,
         horizontal ? seg.p1.y : seg.p1.x,
@@ -294,7 +237,7 @@ void accumulateConicRoot(inout float cov,
     appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
 }
 
-void accumulateConicCoverage<let HAS_CUBIC : bool>(
+void accumulateConicCoverage(
     inout float cov,
     inout float wgt,
     SegmentData seg,
@@ -302,7 +245,7 @@ void accumulateConicCoverage<let HAS_CUBIC : bool>(
     float ppe,
     bool horizontal)
 {
-    if (!segmentRootHullCanCross<HAS_CUBIC>(seg, sampleRc, horizontal)) return;
+    if (!segmentRootHullCanCross(seg, sampleRc, horizontal)) return;
 
     float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
     float sampleAlong = horizontal ? sampleRc.x : sampleRc.y;
@@ -369,7 +312,7 @@ void accumulateConicCoverage<let HAS_CUBIC : bool>(
     float denA = seg.weights.x - 2.0 * seg.weights.y + seg.weights.z;
     float denB = 2.0 * (seg.weights.y - seg.weights.x);
     float denC = seg.weights.x;
-    float endRootDelta = segmentEndRootDelta<HAS_CUBIC>(seg, sampleRc, horizontal);
+    float endRootDelta = segmentEndRootDelta(seg, sampleRc, horizontal);
 
     accumulateConicRoot(cov, wgt, root0, endRootDelta, sampleAlong, ppe, horizontal,
                         rootA, rootB, rootC, alongA, alongB, alongC, denA, denB, denC);
@@ -379,53 +322,7 @@ void accumulateConicCoverage<let HAS_CUBIC : bool>(
     }
 }
 
-void accumulateCubicCoverage(inout float cov, inout float wgt, SegmentData seg, float2 sampleRc, float ppe, bool horizontal) {
-    if (!segmentRootHullCanCross<true>(seg, sampleRc, horizontal)) return;
-
-    float sampleRoot = horizontal ? sampleRc.y : sampleRc.x;
-    float sampleAlong = horizontal ? sampleRc.x : sampleRc.y;
-    float p0Root = horizontal ? seg.p0.y : seg.p0.x;
-    float p1Root = horizontal ? seg.p1.y : seg.p1.x;
-    float p2Root = horizontal ? seg.p2.y : seg.p2.x;
-    float p3Root = horizontal ? seg.p3.y : seg.p3.x;
-    float p0Along = horizontal ? seg.p0.x : seg.p0.y;
-    float p1Along = horizontal ? seg.p1.x : seg.p1.y;
-    float p2Along = horizontal ? seg.p2.x : seg.p2.y;
-    float p3Along = horizontal ? seg.p3.x : seg.p3.y;
-
-    float rootA = -p0Root + 3.0 * p1Root - 3.0 * p2Root + p3Root;
-    float rootB = 3.0 * p0Root - 6.0 * p1Root + 3.0 * p2Root;
-    float rootC = -3.0 * p0Root + 3.0 * p1Root;
-
-    // Decide half-open endpoint ownership before solving, using the same +0
-    // convention as lines, quadratics, and conics.
-    float startDelta = p0Root - sampleRoot;
-    float endDelta = p3Root - sampleRoot;
-    if ((rootCodeCoord(startDelta) < 0.0) == (rootCodeCoord(endDelta) < 0.0)) return;
-
-    float t = 0.0;
-    if (abs(startDelta) <= kCoordEps) {
-        t = 0.0;
-    } else if (abs(endDelta) <= kCoordEps) {
-        t = 1.0;
-    } else if (!solveMonotonicCubicRoot(rootA, rootB, rootC, startDelta, endDelta, t)) {
-        return;
-    }
-
-    float alongA = -p0Along + 3.0 * p1Along - 3.0 * p2Along + p3Along;
-    float alongB = 3.0 * p0Along - 6.0 * p1Along + 3.0 * p2Along;
-    float alongC = -3.0 * p0Along + 3.0 * p1Along;
-
-    float along = (t == 1.0) ? p3Along : ((alongA * t + alongB) * t + alongC) * t + p0Along;
-    // Cubics are packed as monotonic spans. Endpoint direction is the
-    // scale-invariant winding sign.
-    float derivAxis = horizontal ? p3Root - p0Root : p0Root - p3Root;
-
-    float dist = (along - sampleAlong) * ppe;
-    appendCoverageContribution(cov, wgt, dist, derivAxis > 0.0 ? 1.0 : -1.0);
-}
-
-bool accumulateAxisCoverageSegment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+bool accumulateAxisCoverageSegment<let HAS_CONIC : bool>(
     inout float cov,
     inout float wgt,
     float2 sampleRc,
@@ -435,8 +332,8 @@ bool accumulateAxisCoverageSegment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
 {
     float maxCoord = (
         horizontal
-            ? segmentMaxX<HAS_CUBIC>(seg) - sampleRc.x
-            : segmentMaxY<HAS_CUBIC>(seg) - sampleRc.y
+            ? segmentMaxX(seg) - sampleRc.x
+            : segmentMaxY(seg) - sampleRc.y
     );
     if (maxCoord * ppe < -0.5) return false;
 
@@ -478,30 +375,26 @@ bool accumulateAxisCoverageSegment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     }
 
     if (HAS_CONIC && seg.kind == 1) {
-        accumulateConicCoverage<HAS_CUBIC>(cov, wgt, seg, sampleRc, ppe, horizontal);
+        accumulateConicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
         return true;
     }
 
-    if (HAS_CUBIC) {
-        accumulateCubicCoverage(cov, wgt, seg, sampleRc, ppe, horizontal);
-    } else {
-        // Classified quadratic/conic records guarantee the only remaining
-        // kind is line.
-        accumulateLineCoverage(
-            cov,
-            wgt,
-            seg.p0.x - sampleRc.x,
-            seg.p0.y - sampleRc.y,
-            seg.p2.x - sampleRc.x,
-            seg.p2.y - sampleRc.y,
-            ppe,
-            horizontal
-        );
-    }
+    // Classified quadratic/conic records guarantee the only remaining kind
+    // is line.
+    accumulateLineCoverage(
+        cov,
+        wgt,
+        seg.p0.x - sampleRc.x,
+        seg.p0.y - sampleRc.y,
+        seg.p2.x - sampleRc.x,
+        seg.p2.y - sampleRc.y,
+        ppe,
+        horizontal
+    );
     return true;
 }
 
-float2 evalAxisCoverageBands<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+float2 evalAxisCoverageBands<let HAS_CONIC : bool>(
     SnailFloatTexture2DArray curve_tex,
     SnailUint2Texture2DArray band_tex,
     float2 sampleRc,
@@ -531,7 +424,7 @@ float2 evalAxisCoverageBands<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
             int2 cLoc = decodeBandCurveLocCommon(ref);
             int kind = decodeBandCurveKindCommon(ref);
             SegmentData seg = fetchSegment<HAS_CONIC>(curve_tex, cLoc, layer, kind);
-            if (!accumulateAxisCoverageSegment<HAS_CONIC, HAS_CUBIC>(
+            if (!accumulateAxisCoverageSegment<HAS_CONIC>(
                     cov, wgt, sampleRc, ppe, seg, horizontal))
                 break;
         }
@@ -539,7 +432,7 @@ float2 evalAxisCoverageBands<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     return float2(cov, wgt);
 }
 
-float evalPathGlyphCoverage<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+float evalPathGlyphCoverage<let HAS_CONIC : bool>(
     SnailFloatTexture2DArray curve_tex,
     SnailUint2Texture2DArray band_tex,
     float2 rc,
@@ -557,10 +450,10 @@ float evalPathGlyphCoverage<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     // kCoverageBandSpanParamEps (1/100000).
     CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, bandMax.y);
     CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
-    float2 horiz = evalAxisCoverageBands<HAS_CONIC, HAS_CUBIC>(
+    float2 horiz = evalAxisCoverageBands<HAS_CONIC>(
         curve_tex, band_tex, rc, ppe.x, gLoc, 0,
         hSpan.first, hSpan.last, texLayer, true);
-    float2 vert = evalAxisCoverageBands<HAS_CONIC, HAS_CUBIC>(
+    float2 vert = evalAxisCoverageBands<HAS_CONIC>(
         curve_tex, band_tex, rc, ppe.y, gLoc, bandMax.y + 1,
         vSpan.first, vSpan.last, texLayer, false);
     float wsum = horiz.y + vert.y;
@@ -685,7 +578,7 @@ PathPaintSample samplePathPaint(SnailFloatTexture2D layer_tex, SnailFloatTexture
     return s;
 }
 
-PathCompositeSample compositePathGroup<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
     SnailFloatTexture2DArray curve_tex,
     SnailUint2Texture2DArray band_tex,
     SnailFloatTexture2D layer_tex,
@@ -718,7 +611,7 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool, let HAS_CUBIC : boo
         int rec_fill_rule = (packed_gx >> 15) & 1;
         int bandMaxH = asint(info.z) & 0xFFFF;
         int bandMaxV = (asint(info.z) >> 16) & 0xFFFF;
-        float cov = evalPathGlyphCoverage<HAS_CONIC, HAS_CUBIC>(
+        float cov = evalPathGlyphCoverage<HAS_CONIC>(
             curve_tex, band_tex, rc, epp, ppe, gLoc,
             int2(bandMaxV, bandMaxH), band, texLayer,
             rec_fill_rule, coverage_exponent);
@@ -761,7 +654,7 @@ public struct PaintedVaryings {
     public int4 glyph;
 };
 
-public float4 snailPaintedFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+public float4 snailPaintedFragment<let HAS_CONIC : bool>(
     PaintedVaryings v,
     float2 frag_coord,
     SnailFloatTexture2DArray curve_tex,
@@ -787,7 +680,7 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     // v.tint arrives as a linear-light f16 vertex attribute.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
-        PathCompositeSample result = compositePathGroup<HAS_CONIC, HAS_CUBIC>(
+        PathCompositeSample result = compositePathGroup<HAS_CONIC>(
             curve_tex, band_tex, layer_tex, image_tex, image_sampler,
             rc, epp, ppe, infoBase, firstInfo, texLayer, v.tint,
             p.coverage_exponent);
@@ -802,7 +695,7 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     int rec_fill_rule = (packed_gx >> 15) & 1;
     int bandMaxH = asint(firstInfo.z) & 0xFFFF;
     int bandMaxV = (asint(firstInfo.z) >> 16) & 0xFFFF;
-    float cov = evalPathGlyphCoverage<HAS_CONIC, HAS_CUBIC>(
+    float cov = evalPathGlyphCoverage<HAS_CONIC>(
         curve_tex, band_tex, rc, epp, ppe, gLoc,
         int2(bandMaxV, bandMaxH), band, texLayer,
         rec_fill_rule, p.coverage_exponent);

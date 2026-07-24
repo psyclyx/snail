@@ -1,8 +1,8 @@
 // Shared arbitrary-path + general-paint fragment-family adapter.
 //
-// Thin family entry modules specialize pathFragment for classified
-// quadratic, classified conic, or unrestricted cubic records while keeping
-// the public fragmentMain entry-point name on every textual backend.
+// Thin family entry modules specialize pathFragment for classified quadratic
+// or conic records while keeping the public fragmentMain entry-point name on
+// every textual backend. Authored cubics are lowered during preparation.
 //
 // Binding 3 is a sampled image:
 //  - Vulkan aliases an image-only and sampler-only variable onto the one
@@ -43,7 +43,7 @@ SnailSamplerState u_image_sampler;
 #endif
 #endif
 
-public float4 pathFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
+public float4 pathFragment<let HAS_CONIC : bool>(
     PaintedFragmentInput input)
 {
     PaintedVaryings v;
@@ -57,7 +57,7 @@ public float4 pathFragment<let HAS_CONIC : bool, let HAS_CUBIC : bool>(
     p.coverage_exponent = pc.coverage_exponent;
     p.dither_scale = pc.dither_scale;
     p.mask_output = pc.mask_output;
-    return snailPaintedFragment<HAS_CONIC, HAS_CUBIC>(
+    return snailPaintedFragment<HAS_CONIC>(
         v, input.position.xy,
         u_curve_tex, u_band_tex, u_layer_tex,
         u_image_tex, u_image_sampler, p);
