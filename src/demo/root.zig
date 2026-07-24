@@ -30,4 +30,7 @@ pub fn main() !void {
 
 test {
     _ = entry;
+    _ = @import("terminal/screen.zig");
+    _ = @import("terminal/simulation.zig");
+    _ = @import("terminal/view.zig");
 }
