@@ -58,7 +58,7 @@ float2 solveQuadraticHorizDistances(float p0x, float p0y, float p1x, float p1y, 
         t1 = (abs(by) < kEps) ? 0.0 : p0y * 0.5 / by;
         t2 = t1;
     } else {
-        float sq = snapNearTangentSqrt(by * by - ay * p0y, by, ay * p0y);
+        float sq = sqrt(max(by * by - ay * p0y, 0.0));
         if (by >= 0.0) {
             float q = by + sq;
             t2 = q / ay;
@@ -87,7 +87,7 @@ float2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, f
         t1 = (abs(bx) < kEps) ? 0.0 : p0x * 0.5 / bx;
         t2 = t1;
     } else {
-        float sq = snapNearTangentSqrt(bx * bx - ax * p0x, bx, ax * p0x);
+        float sq = sqrt(max(bx * bx - ax * p0x, 0.0));
         if (bx >= 0.0) {
             float q = bx + sq;
             t2 = q / ax;
@@ -185,9 +185,7 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     // A vertex exactly on the scanline snaps to +0 and reads as the positive
     // side, so a vertex shared with the next segment is owned by exactly one of
     // them. See snail_path_frag_body.glsl for the full derivation.
-    float a0 = rootCodeCoord(rootAxis0);
-    float a2 = rootCodeCoord(rootAxis2);
-    if ((a0 < 0.0) == (a2 < 0.0)) return;
+    if ((rootAxis0 < 0.0) == (rootAxis2 < 0.0)) return;
 
     float denom = rootAxis2 - rootAxis0;
     if (abs(denom) < 1e-10) return;
@@ -458,9 +456,14 @@ float evalPathGlyphCoverage<let HAS_CONIC : bool>(
         vSpan.first, vSpan.last, texLayer, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
-    float cov = max(applyFillRule(blended / max(wsum, kCoordEps), fill_rule),
-                    min(applyFillRule(horiz.x, fill_rule), applyFillRule(vert.x, fill_rule)));
-    return applyCoverageTransfer(cov, coverage_exponent);
+    float windingCoverage = max(
+        abs(blended / max(wsum, kCoordEps)),
+        min(abs(horiz.x), abs(vert.x))
+    );
+    return applyCoverageTransfer(
+        applyFillRule(windingCoverage, fill_rule),
+        coverage_exponent
+    );
 }
 
 float wrapPaintT(float t, float extendMode) {

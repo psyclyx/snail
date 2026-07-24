@@ -4,32 +4,15 @@
 module coverage_common;
 
 public static const int kLogBandTextureWidth = 12;
-public static const float kRootCodeEps = 1.0 / 65536.0;
 public static const float kCoverageBandSpanParamEps = 1.0 / 100000.0;
 public static const uint kBandCurveLocXMaskCommon = 0x0FFFu;
 public static const uint kBandCurveLocYMaskCommon = 0x3FFFu;
 public static const uint kBandCurveFirstMemberShiftCommon = 12u;
 public static const uint kBandCurveKindShiftCommon = 14u;
 
-// Treat exact-edge float drift as the mathematical contour sample. The
-// half-open segment convention still comes from the root ordering below.
-public float rootCodeCoord(float v) {
-    return (abs(v) <= kRootCodeEps) ? 0.0 : v;
-}
-
-// Snap a near-tangent discriminant in the cancellation-free quadratic
-// solver. See snail_coverage_common.glsl for the full derivation; the
-// relative tolerance accommodates ~24 ULPs of FP noise from the disc
-// subtraction without disturbing genuine double-crossings.
-public float snapNearTangentSqrt(float disc, float b, float ac) {
-    float tol = max(b * b, abs(ac)) * 3.0e-6;
-    return (disc <= tol) ? 0.0 : sqrt(disc);
-}
-
 public uint calcRootCode(float y1, float y2, float y3) {
-    y1 = rootCodeCoord(y1);
-    y2 = rootCodeCoord(y2);
-    y3 = rootCodeCoord(y3);
+    // Slug's compact quadratic crossing classifier is the raw sign pattern
+    // of the three sample-relative Bernstein coordinates.
     uint i1 = asuint(y1) >> 31u;
     uint i2 = asuint(y2) >> 30u;
     uint i3 = asuint(y3) >> 29u;

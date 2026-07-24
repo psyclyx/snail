@@ -160,11 +160,17 @@ fn applyFillRule(fill_rule: FillRule, winding: f32) f32 {
 pub fn resolveCoverage(horiz: CoveragePair, vert: CoveragePair, fill_rule: FillRule) f32 {
     const wsum = horiz.wgt + vert.wgt;
     const blended = horiz.cov * horiz.wgt + vert.cov * vert.wgt;
-    const cov = @max(
-        applyFillRule(fill_rule, blended / @max(wsum, 1.0 / 65536.0)),
-        @min(applyFillRule(fill_rule, horiz.cov), applyFillRule(fill_rule, vert.cov)),
+    const winding_coverage = @max(
+        @abs(blended / @max(wsum, 1.0 / 65536.0)),
+        @min(@abs(horiz.cov), @abs(vert.cov)),
     );
-    return clamp01(cov);
+    return clamp01(applyFillRule(fill_rule, winding_coverage));
+}
+
+test "even-odd applies after directional coverage resolve" {
+    const horiz = CoveragePair{ .cov = 1.2, .wgt = 27.0 };
+    const vert = CoveragePair{ .cov = -2.2, .wgt = 7.0 };
+    try std.testing.expectApproxEqAbs(@as(f32, 0.8), resolveCoverage(horiz, vert, .even_odd), 1e-6);
 }
 
 pub fn premultiplyCoverage(color: [4]f32, cov: f32) [4]f32 {
@@ -217,9 +223,7 @@ pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f3
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
 
-const root_code_eps = quadratic.root_code_eps;
-const rootCodeCoord = quadratic.rootCodeCoord;
-const snapNearTangentSqrt = quadratic.snapNearTangentSqrt;
+const coord_eps = quadratic.coord_eps;
 const calcRootCode = quadratic.calcRootCode;
 const solveHorizPoly = quadratic.solveHorizPoly;
 const solveVertPoly = quadratic.solveVertPoly;
@@ -236,9 +240,7 @@ inline fn distToUnitInterval(t: f32) f32 {
 /// crossing from BOTH segments and collapse an interior pixel's winding.
 /// Returns the crossing parameter clamped to [0, 1], or null.
 pub inline fn lineCrossingT(root_axis0: f32, root_axis2: f32) ?f32 {
-    const a0 = rootCodeCoord(root_axis0);
-    const a2 = rootCodeCoord(root_axis2);
-    if ((a0 < 0.0) == (a2 < 0.0)) return null;
+    if ((root_axis0 < 0.0) == (root_axis2 < 0.0)) return null;
     const denom = root_axis2 - root_axis0;
     if (@abs(denom) < 1e-10) return null;
     return std.math.clamp(-root_axis0 / denom, 0.0, 1.0);
@@ -263,8 +265,8 @@ pub inline fn gatedConicRoots(pa: f32, pb: f32, pc: f32) GatedConicRoots {
 
     var cand: [2]f32 = undefined;
     var ncand: usize = 0;
-    if (@abs(pa) < root_code_eps) {
-        if (@abs(pb) >= root_code_eps) {
+    if (@abs(pa) < coord_eps) {
+        if (@abs(pb) >= coord_eps) {
             cand[0] = -pc / pb;
             ncand = 1;
         }
@@ -296,14 +298,7 @@ pub inline fn gatedConicRoots(pa: f32, pb: f32, pc: f32) GatedConicRoots {
 inline fn rootHullCanCross3(p0: f32, p1: f32, p2: f32, sample_root: f32) bool {
     const min_root = @min(@min(p0, p1), p2);
     const max_root = @max(@max(p0, p1), p2);
-    return min_root - sample_root <= root_code_eps and max_root - sample_root >= -root_code_eps;
-}
-
-test "sign-of-zero snap treats near-zero root coords as on the line" {
-    try std.testing.expectEqual(@as(f32, 0.0), rootCodeCoord(root_code_eps * 0.5));
-    try std.testing.expectEqual(@as(f32, 0.0), rootCodeCoord(-root_code_eps * 0.5));
-    try std.testing.expect(rootCodeCoord(root_code_eps * 2.0) > 0.0);
-    try std.testing.expect(rootCodeCoord(-root_code_eps * 2.0) < 0.0);
+    return min_root - sample_root <= coord_eps and max_root - sample_root >= -coord_eps;
 }
 
 const CoverageScan = enum {
@@ -442,7 +437,7 @@ pub inline fn solvePreparedAxisQuadratic(curve: *const PreparedAxisCurve, p0_alo
         t1 = if (@abs(by) < eps) 0.0 else p0_root * 0.5 / by;
         t2 = t1;
     } else {
-        const sq = snapNearTangentSqrt(by * by - ay * p0_root, by, ay * p0_root);
+        const sq = @sqrt(@max(by * by - ay * p0_root, 0.0));
         if (by >= 0.0) {
             const q = by + sq;
             t2 = q / ay;

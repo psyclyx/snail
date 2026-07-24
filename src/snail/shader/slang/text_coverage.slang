@@ -29,7 +29,7 @@ public float2 solveHorizPoly(float4 p12, float2 p3) {
         t1 = (abs(b.y) < kEps) ? 0.0 : p12.y * 0.5 / b.y;
         t2 = t1;
     } else {
-        float sq = snapNearTangentSqrt(b.y * b.y - a.y * p12.y, b.y, a.y * p12.y);
+        float sq = sqrt(max(b.y * b.y - a.y * p12.y, 0.0));
         if (b.y >= 0.0) {
             float q = b.y + sq;
             t2 = q / a.y;
@@ -53,7 +53,7 @@ public float2 solveVertPoly(float4 p12, float2 p3) {
         t1 = (abs(b.x) < kEps) ? 0.0 : p12.x * 0.5 / b.x;
         t2 = t1;
     } else {
-        float sq = snapNearTangentSqrt(b.x * b.x - a.x * p12.x, b.x, a.x * p12.x);
+        float sq = sqrt(max(b.x * b.x - a.x * p12.x, 0.0));
         if (b.x >= 0.0) {
             float q = b.x + sq;
             t2 = q / a.x;
@@ -146,7 +146,7 @@ public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int
 
     float wsum = xwgt + ywgt;
     float blended = xcov * xwgt + ycov * ywgt;
-    float cov = max(applyFillRule(blended / max(wsum, 1.0 / 65536.0), 0),
-                    min(applyFillRule(xcov, 0), applyFillRule(ycov, 0)));
+    float cov = max(abs(blended / max(wsum, 1.0 / 65536.0)),
+                    min(abs(xcov), abs(ycov)));
     return applyCoverageTransfer(cov, coverage_exponent);
 }
