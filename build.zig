@@ -2,7 +2,7 @@ const std = @import("std");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
 const slang_shaders = @import("build/slang_shaders.zig");
 
-const version = "0.12.1";
+const version = "0.13.0";
 
 const DemoEntry = enum {
     banner,

@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 - 2026-07-24
 
 The public API was rewritten end-to-end around an embeddable-only design.
 Every previously exposed noun (`TextBlobBundle`, `TrueTypeHintContext`,
