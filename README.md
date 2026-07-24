@@ -6,7 +6,12 @@ Text and vector rendering via direct Bezier curve evaluation, built to embed in 
 
 snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform.
 
-snail is a library, not a renderer: it owns no GPU objects, threads, caches, or eviction policy. It prepares data on the CPU and hands you texture contents, typed draw records, and entry-point-free shader fragments; your engine owns the textures, pipelines, uploads, and draw calls. An optional software renderer (`snail-raster`) covers hosts without a GPU.
+snail is a library, not a renderer: it owns no GPU objects or threads and
+provides no automatic glyph-residency or eviction policy. It prepares data on
+the CPU and hands you texture contents, typed draw records, reusable native
+Slang modules, and complete generated shader stages; your engine owns the GPU
+textures, pipelines, uploads, and draw calls. An optional software renderer
+(`snail-raster`) covers hosts without a GPU.
 
 This is alpha-quality software; see [Status](#status).
 
@@ -24,13 +29,18 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 
 Rendering splits into a **preparation** phase (CPU, once per glyph or path)
 and a **draw** phase (every frame, in a shader or the CPU rasterizer).
-Nothing is ever rasterized ahead of time — what the atlas stores is
-geometry. The README visuals below are rendered by snail itself
-(`zig build run-algorithm-diagrams`).
+Outline geometry is never rasterized ahead of time — the atlas stores curves
+and their lookup data. Image paints remain caller-provided raster images. The
+README visuals below are rendered by snail itself; `zig build
+run-algorithm-diagrams` writes their TGA source renders to `zig-out/` (see
+[Build](#build) for the conversion step).
 
-**1. Prepare: outlines stay curves.** A glyph is quadratic Béziers in em
-coordinates. Preparation packs the segments — four texels each — into the
-curve texture. One record per glyph, reused at every size and transform.
+**1. Prepare: outlines stay curves.** TrueType glyphs are quadratic Béziers
+in em coordinates; CFF/CFF2 glyphs and general vector paths may also contain
+cubics, while paths additionally support lines and rational conics.
+Preparation packs the segments — four texels each — into the curve texture.
+Unhinted records are ppem-independent and reusable at every size and
+transform. TrueType grid-fit records are ppem-specific.
 
 <img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
 
@@ -49,27 +59,32 @@ textures it owns.
 
 **3. Draw: one instanced quad per emitted record.** Each placed shape whose
 atlas record contains curves becomes one instance of a quad bounding the
-outline under its transform; empty records produce no draw work. `emit`
-produces typed instances and coalesced batches, one instanced draw per batch.
-A fragment maps its position back to glyph-local coordinates through the
-inverse transform, which is why any affine or perspective transform (and
-either y-axis convention) renders exactly on the GPU pipelines: all the math
-from here on happens in the record's own space. The optional CPU rasterizer is
-affine-only and reports `NonAffineMvp` for a perspective MVP.
+outline under its transform; empty records produce no draw work. Before
+projection, the vertex shader dynamically dilates the quad in device space
+far enough to cover the analytic-AA or LCD-filter footprint, including under
+perspective. `emit` produces typed instances and coalesced batches, one
+instanced draw per batch. A fragment maps its position back to glyph-local
+coordinates through the inverse transform, which is why any affine or
+perspective transform (and either y-axis convention) renders exactly on the
+GPU pipelines: all the math from here on happens in the record's own space.
+The optional CPU rasterizer is affine-only and reports `NonAffineMvp` for a
+perspective MVP.
 
 <img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="640">
 
-**4. Draw: the sample picks two bands.** The fragment's local position
-selects one horizontal and one vertical band; only the curves those bands
-list are candidates — a handful of segments instead of the whole glyph.
+**4. Draw: the sample picks band spans.** The fragment's local footprint
+selects a span of horizontal bands and a span of vertical bands. The
+evaluator visits every touched band and deduplicates curves shared by those
+bands, leaving a handful of candidate segments instead of the whole glyph.
 
-<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band highlighted and their candidate curves emphasized" width="640">
+<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band spans highlighted and their candidate curves emphasized" width="640">
 
 **5. Draw: solve ray roots per candidate.** Cast axis-aligned rays through
-the sample and solve the ray/Bézier equation for each candidate — a
-quadratic for text (the TrueType fast path); vector paths add lines,
-rational conics, and cubics. Every root in range is a crossing, signed by
-the direction the curve crosses the ray.
+the sample and solve the ray/curve equation for each candidate: quadratic
+for TrueType outlines, cubic for CFF/CFF2 outlines, and line, rational-conic,
+quadratic, or cubic for general paths. Eligible roots use half-open endpoint
+rules to avoid double-counting shared vertices and are signed by the
+direction the curve crosses the ray.
 
 <img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
 
@@ -83,19 +98,23 @@ robustness near tangencies.
 
 **7. Draw: roots near the pixel become coverage.** A root within half a
 pixel of the sample contributes fractional coverage instead of a binary
-in/out — analytic antialiasing, no supersampling, no prefiltered bitmap.
-Coverage multiplies the paint resolved from the layer-info record (solid,
-gradient, or image) and composites as premultiplied linear. Grayscale AA
-takes one sample per pixel; LCD subpixel modes evaluate per-channel
-offsets.
+in/out — analytic antialiasing without a prefiltered bitmap. Coverage
+multiplies the paint resolved from the layer-info record (solid, gradient, or
+image) and composites as premultiplied linear. Grayscale AA takes one
+analytic sample per pixel. LCD modes take seven analytic samples along the
+display's stripe axis and apply a five-tap filter to form RGB coverage.
 
 <img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by their true fractional coverage" width="640">
 
 ## The pipeline
 
 Everything is **prepare → record → upload → draw**. The `Atlas` is the store
-of prepared records — a persistent, value-typed CPU artifact. Producers are
-pure; nothing in the shipped API is a cache.
+of prepared records — a persistent, value-typed CPU artifact. Preparation
+and residency are explicit: there is no hidden application-level glyph cache
+or automatic eviction policy. `TtHintVm` deliberately retains reusable
+per-font scratch and a ppem-independent parsed-outline cache; upload planners
+and `snail-raster`'s `DeviceAtlas` retain caller-owned upload/device-cache
+state.
 
 ```zig
 const snail = @import("snail");
@@ -265,7 +284,10 @@ the macOS GPU CI gate) — plus the binding-name contracts loaders bind by.
 Artifacts are not checked in: they are generated at build time, in the zig
 cache, only for builds that actually import the module — and per-target
 scopes of the same API (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`,
-`-msl`) generate only their own targets, so e.g. a WebGPU consumer runs
+`-msl`) materialize only their selected runtime shader targets. Each scope
+also generates the small shared parameter-ABI reflection module, whose
+`slangc` reflection passes cover WGSL and the shared Vulkan families.
+Consumer scopes do not run `naga` validation, so e.g. a WebGPU consumer needs
 `slangc` alone; the direct GLSL/GLES path also needs no second shader
 compiler. Consumers of `snail`/`snail-raster` alone never need `slangc`.
 Composition is
@@ -503,7 +525,7 @@ zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-g
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
 zig build gen-shaders             # materialize generated shader artifacts into zig-out/shaders (needs slang+naga)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
-zig build run-algorithm-diagrams  # regenerate the README banner and diagrams (snail rendering itself)
+zig build run-algorithm-diagrams  # render README TGA sources into zig-out/ (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate
 zig build run-gamma-probe         # linear-blending / encode round-trip gate
 zig build run-composite-probe     # perspective coverage-hole gate (GL)
@@ -513,6 +535,16 @@ zig build install-perf            # performance regression runners
 
 With Nix: `nix-build -A demo`, or `nix-shell` for a dev shell with all
 dependencies.
+
+To update the checked-in README images after rendering their TGA sources
+(requires ImageMagick):
+
+```sh
+magick zig-out/banner.tga assets/banner.png
+for image in curves bands quad sample-bands roots winding alpha; do
+  magick "zig-out/algorithm-${image}.tga" "assets/algorithm-${image}.png"
+done
+```
 
 ### As a dependency
 
@@ -525,7 +557,17 @@ const snail_dep = b.dependency("snail", .{ .target = target, .optimize = optimiz
 exe.root_module.addImport("snail", snail_dep.module("snail"));
 // Optional software renderer:
 exe.root_module.addImport("snail-raster", snail_dep.module("snail-raster"));
+// GPU shader stages; choose the scope that matches your backend:
+exe.root_module.addImport(
+    "snail_shaders",
+    snail_dep.module("snail-shaders-glsl330"),
+);
 ```
+
+Other generated-shader scopes are `snail-shaders-gl` (GLSL 330 + GLES 300),
+`snail-shaders-wgsl`, `snail-shaders-hlsl`, and `snail-shaders-msl`. The
+aggregate `snail-shaders` scope includes every target, including Vulkan
+SPIR-V. Omit the shader import when using only `snail` or `snail-raster`.
 
 Workspace builds that import `snail/build.zig` directly can call `module()` /
 `rasterModule()` instead.
@@ -536,17 +578,17 @@ Alpha. The embeddable-only rewrite is complete (see
 [CHANGELOG](CHANGELOG.md)); the Zig API is settling but breaking changes are
 still expected. A C API against the current primitives is planned. Rendering
 correctness is gated in CI (GitHub Actions; the toolchain is the same
-nix-pinned shell.nix used for local dev): the Linux job runs the unit
-tests (including the byte-identity checks for `compact` and delta uploads),
-the CPU-vs-GL backend-compare, the composite/coverage/coverage-parity
-probes, the minimal GL example under llvmpipe, and the minimal D3D11
-example under Wine, gated against `src/demo/app/minimal_reference.png`;
-a Windows job re-runs the same cross-built D3D11 exe on a real Windows
-runner (no Windows-side toolchain — it only executes artifacts built by
-the nix job) and gates it with a dependency-free pixel comparator; a
-macOS job runs the Metal example on a real GPU and gates it against the
-same reference. The gamma probe and the GLES/Vulkan screenshot variants
-remain local build steps.
+nix-pinned `shell.nix` used for local development). Separate Linux jobs run
+the unit and generated-artifact tests; CPU-vs-GL comparison; coverage,
+composite, parity, and gamma probes; GL/GLES screenshots under llvmpipe;
+Vulkan and game-scene screenshots under lavapipe; WebGPU; and D3D11 under
+Wine. Release-mode consumer builds and the Nix package are also built.
+A Windows job runs the cross-built D3D11 and CPU artifacts on the native
+runtime without installing a second toolchain. A macOS job reruns the tests
+and CPU gate, compiles and executes the generated MSL on a real Metal GPU,
+and gates WebGPU through Metal. Backend images are compared against the
+appropriate checked-in or CPU-rendered references with documented
+tolerances in [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
 
 ## License
 
