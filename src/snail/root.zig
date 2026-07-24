@@ -61,6 +61,16 @@ pub const placedRunShapeCount = run_placement.placedRunShapeCount;
 pub const placeRun = run_placement.placeRun;
 pub const placeRunAlloc = run_placement.placeRunAlloc;
 
+const cell_placement = @import("text/cell_placement.zig");
+pub const Cell = cell_placement.Cell;
+pub const CellSnap = cell_placement.CellSnap;
+pub const CellRunPlacement = cell_placement.CellRunPlacement;
+pub const PlaceCellRunError = cell_placement.PlaceCellRunError;
+pub const PlaceCellRunAllocError = cell_placement.PlaceCellRunAllocError;
+pub const placedCellRunShapeCount = cell_placement.placedCellRunShapeCount;
+pub const placeCellRun = cell_placement.placeCellRun;
+pub const placeCellRunAlloc = cell_placement.placeCellRunAlloc;
+
 pub const Font = font.Font;
 
 // ── Paint ──
@@ -174,6 +184,7 @@ test {
     _ = @import("format/abi.zig");
     _ = @import("text/faces.zig");
     _ = @import("text/run_placement.zig");
+    _ = cell_placement;
     _ = shape_mod;
     _ = @import("draw/records.zig");
     _ = @import("draw/emit.zig");
