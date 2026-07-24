@@ -9,6 +9,7 @@ const std = @import("std");
 const snail = @import("snail");
 const support = @import("support");
 const offscreen_gl = @import("../../platform/offscreen_gl.zig");
+const driver_common = @import("../../driver/common.zig");
 const passes = @import("../../game/passes.zig");
 const scene_mod = @import("../../game/scene.zig");
 const gl_scene = @import("../../game/gl_scene.zig");
@@ -27,9 +28,7 @@ const gles_gl = @cImport({
 const W: u32 = 1280;
 const H: u32 = 800;
 
-fn srgbToLinear(v: f32) f32 {
-    return if (v <= 0.04045) v / 12.92 else std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
-}
+const TargetKind = enum { srgb_attachment, linear_attachment };
 
 pub fn main() !void {
     var da: std.heap.DebugAllocator(.{}) = .init;
@@ -37,12 +36,19 @@ pub fn main() !void {
     const allocator = da.allocator();
     _ = std.c.mkdir("zig-out", 0o755);
 
-    try renderOne(.gl44, allocator, "OpenGL 4.4", "zig-out/game-gl44.tga");
-    try renderOne(.gl33, allocator, "OpenGL 3.3", "zig-out/game-gl33.tga");
-    try renderOne(.gles30, allocator, "OpenGL ES 3.0", "zig-out/game-gles30.tga");
+    allocator.free(try renderOne(.gl44, .srgb_attachment, allocator, "OpenGL 4.4", "zig-out/game-gl44.tga"));
+    allocator.free(try renderOne(.gl33, .srgb_attachment, allocator, "OpenGL 3.3", "zig-out/game-gl33.tga"));
+    const gles_srgb = try renderOne(.gles30, .srgb_attachment, allocator, "OpenGL ES 3.0", "zig-out/game-gles30.tga");
+    defer allocator.free(gles_srgb);
+    // Mirrors a window whose default framebuffer is linear even though the
+    // compositor expects sRGB pixels. This exercises the game's full-scene
+    // float resolve, including its private depth attachment.
+    const gles_linear = try renderOne(.gles30, .linear_attachment, allocator, "OpenGL ES 3.0", "zig-out/game-gles30-linear.tga");
+    defer allocator.free(gles_linear);
+    try expectNearIdentical(gles_srgb, gles_linear);
 }
 
-fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator, name: []const u8, out_path: [*:0]const u8) !void {
+fn renderOne(comptime variant: gl_material.Variant, comptime target: TargetKind, allocator: std.mem.Allocator, name: []const u8, out_path: [*:0]const u8) ![]u8 {
     const api: offscreen_gl.GlApi = switch (variant) {
         .gl44 => .gl44,
         .gl33 => .gl33,
@@ -56,7 +62,7 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
     var ctx = try offscreen_gl.Context.init(W, H, api);
     defer ctx.deinit();
 
-    // Offscreen target: sRGB color texture + depth renderbuffer.
+    // Offscreen target: selected color encoding + depth renderbuffer.
     const GL_SRGB8_ALPHA8: gl.GLint = 0x8C43;
     const GL_DEPTH_COMPONENT24: gl.GLenum = 0x81A6;
     var fbo: gl.GLuint = 0;
@@ -66,7 +72,11 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
     gl.glGenTextures(1, &color_tex);
     gl.glGenRenderbuffers(1, &depth_rb);
     gl.glBindTexture(gl.GL_TEXTURE_2D, color_tex);
-    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, GL_SRGB8_ALPHA8, @intCast(W), @intCast(H), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
+    const color_format: gl.GLint = switch (target) {
+        .srgb_attachment => GL_SRGB8_ALPHA8,
+        .linear_attachment => gl.GL_RGBA8,
+    };
+    gl.glTexImage2D(gl.GL_TEXTURE_2D, 0, color_format, @intCast(W), @intCast(H), 0, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, null);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MIN_FILTER, gl.GL_LINEAR);
     gl.glTexParameteri(gl.GL_TEXTURE_2D, gl.GL_TEXTURE_MAG_FILTER, gl.GL_LINEAR);
     gl.glBindFramebuffer(gl.GL_FRAMEBUFFER, fbo);
@@ -83,9 +93,11 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
 
     // Desktop GL needs FRAMEBUFFER_SRGB to encode linear shader output into the
     // sRGB attachment; GLES 3.0 encodes to sRGB attachments unconditionally.
-    switch (variant) {
-        .gl44, .gl33 => gl.glEnable(0x8DB9), // GL_FRAMEBUFFER_SRGB
-        .gles30 => {},
+    if (target == .srgb_attachment) {
+        switch (variant) {
+            .gl44, .gl33 => gl.glEnable(0x8DB9), // GL_FRAMEBUFFER_SRGB
+            .gles30 => {},
+        }
     }
 
     var fonts = try passes.initFonts(allocator);
@@ -99,16 +111,32 @@ fn renderOne(comptime variant: gl_material.Variant, allocator: std.mem.Allocator
 
     gl.glViewport(0, 0, @intCast(W), @intCast(H));
     gl.glDepthMask(gl.GL_TRUE);
-    // Clear in linear (the sRGB target encodes on store) so the bg matches Vulkan.
-    gl.glClearColor(srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0);
+    const target_encoding = switch (target) {
+        .srgb_attachment => @import("snail-raster").TargetEncoding.srgb,
+        .linear_attachment => @import("snail-raster").TargetEncoding.srgb_pixels_on_linear_attachment,
+    };
+    const clear = driver_common.clearColorForShader(.{ 0.035, 0.045, 0.065, 1.0 }, target_encoding);
+    gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
     gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
     const view_proj = scene.viewProj(@as(f32, @floatFromInt(W)) / @as(f32, @floatFromInt(H)));
-    const surface = @import("snail-raster").TargetSurface{ .pixel_width = W, .pixel_height = H, .encoding = @import("snail-raster").TargetEncoding.srgb };
+    const surface = @import("snail-raster").TargetSurface{ .pixel_width = W, .pixel_height = H, .encoding = target_encoding };
     try sr.draw(&scene, W, H, view_proj, surface);
 
     const px = try support.screenshot.captureFramebuffer(allocator, W, H);
-    defer allocator.free(px);
+    errdefer allocator.free(px);
     try support.screenshot.writeTga(out_path, px, W, H);
     std.debug.print("wrote {s} ({s})\n", .{ out_path, name });
+    return px;
+}
+
+fn expectNearIdentical(a: []const u8, b: []const u8) !void {
+    if (a.len != b.len) return error.ScreenshotSizeMismatch;
+    var max_delta: u8 = 0;
+    for (a, b) |av, bv| {
+        const delta: u8 = if (av >= bv) av - bv else bv - av;
+        max_delta = @max(max_delta, delta);
+    }
+    std.debug.print("GLES sRGB-attachment vs linear-window resolve: max byte delta {d}\n", .{max_delta});
+    if (max_delta > 1) return error.GlesLinearResolveGammaMismatch;
 }

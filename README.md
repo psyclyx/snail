@@ -268,7 +268,9 @@ stages (float-intermediate seed/encode with premultiplication handled
 correctly); the demo GL renderers show the orchestration. If a display expects
 sRGB pixels from a linear attachment, encode both shader output and clear
 colors consistently. `TargetEncoding` expresses that attachment/storage
-combination. If you author in sRGB, convert once at the boundary with
+combination. Translucent layers must still be blended in a linear intermediate
+and encoded once at the end; encoding each layer before blending makes the
+overlap too dark. If you author in sRGB, convert once at the boundary with
 `snail.color.srgbToLinearColor`.
 Font palette colors (CPAL, spec-defined sRGB) are converted at extraction.
 
@@ -539,6 +541,7 @@ zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-g
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
 zig build gen-shaders             # materialize generated shader artifacts into zig-out/shaders (needs slang+naga)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
+zig build run-game-screenshot     # game scene across GL/GLES, including the linear-window fallback
 zig build run-algorithm-diagrams  # render README TGA sources into zig-out/ (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate
 zig build run-gamma-probe         # linear-blending / encode round-trip gate
