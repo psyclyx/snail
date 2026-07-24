@@ -1,11 +1,9 @@
 // TT-hinted-text family: native-Slang single source for all four GPU
 // targets. Fragment-only family — the vertex stage is the shared text
-// vertex (families/text.slang; GL hosts pair with the -O0 painted vertex,
-// see README-notes trap 9).
+// vertex from families/text.slang.
 //
-// Per-target compile flags and the naga legs match families/painted.slang
-// (see build/slang_shaders.zig). The fragment has loops (text-family
-// coverage evaluator), so its GL leg goes -emit-spirv-via-glsl -O0 + ADCE.
+// Per-target compile flags and the naga legs are defined in
+// build/slang_shaders.zig.
 module tt_hinted_text;
 
 import resource_types;

@@ -275,9 +275,11 @@ sample glyph coverage inside its own material shader — the game demo's
 worked example. For OpenGL, prefer the driver-oriented complete stages in
 the `snail-shaders-glsl330` / `snail-shaders-gl` module scopes. Slang emits
 them directly, preserving authored helpers and structured control flow;
-`paintedFrag*` is shared by COLR and path. `run-minimal-gl` demonstrates the
-generated-GL consumer route. WebGPU is validated by the `run-minimal-wgpu`
-example against the GL reference.
+`colrFrag*` is specialized for solid-layer COLRv0 glyphs while `pathFrag*`
+retains the general cubic/conic/gradient/image path engine. Compile only the
+families a renderer actually draws; the reference GL/GLES renderer does this
+lazily. `run-minimal-gl` demonstrates the generated-GL consumer route. WebGPU
+is validated by the `run-minimal-wgpu` example against the GL reference.
 
 **Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded
 f16 local bbox, affine transform/origin, glyph words, four payload words, and

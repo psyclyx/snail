@@ -66,6 +66,7 @@ fn TextStateFor(comptime backend: Backend) type {
 
         text_program: ProgramState = .{},
         text_subpixel_dual_program: ProgramState = .{},
+        colr_program: ProgramState = .{},
         path_program: ProgramState = .{},
         tt_hinted_text_program: ProgramState = .{},
         tt_hinted_subpixel_dual_program: ProgramState = .{},
@@ -124,19 +125,9 @@ fn TextStateFor(comptime backend: Backend) type {
             self.supports_dual_source_blend = detectDualSourceBlendSupport();
             errdefer self.deinit();
 
-            // Link all draw programs during renderer init so draw never compiles or links.
-            //
-            self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
-            self.path_program = try gl_programs.loadNativeProgramState("painted", shaders.vertex_shader, shaders.fragment_shader_path);
-            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
-            self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
-            if (self.supports_dual_source_blend) {
-                // Subpixel fragments carry layout(location = 0, index = N)
-                // qualifiers, so no glBindFragDataLocationIndexed calls are needed.
-                self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual);
-                self.tt_hinted_subpixel_dual_program = try gl_programs.loadNativeProgramState("hinted-subpixel", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_subpixel_dual);
-                self.autohint_subpixel_dual_program = try gl_programs.loadNativeProgramState("autohint-subpixel", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint_subpixel_dual);
-            }
+            // Draw programs are linked on first use. A hinted-text-only
+            // client must not pay for arbitrary paths, autohint, COLR, or
+            // unused subpixel variants.
             try self.linear_resolve.init();
 
             if (comptime backend == .gl33) {
@@ -204,6 +195,7 @@ fn TextStateFor(comptime backend: Backend) type {
 
             deleteProgramState(&self.text_program);
             deleteProgramState(&self.text_subpixel_dual_program);
+            deleteProgramState(&self.colr_program);
             deleteProgramState(&self.path_program);
             deleteProgramState(&self.tt_hinted_text_program);
             deleteProgramState(&self.tt_hinted_subpixel_dual_program);
@@ -251,7 +243,7 @@ fn TextStateFor(comptime backend: Backend) type {
         pub const DrawError = error{
             MissingBinding,
             StaleBinding,
-        } || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
+        } || gl_programs.ProgramError || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
 
         /// Walk `DrawRecords.batches`, bind each batch's matching
         /// `GlDeviceAtlas` cache, dispatch the encoded instances through
@@ -326,20 +318,11 @@ fn TextStateFor(comptime backend: Backend) type {
                 .grayscale;
             self.setBlendMode(textBlendMode(run_mode));
             const prog_state = switch (kind) {
-                .regular => switch (run_mode) {
-                    .grayscale => &self.text_program,
-                    .subpixel_dual_source => &self.text_subpixel_dual_program,
-                },
-                .colr => self.ensureColrProgram(),
-                .path => self.ensurePathProgram(),
-                .tt_hinted_text => switch (run_mode) {
-                    .grayscale => self.ensureTtHintedTextProgram(),
-                    .subpixel_dual_source => &self.tt_hinted_subpixel_dual_program,
-                },
-                .autohint => switch (run_mode) {
-                    .grayscale => self.ensureAutohintProgram(),
-                    .subpixel_dual_source => &self.autohint_subpixel_dual_program,
-                },
+                .regular => try self.ensureTextProgram(run_mode),
+                .colr => try self.ensureColrProgram(),
+                .path => try self.ensurePathProgram(),
+                .tt_hinted_text => try self.ensureTtHintedTextProgram(run_mode),
+                .autohint => try self.ensureAutohintProgram(run_mode),
             };
             self.bindProgramState(cache, prog_state, draw_state, run_mode);
             self.drawGlyphRange(instances, 0, total_glyphs);
@@ -359,10 +342,9 @@ fn TextStateFor(comptime backend: Backend) type {
                 self.frame_begun = true;
             }
 
-            // Rebind on program change too, not just cache change: the layer /
-            // image sampler binding is *program-dependent* (a path/colr program
-            // samples `u_layer_tex` on unit 2, the text program doesn't), so a
-            // text→path switch on the same cache must (re)bind unit 2 for path.
+            // Rebind on program change too, not just cache change: sampler
+            // bindings are program-dependent (COLR uses layer-info; general
+            // paths additionally use images; text uses neither).
             const cache_changed = self.active_cache != cache or program_changed;
             if (cache_changed) {
                 self.active_cache = cache;
@@ -527,24 +509,64 @@ fn TextStateFor(comptime backend: Backend) type {
             if (comptime backend == .gl44) self.ring.beginFrame();
         }
 
-        fn ensureColrProgram(self: *GlTextState) *const ProgramState {
-            std.debug.assert(self.path_program.handle != 0);
+        fn ensureTextProgram(self: *GlTextState, mode: TextRenderMode) DrawError!*const ProgramState {
+            return switch (mode) {
+                .grayscale => blk: {
+                    if (self.text_program.handle == 0)
+                        self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
+                    break :blk &self.text_program;
+                },
+                .subpixel_dual_source => blk: {
+                    std.debug.assert(self.supports_dual_source_blend);
+                    if (self.text_subpixel_dual_program.handle == 0)
+                        self.text_subpixel_dual_program = try gl_programs.loadNativeProgramState("text-subpixel", shaders.vertex_shader, shaders.fragment_shader_text_subpixel_dual);
+                    break :blk &self.text_subpixel_dual_program;
+                },
+            };
+        }
+
+        fn ensureColrProgram(self: *GlTextState) DrawError!*const ProgramState {
+            if (self.colr_program.handle == 0)
+                self.colr_program = try gl_programs.loadNativeProgramState("colr", shaders.vertex_shader, shaders.fragment_shader_colr);
+            return &self.colr_program;
+        }
+
+        fn ensurePathProgram(self: *GlTextState) DrawError!*const ProgramState {
+            if (self.path_program.handle == 0)
+                self.path_program = try gl_programs.loadNativeProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path);
             return &self.path_program;
         }
 
-        fn ensurePathProgram(self: *GlTextState) *const ProgramState {
-            std.debug.assert(self.path_program.handle != 0);
-            return &self.path_program;
+        fn ensureTtHintedTextProgram(self: *GlTextState, mode: TextRenderMode) DrawError!*const ProgramState {
+            return switch (mode) {
+                .grayscale => blk: {
+                    if (self.tt_hinted_text_program.handle == 0)
+                        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
+                    break :blk &self.tt_hinted_text_program;
+                },
+                .subpixel_dual_source => blk: {
+                    std.debug.assert(self.supports_dual_source_blend);
+                    if (self.tt_hinted_subpixel_dual_program.handle == 0)
+                        self.tt_hinted_subpixel_dual_program = try gl_programs.loadNativeProgramState("hinted-subpixel", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_subpixel_dual);
+                    break :blk &self.tt_hinted_subpixel_dual_program;
+                },
+            };
         }
 
-        fn ensureTtHintedTextProgram(self: *GlTextState) *const ProgramState {
-            std.debug.assert(self.tt_hinted_text_program.handle != 0);
-            return &self.tt_hinted_text_program;
-        }
-
-        fn ensureAutohintProgram(self: *GlTextState) *const ProgramState {
-            std.debug.assert(self.autohint_program.handle != 0);
-            return &self.autohint_program;
+        fn ensureAutohintProgram(self: *GlTextState, mode: TextRenderMode) DrawError!*const ProgramState {
+            return switch (mode) {
+                .grayscale => blk: {
+                    if (self.autohint_program.handle == 0)
+                        self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
+                    break :blk &self.autohint_program;
+                },
+                .subpixel_dual_source => blk: {
+                    std.debug.assert(self.supports_dual_source_blend);
+                    if (self.autohint_subpixel_dual_program.handle == 0)
+                        self.autohint_subpixel_dual_program = try gl_programs.loadNativeProgramState("autohint-subpixel", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint_subpixel_dual);
+                    break :blk &self.autohint_subpixel_dual_program;
+                },
+            };
         }
 
         fn drawGlyphRange(self: *GlTextState, instances: []const vertex.Instance, glyph_offset: usize, glyph_count: usize) void {

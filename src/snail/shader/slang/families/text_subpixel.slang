@@ -1,6 +1,6 @@
 // LCD-subpixel text family (dual-source blended): native-Slang single
 // source. Fragment-only family — the vertex stage is the shared text
-// vertex (GL hosts pair with the -O0 painted vertex).
+// vertex.
 //
 // ── Dual-source outputs ──
 //

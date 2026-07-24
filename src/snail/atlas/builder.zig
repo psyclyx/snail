@@ -37,6 +37,7 @@ const RecordKey = record_key_mod.RecordKey;
 const GlyphCurves = curves_mod.GlyphCurves;
 const PaintRecordDescriptor = atlas_mod.PaintRecordDescriptor;
 const PaintRecordInfo = atlas_mod.PaintRecordInfo;
+const PaintShaderClass = atlas_mod.PaintShaderClass;
 const RecordLookup = atlas_mod.RecordLookup;
 const PaintLookup = atlas_mod.PaintLookup;
 const TtAdvanceLookup = atlas_mod.TtAdvanceLookup;
@@ -46,6 +47,13 @@ const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
+
+fn isSolidPaint(paint: Paint) bool {
+    return switch (paint) {
+        .solid => true,
+        else => false,
+    };
+}
 
 pub const Builder = struct {
     allocator: std.mem.Allocator,
@@ -483,6 +491,7 @@ pub const Builder = struct {
         extra_placements: []const Placement,
         promoted_extra: ?usize,
         layer_count: u32,
+        shader_class: PaintShaderClass,
     ) InsertError!void {
         std.debug.assert(extra_placements.len + 1 == layer_count);
         std.debug.assert(extra_placements.len <= extra_layers.len);
@@ -528,6 +537,7 @@ pub const Builder = struct {
             .info_x = @intCast(header_offset % paint_records.info_width),
             .info_y = @intCast(header_offset / paint_records.info_width),
             .layer_count = @intCast(layer_count),
+            .shader_class = shader_class,
         });
         self.layer_info_texels = new_texels;
     }
@@ -548,7 +558,14 @@ pub const Builder = struct {
         }, layer_texel, 1);
     }
 
-    fn insertPaintRecord(self: *Builder, key: RecordKey, paint: Paint, band_entry: GlyphBandEntry, fill_rule: paint_mod.FillRule) InsertError!void {
+    fn insertPaintRecord(
+        self: *Builder,
+        key: RecordKey,
+        paint: Paint,
+        band_entry: GlyphBandEntry,
+        fill_rule: paint_mod.FillRule,
+        shader_class: PaintShaderClass,
+    ) InsertError!void {
         const texel_offset = self.layer_info_texels;
         const new_texels = std.math.add(u32, texel_offset, paint_records.texels_per_record) catch return error.LayerInfoTooLarge;
         const max_texels = paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
@@ -565,6 +582,7 @@ pub const Builder = struct {
             .info_x = @intCast(texel_offset % paint_records.info_width),
             .info_y = @intCast(texel_offset / paint_records.info_width),
             .layer_count = 1,
+            .shader_class = shader_class,
         });
         try self.appendPaintRecord(switch (paint) {
             .image => |img| img.image,
@@ -699,9 +717,18 @@ pub const Builder = struct {
         // Skip layer-info entirely if there's no paint at all.
         if (base_paint == null and extra_count == 0) return;
 
+        const glyph_solid = entry.key.namespace == record_key_mod.ns.unhinted_glyph and
+            base_paint != null and isSolidPaint(base_paint.?) and
+            base_fill_rule == .non_zero;
         if (extra_count == 0) {
             // Single-layer path: just one paint record, no composite header.
-            try self.insertPaintRecord(entry.key, base_paint.?, base_placement.bands, base_fill_rule);
+            try self.insertPaintRecord(
+                entry.key,
+                base_paint.?,
+                base_placement.bands,
+                base_fill_rule,
+                if (glyph_solid) .colr_solid else .general,
+            );
             return;
         }
 
@@ -709,6 +736,12 @@ pub const Builder = struct {
         // fill slots 1..1+extra_count.
         const total_layers: u32 = @intCast(1 + extra_count);
         const composite_base_paint = base_paint orelse Paint{ .solid = .{ 0, 0, 0, 0 } };
+        var colr_solid = glyph_solid and entry.composite_mode == .source_over;
+        for (entry.extra_layers, 0..) |layer, layer_index| {
+            if (promoted_extra == layer_index or layer.curves.isEmpty()) continue;
+            colr_solid = colr_solid and isSolidPaint(layer.paint) and
+                layer.fill_rule == .non_zero;
+        }
         try self.insertCompositeRecord(
             entry.key,
             entry.composite_mode,
@@ -719,6 +752,7 @@ pub const Builder = struct {
             extras_storage[0..extra_count],
             promoted_extra,
             total_layers,
+            if (colr_solid) .colr_solid else .general,
         );
     }
 
@@ -919,6 +953,7 @@ pub const Builder = struct {
             .info_x = @intCast(dst_texel % width),
             .info_y = @intCast(dst_texel / width),
             .layer_count = @intCast(layer_count),
+            .shader_class = paint_info.shader_class,
         });
         self.layer_info_texels = new_texels;
     }

@@ -3,6 +3,12 @@ const gl = @import("bindings.zig").gl;
 const gl_common = @import("../common.zig");
 const slang_gen = @import("snail_shaders");
 
+pub const ProgramError = error{
+    VertexShaderFailed,
+    FragmentShaderFailed,
+    ShaderLinkFailed,
+};
+
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
     /// Non-zero for the native-Slang text program: the 96-byte UBO backing

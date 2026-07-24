@@ -1,6 +1,7 @@
-// Painted family (path + COLR): native-Slang single source for all GPU
-// targets. Both instance kinds share the same immutable paint-record
-// evaluator; the host's batch selection chooses this one program for either.
+// Painted families: one shared vertex/interface shell with genuinely
+// specialized fragment bodies. SNAIL_PAINTED_COLR selects the compact
+// TrueType-quadratic + solid-layer COLRv0 evaluator; SNAIL_PAINTED_PATH
+// selects the arbitrary path and general paint evaluator.
 //
 // Per-target compile flags match families/text.slang (see
 // build/slang_shaders.zig). The vertex is the same raw-VertexIndex
@@ -26,7 +27,13 @@ import resource_types;
 import render_abi;
 import color_common;
 import coverage_common;
+#if defined(SNAIL_PAINTED_COLR)
+import colr_body;
+#elif defined(SNAIL_PAINTED_PATH)
 import path_body;
+#else
+#error "painted.slang requires SNAIL_PAINTED_COLR or SNAIL_PAINTED_PATH"
+#endif
 import vertex;
 
 public struct SnailPushConstants {
@@ -45,25 +52,31 @@ public struct SnailPushConstants {
 [[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
 [[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
+#if defined(SNAIL_PAINTED_PATH)
 [[vk::binding(3, 0)]] SnailFloatTexture2DArray u_image_tex;
 [[vk::binding(3, 0)]] SnailSamplerState u_image_sampler;
+#endif
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
 [[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
 [[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
+#if defined(SNAIL_PAINTED_PATH)
 [[vk::binding(3, 0)]] SnailFloatTexture2DArray u_image_tex;
 [[vk::binding(3, 1)]] SnailSamplerState u_image_sampler;
+#endif
 #else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
 SnailFloatTexture2DArray u_curve_tex;
 SnailUint2Texture2DArray u_band_tex;
 SnailFloatTexture2D u_layer_tex;
+#if defined(SNAIL_PAINTED_PATH)
 SnailFloatTexture2DArray u_image_tex;
 #if defined(SNAIL_TARGET_GL)
 static const SnailSamplerState u_image_sampler = 0;
 #else
 SnailSamplerState u_image_sampler;
+#endif
 #endif
 #endif
 
@@ -138,6 +151,18 @@ VsOutput vertexBody(VsInput input, uint vertex_index) {
 
 [shader("fragment")]
 float4 fragmentMain(VsOutput input) : SV_Target {
+#if defined(SNAIL_PAINTED_COLR)
+    ColrVaryings v;
+    v.tint = input.tint;
+    v.texcoord = input.texcoord;
+    v.glyph = input.glyph;
+    ColrParams p;
+    p.layer_base = pc.layer_base;
+    p.output_srgb = pc.output_srgb;
+    p.coverage_exponent = pc.coverage_exponent;
+    p.mask_output = pc.mask_output;
+    return snailColrFragment(v, u_curve_tex, u_band_tex, u_layer_tex, p);
+#else
     PaintedVaryings v;
     v.tint = input.tint;
     v.texcoord = input.texcoord;
@@ -152,4 +177,5 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     return snailPaintedFragment(v, input.position.xy,
                                 u_curve_tex, u_band_tex, u_layer_tex,
                                 u_image_tex, u_image_sampler, p);
+#endif
 }

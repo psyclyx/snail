@@ -1,5 +1,6 @@
-// Canonical painted-family (path / COLR) segment coverage evaluator and
-// paint-record sampler.
+// Canonical arbitrary-path segment coverage evaluator and general
+// paint-record sampler. COLRv0 uses colr_body.slang's smaller quadratic
+// glyph + solid-layer path.
 //
 // Per-target plumbing:
 //  - the four textures (+ the image sampler) and the per-draw scalars are

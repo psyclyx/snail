@@ -193,7 +193,7 @@ fn inspectShape(
         inspected.layer_count = info.layer_count;
     } else if (atlas.lookupPaintRecord(shape.key)) |info| {
         if (shape.autohint_policy != null) return error.UnexpectedAutohintPolicy;
-        inspected.mode = if (shape.key.namespace == record_key_mod.ns.unhinted_glyph) .colr else .path;
+        inspected.mode = if (info.shader_class == .colr_solid) .colr else .path;
         inspected.info_x = info.info_x;
         inspected.info_y = try addRowBase(info.info_y, binding.info_row_base);
         inspected.layer_count = info.layer_count;
@@ -764,11 +764,18 @@ test "emit splits contiguous shapes into exact semantic batches" {
     defer path_curves.deinit();
     const regular_key = record_key_mod.unhintedGlyph(0, 1);
     const colr_key = record_key_mod.unhintedGlyph(1, 2);
+    const painted_glyph_key = record_key_mod.unhintedGlyph(1, 3);
     const path_key = record_key_mod.RecordKey{ .namespace = record_key_mod.ns.path_fill, .a = 1 };
     const hinted_key = record_key_mod.ttHintedGlyph(0, 3, 16 * 64);
     var atlas = try Atlas.from(testing.allocator, pool, &.{
         .{ .key = regular_key, .curves = regular_curves },
         .{ .key = colr_key, .curves = regular_curves, .paint = .{ .solid = .{ 1, 0, 0, 1 } } },
+        .{ .key = painted_glyph_key, .curves = regular_curves, .paint = .{ .linear_gradient = .{
+            .start = .{ .x = 0, .y = 0 },
+            .end = .{ .x = 1, .y = 1 },
+            .start_color = .{ 1, 0, 0, 1 },
+            .end_color = .{ 0, 0, 1, 1 },
+        } } },
         .{ .key = path_key, .curves = path_curves, .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
         .{ .key = hinted_key, .curves = regular_curves },
     });
@@ -777,12 +784,13 @@ test "emit splits contiguous shapes into exact semantic batches" {
     const shapes = [_]Shape{
         .{ .key = regular_key },
         .{ .key = colr_key },
+        .{ .key = painted_glyph_key },
         .{ .key = path_key },
         .{ .key = hinted_key },
         .{ .key = regular_key },
     };
-    var instances: [5]Instance = undefined;
-    var batches: [5]DrawBatch = undefined;
+    var instances: [6]Instance = undefined;
+    var batches: [6]DrawBatch = undefined;
     var instance_len: usize = 0;
     var batch_len: usize = 0;
     const result = try emit(&instances, &batches, &instance_len, &batch_len, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
@@ -792,9 +800,11 @@ test "emit splits contiguous shapes into exact semantic batches" {
     try testing.expectEqual(draw_records.ShapeKind.regular, batches[0].kind);
     try testing.expectEqual(draw_records.ShapeKind.colr, batches[1].kind);
     try testing.expectEqual(draw_records.ShapeKind.path, batches[2].kind);
+    try testing.expectEqual(@as(u32, 2), batches[2].instance_count);
     try testing.expectEqual(draw_records.ShapeKind.tt_hinted_text, batches[3].kind);
     try testing.expectEqual(draw_records.ShapeKind.regular, batches[4].kind);
-    for (batches) |batch| {
+    for (batches[0..batch_len]) |batch| {
+        if (batch.kind == .path) continue;
         try testing.expectEqual(@as(u32, 1), batch.instance_count);
     }
 }

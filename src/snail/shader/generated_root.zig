@@ -149,41 +149,27 @@ pub fn textWgsl(comptime stage: Stage) [:0]const u8 {
 // `textGles300(.vertex)`.
 
 pub fn colrFragGlsl330() [:0]const u8 {
-    return paintedFragGlsl330();
+    return @embedFile("generated/glsl330/colr.frag.glsl");
 }
 
 pub fn colrFragGles300() [:0]const u8 {
-    return paintedFragGles300();
+    return @embedFile("generated/gles300/colr.frag.glsl");
 }
 
 pub fn colrFragWgsl() [:0]const u8 {
-    return paintedFragWgsl();
-}
-
-/// Shared COLR/path paint evaluator. Hosts should link this once and select
-/// the resulting program for both painted batch kinds.
-pub fn paintedFragGlsl330() [:0]const u8 {
-    return @embedFile("generated/glsl330/path.frag.glsl");
-}
-
-pub fn paintedFragGles300() [:0]const u8 {
-    return @embedFile("generated/gles300/path.frag.glsl");
-}
-
-pub fn paintedFragWgsl() [:0]const u8 {
-    return @embedFile("generated/wgsl/path.frag.wgsl");
+    return @embedFile("generated/wgsl/colr.frag.wgsl");
 }
 
 pub fn pathFragGlsl330() [:0]const u8 {
-    return paintedFragGlsl330();
+    return @embedFile("generated/glsl330/path.frag.glsl");
 }
 
 pub fn pathFragGles300() [:0]const u8 {
-    return paintedFragGles300();
+    return @embedFile("generated/gles300/path.frag.glsl");
 }
 
 pub fn pathFragWgsl() [:0]const u8 {
-    return paintedFragWgsl();
+    return @embedFile("generated/wgsl/path.frag.wgsl");
 }
 
 pub fn ttHintedFragGlsl330() [:0]const u8 {
@@ -334,15 +320,11 @@ pub fn autohintHlsl(comptime stage: Stage) [:0]const u8 {
 }
 
 pub fn colrFragHlsl() [:0]const u8 {
-    return paintedFragHlsl();
-}
-
-pub fn paintedFragHlsl() [:0]const u8 {
-    return @embedFile("generated/hlsl/path.frag.hlsl");
+    return @embedFile("generated/hlsl/colr.frag.hlsl");
 }
 
 pub fn pathFragHlsl() [:0]const u8 {
-    return paintedFragHlsl();
+    return @embedFile("generated/hlsl/path.frag.hlsl");
 }
 
 pub fn ttHintedFragHlsl() [:0]const u8 {
@@ -390,15 +372,11 @@ pub fn autohintMsl(comptime stage: Stage) [:0]const u8 {
 }
 
 pub fn colrFragMsl() [:0]const u8 {
-    return paintedFragMsl();
-}
-
-pub fn paintedFragMsl() [:0]const u8 {
-    return @embedFile("generated/msl/path.frag.metal");
+    return @embedFile("generated/msl/colr.frag.metal");
 }
 
 pub fn pathFragMsl() [:0]const u8 {
-    return paintedFragMsl();
+    return @embedFile("generated/msl/path.frag.metal");
 }
 
 pub fn ttHintedFragMsl() [:0]const u8 {
@@ -457,15 +435,11 @@ pub fn textSpv(comptime stage: Stage) []align(4) const u8 {
 }
 
 pub fn colrFragSpv() []align(4) const u8 {
-    return paintedFragSpv();
-}
-
-pub fn paintedFragSpv() []align(4) const u8 {
-    return &aligned_path_frag_spv;
+    return &aligned_colr_frag_spv;
 }
 
 pub fn pathFragSpv() []align(4) const u8 {
-    return paintedFragSpv();
+    return &aligned_path_frag_spv;
 }
 
 pub fn ttHintedFragSpv() []align(4) const u8 {
@@ -558,7 +532,14 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_curve_tex_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_band_tex_name) != null);
     }
-    inline for (.{ colrFragGlsl330(), colrFragGles300(), pathFragGlsl330(), pathFragGles300() }) |src| {
+    inline for (.{ colrFragGlsl330(), colrFragGles300() }) |src| {
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_curve_tex_name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_band_tex_name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_layer_tex_name) != null);
+        try std.testing.expect(std.mem.indexOf(u8, src, glsl_image_tex_name) == null);
+    }
+    inline for (.{ pathFragGlsl330(), pathFragGles300() }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_fragment_block_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_curve_tex_name) != null);
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_band_tex_name) != null);
@@ -689,7 +670,10 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t1)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, hlsl_fragment_entry) != null);
     }
-    inline for (.{ colrFragHlsl(), pathFragHlsl() }) |src| {
+    try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(t2)") != null);
+    try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(t3)") == null);
+    try std.testing.expect(std.mem.indexOf(u8, colrFragHlsl(), "register(s0)") == null);
+    inline for (.{pathFragHlsl()}) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t2)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(t3)") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "register(s0)") != null);
@@ -731,7 +715,10 @@ test "generated artifacts carry the documented interface names" {
         try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(1)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "#line") == null);
     }
-    inline for (.{ colrFragMsl(), pathFragMsl() }) |src| {
+    try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[texture(2)]]") != null);
+    try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[texture(3)]]") == null);
+    try std.testing.expect(std.mem.indexOf(u8, colrFragMsl(), "[[sampler(0)]]") == null);
+    inline for (.{pathFragMsl()}) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(2)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "[[texture(3)]]") != null);
         try std.testing.expect(std.mem.indexOf(u8, src, "[[sampler(0)]]") != null);

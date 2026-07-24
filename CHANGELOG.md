@@ -99,8 +99,15 @@ Treat this as a from-scratch migration.
   layout) without a SPIR-V/SPIRV-Cross IR round trip. This preserves authored
   helpers and structured control flow and removes the handwritten GLSL mirror
   and the SPIRV-Cross build dependency.
-- COLR and path share one painted program instead of linking the same evaluator
-  twice. Autohint records resolve semantic relationships once
+- COLRv0 and arbitrary paths are separate generated shader families. COLRv0
+  reuses the compact quadratic TrueType coverage evaluator and supports its
+  actual solid CPAL layer contract; it no longer compiles cubic/conic path
+  solving, gradients, or image paints. The reference GL/GLES renderers link
+  every draw family lazily on first use. On the cache-disabled RTX 3090, the
+  dedicated COLR fixture's total cold process startup falls from 1.22 seconds
+  to 0.27 seconds with a byte-identical framebuffer, while clients that never
+  draw arbitrary paths never link the roughly 1.0-second path program.
+  Autohint records resolve semantic relationships once
   at serialization, allowing the shader to remove its quadratic fallback
   searches; validated runtime counts bound fitter loops so NVIDIA cannot
   expand every 16/32-element pass during link. Structured TT-hinted and

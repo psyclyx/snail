@@ -85,10 +85,19 @@ pub const PaintRecordDescriptor = struct {
 /// Lookup result for a key whose entry carries a paint. Holds the
 /// (info_x, info_y) texel coordinates pointing at the layer_info record
 /// in the atlas's `layer_info_data` buffer.
+pub const PaintShaderClass = enum {
+    /// Arbitrary geometry/paint record: use the general path fragment.
+    general,
+    /// TrueType glyph geometry with solid source-over layers: eligible for
+    /// the compact COLRv0 fragment.
+    colr_solid,
+};
+
 pub const PaintRecordInfo = struct {
     info_x: u16,
     info_y: u16,
     layer_count: u16 = 1,
+    shader_class: PaintShaderClass = .general,
 };
 
 /// Immutable, target-free analysis for an autohint entry. All values are

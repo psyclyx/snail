@@ -46,6 +46,7 @@ const MAX_GLYPHS_PER_UPLOAD = STREAM_BYTES / BYTES_PER_GLYPH;
 pub const Gles30TextState = struct {
     backend: Backend = .gles30,
     text_program: ProgramState = .{},
+    colr_program: ProgramState = .{},
     path_program: ProgramState = .{},
     tt_hinted_text_program: ProgramState = .{},
     autohint_program: ProgramState = .{},
@@ -61,12 +62,8 @@ pub const Gles30TextState = struct {
     pub fn init(self: *Gles30TextState) !void {
         self.backend = gl_backend.detect(gl);
 
-        // Link all Slang-generated programs during renderer init so draw
-        // never compiles or links.
-        self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
-        self.path_program = try gl_programs.loadNativeProgramState("painted", shaders.vertex_shader, shaders.fragment_shader_path);
-        self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
-        self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
+        // Draw programs are linked on first use. A hinted-text-only client
+        // must not pay for arbitrary paths, autohint, or COLR.
         try self.linear_resolve.init();
 
         self.initGles30();
@@ -95,6 +92,7 @@ pub const Gles30TextState = struct {
 
     pub fn deinit(self: *Gles30TextState) void {
         deleteProgramState(&self.text_program);
+        deleteProgramState(&self.colr_program);
         deleteProgramState(&self.path_program);
         deleteProgramState(&self.tt_hinted_text_program);
         deleteProgramState(&self.autohint_program);
@@ -123,7 +121,7 @@ pub const Gles30TextState = struct {
     pub const DrawError = error{
         MissingBinding,
         StaleBinding,
-    } || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
+    } || gl_programs.ProgramError || draw_records_mod.DrawRecords.ValidationError || std.mem.Allocator.Error;
 
     /// Walk `DrawRecords.segments`, bind each segment's matching
     /// `Gles30DeviceAtlas` cache, dispatch the encoded instances
@@ -158,11 +156,11 @@ pub const Gles30TextState = struct {
         const run_mode: TextRenderMode = .grayscale;
         setTextBlendMode(kind != .regular, run_mode);
         const prog_state = switch (kind) {
-            .regular => &self.text_program,
-            .colr => self.ensureColrProgram(),
-            .path => self.ensurePathProgram(),
-            .tt_hinted_text => self.ensureTtHintedTextProgram(),
-            .autohint => self.ensureAutohintProgram(),
+            .regular => try self.ensureTextProgram(),
+            .colr => try self.ensureColrProgram(),
+            .path => try self.ensurePathProgram(),
+            .tt_hinted_text => try self.ensureTtHintedTextProgram(),
+            .autohint => try self.ensureAutohintProgram(),
         };
         self.bindProgramState(cache, prog_state, draw_state, run_mode);
         self.drawGlyphRange(instances, 0, total_glyphs);
@@ -236,23 +234,33 @@ pub const Gles30TextState = struct {
         self.frame_begun = false;
     }
 
-    fn ensureColrProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.path_program.handle != 0);
+    fn ensureTextProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.text_program.handle == 0)
+            self.text_program = try gl_programs.loadNativeProgramState("text", shaders.vertex_shader, shaders.fragment_shader_text);
+        return &self.text_program;
+    }
+
+    fn ensureColrProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.colr_program.handle == 0)
+            self.colr_program = try gl_programs.loadNativeProgramState("colr", shaders.vertex_shader, shaders.fragment_shader_colr);
+        return &self.colr_program;
+    }
+
+    fn ensurePathProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.path_program.handle == 0)
+            self.path_program = try gl_programs.loadNativeProgramState("path", shaders.vertex_shader, shaders.fragment_shader_path);
         return &self.path_program;
     }
 
-    fn ensurePathProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.path_program.handle != 0);
-        return &self.path_program;
-    }
-
-    fn ensureTtHintedTextProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.tt_hinted_text_program.handle != 0);
+    fn ensureTtHintedTextProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.tt_hinted_text_program.handle == 0)
+            self.tt_hinted_text_program = try gl_programs.loadNativeProgramState("hinted-text", shaders.vertex_shader, shaders.fragment_shader_tt_hinted_text);
         return &self.tt_hinted_text_program;
     }
 
-    fn ensureAutohintProgram(self: *Gles30TextState) *const ProgramState {
-        std.debug.assert(self.autohint_program.handle != 0);
+    fn ensureAutohintProgram(self: *Gles30TextState) DrawError!*const ProgramState {
+        if (self.autohint_program.handle == 0)
+            self.autohint_program = try gl_programs.loadNativeProgramState("autohint", shaders.vertex_shader_autohint, shaders.fragment_shader_autohint);
         return &self.autohint_program;
     }
 
