@@ -6,6 +6,7 @@
 
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
+const cubic_to_quadratic = @import("math/cubic_to_quadratic.zig");
 const curves_mod = @import("atlas/curves.zig");
 const curve_tex = @import("format/curve_texture.zig");
 const band_tex = @import("format/band_texture.zig");
@@ -63,30 +64,22 @@ pub fn packCurves(
     fill_bbox: BBox,
     logical_curve_count: usize,
 ) !curves_mod.GlyphCurves {
-    // The GL/Vulkan path shader assumes each uploaded cubic is monotonic
-    // along both sampling axes (see `solveMonotonicCubicRoot` in
-    // snail_path_frag_body.glsl). Split cubics at their x/y extrema before
-    // packing so the GPU coverage evaluator sees only monotonic pieces.
-    // Conics and quadratics are unaffected.
-    const split = try curve_tex.splitCubicsAtExtrema(scratch, segs);
-    defer scratch.free(split);
+    // Slug's exact root-eligibility code is quadratic. Lower authored and
+    // stroke-generated cubics once during preparation so no draw-time cubic
+    // root finder is needed. The tolerance is below the normalized f16
+    // storage error; critical points and generated joins preserve tangents.
+    const lowered = try cubic_to_quadratic.lower(scratch, segs, cubic_to_quadratic.default_tolerance);
+    defer scratch.free(lowered);
 
-    // Direct-encoding (one f16 quantize per point) instead of packed
-    // (anchor chunk+frac decode + relative deltas). The packed encode
-    // path makes `p0` go through `decodeAnchor(quantize(chunk),
-    // quantize(frac))` while control points use `anchor + quantize(rel)`.
-    // For extremum-split cubic joins, the LEFT half's `p3` and the RIGHT
-    // half's `p0` then quantize asymmetrically — leaving ~1 ULP residual
-    // at the join that defeats `splitCubicsAtExtrema`'s zero-tangent
-    // snap. Direct encoding quantizes every point with the same
-    // `quantizeVec2F16`, so the join is bit-exact on both sides.
+    // Direct encoding quantizes every point with the same f16 conversion, so
+    // adjacent lowered spans retain bit-exact shared endpoints.
     //
     // We need each prepared curve's analytic bbox in two places below
     // (render_bbox merge + band-build collect). Allocate the cache in
     // scratch and have prepare populate it in one pass.
-    const prepared_bboxes = try scratch.alloc(BBox, split.len);
+    const prepared_bboxes = try scratch.alloc(BBox, lowered.len);
     defer scratch.free(prepared_bboxes);
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, split, .zero, prepared_bboxes);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, lowered, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
     const render_bbox = mergeBBoxes(fill_bbox, prepared_bboxes);
@@ -109,7 +102,7 @@ pub fn packCurves(
     const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
         allocator,
         scratch,
-        split,
+        lowered,
         logical_curve_count,
         render_bbox,
         entry,
@@ -127,7 +120,7 @@ pub fn packCurves(
         .curve_bytes = curve_bytes,
         .band_bytes = band_bytes,
         .curve_count = curve_count,
-        .path_curve_class = curves_mod.classifyPathCurves(split),
+        .path_curve_class = curves_mod.classifyPathCurves(lowered),
         .h_band_count = bd.h_band_count,
         .v_band_count = bd.v_band_count,
         .band_scale_x = bd.band_scale_x,
@@ -184,6 +177,26 @@ test "pathToCurves packs a rectangle fill" {
     try testing.expect(curves.h_band_count > 0);
     try testing.expect(curves.v_band_count > 0);
     try testing.expect(curves.bbox.max.x >= 100.0);
+}
+
+test "pathToCurves lowers cubic fills to quadratic records" {
+    var path = Path.init(testing.allocator);
+    defer path.deinit();
+    try path.moveTo(.{ .x = 0, .y = 0 });
+    try path.cubicTo(.{ .x = 1, .y = -1 }, .{ .x = 2, .y = 2 }, .{ .x = 3, .y = 0 });
+    try path.cubicTo(.{ .x = 2, .y = 1 }, .{ .x = 1, .y = 1 }, .{ .x = 0, .y = 0 });
+    try path.close();
+
+    var curves = try pathToCurves(testing.allocator, testing.allocator, &path);
+    defer curves.deinit();
+
+    try testing.expectEqual(curves_mod.PathCurveClass.quadratic, curves.path_curve_class);
+    for (0..curves.curve_count) |curve_index| {
+        const texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
+        const segment = curve_tex.decodeSegmentAt(curves.curve_bytes, texel) orelse
+            return error.InvalidCurves;
+        try testing.expectEqual(bezier.CurveKind.quadratic, segment.kind);
+    }
 }
 
 test "pathToCurves returns empty for empty path" {

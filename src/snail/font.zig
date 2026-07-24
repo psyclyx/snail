@@ -1,5 +1,6 @@
 const std = @import("std");
 const bezier = @import("math/bezier.zig");
+const cubic_to_quadratic = @import("math/cubic_to_quadratic.zig");
 const ttf = @import("font/ttf.zig");
 const sfnt = @import("font/sfnt.zig");
 const font_types = @import("font/types.zig");
@@ -300,11 +301,16 @@ fn packGlyphCurves(
 ) !curves_mod.GlyphCurves {
     if (segs.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
+    // CFF/CFF2 outlines use cubics. Lower them to tangent-preserving
+    // quadratics once so every font uses Slug's compact quadratic evaluator.
+    const lowered = try cubic_to_quadratic.lower(scratch, segs, cubic_to_quadratic.default_tolerance);
+    defer scratch.free(lowered);
+
     // Cache analytic bboxes during prepare so glyphRenderBBox and the
     // band-build pass don't each recompute them.
-    const prepared_bboxes = try scratch.alloc(bezier.BBox, segs.len);
+    const prepared_bboxes = try scratch.alloc(bezier.BBox, lowered.len);
     defer scratch.free(prepared_bboxes);
-    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, segs, .zero, prepared_bboxes);
+    const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, lowered, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
     const render_bbox = glyphRenderBBoxFromBBoxes(metrics_bbox, prepared_bboxes);
@@ -329,7 +335,7 @@ fn packGlyphCurves(
     const bd = try band_tex.buildGlyphBandDataWithPreparedCurves(
         allocator,
         scratch,
-        segs,
+        lowered,
         segs.len,
         render_bbox,
         entry,
@@ -347,7 +353,7 @@ fn packGlyphCurves(
         .curve_bytes = curve_bytes,
         .band_bytes = band_bytes,
         .curve_count = curve_count,
-        .path_curve_class = curves_mod.classifyPathCurves(segs),
+        .path_curve_class = curves_mod.classifyPathCurves(lowered),
         .h_band_count = bd.h_band_count,
         .v_band_count = bd.v_band_count,
         .band_scale_x = bd.band_scale_x,
@@ -402,7 +408,7 @@ test "extractCurves returns empty for whitespace glyph" {
     try std.testing.expect(curves.isEmpty());
 }
 
-test "static CFF font exposes metrics and cubic outlines" {
+test "static CFF font lowers cubic outlines for Slug coverage" {
     const font_data = @import("assets").source_serif_cff;
     var font = try Font.init(font_data);
     try std.testing.expectEqual(OutlineFormat.cff, font.outlineFormat());
@@ -416,6 +422,13 @@ test "static CFF font exposes metrics and cubic outlines" {
     defer curves.deinit();
     try std.testing.expect(curves.curve_count > 0);
     try std.testing.expect(curves.band_bytes.len > 0);
+    try std.testing.expectEqual(curves_mod.PathCurveClass.quadratic, curves.path_curve_class);
+    for (0..curves.curve_count) |curve_index| {
+        const texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
+        const segment = curve_tex.decodeSegmentAt(curves.curve_bytes, texel) orelse
+            return error.InvalidCurves;
+        try std.testing.expect(segment.kind != .cubic);
+    }
 }
 
 test "CFF2 variable coordinates affect axes metrics and outlines" {
