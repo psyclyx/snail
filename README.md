@@ -265,7 +265,10 @@ is **premultiplied linear** — encode via an sRGB framebuffer or a resolve
 pass (blend state: `ONE, ONE_MINUS_SRC_ALPHA`). For targets without
 hardware sRGB encode, `snail-shaders` ships the generated linear-resolve
 stages (float-intermediate seed/encode with premultiplication handled
-correctly); the demo GL renderers show the orchestration. If you author in sRGB, convert once at the boundary with
+correctly); the demo GL renderers show the orchestration. If a display expects
+sRGB pixels from a linear attachment, encode both shader output and clear
+colors consistently. `TargetEncoding` expresses that attachment/storage
+combination. If you author in sRGB, convert once at the boundary with
 `snail.color.srgbToLinearColor`.
 Font palette colors (CPAL, spec-defined sRGB) are converted at extraction.
 

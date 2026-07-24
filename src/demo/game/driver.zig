@@ -13,6 +13,7 @@ const std = @import("std");
 const snail = @import("snail");
 const wayland = @import("../platform/wayland.zig");
 const presentation = @import("../platform/presentation.zig");
+const driver_common = @import("../driver/common.zig");
 const scene_mod = @import("scene.zig");
 const gl_material = @import("gl_material.zig");
 const gl_scene = @import("gl_scene.zig");
@@ -196,9 +197,11 @@ fn GlDriver(comptime variant: gl_material.Variant) type {
 
             gl.glViewport(0, 0, @intCast(fb[0]), @intCast(fb[1]));
             gl.glDepthMask(gl.GL_TRUE);
-            // Clear in linear; the sRGB target encodes on store (snail enables
-            // GL_FRAMEBUFFER_SRGB), so pass linear to land on the sRGB bg.
-            gl.glClearColor(srgbToLinear(0.035), srgbToLinear(0.045), srgbToLinear(0.065), 1.0);
+            // Match the clear to the same output encoding used by the draw
+            // shaders. This matters on GLES window surfaces that expose a
+            // linear default framebuffer but are presented as sRGB pixels.
+            const clear = driver_common.clearColorForShader(.{ 0.035, 0.045, 0.065, 1.0 }, target_encoding);
+            gl.glClearColor(clear[0], clear[1], clear[2], clear[3]);
             gl.glClear(gl.GL_COLOR_BUFFER_BIT | gl.GL_DEPTH_BUFFER_BIT);
 
             const surface = @import("snail-raster").TargetSurface{ .pixel_width = fb[0], .pixel_height = fb[1], .encoding = target_encoding };

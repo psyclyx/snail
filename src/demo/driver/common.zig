@@ -225,6 +225,20 @@ pub fn clearColorForShader(color_srgb: [4]f32, encoding: @import("snail-raster")
     };
 }
 
+test "clear color follows target shader output encoding" {
+    const raster = @import("snail-raster");
+    const color = [4]f32{ 0.25, 0.5, 0.75, 0.8 };
+
+    const hardware_encoded = clearColorForShader(color, raster.TargetEncoding.srgb);
+    try std.testing.expectApproxEqAbs(srgbToLinear(color[0]), hardware_encoded[0], 0.000001);
+    try std.testing.expectApproxEqAbs(srgbToLinear(color[1]), hardware_encoded[1], 0.000001);
+    try std.testing.expectApproxEqAbs(srgbToLinear(color[2]), hardware_encoded[2], 0.000001);
+    try std.testing.expectEqual(color[3], hardware_encoded[3]);
+
+    const shader_encoded = clearColorForShader(color, raster.TargetEncoding.srgb_pixels_on_linear_attachment);
+    try std.testing.expectEqual(color, shader_encoded);
+}
+
 test "shape budget covers every shape in mixed pictures" {
     const shapes_a = [_]snail.Shape{ .{}, .{}, .{} };
     const shapes_b = [_]snail.Shape{ .{}, .{} };
