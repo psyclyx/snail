@@ -10,9 +10,9 @@
 //! from supersampled inside tests.
 //!
 //! Diagrams are authored in logical 320×200 coordinates and emitted under
-//! a uniform 3× world transform (the renderer is resolution-independent,
-//! so this is free sharpness) → 960×600 TGAs in `zig-out/`, embedded in
-//! the README at width 320 so they stay crisp when zoomed.
+//! a uniform 6× world transform (the renderer is resolution-independent,
+//! so this is free sharpness) → 1920×1200 TGAs in `zig-out/`, embedded in
+//! the README at width 640 so they stay crisp when zoomed.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -26,7 +26,7 @@ const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;
 const Rect = snail.Rect;
 
-const SCALE: f32 = 3.0;
+const SCALE: f32 = 6.0;
 const LOGICAL_W: u32 = 320;
 const LOGICAL_H: u32 = 200;
 const W: u32 = @intFromFloat(@as(f32, LOGICAL_W) * SCALE);
@@ -230,6 +230,20 @@ const Ctx = struct {
         try self.addPrepared(curves, try prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
     }
 
+    fn strokePathRound(self: *Ctx, path: *const snail.Path, width: f32, color: [4]f32, outer: Transform2D) !void {
+        var prepared = try path.prepare(self.allocator);
+        defer prepared.deinit();
+        const style = snail.StrokeStyle{
+            .paint = .{ .solid = color },
+            .width = width,
+            .cap = .round,
+            .join = .round,
+        };
+        const curves = try prepared.strokeCurves(self.allocator, self.scratch.allocator(), style);
+        _ = self.scratch.reset(.retain_capacity);
+        try self.addPrepared(curves, try prepared.paintForDesign(.{ .solid = color }), prepared.placedBy(outer));
+    }
+
     fn fillRect(self: *Ctx, rect: Rect, color: [4]f32) !void {
         var p = try support.unitRectPath(self.allocator);
         defer p.deinit();
@@ -370,7 +384,7 @@ const Ctx = struct {
         _ = try self.text(str, cx - w / 2, y, em, color, weight);
     }
 
-    fn render(self: *Ctx, out_path: [*:0]const u8) !void {
+    fn render(self: *Ctx, out_path: [*:0]const u8, width: u32, height: u32, scale: f32) !void {
         var paths_atlas = try snail.Atlas.from(self.allocator, self.pool, self.path_entries.items);
         defer paths_atlas.deinit();
         var paths_picture = try support.Picture.from(self.allocator, self.path_shapes.items);
@@ -388,14 +402,14 @@ const Ctx = struct {
             .text_atlas = &self.text_atlas,
             .paths_picture = &paths_picture,
             .text_picture = &text_picture,
-        }, out_path);
+        }, out_path, width, height, scale);
     }
 };
 
-/// `harness.renderCpu` with the 3× world transform applied at emit time.
-fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const u8) !void {
-    const stride: u32 = W * 4;
-    const pixels = try allocator.alloc(u8, @as(usize, H) * stride);
+/// `harness.renderCpu` with a supersampling world transform applied at emit time.
+fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const u8, width: u32, height: u32, scale: f32) !void {
+    const stride: u32 = width * 4;
+    const pixels = try allocator.alloc(u8, @as(usize, height) * stride);
     defer allocator.free(pixels);
     harness.fillBgRgba8(pixels);
 
@@ -414,22 +428,22 @@ fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const
     const batches = try allocator.alloc(snail.render.records.DrawBatch, budget);
     defer allocator.free(batches);
 
-    const world = Transform2D{ .xx = SCALE, .yy = SCALE };
+    const world = Transform2D{ .xx = scale, .yy = scale };
     var ni: usize = 0;
     var nb: usize = 0;
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[0], scene.paths_atlas, scene.paths_picture.shapes, world, white);
     _ = try snail.emit.emit(instances, batches, &ni, &nb, bindings[1], scene.text_atlas, scene.text_picture.shapes, world, white);
 
-    var renderer = try raster.Renderer.init(pixels, W, H, stride, .rgba8_unorm);
+    var renderer = try raster.Renderer.init(pixels, width, height, stride, .rgba8_unorm);
     try raster.draw(
         &renderer,
-        harness.drawState(W, H),
+        harness.drawState(width, height),
         .{ .instances = instances[0..ni], .batches = batches[0..nb] },
         &.{&cache},
         null,
     );
-    try harness.flipRowsInPlace(allocator, pixels, W, H);
-    try harness.writeOutput(out_path, pixels, W, H);
+    try harness.flipRowsInPlace(allocator, pixels, width, height);
+    try harness.writeOutput(out_path, pixels, width, height);
 }
 
 // ── Shared layout ───────────────────────────────────────────────────
@@ -876,9 +890,359 @@ fn diagramCoverage(ctx: *Ctx) !void {
     _ = try ctx.text("premultiplied linear out", 196, cap_y + 11, label_em, muted, .regular);
 }
 
+// ── README hero: a dedicated snail composition, not the demo scene ───
+
+const HERO_LOGICAL_W: u32 = 640;
+const HERO_LOGICAL_H: u32 = 200;
+const HERO_W: u32 = @intFromFloat(@as(f32, HERO_LOGICAL_W) * SCALE);
+const HERO_H: u32 = @intFromFloat(@as(f32, HERO_LOGICAL_H) * SCALE);
+
+fn spiralPoint(center: Vec2, radius: f32, decay: f32, theta: f32, start_angle: f32) Vec2 {
+    const r = radius * @exp(decay * (theta - start_angle));
+    return .{
+        .x = center.x + r * @cos(theta),
+        .y = center.y + r * @sin(theta),
+    };
+}
+
+fn spiralTangent(radius: f32, decay: f32, theta: f32, start_angle: f32) Vec2 {
+    const r = radius * @exp(decay * (theta - start_angle));
+    return .{
+        .x = r * (decay * @cos(theta) - @sin(theta)),
+        .y = r * (decay * @sin(theta) + @cos(theta)),
+    };
+}
+
+const SpiralSpan = struct {
+    p0: Vec2,
+    c0: Vec2,
+    c1: Vec2,
+    p1: Vec2,
+};
+
+fn logarithmicSpiralSpan(center: Vec2, radius: f32, decay: f32, start_angle: f32, step: f32, i: u32) SpiralSpan {
+    const theta0 = start_angle + @as(f32, @floatFromInt(i)) * step;
+    const theta1 = theta0 + step;
+    const p0 = spiralPoint(center, radius, decay, theta0, start_angle);
+    const p1 = spiralPoint(center, radius, decay, theta1, start_angle);
+    const d0 = spiralTangent(radius, decay, theta0, start_angle);
+    const d1 = spiralTangent(radius, decay, theta1, start_angle);
+    return .{
+        .p0 = p0,
+        .c0 = .{ .x = p0.x + d0.x * step / 3.0, .y = p0.y + d0.y * step / 3.0 },
+        .c1 = .{ .x = p1.x - d1.x * step / 3.0, .y = p1.y - d1.y * step / 3.0 },
+        .p1 = p1,
+    };
+}
+
+/// Append a logarithmic spiral as cubic Hermite spans. Increasing `theta`
+/// shrinks the radius, so each revolution repeats the same geometry at a
+/// smaller scale.
+fn logarithmicSpiral(path: *snail.Path, center: Vec2, radius: f32, inner_radius: f32, turns: f32, start_angle: f32) !void {
+    const sweep = turns * 2.0 * std.math.pi;
+    const decay = @log(inner_radius / radius) / sweep;
+    const segment_count: u32 = 32;
+    const step = sweep / @as(f32, @floatFromInt(segment_count));
+
+    try path.moveTo(spiralPoint(center, radius, decay, start_angle, start_angle));
+    for (0..segment_count) |i| {
+        const span = logarithmicSpiralSpan(center, radius, decay, start_angle, step, @intCast(i));
+        try path.cubicTo(span.c0, span.c1, span.p1);
+    }
+}
+
+fn fillSpiralFrame(
+    ctx: *Ctx,
+    center: Vec2,
+    radius: f32,
+    inner_radius: f32,
+    turns: f32,
+    start_angle: f32,
+    color: [4]f32,
+) !void {
+    const sweep = turns * 2.0 * std.math.pi;
+    const decay = @log(inner_radius / radius) / sweep;
+    const segment_count: u32 = 32;
+    const step = sweep / @as(f32, @floatFromInt(segment_count));
+
+    var ribbon = snail.Path.init(ctx.allocator);
+    defer ribbon.deinit();
+    const first = logarithmicSpiralSpan(center, radius, decay, start_angle, step, 0);
+    try ribbon.moveTo(first.p0);
+    for (0..segment_count) |i| {
+        const span = logarithmicSpiralSpan(center, radius, decay, start_angle, step, @intCast(i));
+        try ribbon.cubicTo(span.c0, span.c1, span.p1);
+    }
+
+    const last = logarithmicSpiralSpan(center, radius, decay, start_angle, step, segment_count - 1);
+    const vx = first.p0.x - last.p1.x;
+    try ribbon.cubicTo(
+        .{ .x = last.p1.x + vx * 0.08, .y = first.p0.y - 3.0 },
+        .{ .x = last.p1.x + vx * 0.68, .y = first.p0.y + 1.5 },
+        first.p0,
+    );
+    try ribbon.close();
+    try ctx.fillPath(&ribbon, color, .identity);
+}
+
+fn constructionRect(ctx: *Ctx, rect: Rect, width: f32, color: [4]f32) !void {
+    const tl = Vec2{ .x = rect.x, .y = rect.y };
+    const tr = Vec2{ .x = rect.x + rect.w, .y = rect.y };
+    const br = Vec2{ .x = rect.x + rect.w, .y = rect.y + rect.h };
+    const bl = Vec2{ .x = rect.x, .y = rect.y + rect.h };
+    try ctx.line(tl, tr, width, color);
+    try ctx.line(tr, br, width, color);
+    try ctx.line(br, bl, width, color);
+    try ctx.line(bl, tl, width, color);
+}
+
+fn fibonacciArc(ctx: *Ctx, rect: Rect, orientation: u2, width: f32, color: [4]f32) !void {
+    const radius = rect.w;
+    const center = switch (orientation) {
+        0 => Vec2{ .x = rect.x, .y = rect.y + radius },
+        1 => Vec2{ .x = rect.x + radius, .y = rect.y + radius },
+        2 => Vec2{ .x = rect.x + radius, .y = rect.y },
+        3 => Vec2{ .x = rect.x, .y = rect.y },
+    };
+    const start_angle: f32 = switch (orientation) {
+        0 => -std.math.pi / 2.0,
+        1 => std.math.pi,
+        2 => std.math.pi / 2.0,
+        3 => 0.0,
+    };
+    const end_angle = start_angle + std.math.pi / 2.0;
+    const k: f32 = 0.55228475;
+    const p0 = Vec2{
+        .x = center.x + radius * @cos(start_angle),
+        .y = center.y + radius * @sin(start_angle),
+    };
+    const p1 = Vec2{
+        .x = center.x + radius * @cos(end_angle),
+        .y = center.y + radius * @sin(end_angle),
+    };
+    const c0 = Vec2{
+        .x = p0.x - radius * k * @sin(start_angle),
+        .y = p0.y + radius * k * @cos(start_angle),
+    };
+    const c1 = Vec2{
+        .x = p1.x + radius * k * @sin(end_angle),
+        .y = p1.y - radius * k * @cos(end_angle),
+    };
+    var arc = snail.Path.init(ctx.allocator);
+    defer arc.deinit();
+    try arc.moveTo(p0);
+    try arc.cubicTo(c0, c1, p1);
+    try ctx.strokePathRound(&arc, width, color, .identity);
+}
+
+fn diagramBanner(ctx: *Ctx) !void {
+    const hero_bg = srgb(.{ 0.945, 0.95, 0.91, 1.0 });
+    const hero_ink = srgb(.{ 0.075, 0.15, 0.18, 1.0 });
+    const hero_copy = srgb(.{ 0.68, 0.34, 0.20, 1.0 });
+    const study_ink = srgb(.{ 0.24, 0.17, 0.11, 0.96 });
+    const study_guide = srgb(.{ 0.35, 0.30, 0.23, 0.22 });
+    const study_faint = srgb(.{ 0.35, 0.30, 0.23, 0.11 });
+    const shell_arc = srgb(.{ 0.38, 0.31, 0.24, 0.48 });
+    const shell_wash = srgb(.{ 0.80, 0.70, 0.52, 1.0 });
+    const study_teal = srgb(.{ 0.07, 0.37, 0.37, 0.92 });
+    const study_sanguine = srgb(.{ 0.64, 0.25, 0.14, 1.0 });
+    const body_color = srgb(.{ 0.28, 0.39, 0.46, 1.0 });
+    const body_light = srgb(.{ 0.55, 0.68, 0.70, 0.76 });
+    const body_mark = srgb(.{ 0.12, 0.24, 0.29, 0.34 });
+
+    try ctx.fillRect(.{ .x = 0, .y = 0, .w = HERO_LOGICAL_W, .h = HERO_LOGICAL_H }, hero_bg);
+
+    _ = try ctx.text("snail", 38, 96, 68, hero_ink, .bold);
+    _ = try ctx.text("every size fits.", 42, 145, 19, hero_copy, .regular);
+
+    // Fibonacci-square scaffold for a 233:144 golden rectangle.
+    const x0: f32 = 356;
+    const fs: f32 = 0.82;
+    const y0: f32 = @as(f32, @floatFromInt(HERO_LOGICAL_H)) - 61.0 - 144.0 * fs;
+    const squares = [_]struct { x: f32, y: f32, side: f32, label: []const u8 }{
+        .{ .x = 0, .y = 0, .side = 144, .label = "144" },
+        .{ .x = 144, .y = 55, .side = 89, .label = "89" },
+        .{ .x = 178, .y = 0, .side = 55, .label = "55" },
+        .{ .x = 144, .y = 0, .side = 34, .label = "34" },
+        .{ .x = 144, .y = 34, .side = 21, .label = "21" },
+        .{ .x = 165, .y = 42, .side = 13, .label = "13" },
+        .{ .x = 170, .y = 34, .side = 8, .label = "8" },
+        .{ .x = 165, .y = 34, .side = 5, .label = "5" },
+        .{ .x = 165, .y = 39, .side = 3, .label = "3" },
+        .{ .x = 168, .y = 40, .side = 2, .label = "2" },
+    };
+
+    const outer = Rect{ .x = x0, .y = y0, .w = 233 * fs, .h = 144 * fs };
+    // Mirror the construction so the shell's aperture faces the head.
+    const center = Vec2{ .x = x0 + (233.0 - 169.5) * fs, .y = y0 + (144.0 - 40.5) * fs };
+    const first = Vec2{ .x = x0 + 233.0 * fs, .y = y0 + 144.0 * fs };
+    const dx = first.x - center.x;
+    const dy = first.y - center.y;
+    const outer_radius = @sqrt(dx * dx + dy * dy);
+    const start_angle = std.math.atan2(dy, dx);
+    const phi: f32 = 1.61803398875;
+    var spiral_inner = outer_radius;
+    for (0..9) |_| spiral_inner /= phi;
+
+    // A low, fluid body sits behind the construction. Its broad shapes and
+    // muted color deliberately contrast with the shell's measured linework.
+    var body = snail.Path.init(ctx.allocator);
+    defer body.deinit();
+    try body.moveTo(.{ .x = 348, .y = 151 });
+    try body.cubicTo(.{ .x = 375, .y = 132 }, .{ .x = 405, .y = 119 }, .{ .x = 440, .y = 124 });
+    try body.cubicTo(.{ .x = 472, .y = 129 }, .{ .x = 496, .y = 143 }, .{ .x = 531, .y = 139 });
+    try body.cubicTo(.{ .x = 550, .y = 137 }, .{ .x = 563, .y = 124 }, .{ .x = 572, .y = 105 });
+    try body.cubicTo(.{ .x = 580, .y = 88 }, .{ .x = 595, .y = 82 }, .{ .x = 608, .y = 91 });
+    try body.cubicTo(.{ .x = 622, .y = 101 }, .{ .x = 621, .y = 121 }, .{ .x = 611, .y = 135 });
+    try body.cubicTo(.{ .x = 598, .y = 151 }, .{ .x = 573, .y = 158 }, .{ .x = 541, .y = 159 });
+    try body.cubicTo(.{ .x = 501, .y = 161 }, .{ .x = 471, .y = 151 }, .{ .x = 438, .y = 148 });
+    try body.cubicTo(.{ .x = 403, .y = 145 }, .{ .x = 375, .y = 152 }, .{ .x = 356, .y = 160 });
+    try body.quadTo(.{ .x = 347, .y = 164 }, .{ .x = 340, .y = 160 });
+    try body.quadTo(.{ .x = 341, .y = 155 }, .{ .x = 348, .y = 151 });
+    try body.close();
+    try ctx.fillPath(&body, body_color, .identity);
+    try ctx.strokePathRound(&body, 1.8, hero_ink, .identity);
+
+    var foot_light = snail.Path.init(ctx.allocator);
+    defer foot_light.deinit();
+    try foot_light.moveTo(.{ .x = 365, .y = 157 });
+    try foot_light.cubicTo(.{ .x = 419, .y = 148 }, .{ .x = 510, .y = 163 }, .{ .x = 583, .y = 148 });
+    try ctx.strokePathRound(&foot_light, 2.7, body_light, .identity);
+
+    var neck_fold = snail.Path.init(ctx.allocator);
+    defer neck_fold.deinit();
+    try neck_fold.moveTo(.{ .x = 536, .y = 148 });
+    try neck_fold.cubicTo(.{ .x = 551, .y = 143 }, .{ .x = 562, .y = 133 }, .{ .x = 568, .y = 119 });
+    try ctx.strokePathRound(&neck_fold, 0.9, body_mark, .identity);
+
+    var near_feeler = snail.Path.init(ctx.allocator);
+    defer near_feeler.deinit();
+    try near_feeler.moveTo(.{ .x = 584, .y = 91 });
+    try near_feeler.cubicTo(.{ .x = 581, .y = 79 }, .{ .x = 581, .y = 68 }, .{ .x = 586, .y = 59 });
+    try ctx.strokePathRound(&near_feeler, 2.7, body_color, .identity);
+    var far_feeler = snail.Path.init(ctx.allocator);
+    defer far_feeler.deinit();
+    try far_feeler.moveTo(.{ .x = 598, .y = 90 });
+    try far_feeler.cubicTo(.{ .x = 607, .y = 80 }, .{ .x = 618, .y = 72 }, .{ .x = 622, .y = 63 });
+    try ctx.strokePathRound(&far_feeler, 2.7, body_color, .identity);
+    try ctx.fillCircle(586, 57, 5.8, hero_ink);
+    try ctx.fillCircle(622, 61, 5.8, hero_ink);
+    try ctx.fillCircle(588, 55, 1.6, white);
+    try ctx.fillCircle(624, 59, 1.6, white);
+
+    var smile = snail.Path.init(ctx.allocator);
+    defer smile.deinit();
+    try smile.moveTo(.{ .x = 578, .y = 119 });
+    try smile.quadTo(.{ .x = 587, .y = 127 }, .{ .x = 595, .y = 117 });
+    try ctx.strokePathRound(&smile, 1.55, hero_ink, .identity);
+
+    // One flat shell field follows the logarithmic spiral, then returns along
+    // a gently bowed version of the radial construction line. The teal curve
+    // below remains its exact outer boundary.
+    try fillSpiralFrame(ctx, center, outer_radius, spiral_inner, -2.25, start_angle, shell_wash);
+
+    try constructionRect(ctx, outer, 0.52, study_guide);
+    try ctx.line(
+        .{ .x = outer.x, .y = outer.y },
+        .{ .x = outer.x + outer.w, .y = outer.y + outer.h },
+        0.38,
+        study_faint,
+    );
+    try ctx.line(
+        .{ .x = outer.x, .y = outer.y + outer.h },
+        .{ .x = outer.x + outer.w, .y = outer.y },
+        0.38,
+        study_faint,
+    );
+
+    for (squares, 0..) |sq, i| {
+        const rect = Rect{
+            .x = x0 + (233.0 - sq.x - sq.side) * fs,
+            .y = y0 + (144.0 - sq.y - sq.side) * fs,
+            .w = sq.side * fs,
+            .h = sq.side * fs,
+        };
+        try constructionRect(ctx, rect, if (i < 4) 0.44 else 0.28, if (i % 2 == 0) study_guide else study_faint);
+        const orientation: u2 = @intCast(3 - (i % 4));
+        try fibonacciArc(ctx, rect, orientation ^ 1, if (i < 6) 1.34 else 0.76, shell_arc);
+    }
+
+    // φ-scaled radii sampled every quarter turn.
+    var radius = outer_radius;
+    var inner_radius = outer_radius;
+    for (0..10) |i| {
+        const theta = start_angle - @as(f32, @floatFromInt(i)) * std.math.pi / 2.0;
+        const point = Vec2{
+            .x = center.x + radius * @cos(theta),
+            .y = center.y + radius * @sin(theta),
+        };
+        try ctx.line(center, point, if (i % 2 == 0) 0.36 else 0.24, study_guide);
+        try ctx.ringCircle(point.x, point.y, if (i < 5) 1.25 else 0.85, 0.52, study_sanguine);
+        inner_radius = radius;
+        radius /= phi;
+    }
+
+    // Exact logarithmic golden spiral against the quarter-circle approximation.
+    var exact_spiral = snail.Path.init(ctx.allocator);
+    defer exact_spiral.deinit();
+    try logarithmicSpiral(&exact_spiral, center, outer_radius, inner_radius, -2.25, start_angle);
+    try ctx.strokePathRound(&exact_spiral, 1.48, study_teal, .identity);
+
+    // Principal construction axes deliberately exceed the golden rectangle.
+    try ctx.line(
+        .{ .x = outer.x - 24, .y = center.y },
+        .{ .x = outer.x + outer.w + 20, .y = center.y },
+        0.34,
+        study_guide,
+    );
+    try ctx.line(
+        .{ .x = center.x, .y = 12 },
+        .{ .x = center.x, .y = 190 },
+        0.34,
+        study_guide,
+    );
+    try ctx.fillCircle(center.x, center.y, 1.45, study_sanguine);
+
+    // Labels are emitted after the complete construction. The smallest cells
+    // get a shell-colored knockout so control points cannot obscure them at
+    // README display size.
+    for (squares, 0..) |sq, i| {
+        if (i >= 7) break;
+        const rect = Rect{
+            .x = x0 + (233.0 - sq.x - sq.side) * fs,
+            .y = y0 + (144.0 - sq.y - sq.side) * fs,
+            .w = sq.side * fs,
+            .h = sq.side * fs,
+        };
+        const label_x = rect.x + 2.2;
+        const label_y = rect.y + 5.9;
+        if (i >= 3) {
+            const label_w = try ctx.textWidth(sq.label, 5.0, .bold);
+            try ctx.fillRect(.{
+                .x = label_x - 0.8,
+                .y = label_y - 4.8,
+                .w = label_w + 1.6,
+                .h = 5.9,
+            }, shell_wash);
+        }
+        _ = try ctx.text(sq.label, label_x, label_y, 5.0, study_ink, .bold);
+    }
+
+    // Dimension line and working annotations.
+    const dimension_y: f32 = 174;
+    try ctx.line(.{ .x = outer.x, .y = dimension_y }, .{ .x = outer.x + outer.w, .y = dimension_y }, 0.40, study_ink);
+    try ctx.line(.{ .x = outer.x, .y = dimension_y - 3 }, .{ .x = outer.x, .y = dimension_y + 3 }, 0.40, study_ink);
+    try ctx.line(.{ .x = outer.x + outer.w, .y = dimension_y - 3 }, .{ .x = outer.x + outer.w, .y = dimension_y + 3 }, 0.40, study_ink);
+    try ctx.textCentered("233 : 144 ~ φ", outer.x + outer.w / 2.0, dimension_y + 9, 5.2, study_ink, .regular);
+    _ = try ctx.text("r(n+1) = r(n) / φ", center.x + 18, center.y - 17, 5.2, study_ink, .regular);
+    _ = try ctx.text("Δθ = π/2", center.x + 58, center.y + 9, 5.0, study_sanguine, .regular);
+    _ = try ctx.text("φ", center.x - 34, center.y + 16, 5.7, study_teal, .regular);
+}
+
 // ── Entry ───────────────────────────────────────────────────────────
 
-const diagrams = [_]struct { name: [*:0]const u8, build: *const fn (*Ctx) anyerror!void }{
+const diagrams = [_]struct { name: [*:0]const u8, width: u32 = W, height: u32 = H, build: *const fn (*Ctx) anyerror!void }{
+    .{ .name = "zig-out/banner.tga", .width = HERO_W, .height = HERO_H, .build = diagramBanner },
     .{ .name = "zig-out/algorithm-curves.tga", .build = diagramCurves },
     .{ .name = "zig-out/algorithm-bands.tga", .build = diagramBands },
     .{ .name = "zig-out/algorithm-quad.tga", .build = diagramQuad },
@@ -912,6 +1276,6 @@ pub fn main() !void {
         var ctx = try Ctx.init(allocator, pool, &faces);
         defer ctx.deinit();
         try d.build(&ctx);
-        try ctx.render(d.name);
+        try ctx.render(d.name, d.width, d.height, SCALE);
     }
 }

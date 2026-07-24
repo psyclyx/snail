@@ -488,7 +488,7 @@ fn addScreenshotSteps(
     const coverage_parity_step = b.step("run-coverage-parity", "Sweep the composite panel through hostile affine transforms on the CPU rasterizer and gate on interior coverage holes");
     coverage_parity_step.dependOn(&run_coverage_parity.step);
 
-    // README algorithm diagrams — CPU backend.
+    // README banner and algorithm diagrams — CPU backend.
     const algorithm_diagrams_mod = b.createModule(.{
         .root_source_file = b.path("src/demo/root.zig"),
         .target = config.target,
@@ -504,7 +504,7 @@ fn addScreenshotSteps(
     selectDemoEntry(b, algorithm_diagrams_mod, .algorithm_diagrams);
     const algorithm_diagrams_exe = b.addExecutable(.{ .name = "snail-algorithm-diagrams", .root_module = algorithm_diagrams_mod });
     const run_algorithm_diagrams = b.addRunArtifact(algorithm_diagrams_exe);
-    const algorithm_diagrams_step = b.step("run-algorithm-diagrams", "Render the README algorithm diagrams through the CPU backend into zig-out/algorithm-*.tga");
+    const algorithm_diagrams_step = b.step("run-algorithm-diagrams", "Render the README banner and algorithm diagrams through the CPU backend into zig-out/banner.tga and zig-out/algorithm-*.tga");
     algorithm_diagrams_step.dependOn(&run_algorithm_diagrams.step);
 
     // Composable autohint policy comparison — CPU backend.

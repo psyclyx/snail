@@ -2,7 +2,7 @@
 
 Text and vector rendering via direct Bezier curve evaluation, built to embed in your engine.
 
-<img src="assets/banner.png?raw=true" alt="snail banner scene: styled and decorated text, complex-script shaping, vector primitives, gradients, and image paints">
+<img src="assets/banner.png?raw=true" alt="snail banner: every size fits, illustrated by a blue-gray vector snail carrying a detailed golden-ratio shell construction" width="1280">
 
 snail renders text and vector art by evaluating Bezier curves at draw time. No bitmap glyph atlases, no signed distance fields. Glyphs and paths are resolution-independent and render correctly at any size, rotation, or perspective transform.
 
@@ -25,21 +25,21 @@ The Slug patent (US 10,373,352) was [dedicated to the public domain](https://ter
 Rendering splits into a **preparation** phase (CPU, once per glyph or path)
 and a **draw** phase (every frame, in a shader or the CPU rasterizer).
 Nothing is ever rasterized ahead of time — what the atlas stores is
-geometry. The diagrams below are rendered by snail itself
+geometry. The README visuals below are rendered by snail itself
 (`zig build run-algorithm-diagrams`).
 
 **1. Prepare: outlines stay curves.** A glyph is quadratic Béziers in em
 coordinates. Preparation packs the segments — four texels each — into the
 curve texture. One record per glyph, reused at every size and transform.
 
-<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="320">
+<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
 
 **2. Prepare: bands index the curves.** The glyph's box is sliced into
 horizontal and vertical bands; each band lists only the segments whose
 bounds overlap it. This band texture is the lookup structure that makes
 per-fragment evaluation cheap.
 
-<img src="assets/algorithm-bands.png?raw=true" alt="horizontal and vertical bands over the glyph, one band highlighted with the curves it references" width="320">
+<img src="assets/algorithm-bands.png?raw=true" alt="horizontal and vertical bands over the glyph, one band highlighted with the curves it references" width="640">
 
 Curves (RGBA16F), bands (RG16UI), and layer-info rows (RGBA32F — bounds,
 band transforms, paint records, color-font layers) are the whole GPU
@@ -57,13 +57,13 @@ either y-axis convention) renders exactly on the GPU pipelines: all the math
 from here on happens in the record's own space. The optional CPU rasterizer is
 affine-only and reports `NonAffineMvp` for a perspective MVP.
 
-<img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="320">
+<img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="640">
 
 **4. Draw: the sample picks two bands.** The fragment's local position
 selects one horizontal and one vertical band; only the curves those bands
 list are candidates — a handful of segments instead of the whole glyph.
 
-<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band highlighted and their candidate curves emphasized" width="320">
+<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample point with its horizontal and vertical band highlighted and their candidate curves emphasized" width="640">
 
 **5. Draw: solve ray roots per candidate.** Cast axis-aligned rays through
 the sample and solve the ray/Bézier equation for each candidate — a
@@ -71,7 +71,7 @@ quadratic for text (the TrueType fast path); vector paths add lines,
 rational conics, and cubics. Every root in range is a crossing, signed by
 the direction the curve crosses the ray.
 
-<img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="320">
+<img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
 
 **6. Draw: signed roots sum to winding.** The crossing signs accumulate
 into a winding number, and the fill rule (`non_zero` or `even_odd`) maps
@@ -79,7 +79,7 @@ winding to inside/outside — the hole's crossings cancel to zero on their
 own. The horizontal and vertical estimates are weighted together for
 robustness near tangencies.
 
-<img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="320">
+<img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="640">
 
 **7. Draw: roots near the pixel become coverage.** A root within half a
 pixel of the sample contributes fractional coverage instead of a binary
@@ -89,7 +89,7 @@ gradient, or image) and composites as premultiplied linear. Grayscale AA
 takes one sample per pixel; LCD subpixel modes evaluate per-channel
 offsets.
 
-<img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by their true fractional coverage" width="320">
+<img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by their true fractional coverage" width="640">
 
 ## The pipeline
 
@@ -503,7 +503,7 @@ zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-g
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
 zig build gen-shaders             # materialize generated shader artifacts into zig-out/shaders (needs slang+naga)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
-zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
+zig build run-algorithm-diagrams  # regenerate the README banner and diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate
 zig build run-gamma-probe         # linear-blending / encode round-trip gate
 zig build run-composite-probe     # perspective coverage-hole gate (GL)
