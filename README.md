@@ -1,8 +1,8 @@
+<img src="assets/banner.png?raw=true" alt="snail banner: every size fits, illustrated by a blue-gray vector snail carrying a detailed golden-ratio shell construction" width="1280">
+
 # snail
 
 Text and vector rendering from Bézier curves, built to embed in an engine.
-
-<img src="assets/banner.png?raw=true" alt="snail banner: every size fits, illustrated by a blue-gray vector snail carrying a detailed golden-ratio shell construction" width="1280">
 
 snail stores glyph outlines and vector paths as curves, then evaluates those
 curves while drawing. It does not pre-render glyphs into bitmap atlases or
