@@ -516,13 +516,22 @@ pub fn buildKnotsReg(
     // glyph grows and AA already renders stems cleanly.
     var count: usize = 0;
     var blue_fixed = [_]bool{false} ** max_knots;
-    var natural_spacing = [_]bool{false} ** max_knots;
+    var min_spacing = [_]f32{0} ** max_knots;
     for (edges, 0..) |e, i| {
         const keep = hinted[i] or e.blue >= 0;
         if (!keep) continue;
         out[count] = .{ .base = e.pos, .target = target[i] };
+        if (count > 0) {
+            // Preserve any separation the fitter actually established (most
+            // importantly a fitted stem width). Independently snapped
+            // features may coincide at tiny ppem; their counter is allowed to
+            // collapse to epsilon instead of manufacturing another full pixel.
+            min_spacing[count - 1] = @max(
+                out[count].target - out[count - 1].target,
+                1e-6,
+            );
+        }
         blue_fixed[count] = e.blue >= 0;
-        natural_spacing[count] = e.synthetic_apex;
         count += 1;
     }
 
@@ -537,26 +546,29 @@ pub fn buildKnotsReg(
         while (m > 0) : (m -= 1) {
             out[m] = out[m - 1];
             blue_fixed[m] = blue_fixed[m - 1];
-            natural_spacing[m] = natural_spacing[m - 1];
+            if (m > 1) min_spacing[m - 1] = min_spacing[m - 2];
         }
         out[0] = .{ .base = left_edge, .target = snap(left_edge, px_per_unit) };
         blue_fixed[0] = false;
-        natural_spacing[0] = false;
+        min_spacing[0] = @max(out[1].target - out[0].target, 1e-6);
         count += 1;
     }
 
     // Pass 4 — blue zones are shared font metrics, so preserve their fitted
     // targets when a small PPEM leaves too little room for the interior knots.
-    // Resolve each blue-bounded collision inward first instead of allowing the
-    // generic forward repair below to push the blue edge a whole pixel out.
+    // Resolve each blue-bounded collision inward using only the separation
+    // established above: stem widths survive, while impossible counters may
+    // collapse instead of pushing the blue edge outward.
     var b = count;
     while (b > 1) {
         b -= 1;
         if (!blue_fixed[b]) continue;
         var j = b;
         while (j > 0 and !blue_fixed[j - 1]) : (j -= 1) {
-            const spacing = if (natural_spacing[j - 1]) 1e-6 else grid;
-            out[j - 1].target = @min(out[j - 1].target, out[j].target - spacing);
+            out[j - 1].target = @min(
+                out[j - 1].target,
+                out[j].target - min_spacing[j - 1],
+            );
         }
     }
 
@@ -564,8 +576,9 @@ pub fn buildKnotsReg(
     // remains the fallback for knots outside blue-bounded intervals.
     var i: usize = 1;
     while (i < count) : (i += 1) {
-        if (out[i].target <= out[i - 1].target) {
-            out[i].target = out[i - 1].target + grid;
+        const required = out[i - 1].target + min_spacing[i - 1];
+        if (out[i].target < required) {
+            out[i].target = required;
         }
     }
 
@@ -888,13 +901,18 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
 
     var count: usize = 0;
     var blue_fixed = [_]bool{false} ** max_knots;
-    var natural_spacing = [_]bool{false} ** max_knots;
+    var min_spacing = [_]f32{0} ** max_knots;
     for (features, 0..) |feature, i| {
         const axis_aligned = if (axis == .x) policy.x_align != 0 else policy.y_align != 0;
         if (!hinted[i] and !(axis_aligned and feature.blue >= 0)) continue;
         out[count] = .{ .base = feature.pos, .target = targets[i] };
+        if (count > 0) {
+            min_spacing[count - 1] = @max(
+                out[count].target - out[count - 1].target,
+                1e-6,
+            );
+        }
         blue_fixed[count] = axis_aligned and feature.blue >= 0;
-        natural_spacing[count] = feature.flags.synthetic_apex;
         count += 1;
     }
     if (axis == .x and policy.x_registration == 1 and count > 0 and count < max_knots and count < out.len and
@@ -904,11 +922,11 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         while (i > 0) : (i -= 1) {
             out[i] = out[i - 1];
             blue_fixed[i] = blue_fixed[i - 1];
-            natural_spacing[i] = natural_spacing[i - 1];
+            if (i > 1) min_spacing[i - 1] = min_spacing[i - 2];
         }
         out[0] = .{ .base = left, .target = glslHostSnap(left, scale) };
         blue_fixed[0] = false;
-        natural_spacing[0] = false;
+        min_spacing[0] = @max(out[1].target - out[0].target, 1e-6);
         count += 1;
     }
     var b = count;
@@ -917,13 +935,16 @@ fn glslHostFitAxis(features: []const FeatureEdge, font: TestFontFeatures, compti
         if (!blue_fixed[b]) continue;
         var j = b;
         while (j > 0 and !blue_fixed[j - 1]) : (j -= 1) {
-            const spacing = if (natural_spacing[j - 1]) 1e-6 else grid;
-            out[j - 1].target = @min(out[j - 1].target, out[j].target - spacing);
+            out[j - 1].target = @min(
+                out[j - 1].target,
+                out[j].target - min_spacing[j - 1],
+            );
         }
     }
     var i: usize = 1;
     while (i < count) : (i += 1) {
-        if (out[i].target <= out[i - 1].target) out[i].target = out[i - 1].target + grid;
+        const required = out[i - 1].target + min_spacing[i - 1];
+        if (out[i].target < required) out[i].target = required;
     }
     if (policy.fade_enabled != 0 and scale > policy.fade_start) {
         const span = policy.fade_full - policy.fade_start;
@@ -1278,6 +1299,65 @@ test "stem width quantises to a whole pixel, minimum one" {
     try testing.expectApproxEqAbs(@as(f32, 1.0), width_px, 1e-4);
 }
 
+test "colliding tiny-ppem stems preserve widths without expanding counters" {
+    // A six-pixel em only has room for these three one-pixel stems if the two
+    // counters collapse. Giving every collided edge another full grid step
+    // expands the fitted span from 3px to 5px and ejects the last stem from a
+    // terminal cell.
+    const scale: f32 = 6;
+    var features = [_]FeatureEdge{
+        testFeature(0.0),
+        testFeature(0.1),
+        testFeature(0.2),
+        testFeature(0.3),
+        testFeature(0.4),
+        testFeature(0.5),
+    };
+    featureStemPair(&features[0], &features[1], 0, 1, 0.1);
+    featureStemPair(&features[2], &features[3], 2, 3, 0.1);
+    featureStemPair(&features[4], &features[5], 4, 5, 0.1);
+    const policy: policy_mod.XPolicy = .{
+        .@"align" = .grid,
+        .stem_width = .{ .full = .{ .std_snap_ratio = 0 } },
+    };
+
+    var cpu_out: [max_knots]Knot = undefined;
+    var glsl_out: [max_knots]Knot = undefined;
+    const cpu = fitAxis(
+        &features,
+        TestFontFeatures{},
+        .x,
+        policy,
+        scale,
+        0,
+        &cpu_out,
+    );
+    const policy_words = try (policy_mod.AutohintPolicy{ .x = policy }).pack();
+    const glsl = glslHostFitAxis(
+        &features,
+        TestFontFeatures{},
+        .x,
+        policy_words,
+        scale,
+        0,
+        &glsl_out,
+    );
+    try expectGlslFixtureAxis(cpu, glsl, &.{ 0.0, 0.25, 0.5 });
+    try testing.expectEqual(@as(usize, 6), cpu.len);
+    inline for (.{ 0, 2, 4 }) |i| {
+        try testing.expectApproxEqAbs(
+            @as(f32, 1),
+            (cpu[i + 1].target - cpu[i].target) * scale,
+            1e-4,
+        );
+    }
+    try testing.expectApproxEqAbs(
+        @as(f32, 3),
+        (cpu[5].target - cpu[0].target) * scale,
+        1e-4,
+    );
+}
+
 test "blue-linked edges snap to the shared rounded blue position" {
     const px_per_unit: f32 = 13.0 / 1000.0;
     var a = edge(512, 1); // slightly off the blue
@@ -1397,8 +1477,8 @@ test "blue target wins when interior knots collide at small ppem" {
     try testing.expectEqual(@as(usize, 5), n);
     try testing.expectApproxEqAbs(@as(f32, 0.5), buf[4].target, 1e-5);
     try testing.expectApproxEqAbs(@as(f32, 0.4), buf[3].target, 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 0.3), buf[2].target, 1e-5);
-    try testing.expectApproxEqAbs(@as(f32, 0.2), buf[1].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.4 - 1e-6), buf[2].target, 1e-5);
+    try testing.expectApproxEqAbs(@as(f32, 0.3 - 1e-6), buf[1].target, 1e-5);
 }
 
 test "inverse warp round-trips knot targets to their bases" {

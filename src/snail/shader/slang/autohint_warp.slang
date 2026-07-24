@@ -191,9 +191,9 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
 
     float4 featureData[N];
     float targets[N];
+    float knotMinSpacing[N];
     uint hintedMask = 0u;
     uint knotBlueFixedMask = 0u;
-    uint knotNaturalSpacingMask = 0u;
 
     for (int i = 0; i < n; ++i) {
         featureData[i] = snailAhFeatureData(layer_tex, info_base, run, i);
@@ -320,8 +320,10 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
         if (!snailAhBitSet(hintedMask, i) && !(axisAligned && feature.blue >= 0)) continue;
         knotBase[knotCount] = feature.pos;
         knotTarget[knotCount] = targets[i];
+        if (knotCount > 0)
+            knotMinSpacing[knotCount - 1] =
+                max(knotTarget[knotCount] - knotTarget[knotCount - 1], 1e-6);
         if (axisAligned && feature.blue >= 0) knotBlueFixedMask |= snailAhBit(knotCount);
-        if ((feature.flags & 2u) != 0u) knotNaturalSpacingMask |= snailAhBit(knotCount);
         knotSource[knotCount] = i;
         ++knotCount;
     }
@@ -331,27 +333,29 @@ public bool snailFitAutohintAxis<let N : int, let IS_VERTEX : bool>(
             knotBase[i] = knotBase[i - 1];
             knotTarget[i] = knotTarget[i - 1];
             knotSource[i] = knotSource[i - 1];
+            if (i > 1) knotMinSpacing[i - 1] = knotMinSpacing[i - 2];
         }
         knotBlueFixedMask <<= 1u;
-        knotNaturalSpacingMask <<= 1u;
         knotBase[0] = left;
         knotTarget[0] = snailAhSnap(left, scale);
         knotSource[0] = SNAIL_AH_LEFT_SOURCE;
+        knotMinSpacing[0] = max(knotTarget[1] - knotTarget[0], 1e-6);
         ++knotCount;
     }
     // Keep shared blue-zone targets fixed. If quantized interior features run
-    // out of room below one, resolve their collisions inward before the
-    // generic forward monotonicity repair can push the blue edge outward.
+    // out of room below one, resolve their collisions inward while preserving
+    // fitted stem widths and allowing impossible counters to collapse.
     for (int b = knotCount - 1; b > 0; --b) {
         if (!snailAhBitSet(knotBlueFixedMask, b)) continue;
         for (int j = b; j > 0; --j) {
             if (snailAhBitSet(knotBlueFixedMask, j - 1)) break;
-            float spacing = snailAhBitSet(knotNaturalSpacingMask, j - 1) ? 1e-6 : grid;
-            knotTarget[j - 1] = min(knotTarget[j - 1], knotTarget[j] - spacing);
+            knotTarget[j - 1] =
+                min(knotTarget[j - 1], knotTarget[j] - knotMinSpacing[j - 1]);
         }
     }
     for (int i = 1; i < knotCount; ++i) {
-        if (knotTarget[i] <= knotTarget[i - 1]) knotTarget[i] = knotTarget[i - 1] + grid;
+        float required = knotTarget[i - 1] + knotMinSpacing[i - 1];
+        if (knotTarget[i] < required) knotTarget[i] = required;
     }
     // Fade to identity at large ppem — autohinting is a small-size tool, so above
     // the policy's fade start blend each knot's target back toward its natural

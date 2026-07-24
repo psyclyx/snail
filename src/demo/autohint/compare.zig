@@ -358,6 +358,17 @@ pub const Compare = struct {
     /// analysis per sample glyph, plus TT-hinted curves for each PPEM.
     /// Feature slices and TT curves live on `scratch`; the atlas copies them.
     pub fn ensureAll(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, px_scale: f32) !void {
+        return self.ensureAllForPpems(
+            scratch,
+            shaped,
+            tags,
+            &grid_ppems,
+            px_scale,
+        );
+    }
+
+    /// `ensureAll` with an explicit size corpus for focused headless tools.
+    pub fn ensureAllForPpems(self: *Compare, scratch: Allocator, shaped: *const snail.ShapedText, tags: *const snail.ShapedText, ppems: []const f32, px_scale: f32) !void {
         var entries: std.ArrayList(snail.AtlasEntry) = .empty;
         defer entries.deinit(scratch);
 
@@ -397,7 +408,7 @@ pub const Compare = struct {
         }
 
         // Only TT-hint preparation and baked curves remain PPEM-specific.
-        for (grid_ppems) |ppem| {
+        for (ppems) |ppem| {
             const ppem_26_6: u32 = @intFromFloat(devEm(ppem, px_scale) * 64.0);
             // Run fpgm/prep once for this size; every glyph hints from it.
             var tt_prepared: ?snail.TtHintVm.PreparedPpem = if (self.tt) |*vm|

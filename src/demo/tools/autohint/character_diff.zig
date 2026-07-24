@@ -12,7 +12,7 @@ const harness = @import("../../screenshot/harness.zig");
 const assets = @import("assets");
 
 pub const corpus = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789!@#$%^*()[]{}+=";
-pub const ppems = [_]u32{ 9, 10, 11, 12, 13, 14 };
+pub const ppems = [_]f32{ 6, 7, 8, 9, 10, 11, 12, 13, 14 };
 const policy_count = 4;
 const cell_w: u32 = 28;
 const cell_h: u32 = 28;
@@ -264,7 +264,13 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, font_desc: anyty
 
     const all = try compare.shape_cache.shape(&compare.faces, corpus, .{});
     const tags = try compare.shape_cache.shape(&compare.faces, "characterdiff", .{});
-    try compare.ensureAll(scratch.allocator(), all, tags, 1.0);
+    try compare.ensureAllForPpems(
+        scratch.allocator(),
+        all,
+        tags,
+        &ppems,
+        1.0,
+    );
     var empty_atlas = snail.Atlas.empty(allocator);
     defer empty_atlas.deinit();
     var empty_pic = try support.Picture.from(allocator, &.{});
@@ -276,7 +282,8 @@ fn runFont(allocator: std.mem.Allocator, pool: *snail.PagePool, font_desc: anyty
     const candidate_ink = try allocator.alloc(u8, pixels);
     defer allocator.free(candidate_ink);
 
-    for (ppems) |ppem| {
+    for (ppems) |ppem_f| {
+        const ppem: u32 = @intFromFloat(ppem_f);
         const sheet = try allocator.alloc(u8, @as(usize, sheet_w) * sheet_h * 4);
         defer allocator.free(sheet);
         @memset(sheet, 255);
@@ -327,7 +334,7 @@ test "character diff corpus and policy order are stable" {
     try std.testing.expectEqualStrings("x-natural", policies[1].name);
     try std.testing.expectEqualStrings("x-full", policies[2].name);
     try std.testing.expectEqualStrings("xy-registered", policies[3].name);
-    try std.testing.expectEqualSlices(u32, &.{ 9, 10, 11, 12, 13, 14 }, &ppems);
+    try std.testing.expectEqualSlices(f32, &.{ 6, 7, 8, 9, 10, 11, 12, 13, 14 }, &ppems);
 }
 
 test "metric math is per-cell and zero safe" {

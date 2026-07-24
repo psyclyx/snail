@@ -89,6 +89,11 @@ Treat this as a from-scratch migration.
 
 ### Correctness and performance
 
+- Tiny-PPEM autohint collision repair now preserves fitted stem widths while
+  allowing independently snapped counter gaps to collapse. Multi-stem glyphs
+  no longer manufacture a full pixel per collided edge and expand beyond
+  narrow terminal cells; the character-diff corpus now covers the demo's
+  6–8 px minimum sizes.
 - Cold Vulkan startup no longer compiles every shader family serially. The
   independent family pipelines compile concurrently, and Vulkan SPIR-V is
   optimized with Slang `-O2` before reaching the driver (reducing the path
