@@ -72,6 +72,9 @@ pub const placeCellRun = cell_placement.placeCellRun;
 pub const placeCellRunAlloc = cell_placement.placeCellRunAlloc;
 
 pub const Font = font.Font;
+pub const FontVariation = font.Variation;
+pub const FontVariationAxis = font.VariationAxis;
+pub const FontOptions = font.Options;
 
 // ── Paint ──
 
@@ -125,7 +128,9 @@ pub const ColrHandling = atlas_populate.ColrHandling;
 pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
 pub const recordUnhintedRuns = atlas_populate.recordUnhintedRuns;
 pub const recordAutohintRun = atlas_populate.recordAutohintRun;
+pub const recordAutohintRuns = atlas_populate.recordAutohintRuns;
 pub const recordTtHintRun = atlas_populate.recordTtHintRun;
+pub const recordTtHintRuns = atlas_populate.recordTtHintRuns;
 pub const recordTtAdvanceRun = atlas_populate.recordTtAdvanceRun;
 pub const TtAdvanceSource = atlas_populate.TtAdvanceSource;
 

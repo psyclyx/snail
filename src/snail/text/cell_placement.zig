@@ -66,7 +66,9 @@ pub const CellRunPlacement = struct {
     /// Cell grids must remain axis-aligned; use `.none` for rotated text.
     world_to_pixel: ?Transform2D = null,
     /// Expand COLRv0 glyphs to separately colored layer shapes. Every such
-    /// cell must use `.unhinted`, matching `recordUnhintedRun(.layers)`.
+    /// color-glyph cell must use `.unhinted`, matching
+    /// `recordUnhintedRun(.layers)`. Non-COLR cells in the same run may use
+    /// autohint or TrueType records.
     colr: bool = false,
 };
 
@@ -183,17 +185,13 @@ fn validateMode(mode: HintMode) bool {
     };
 }
 
-fn validateCells(cells: []const Cell, colr: bool) PlaceCellRunError!void {
+fn validateCells(cells: []const Cell) PlaceCellRunError!void {
     var previous_end: u32 = 0;
     for (cells, 0..) |cell, i| {
         if (cell.source.end <= cell.source.start) return error.InvalidCells;
         if (i != 0 and cell.source.start < previous_end) return error.InvalidCells;
         if (!validColor(cell.color)) return error.InvalidColor;
         if (!validateMode(cell.mode)) return error.InvalidHintMode;
-        if (colr) switch (cell.mode) {
-            .unhinted => {},
-            else => return error.InvalidColrMode,
-        };
         previous_end = cell.source.end;
     }
 }
@@ -256,7 +254,7 @@ fn colrLayerShapeCount(
         if (!(layer.color[0] < 0) and !validColor(layer.color))
             return error.InvalidColor;
     }
-    return if (count == 0) 1 else count;
+    return count;
 }
 
 /// Return the exact output storage needed by `placeCellRun`.
@@ -266,7 +264,7 @@ pub fn placedCellRunShapeCount(
     cells: []const Cell,
     placement: CellRunPlacement,
 ) PlaceCellRunError!usize {
-    try validateCells(cells, placement.colr);
+    try validateCells(cells);
     const grid = try Grid.init(placement);
 
     var count: usize = 0;
@@ -291,10 +289,15 @@ pub fn placedCellRunShapeCount(
         const cell = cellForSource(cells, glyph_value.source_start) orelse
             return error.NoCellForGlyph;
         _ = try grid.glyphOrigin(cell, glyph_value, cluster_pen_x, cluster_pen_y);
-        const add: usize = if (placement.colr)
+        const layer_count = if (placement.colr)
             try colrLayerShapeCount(faces orelse return error.UnknownFaceIndex, glyph_value)
         else
-            1;
+            0;
+        if (layer_count != 0) switch (cell.mode) {
+            .unhinted => {},
+            else => return error.InvalidColrMode,
+        };
+        const add: usize = if (layer_count == 0) 1 else layer_count;
         count = std.math.add(usize, count, add) catch return error.ShapeCountOverflow;
         pen_x += glyph_value.x_advance;
         pen_y += glyph_value.y_advance;
@@ -354,9 +357,9 @@ pub fn placeCellRun(
                     origin,
                     placement.em,
                     grid.y_sign,
-                    record_key.unhintedGlyph(glyph_value.font_id, glyph_value.glyph_id),
+                    cell.mode.key(glyph_value.font_id, glyph_value.glyph_id),
                     cell.color,
-                    .unhinted,
+                    cell.mode,
                 );
                 cursor += 1;
             } else {

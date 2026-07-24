@@ -253,9 +253,34 @@ pub fn recordAutohintRun(
     font_id: u32,
     shaped: *const text_mod.ShapedText,
 ) !void {
+    return recordAutohintRuns(atlas, allocator, analyzer, font_id, &.{shaped});
+}
+
+/// Record immutable autohint analysis for several independently shaped runs
+/// in one atlas transaction.
+pub fn recordAutohintRuns(
+    atlas: *Atlas,
+    allocator: Allocator,
+    analyzer: *autohint_mod.AutohintAnalyzer,
+    font_id: u32,
+    shaped_runs: []const *const text_mod.ShapedText,
+) !void {
     var batch = Batch.init(allocator);
     defer batch.deinit();
 
+    for (shaped_runs) |shaped| {
+        try appendAutohintRun(&batch, atlas, analyzer, font_id, shaped);
+    }
+    try batch.apply(atlas);
+}
+
+fn appendAutohintRun(
+    batch: *Batch,
+    atlas: *const Atlas,
+    analyzer: *autohint_mod.AutohintAnalyzer,
+    font_id: u32,
+    shaped: *const text_mod.ShapedText,
+) !void {
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != font_id) continue;
         const key = record_key.autohintGlyph(font_id, glyph.glyph_id);
@@ -263,7 +288,7 @@ pub fn recordAutohintRun(
         const base_key = record_key.unhintedGlyph(font_id, glyph.glyph_id);
         const base = atlas.lookupRecord(base_key) orelse return error.MissingBaseGlyph;
         if (base.curve_count == 0) {
-            try batch.entries.append(allocator, .{
+            try batch.entries.append(batch.allocator, .{
                 .key = key,
                 .curves = GlyphCurves.empty(batch.scratch.allocator()),
             });
@@ -273,14 +298,13 @@ pub fn recordAutohintRun(
         const x = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
         const y = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
         const analysis = try analyzer.analyzeGlyph(batch.scratch.allocator(), glyph.glyph_id, x, y);
-        try batch.entries.append(allocator, .{
+        try batch.entries.append(batch.allocator, .{
             .key = key,
             .curves = GlyphCurves.empty(batch.scratch.allocator()),
             .autohint = .{ .font = analyzer.fontFeatures(), .glyph = analysis },
             .autohint_base = base_key,
         });
     }
-    try batch.apply(atlas);
 }
 
 fn ppemOf(prepared: *const hint_vm_mod.TtHintVm.PreparedPpem) hint_vm_mod.TtHintPpem {
@@ -299,38 +323,65 @@ pub fn recordTtHintRun(
     font_id: u32,
     shaped: *const text_mod.ShapedText,
 ) !void {
+    return recordTtHintRuns(atlas, allocator, vm, prepared, font_id, &.{shaped});
+}
+
+/// Record per-PPEM TT-hinted curves and advances for several independently
+/// shaped runs in one atlas transaction.
+pub fn recordTtHintRuns(
+    atlas: *Atlas,
+    allocator: Allocator,
+    vm: *hint_vm_mod.TtHintVm,
+    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
+    font_id: u32,
+    shaped_runs: []const *const text_mod.ShapedText,
+) !void {
     const ppem = ppemOf(prepared);
     // Curve record keys use the uniform-ppem convention shared with
     // `HintMode.tt_hint` and `record_key.ttHintedGlyph`; an anisotropic
     // `prepared` cannot be keyed.
     if (ppem.x_26_6 != ppem.y_26_6) return error.AnisotropicPpem;
-    const ppem_26_6 = ppem.x_26_6;
     const packed_ppem = try ppem.packed26Dot6();
 
     var batch = Batch.init(allocator);
     defer batch.deinit();
 
+    for (shaped_runs) |shaped| {
+        try appendTtHintRun(&batch, atlas, vm, prepared, font_id, ppem.x_26_6, packed_ppem, shaped);
+    }
+    try batch.apply(atlas);
+}
+
+fn appendTtHintRun(
+    batch: *Batch,
+    atlas: *const Atlas,
+    vm: *hint_vm_mod.TtHintVm,
+    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
+    font_id: u32,
+    ppem_26_6: u32,
+    packed_ppem: u32,
+    shaped: *const text_mod.ShapedText,
+) !void {
     for (shaped.glyphs) |glyph| {
         if (glyph.font_id != font_id) continue;
 
         const advance_key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
         if (try batch.shouldRecordAdvance(atlas, advance_key)) {
             const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
-            try batch.advances.append(allocator, .{ .key = advance_key, .advance_26_6 = advance });
+            try batch.advances.append(batch.allocator, .{ .key = advance_key, .advance_26_6 = advance });
         }
 
         const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
         if (!try batch.shouldInsert(atlas, key)) continue;
-        var curves = try vm.hintGlyph(allocator, batch.scratch.allocator(), prepared, glyph.glyph_id);
+        var curves = try vm.hintGlyph(batch.allocator, batch.scratch.allocator(), prepared, glyph.glyph_id);
         errdefer curves.deinit();
         _ = batch.scratch.reset(.retain_capacity);
         try batch.curves.append(batch.allocator, curves);
-        try batch.entries.append(allocator, .{
+        try batch.entries.append(batch.allocator, .{
             .key = key,
             .curves = batch.curves.items[batch.curves.items.len - 1],
         });
     }
-    try batch.apply(atlas);
 }
 
 /// Record TT-hinted horizontal advances (`ns.tt_advance`) for every glyph

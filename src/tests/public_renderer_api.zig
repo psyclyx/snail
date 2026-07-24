@@ -54,6 +54,11 @@ test "core and external renderers need only the intentional public api" {
 
         _ = snail.TextDirection;
         _ = snail.ConicGradient;
+        _ = snail.FontVariation;
+        _ = snail.FontVariationAxis;
+        _ = snail.FontOptions;
+        _ = snail.recordAutohintRuns;
+        _ = snail.recordTtHintRuns;
         _ = snail.autohint.AutohintAnalyzer;
         _ = snail.autohint.AutohintPolicy;
         _ = snail.autohint.FeatureEdge;
