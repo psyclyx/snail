@@ -280,7 +280,7 @@ fn accumulateLineSharedRoot(
 
     const derivative_axis = if (horizontal) curve.a_root else -curve.a_root;
     if (@abs(derivative_axis) <= 1e-5) return;
-    const sign: f32 = if (derivative_axis > 0.0) 1.0 else -1.0;
+    const sign = coverage.crossingSignFromDerivative(derivative_axis);
     const along_at_t = curve.p0_along + curve.a_along * t;
 
     inline for (0..W) |i| {

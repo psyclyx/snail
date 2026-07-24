@@ -197,7 +197,9 @@ void accumulateLineCoverage(inout float cov, inout float wgt, float p0x, float p
     if (abs(derivativeAxis) <= kParamEps) return;
 
     float distance = (horizontal ? p0x + (p2x - p0x) * t : p0y + (p2y - p0y) * t) * ppe;
-    appendCoverageContribution(cov, wgt, distance, derivativeAxis > 0.0 ? 1.0 : -1.0);
+    // Slug's quadratic table assigns positive winding to a negative
+    // derivativeAxis (dy for horizontal rays, -dx for vertical rays).
+    appendCoverageContribution(cov, wgt, distance, derivativeAxis < 0.0 ? 1.0 : -1.0);
 }
 
 float distToUnitInterval(float t) {

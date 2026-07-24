@@ -223,6 +223,12 @@ pub fn appendCoverageContribution(result: *CoveragePair, distance: f32, sign: f3
     result.wgt = @max(result.wgt, clamp01(1.0 - @abs(distance) * 2.0));
 }
 
+/// Match the winding polarity encoded by Slug's quadratic root table.
+/// `derivative_axis` is dy for horizontal rays and -dx for vertical rays.
+pub inline fn crossingSignFromDerivative(derivative_axis: f32) f32 {
+    return if (derivative_axis < 0.0) 1.0 else -1.0;
+}
+
 const coord_eps = quadratic.coord_eps;
 const rootCodeCoord = quadratic.rootCodeCoord;
 const calcRootCode = quadratic.calcRootCode;
@@ -355,7 +361,19 @@ inline fn accumulateLineCoverage(
         (p0x + (p2x - p0x) * t) * ppe
     else
         (p0y + (p2y - p0y) * t) * ppe;
-    appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+    appendCoverageContribution(result, distance, crossingSignFromDerivative(derivative_axis));
+}
+
+test "line winding polarity cancels an adjacent quadratic" {
+    var horizontal = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    accumulateLineCoverage(&horizontal, 2.0, 1.0, 3.0, -1.0, 1.0, true);
+    accumulateQuadraticCoverage(&horizontal, 3.0, -1.0, 3.5, -0.5, 4.0, 1.0, 1.0, true);
+    try std.testing.expectEqual(@as(f32, 0.0), horizontal.cov);
+
+    var vertical = CoveragePair{ .cov = 0.0, .wgt = 0.0 };
+    accumulateLineCoverage(&vertical, 1.0, 2.0, -1.0, 3.0, 1.0, false);
+    accumulateQuadraticCoverage(&vertical, -1.0, 3.0, -0.5, 3.5, 1.0, 4.0, 1.0, false);
+    try std.testing.expectEqual(@as(f32, 0.0), vertical.cov);
 }
 
 inline fn accumulateGlyphCoverageSegment(
@@ -492,7 +510,7 @@ inline fn accumulatePreparedLineCoverage(
     if (@abs(derivative_axis) <= 1e-5) return;
 
     const distance = (curve.p0_along - sample_along + curve.a_along * t) * ppe;
-    appendCoverageContribution(result, distance, if (derivative_axis > 0.0) 1.0 else -1.0);
+    appendCoverageContribution(result, distance, crossingSignFromDerivative(derivative_axis));
 }
 
 inline fn evaluatePreparedConicAlong(cold: *const PreparedAxisCurveCold, t: f32) f32 {
@@ -893,7 +911,7 @@ inline fn solveRowHorizCurve(curve: *const PreparedAxisCurve, cold_curves: []con
             if (lineCrossingT(root_axis0, root_axis0 + curve.a_root)) |t| {
                 if (@abs(curve.a_root) > 1e-5) {
                     entry.along[0] = curve.p0_along + curve.a_along * t;
-                    entry.sign[0] = if (curve.a_root > 0.0) 1.0 else -1.0;
+                    entry.sign[0] = crossingSignFromDerivative(curve.a_root);
                 }
             }
             return entry;
