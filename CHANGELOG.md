@@ -154,6 +154,8 @@ Treat this as a from-scratch migration.
   updates, wrapping/scrolling, combining clusters, wide cells, styled faces,
   script fallback, and COLRv0 emoji. It retains atlas state and exercises
   delta uploads across the Vulkan, GL, GLES, and software demo backends.
+  Runtime controls resize text from 6–96 px and cycle unhinted, y-only
+  autohint, default autohint, and TrueType hinting.
 
 ### Design
 
@@ -183,8 +185,9 @@ Treat this as a from-scratch migration.
   source-range cells → exact terminal columns, preserving fallback advances
   and intra-cluster mark/ligature offsets. Cells carry explicit columns,
   colors, and hint modes; the host retains width, wrapping, and cursor policy.
-- `recordUnhintedRuns`: batch several shaped runs into one idempotent atlas
-  transaction, deduplicating records across the whole batch.
+- `recordUnhintedRuns`, `recordAutohintRuns`, and `recordTtHintRuns`: batch
+  several shaped runs into one idempotent atlas transaction, deduplicating
+  records across the whole batch.
 - `Atlas` store: `recordUnhintedRun` (with `ColrHandling`: composite /
   layers / outline_only), `recordAutohintRun`, `recordTtHintRun`,
   `recordTtAdvanceRun` (measurement-only advances; `TtAdvanceSource` is the

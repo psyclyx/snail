@@ -412,14 +412,24 @@ a later column; snail deliberately does not decide Unicode width,
 grapheme/cursor policy, tabs, line wrapping, paragraph bidi, or scrollback.
 Those remain properties of the caller's screen model.
 
+The demo keeps the baseline and cell advance pixel-aligned in every mode.
+Unhinted and y-only autohinting use `CellSnap.grid`; the default two-axis
+autohinter and TrueType mode use `CellSnap.glyph_origins` so their fitted
+x-stems do not land at fractional device positions. Only cells resolved to
+the primary mono face switch record modes; fallback scripts, the selected
+bold variable face, and COLRv0 emoji remain unhinted in the same placed run.
+
 A practical update loop retains `Font` storage, `Faces`, `PagePool`, and
-`Atlas`; shapes only changed row/style runs; records all such runs with one
-`recordUnhintedRuns` call; rebuilds the cheap placed picture; and applies
-`planDelta`/`DeviceAtlas.uploadDelta` to the existing binding. Recording is
-idempotent, so repeated characters add no atlas work. Stable `font_id` values
-must identify the same stable `Font` pointers everywhere that feeds an atlas.
-Adding or reordering fallback faces requires building a new `Faces` value;
-already-recorded atlas keys remain valid when those identities stay stable.
+`Atlas`; shapes only changed row/style runs; records those runs with the
+matching plural verb (`recordUnhintedRuns`, `recordAutohintRuns`, or
+`recordTtHintRuns`); rebuilds the cheap placed picture; and applies
+`planDelta`/`DeviceAtlas.uploadDelta` to the existing binding. Hinted modes
+still record unhinted bases first for fallback and analysis dependencies.
+Recording is idempotent, so repeated characters add no atlas work. Stable
+`font_id` values must identify the same stable `Font` pointers everywhere
+that feeds an atlas. Adding or reordering fallback faces requires building a
+new `Faces` value; already-recorded atlas keys remain valid when those
+identities stay stable.
 
 The current color-font path is COLRv0. Dynamic terminals can use
 `ColrHandling.layers` plus cell placement's `colr = true`: this expands solid
@@ -434,7 +444,9 @@ The complete worked example is
 [cell model](src/demo/terminal/screen.zig),
 [simulation](src/demo/terminal/simulation.zig), and
 [snail-backed view](src/demo/terminal/view.zig). Run it with
-`zig build run-terminal` (`R` resets, `P` pauses, and `C` cycles renderers).
+`zig build run-terminal` (`R` resets, `P` pauses, `-`/`+` changes text size,
+`H` cycles unhinted/auto-y/auto-df/TrueType hinting, and `C` cycles
+renderers).
 
 Grid-fit hinting needs integer device-pixel origins: pair strong policies or
 `tt_hint` with `RunSnap.origins` (proportional) or `.columns` (monospace
