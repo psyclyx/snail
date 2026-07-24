@@ -1349,5 +1349,19 @@ fn addRoundedCard(
 fn hintPpem26_6(font_size: f32, ppem_scale: f32) !u32 {
     const ppem = font_size * ppem_scale;
     if (!std.math.isFinite(ppem) or ppem < 1.0) return error.HintUnavailable;
-    return @intFromFloat(@round(@min(ppem, 4096.0) * 64.0));
+    const max_26_6 = snail.TtHintPpem.max_26_6;
+    const max_ppem = @as(f32, @floatFromInt(max_26_6)) / 64.0;
+    if (ppem >= max_ppem) return max_26_6;
+    return @intFromFloat(@round(ppem * 64.0));
+}
+
+test "banner hint ppem clamps extreme zoom to the record-key limit" {
+    try std.testing.expectEqual(@as(u32, 16 * 64), try hintPpem26_6(16.0, 1.0));
+
+    const extreme = try hintPpem26_6(96.0, 100.0);
+    try std.testing.expectEqual(snail.TtHintPpem.max_26_6, extreme);
+    try snail.TtHintPpem.uniform(extreme).validate();
+
+    try std.testing.expectError(error.HintUnavailable, hintPpem26_6(0.0, 1.0));
+    try std.testing.expectError(error.HintUnavailable, hintPpem26_6(16.0, std.math.inf(f32)));
 }
