@@ -196,15 +196,14 @@ pub const Assets = struct {
     /// em-space.
     has_regular_hinter: bool,
 
-    pub const face_count: usize = 10;
+    pub const face_count: usize = 9;
     pub const font_count: usize = 7;
 
-    /// Logical-face → font index (into `fonts`). The shaper carries 10
-    /// faces (regular/bold/italic/bold-italic/semi-bold/arabic/devanagari/
-    /// symbols/thai/emoji); the underlying `Font` set deduplicates back to
-    /// 6 (regular, bold, arabic, devanagari, symbols, thai, emoji+symbols)
-    /// by reusing regular for italic and bold for bold-italic, since the
-    pub const face_to_font_id = [face_count]u32{ 0, 1, 0, 1, 0, 2, 3, 4, 5, 6 };
+    /// Logical-face → font index (into `fonts`). The shaper carries 9
+    /// faces (regular/bold/italic/bold-italic/arabic/devanagari/symbols/
+    /// thai/emoji); the underlying `Font` set deduplicates back to 7 by
+    /// reusing regular for italic and bold for bold-italic.
+    pub const face_to_font_id = [face_count]u32{ 0, 1, 0, 1, 2, 3, 4, 5, 6 };
 
     pub fn init(allocator: Allocator) !Assets {
         const fonts = try allocator.alloc(snail.Font, font_count);
@@ -227,7 +226,6 @@ pub const Assets = struct {
             .{ .font = &fonts[1], .font_id = 1, .weight = .bold },
             .{ .font = &fonts[0], .font_id = 0, .italic = true },
             .{ .font = &fonts[1], .font_id = 1, .weight = .bold, .italic = true },
-            .{ .font = &fonts[0], .font_id = 0, .weight = .semi_bold },
             .{ .font = &fonts[2], .font_id = 2, .fallback = true },
             .{ .font = &fonts[3], .font_id = 3, .fallback = true },
             .{ .font = &fonts[4], .font_id = 4, .fallback = true },
@@ -319,7 +317,6 @@ pub const Assets = struct {
             &self.fonts[1],
             &self.fonts[0],
             &self.fonts[1],
-            &self.fonts[0],
             &self.fonts[2],
             &self.fonts[3],
             &self.fonts[4],
@@ -796,8 +793,6 @@ const BannerBuilder = struct {
             _ = try self.addText(.{ .italic = true }, "Italic", x, y + body_size, body_size, text_color);
             y += line_h;
             _ = try self.addText(.{ .weight = .bold, .italic = true }, "Bold Italic", x, y + body_size, body_size, text_color);
-            y += line_h;
-            _ = try self.addText(.{ .weight = .semi_bold }, "Synthetic", x, y + body_size, body_size, text_color);
             y += line_h + 8 * s;
 
             _ = try self.addText(.{}, "Mixed styles", x, y + sub_label_size, sub_label_size, muted);
@@ -1209,7 +1204,7 @@ const BannerBuilder = struct {
     fn allRunGlyphsHintable(self: *const BannerBuilder, shaped: *const snail.ShapedText) bool {
         // We only have a hinter for face 0 today; if every glyph in the run
         // is from face 0 we can take the hinted path. Otherwise fall back
-        // to unhinted (synthetic / fallback / emoji faces don't hint).
+        // to unhinted (styled / fallback / emoji faces don't hint).
         if (!self.assets.has_regular_hinter) return false;
         for (shaped.glyphs) |g| {
             if (g.face_index != 0) return false;
