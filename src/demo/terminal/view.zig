@@ -231,7 +231,7 @@ pub const View = struct {
                 .style = styleFont(style),
                 .direction = .ltr,
                 .script = null,
-                .language = "en",
+                .language = null,
                 .features = &features,
             });
             errdefer shaped.deinit();

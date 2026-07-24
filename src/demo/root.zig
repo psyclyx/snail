@@ -1,6 +1,7 @@
 const entry = switch (@import("demo_entry").value) {
     .banner => @import("app/banner.zig"),
     .game => @import("app/game.zig"),
+    .terminal => @import("app/terminal.zig"),
     .autohint_compare => @import("autohint/compare.zig"),
     .autohint_character_diff => @import("tools/autohint/character_diff.zig"),
     .autohint_diff => @import("tools/autohint/diff.zig"),

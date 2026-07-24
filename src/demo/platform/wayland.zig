@@ -32,6 +32,7 @@ pub const KEY_X = c.KEY_X;
 pub const KEY_H = c.KEY_H;
 pub const KEY_B = c.KEY_B;
 pub const KEY_C = c.KEY_C;
+pub const KEY_P = c.KEY_P;
 pub const KEY_T = c.KEY_T;
 pub const KEY_O = c.KEY_O;
 pub const KEY_V = c.KEY_V;

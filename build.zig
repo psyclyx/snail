@@ -7,6 +7,7 @@ const version = "0.12.1";
 const DemoEntry = enum {
     banner,
     game,
+    terminal,
     autohint_compare,
     autohint_character_diff,
     autohint_diff,
@@ -888,16 +889,13 @@ fn addScreenshotSteps(
     }
 }
 
-fn addInteractiveDemoStep(
+fn createInteractiveDemoModule(
     b: *std.Build,
     config: BuildConfig,
     modules: ProjectModules,
-) void {
-    // Interactive demo: default to ReleaseFast unless the user explicitly
-    // overrides via -Doptimize. The demo is CPU-bound enough on the
-    // shape/emit path that a Debug build is visibly slower; explicit
-    // override (e.g. `-Doptimize=Debug` for debugging) still wins.
-    const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    demo_optimize: std.builtin.OptimizeMode,
+    entry: DemoEntry,
+) *std.Build.Module {
     const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.shaders_gl);
     const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
     const demo_mod = b.createModule(.{
@@ -915,10 +913,7 @@ fn addInteractiveDemoStep(
             .{ .name = "vulkan_types", .module = modules.demo_vulkan_types },
         },
     });
-    selectDemoEntry(b, demo_mod, .banner);
-    // Interactive demo wraps every backend's platform layer: Wayland +
-    // EGL/OpenGL + Vulkan + libwayland-client. The platform sources live
-    // alongside the demo and reference snail's public types only.
+    selectDemoEntry(b, demo_mod, entry);
     demo_mod.linkSystemLibrary("wayland-client", .{});
     demo_mod.addIncludePath(b.path("src/demo/platform"));
     demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
@@ -928,7 +923,18 @@ fn addInteractiveDemoStep(
     demo_mod.linkSystemLibrary("OpenGL", .{});
     demo_mod.linkSystemLibrary("GLESv2", .{});
     demo_mod.linkSystemLibrary("vulkan", .{});
+    return demo_mod;
+}
 
+fn addInteractiveDemoStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    // Interactive demos default to ReleaseFast unless the user explicitly
+    // overrides via -Doptimize.
+    const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const demo_mod = createInteractiveDemoModule(b, config, modules, demo_optimize, .banner);
     const demo_exe = b.addExecutable(.{ .name = "snail-demo", .root_module = demo_mod });
     const install_demo_artifact = b.addInstallArtifact(demo_exe, .{});
     const install_demo_step = b.step("install-demo", "Install the interactive Wayland banner demo");
@@ -937,6 +943,34 @@ fn addInteractiveDemoStep(
     if (b.args) |args| run_demo.addArgs(args);
     const run_step = b.step("run", "Run the interactive Wayland banner demo");
     run_step.dependOn(&run_demo.step);
+}
+
+fn addTerminalDemoStep(
+    b: *std.Build,
+    config: BuildConfig,
+    modules: ProjectModules,
+) void {
+    const demo_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
+    const demo_mod = createInteractiveDemoModule(b, config, modules, demo_optimize, .terminal);
+    const demo_exe = b.addExecutable(.{
+        .name = "snail-terminal-demo",
+        .root_module = demo_mod,
+    });
+
+    const install_artifact = b.addInstallArtifact(demo_exe, .{});
+    const install_step = b.step(
+        "install-terminal-demo",
+        "Install the interactive terminal text demo",
+    );
+    install_step.dependOn(&install_artifact.step);
+
+    const run_artifact = b.addRunArtifact(demo_exe);
+    if (b.args) |args| run_artifact.addArgs(args);
+    const run_step = b.step(
+        "run-terminal",
+        "Run the interactive terminal text integration demo",
+    );
+    run_step.dependOn(&run_artifact.step);
 }
 
 /// Compile the game's custom Vulkan material shaders (native Slang; the
@@ -1395,6 +1429,7 @@ pub fn build(b: *std.Build) void {
     addTestSteps(b, config, modules);
     addScreenshotSteps(b, config, modules);
     addInteractiveDemoStep(b, config, modules);
+    addTerminalDemoStep(b, config, modules);
     addGameDemoStep(b, config, modules);
     addMinimalGlStep(b, config, modules);
     addMinimalWgpuStep(b, config, modules);
