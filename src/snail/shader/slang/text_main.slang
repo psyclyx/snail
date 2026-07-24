@@ -1,6 +1,4 @@
-// Native-Slang port of snail_text_main.glsl — the regular-text fragment
-// entry logic. The GLSL fragment is the behavioral spec: every epsilon,
-// literal, and operation order is preserved.
+// Canonical regular-text fragment entry logic.
 module text_main;
 
 import resource_types;

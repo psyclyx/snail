@@ -197,6 +197,7 @@ pub fn StateFor(comptime gl: type, comptime config: anytype) type {
             gl.glBindTexture(gl.GL_TEXTURE_2D, self.dst_tex);
             const block = [4]i32{ @intFromEnum(pass), 0, 0, 0 };
             gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, self.mode_ubo);
+            gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, self.mode_ubo);
             gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, 16, &block);
             gl.glDrawArrays(gl.GL_TRIANGLES, 0, 3);
         }

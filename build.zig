@@ -312,7 +312,7 @@ const ProjectModules = struct {
     render_state: *std.Build.Module,
     raster: *std.Build.Module,
     /// The public aggregate `snail-shaders` module (every generated
-    /// target; needs slangc + spirv-cross when consumed). Used by the
+    /// target; needs slangc when consumed). Used by the
     /// artifact-contract/public-API tests, which deliberately cover all
     /// target accessors.
     shaders: *std.Build.Module,
@@ -321,8 +321,7 @@ const ProjectModules = struct {
     /// Per-target scopes of the same accessor API (same import name
     /// `snail_shaders` in consumers): each depends only on its own
     /// targets' generation steps, so e.g. the GL demos never compile
-    /// WGSL/HLSL/MSL and the WebGPU/D3D11/Metal demos never need
-    /// spirv-cross.
+    /// WGSL/HLSL/MSL.
     shaders_gl: *std.Build.Module, // glsl330 + gles300
     shaders_glsl330: *std.Build.Module, // desktop GL only (perf rows)
     shaders_wgsl: *std.Build.Module,
@@ -1027,6 +1026,7 @@ fn addMinimalGlStep(
         .imports = &.{
             .{ .name = "assets", .module = modules.assets },
             .{ .name = "snail", .module = modules.snail },
+            .{ .name = "snail_shaders", .module = modules.shaders_glsl330 },
         },
     });
     mod.linkSystemLibrary("EGL", .{});
@@ -1347,9 +1347,6 @@ fn addMinimalWgpuStep(
 
 pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
-    // Consumers use `dependency.namedLazyPath(...)` for slangc `-I` arguments;
-    // the paths stay dependency-relative instead of assuming their build root.
-    b.addNamedLazyPath("snail_glsl", b.path("src/snail/shader/glsl"));
     // The native-Slang module catalog. Callers authoring their own Slang
     // families `import` snail's caller-facing modules (see the "Caller
     // integration" section of src/snail/shader/slang/README-notes for the
@@ -1367,7 +1364,7 @@ pub fn build(b: *std.Build) void {
     // The whole generated-shader matrix as lazy Run steps; only consumers
     // of a generated-shaders module (or the demo Vulkan/game SPIR-V legs)
     // depend on them, so `zig build` targets that never touch generated
-    // shaders never need slangc/spirv-cross. Each module scopes the one
+    // shaders never need slangc. Each module scopes the one
     // accessor API to a target subset, so every consumer generates only
     // the targets it embeds (the aggregate stays the published
     // `snail-shaders` module and the test root).

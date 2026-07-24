@@ -5,8 +5,8 @@
 //! generated MSL contract textually; macOS CI runtime-compiles every MSL
 //! artifact with `newLibraryWithSource:`, builds the scene-used pipelines,
 //! renders on a real Metal GPU, and gates the image.
-//! The hand-written GLSL fragment catalog (`snail.shader.glsl`) remains
-//! available as the behavioral spec and the composition surface for GL hosts.
+//! The Slang modules are the sole authored shader source; every target artifact,
+//! including GLSL 330 and GLES 300, is generated from them.
 //!
 //! This file is the shared root of the generated-shaders modules: the
 //! aggregate `snail-shaders` (every target) and the per-target scopes

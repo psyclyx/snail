@@ -26,7 +26,7 @@ Treat this as a from-scratch migration.
 - `zig build test-core` runs the library, software renderer, support code, and
   public source-API gate without shader-generation tools. `zig build test`
   additionally runs the generated-shader API/contracts and requires `slangc`,
-  `spirv-cross`, and `naga`.
+  and `naga`.
 - Construction and sizing that can fail are now explicitly fallible:
   `PagePool.init`, `Atlas.init`, `atlas_upload.sizes`/planner initialization,
   and `snail-raster.Renderer.init`/`reinitBuffer` (which now take length-owned
@@ -93,14 +93,14 @@ Treat this as a from-scratch migration.
   independent family pipelines compile concurrently, and Vulkan SPIR-V is
   optimized with Slang `-O2` before reaching the driver (reducing the path
   fragment module from roughly 172 KiB to 107 KiB with Slang 2026.5.2).
-- Shipped coverage-heavy GL/GLES shaders now preserve helper functions through
-  the Slang-to-SPIRV-Cross pipeline instead of presenting drivers with giant
-  inlined entry points. The generated GL/GLES matrix shrinks from 2.65 MiB to
-  656 KiB overall; path and COLR fragments each shrink from 298 KiB to 44 KiB.
-- OpenGL ships driver-oriented complete stages under
-  `snail.shader.glsl.programs` and the reference renderer uses them by
-  default. COLR and path now share one painted program instead of linking the
-  same evaluator twice. Autohint records resolve semantic relationships once
+- GLSL 330 and GLES 300 are now generated directly by Slang from the sole
+  authored shader source tree. A small in-tree pass normalizes Slang's
+  Vulkan-flavored surface syntax (version, bindings, varying names, matrix
+  layout) without a SPIR-V/SPIRV-Cross IR round trip. This preserves authored
+  helpers and structured control flow and removes the handwritten GLSL mirror
+  and the SPIRV-Cross build dependency.
+- COLR and path share one painted program instead of linking the same evaluator
+  twice. Autohint records resolve semantic relationships once
   at serialization, allowing the shader to remove its quadratic fallback
   searches; validated runtime counts bound fitter loops so NVIDIA cannot
   expand every 16/32-element pass during link. Structured TT-hinted and
@@ -113,9 +113,10 @@ Treat this as a from-scratch migration.
   table and represents transient hinted/blue/natural membership as bitmasks,
   avoiding scalar expansion of eleven parallel arrays while also reducing
   private state and runtime. With the NVIDIA disk cache disabled on an RTX 3090
-  (driver 595.84), the reference renderer's full desktop GL shader set links in
-  about 2.27 seconds cold versus roughly 16.3 seconds before these changes; no
-  autohint program exceeds 0.66 seconds.
+  (driver 595.84), the Slang-only reference renderer's full desktop GL shader
+  set links in about 3.27 seconds cold versus roughly 16.3 seconds before these
+  changes. The previous handwritten mirror reached 2.27 seconds but required
+  maintaining a second implementation.
 - Upload planning distinguishes exact snapshots, direct append-only children,
   branches, and unrelated atlases using full snapshot lineage. Delta plans
   copy only changed page spans for direct growth; branches/unrelated snapshots
@@ -194,15 +195,13 @@ Treat this as a from-scratch migration.
   binding-name contracts.
   Artifacts are not checked in: they are produced at build time into the
   zig cache, only for builds that import the module, so the Slang
-  toolchain (slangc + SPIRV-Cross) is needed exactly then and consumers
+  toolchain (`slangc`) is needed exactly then and consumers
   of `snail`/`snail-raster` alone never need it (`zig build gen-shaders`
   optionally materializes the artifacts into `zig-out/shaders/` for
   inspection). Callers can also compose at the Slang level:
   `import text_sample` from a caller-authored family samples glyph
   coverage inside an engine-owned material shader (the game demo's
-  `game_material.slang` is the worked example). The GLSL fragment
-  catalog (`shader.glsl`) stays as the behavioral spec and the GL
-  source-injection surface. Validated by the headless GL, GLES, Vulkan,
+  `game_material.slang` is the worked example). Validated by the headless GL, GLES, Vulkan,
   and wgpu-native (`run-minimal-wgpu`) examples and gates.
 - **LCD subpixel AA for hinted text, on every dual-source backend.** AA
   policy (`RasterOptions.subpixel_order`) and hinting mode now compose:

@@ -105,9 +105,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
             .gl33, .gl44 => @embedFile("game_material.frag.glsl330"),
             .gles30 => @embedFile("game_material.frag.gles300"),
         };
-        // SPIRV-Cross binds the records storage under the raw uniform name
-        // on desktop GL (texel buffers keep their identity) and under a
-        // combined dummy-sampler name on GLES (2D texture).
+        // Direct Slang GLSL keeps the records uniform's source-derived name
+        // for both desktop's texel buffer and GLES's 2D texture.
         const records_uniform_name = switch (variant) {
             .gl33, .gl44 => slang_gen.glsl_text_sample_records_name,
             .gles30 => slang_gen.gles_text_sample_records_name,

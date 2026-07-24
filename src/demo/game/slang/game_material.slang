@@ -1,17 +1,10 @@
-// Native-Slang game material shader — the stage-C migration of the last
-// composed-GLSL consumer. This is the worked example of the embeddable
+// Canonical game material shader and worked example of the embeddable
 // composition case: a CALLER-authored material (text carved into a rough,
 // lit surface) that imports snail's `text_sample` module and calls
 // `snailTextSamplePremulLinearWithFootprint` against its own record
 // storage. The GL dialects are generated at build time and wired in as
 // anonymous imports (build.zig addGameShaderGl); the demo Vulkan build
 // compiles the SPIR-V leg directly (build.zig addGameShaderSpirv).
-//
-// Ported 1:1 from the retired composed sources (the behavioral spec — every
-// literal and operation order preserved):
-//   glsl/game_material.vert + gl_material.zig vertex_src   → vertexMain
-//   glsl/game_material_body.glsl                            → snailGameMaterial
-//   glsl/game_material.frag + gl_material.zig fragment_src → fragmentMain
 //
 // Per-target record storage (the ISnailTextRecords implementations):
 //   Vulkan      read-only SSBO, caller-owned set 1 binding 0

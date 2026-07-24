@@ -1,6 +1,4 @@
-// Native-Slang port of snail_text_subpixel_body.glsl — the LCD subpixel
-// text evaluator (dual-source blended). The GLSL fragment is the behavioral
-// spec: every epsilon, literal, and operation order is preserved.
+// LCD subpixel text evaluator (dual-source blended). This module is canonical.
 //
 // The per-channel coverage evaluator is the text-family evaluator run at
 // three subpixel phases; it reuses text_coverage's solvers/accumulators

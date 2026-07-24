@@ -1,6 +1,5 @@
-// Native-Slang port of snail_render_abi.glsl — the shared data-ABI
-// constants. Values are the behavioral spec; keep them byte-identical to
-// the GLSL catalog.
+// Shared shader data-ABI constants. This module is the canonical shader-side
+// definition; Zig tests keep these values byte-identical to the CPU ABI.
 module render_abi;
 
 public static const int SNAIL_RENDER_ABI_VERSION = 2;

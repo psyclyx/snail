@@ -9,6 +9,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const assets = @import("assets");
+const slang_gen = @import("snail_shaders");
 
 const c = @cImport({
     @cDefine("GL_GLEXT_PROTOTYPES", "1");
@@ -25,66 +26,13 @@ const height = 420;
 const text = "Hello, world!";
 const ppem: u32 = 34 * 64;
 
-const glsl = snail.shader.glsl;
-const vertex_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.vertex_interface) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.vertex_body) ++ "\n" ++
-    "void main() { snailVertex(); }\n";
-const autohint_vertex_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.autohint_vertex_interface) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.vertex_body) ++ "\n" ++
-    glsl.source(.autohint_vertex_body) ++ "\n" ++
-    "void main() { snailAutohintVertex(); }\n";
-const regular_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.regular_text_body) ++ "\n" ++
-    "void main() { snailTextFragment(); }\n";
-const autohint_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.autohint_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.autohint_fast_body) ++ "\n" ++
-    "void main() { snailAutohintFragment(); }\n";
-const tt_hint_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.tt_hinted_text_body) ++ "\n" ++
-    "void main() { snailTtHintedTextFragment(); }\n";
-const path_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.path_body) ++ "\n" ++
-    "void main() { snailPathFragment(); }\n";
-const colr_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.path_body) ++ "\n" ++
-    glsl.source(.colr_body) ++ "\n" ++
-    "void main() { snailColrFragment(); }\n";
+const vertex_source = slang_gen.textGlsl330(.vertex);
+const autohint_vertex_source = slang_gen.autohintGlsl330(.vertex);
+const regular_fragment_source = slang_gen.textGlsl330(.fragment);
+const autohint_fragment_source = slang_gen.autohintGlsl330(.fragment);
+const tt_hint_fragment_source = slang_gen.ttHintedFragGlsl330();
+const path_fragment_source = slang_gen.pathFragGlsl330();
+const colr_fragment_source = slang_gen.colrFragGlsl330();
 
 const Programs = struct {
     regular: c.GLuint,
@@ -92,15 +40,23 @@ const Programs = struct {
     tt_hint: c.GLuint,
     path: c.GLuint,
     colr: c.GLuint,
+    params_ubo: c.GLuint,
 
     fn init() !Programs {
-        var self = Programs{ .regular = 0, .autohint = 0, .tt_hint = 0, .path = 0, .colr = 0 };
+        var self = Programs{ .regular = 0, .autohint = 0, .tt_hint = 0, .path = 0, .colr = 0, .params_ubo = 0 };
         errdefer self.deinit();
         self.regular = try linkProgram(vertex_source, regular_fragment_source);
         self.autohint = try linkProgram(autohint_vertex_source, autohint_fragment_source);
         self.tt_hint = try linkProgram(vertex_source, tt_hint_fragment_source);
         self.path = try linkProgram(vertex_source, path_fragment_source);
         self.colr = try linkProgram(vertex_source, colr_fragment_source);
+        c.glGenBuffers(1, &self.params_ubo);
+        c.glBindBuffer(c.GL_UNIFORM_BUFFER, self.params_ubo);
+        c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(slang_gen.reflection.PushConstants), null, c.GL_DYNAMIC_DRAW);
+        c.glBindBuffer(c.GL_UNIFORM_BUFFER, 0);
+        inline for (.{ self.regular, self.autohint, self.tt_hint, self.path, self.colr }) |program| {
+            setupProgram(program);
+        }
         return self;
     }
 
@@ -110,6 +66,7 @@ const Programs = struct {
         c.glDeleteProgram(self.tt_hint);
         c.glDeleteProgram(self.path);
         c.glDeleteProgram(self.colr);
+        if (self.params_ubo != 0) c.glDeleteBuffers(1, &self.params_ubo);
     }
 
     fn forKind(self: Programs, kind: snail.render.records.ShapeKind) c.GLuint {
@@ -391,7 +348,7 @@ pub fn main() !void {
         const run = instances[batch.first_instance..][0..batch.instance_count];
         const run_bytes = std.mem.sliceAsBytes(run);
         const program = programs.forKind(batch.kind);
-        bindProgram(program, projection);
+        bindProgram(program, programs.params_ubo, projection);
         c.glBindBuffer(c.GL_ARRAY_BUFFER, geometry.vbo);
         c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @intCast(run_bytes.len), run_bytes.ptr);
         c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(batch.instance_count));
@@ -585,20 +542,32 @@ fn intAttribute(location: c.GLuint, count: c.GLint, stride: c.GLsizei, offset: u
     c.glEnableVertexAttribArray(location);
 }
 
-fn bindProgram(program: c.GLuint, projection: snail.Mat4) void {
+fn setupProgram(program: c.GLuint) void {
     c.glUseProgram(program);
-    c.glUniformMatrix4fv(c.glGetUniformLocation(program, "u_mvp"), 1, c.GL_FALSE, &projection.data);
-    c.glUniform2f(c.glGetUniformLocation(program, "u_viewport"), width, height);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_curve_tex"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_band_tex"), 1);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_layer_tex"), 2);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_image_tex"), 3);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_layer_base"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_subpixel_order"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_output_srgb"), 0);
-    c.glUniform1f(c.glGetUniformLocation(program, "u_coverage_exponent"), 1.0);
-    c.glUniform1f(c.glGetUniformLocation(program, "u_dither_scale"), 0.0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_mask_output"), 0);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_curve_tex_name), 0);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_band_tex_name), 1);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_layer_tex_name), 2);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_image_tex_name), 3);
+    const block = c.glGetUniformBlockIndex(program, slang_gen.glsl_vertex_block_name);
+    std.debug.assert(block != c.GL_INVALID_INDEX);
+    c.glUniformBlockBinding(program, block, 0);
+}
+
+fn bindProgram(program: c.GLuint, params_ubo: c.GLuint, projection: snail.Mat4) void {
+    const params = slang_gen.reflection.PushConstants{
+        .mvp = projection.data,
+        .viewport = .{ width, height },
+        .subpixel_order = 0,
+        .output_srgb = 0,
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+        .dither_scale = 0.0,
+        .mask_output = 0,
+    };
+    c.glUseProgram(program);
+    c.glBindBuffer(c.GL_UNIFORM_BUFFER, params_ubo);
+    c.glBufferSubData(c.GL_UNIFORM_BUFFER, 0, @sizeOf(@TypeOf(params)), &params);
+    c.glBindBufferBase(c.GL_UNIFORM_BUFFER, 0, params_ubo);
 }
 
 fn compileShader(kind: c.GLenum, source: [:0]const u8) !c.GLuint {

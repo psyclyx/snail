@@ -1,23 +1,19 @@
-// Native-Slang port of snail_path_frag_body.glsl — the painted-family
-// (path / COLR) segment coverage evaluator and paint-record sampler. The
-// GLSL fragment is the behavioral spec: every epsilon, literal, and
-// operation order is preserved.
+// Canonical painted-family (path / COLR) segment coverage evaluator and
+// paint-record sampler.
 //
-// Structural differences from GLSL (plumbing only, math unchanged):
+// Per-target plumbing:
 //  - the four textures (+ the image sampler) and the per-draw scalars are
-//    explicit function parameters (no cross-module preprocessor state);
-
-import resource_types;
-//    the family entry file owns the global bindings.
+//    explicit function parameters; the family entry file owns global bindings.
 //  - `texelFetch(tex, ivec3(l, a), 0)` becomes `tex.Load(int4(l, a, 0))`;
 //    `texture(u_image_tex, vec3(uv, layer))` becomes
 //    `image_tex.Sample(image_sampler, float3(uv, layer))`.
-//  - GLSL `mod(t, 2.0)` is written out as its spec definition
+//  - GLSL-compatible `mod(t, 2.0)` is written out as its spec definition
 //    `t - 2.0 * floor(t / 2.0)` (Slang's `fmod` is truncation-based).
 //  - `gl_FragCoord.xy` arrives as the `frag_coord` parameter (the family
 //    entry passes its SV_Position input).
 module path_body;
 
+import resource_types;
 import render_abi;
 import color_common;
 import coverage_common;

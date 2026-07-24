@@ -1,7 +1,5 @@
-// Native-Slang port of snail_autohint_vert_body.glsl — the vertex half of
-// the autohint family: fit immutable autohint semantics once at the quad's
-// shared provoking vertex. The GLSL fragment is the behavioral spec: every
-// epsilon, literal, and operation order is preserved.
+// Vertex half of the autohint family: fit immutable autohint semantics once
+// at the quad's shared provoking vertex. This module is canonical.
 module autohint_vertex;
 
 import resource_types;

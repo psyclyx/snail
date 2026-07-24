@@ -1,5 +1,4 @@
-// Native-Slang port of snail_color_common.glsl. The GLSL fragment is the
-// behavioral spec: every epsilon, literal, and operation order is preserved.
+// Canonical shared color-transfer implementation.
 module color_common;
 
 public float srgbDecode(float c) {

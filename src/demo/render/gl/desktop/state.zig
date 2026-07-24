@@ -407,6 +407,7 @@ fn TextStateFor(comptime backend: Backend) type {
                     .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
                 };
                 gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
+                gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, prog_state.ubo);
                 if (!cache_slot.push_block_set or !std.mem.eql(u8, std.mem.asBytes(&cache_slot.push_block), std.mem.asBytes(&block))) {
                     gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, @sizeOf(gl_common.NativeTextPushBlock), &block);
                     cache_slot.push_block = block;

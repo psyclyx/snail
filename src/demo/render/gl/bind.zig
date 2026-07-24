@@ -2,12 +2,10 @@
 //!
 //! In the embeddable-only model the library ships the contract as *data*
 //! The program locations, texture handles, and draw binding policy are all
-//! caller-owned values defined here; Snail only supplies shader algorithms and
-//! packed data contracts.
-//! GL calls — so `snail.shader.glsl` links no OpenGL, exactly like the Vulkan contract links
-//! no Vulkan. The actual `glBindTexture`/`glUniform*` loop lives here, in caller
-//! code, because the caller owns the GL context. This is the GL analog of the
-//! Vulkan reference renderer binding its own descriptor set.
+//! caller-owned values defined here; Snail only supplies generated shader
+//! algorithms and packed data contracts. The actual
+//! `glBindTexture`/`glUniform*` loop lives here because the caller owns the GL
+//! context, just as the Vulkan reference renderer owns its descriptor set.
 //!
 //! `Gl{33,44}Backend` / `Gles30Backend` are thin values over the four atlas
 //! texture handles; `.from(handles)` then `bindProgram` + `bindDrawState`.

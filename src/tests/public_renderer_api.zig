@@ -81,16 +81,7 @@ test "core and external renderers need only the intentional public api" {
         _ = snail.atlas_upload.Planner;
         _ = snail.atlas_upload.OwnedPlanner;
         _ = snail.atlas_upload.Region;
-        _ = snail.shader.glsl.source(.coverage_common);
-        _ = snail.shader.glsl.fileName(.coverage_common);
-        _ = snail.shader.glsl.dependencies.regular_text;
-        _ = snail.shader.glsl.programs.Gl330.painted_fragment;
-        _ = snail.shader.glsl.programs.Gl330.autohint_subpixel_fragment;
-        if (@hasDecl(snail.shader, "generated")) @compileError("the generated catalog moved to the snail-shaders module");
-        if (@hasDecl(snail.shader.glsl, "ATLAS_SET")) @compileError("descriptor layouts belong to callers");
-        if (@hasDecl(snail.shader.glsl, "RECORDS_SET")) @compileError("descriptor layouts belong to callers");
-        if (@hasDecl(snail.shader, "wgsl")) @compileError("the generated per-target catalog replaced shader.wgsl");
-        if (@hasDecl(snail.shader, "slang_generated")) @compileError("the generated catalog is the snail-shaders module");
+        if (@hasDecl(snail, "shader")) @compileError("generated shaders live in the separate snail-shaders module");
 
         _ = raster.Renderer;
         _ = raster.DeviceAtlas;

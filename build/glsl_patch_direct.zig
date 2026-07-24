@@ -6,6 +6,7 @@
 //! varying locations. The shader modules specialize GL resources to combined
 //! samplers, so the remaining rewrite is mechanical:
 //!  - select `#version 330 core` or `#version 300 es`;
+//!  - provide GLES highp defaults for numeric and sampler types;
 //!  - remove Vulkan-only binding/default-layout declarations;
 //!  - rename linked varyings by location (`snail_io<N>`) because GLSL < 4.10
 //!    links them by name;
@@ -160,6 +161,10 @@ pub fn main(init: std.process.Init) !void {
             if (dialect == .gles300) {
                 try appendLine(&normalized, gpa, "precision highp float;");
                 try appendLine(&normalized, gpa, "precision highp int;");
+                try appendLine(&normalized, gpa, "precision highp sampler2D;");
+                try appendLine(&normalized, gpa, "precision highp sampler2DArray;");
+                try appendLine(&normalized, gpa, "precision highp usampler2D;");
+                try appendLine(&normalized, gpa, "precision highp usampler2DArray;");
             }
             index += 1;
             continue;

@@ -1,8 +1,6 @@
-// Native-Slang port of snail_text_frag_body.glsl — the text-family glyph
-// coverage evaluator. The GLSL fragment is the behavioral spec: every
-// epsilon, literal, and operation order is preserved.
+// Canonical text-family glyph coverage evaluator.
 //
-// Structural differences from GLSL (plumbing only, math unchanged):
+// Per-target plumbing:
 //  - `u_curve_tex` / `u_band_tex` are explicit `Texture2DArray` parameters
 //    (Slang-native style; the family entry file owns the global bindings).
 //  - `texelFetch(tex, ivec3(loc, layer), 0)` becomes

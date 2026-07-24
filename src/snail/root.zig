@@ -146,17 +146,6 @@ pub const snap = @import("snap.zig");
 /// Stable byte-layout contract for caller-owned renderers.
 pub const render = @import("render.zig");
 
-/// Shader surface. `glsl` is the hand-written, entry-point-free GLSL
-/// fragment catalog — the behavioral spec and the composition surface for
-/// GL hosts that inject snail's coverage math into their own shaders. The
-/// complete per-target catalog produced from the native-Slang sources
-/// (`shader/slang/`) lives in the separate `snail-shaders` module
-/// (`@import("snail_shaders")`), generated at build time — so consumers of
-/// `snail` alone never need the Slang toolchain.
-pub const shader = struct {
-    pub const glsl = @import("shader/glsl.zig");
-};
-
 test {
     _ = math;
     _ = color;
@@ -189,6 +178,4 @@ test {
     _ = @import("snap.zig");
     _ = @import("util/hamt.zig");
     _ = render;
-    _ = shader;
-    _ = shader.glsl;
 }

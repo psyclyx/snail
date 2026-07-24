@@ -1,9 +1,7 @@
-// Native-Slang port of snail_autohint_warp.glsl — transient autohint
-// fitting (a bounded port of font/autohint/warp.zig fitAxis + inverseWarp).
-// The GLSL fragment is the behavioral spec: every epsilon, literal, and
-// operation order is preserved.
+// Canonical transient autohint fitting (a bounded port of
+// font/autohint/warp.zig fitAxis + inverseWarp).
 //
-// Structural differences from GLSL (plumbing only, math unchanged):
+// Shader-specific plumbing:
 //  - The stage split (SNAIL_AUTOHINT_VERTEX: 16-knot bound, resolved
 //    semantics required) becomes generic parameters
 //    `<let N : int, let IS_VERTEX : bool>`; the compile-time branches fold
@@ -71,9 +69,8 @@ public bool snailAhCount(int max_knots, float encoded, out int count) {
 }
 
 // Decode a binary16 value using only uint32/float32 operations. Slang's
-// f16tof32 intrinsic lowers to SPIR-V 16-bit arithmetic; SPIRV-Cross then
-// correctly requires Int16 + FP16 extensions which are not part of desktop
-// GL 3.3 or GLES 3.0. Every binary16 value is exactly representable as an
+// f16tof32 intrinsic requires native Int16 + FP16 arithmetic, which is not
+// part of baseline GL 3.3 or GLES 3.0. Every binary16 value is exactly representable as an
 // f32, including subnormals. Preserve infinities and NaNs so the policy's
 // finite-value validation keeps rejecting corrupt/non-finite payloads.
 public float snailAhDecodeFloat16(uint bits) {

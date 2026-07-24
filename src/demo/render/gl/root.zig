@@ -3,8 +3,8 @@
 //! Relocated out of the snail library as part of the embeddable-only direction
 //! (snail is a font library, not a renderer): the caller owns the GL context,
 //! programs, VAO, cache, and draw loop. snail provides only the pipeline
-//! packed contracts + includable shader functions (`snail.shader.glsl`) and
-//! the backend-agnostic atlas upload plan (`snail.atlas_upload.Planner`).
+//! packed contracts, generated Slang shader modules, and the backend-agnostic
+//! atlas upload plan (`snail.atlas_upload.Planner`).
 //!
 //! This module is the worked example integrators copy. It bundles:
 //!   - `Gl{33,44}Renderer` / `Gles30Renderer` — the all-in-one text renderers.
@@ -29,9 +29,7 @@ pub const Gles30DeviceAtlas = cache.Gles30DeviceAtlas;
 
 pub const linear_resolve = @import("linear_resolve.zig");
 
-// Caller-side texture/uniform binding for the coverage contract (custom-shader
-// path). snail.shader.glsl ships the contract as data; this runs the glBind/glUniform
-// loop. Used by the game's quad_renderer.
+// Caller-side texture/uniform binding for custom generated shader programs.
 const bind = @import("bind.zig");
 pub const Gl33Backend = bind.Gl33Backend;
 pub const Gl44Backend = bind.Gl44Backend;

@@ -1,9 +1,6 @@
-// Native-Slang port of snail_coverage_common.glsl. The GLSL fragment is the
-// behavioral spec: every epsilon, literal, and operation order is preserved.
+// Canonical shared coverage implementation.
 //
-// The one structural difference from GLSL: the coverage-transfer exponent is
-// an explicit function parameter instead of the SNAIL_COVERAGE_EXPONENT
-// macro (native Slang modules have no cross-module preprocessor state).
+// The coverage-transfer exponent is an explicit function parameter.
 module coverage_common;
 
 public static const int kLogBandTextureWidth = 12;

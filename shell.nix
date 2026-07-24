@@ -60,11 +60,10 @@ pkgs.mkShell ({
     # Vulkan/GL backends on Linux, Metal on macOS.
     wgpu-native
     # Build-time shader generation (the `snail-shaders*` modules): slangc
-    # for every target, spirv-cross for the GL dialects. Needed on every
+    # for every target. Needed on every
     # platform since generation moved out of git — the aggregate contract
     # tests (zig build test) and the Metal demo's MSL both generate.
     shader-slang
-    spirv-cross
     # naga CLI: static-validation tripwire for the subpixel WGSL artifact
     # (prelude-injected dual-source entry) — run by `zig build test` and
     # `gen-shaders` on every platform, never by consumer scopes.

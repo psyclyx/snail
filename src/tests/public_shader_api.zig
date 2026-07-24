@@ -1,6 +1,6 @@
 //! Generated-shader API gate. Kept separate from `public_renderer_api.zig` so
 //! `zig build test-core` verifies the complete source-only API without needing
-//! Slang, SPIRV-Cross, or naga.
+//! Slang or naga.
 
 const std = @import("std");
 const snail = @import("snail");
@@ -8,9 +8,7 @@ const generated = @import("snail_shaders");
 
 test "generated shaders remain a separate opt-in module" {
     comptime {
-        if (@hasDecl(snail.shader, "generated")) @compileError("generated shaders must not pull tools into the core module");
-        if (@hasDecl(snail.shader, "wgsl")) @compileError("generated targets belong to snail-shaders");
-        if (@hasDecl(snail.shader, "slang_generated")) @compileError("generated targets belong to snail-shaders");
+        if (@hasDecl(snail, "shader")) @compileError("generated shaders must not pull tools into the core module");
         _ = generated.textSpv(.fragment);
         _ = generated.textWgsl(.fragment);
         _ = generated.textSampleFragGlsl330();

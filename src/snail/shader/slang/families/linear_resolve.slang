@@ -1,10 +1,7 @@
 // Linear-resolve family (GL hosts only): the fullscreen seed/encode pass of
 // the correct-blending recipe (render into a float intermediate in
-// premultiplied LINEAR light, then encode back to the sRGB target). Ports
-// src/snail/shader/glsl/snail_linear_resolve_body.glsl plus the demo's
-// fullscreen-triangle wrapper (src/demo/render/gl/shaders.zig). The GLSL is
-// the behavioral spec: every epsilon, literal, and operation order is
-// preserved.
+// premultiplied LINEAR light, then encode back to the sRGB target), including
+// the fullscreen-triangle wrapper. This module is the canonical implementation.
 //
 // Only the direct GL dialects are generated (gl_only): Vulkan and WebGPU
 // demo paths have no linear-resolve pass — hardware sRGB targets cover

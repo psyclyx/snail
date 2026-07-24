@@ -1,11 +1,19 @@
 Native-Slang shader source — stage A notes (regular-text family)
 ================================================================
 
-CURRENT READER NOTE (2026-07-22): this is a chronological engineering log.
-Sections before "Build-time generation architecture" describe the state at
-that stage and are historical unless explicitly updated. The current shipped
-surface is summarized by "Build-time generation architecture", "Caller
-integration", and "Dual-source WGSL + contract verification" near the end.
+CURRENT READER NOTE (2026-07-23): this is a chronological engineering log.
+The current implementation supersedes the historical pipeline experiments
+below:
+
+  - `src/snail/shader/slang/` is the only authored shader source.
+  - Vulkan SPIR-V, WGSL, HLSL, MSL, GLSL 330, and GLES 300 are all emitted
+    directly by slangc.
+  - GL resource aliases use combined samplers. `build/glsl_patch_direct.zig`
+    only normalizes dialect/interface syntax; it performs no IR translation.
+  - The handwritten `shader.glsl` catalog and SPIRV-Cross dependency are gone.
+
+Everything below is retained as an engineering record and may describe
+superseded states unless explicitly marked current.
 
 One Slang source tree, four targets, regression-gated against the composed
 GLSL catalog. `zig build gen-shaders` (nix-shell: slangc 2026.5.2 + naga)

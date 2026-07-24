@@ -206,6 +206,7 @@ pub const Gles30TextState = struct {
                 .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
             };
             gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
+            gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, prog_state.ubo);
             gl.glBufferSubData(gl.GL_UNIFORM_BUFFER, 0, @sizeOf(gl_common.NativeTextPushBlock), &block);
             return;
         }

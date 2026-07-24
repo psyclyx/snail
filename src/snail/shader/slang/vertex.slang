@@ -1,8 +1,6 @@
-// Native-Slang port of snail_vert.interface.glsl + snail_vert_body.glsl
-// (the non-autohint text path). The GLSL fragments are the behavioral spec:
-// every epsilon, literal, and operation order is preserved.
+// Shared non-autohint text vertex path. This module is canonical.
 //
-// Matrix convention note: GLSL `mat4` indexes columns (`M[c][r]`), Slang
+// Matrix convention note: generated GLSL `mat4` indexes columns (`M[c][r]`), Slang
 // `float4x4` indexes rows (`M[r][c]`). The GLSL body builds
 // `m0 = vec4(M[0].x, M[1].x, M[2].x, M[3].x)` — logical row 0 — which in
 // Slang is simply `mvp[0]`. Likewise GLSL `M * v` is Slang `mul(M, v)`.

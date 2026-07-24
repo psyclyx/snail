@@ -1,9 +1,7 @@
-// Native-Slang port of snail_autohint_fast_main.glsl — the fragment half of
-// the vertex-fit autohint path. The vertex stage supplies draw-time targets
-// and compact source indices; immutable base positions stay in the analysis
-// record. Oversized/perspective axes use the full fitter. The GLSL fragment
-// is the behavioral spec: every epsilon, literal, and operation order is
-// preserved.
+// Canonical fragment half of the vertex-fit autohint path. The vertex stage
+// supplies draw-time targets and compact source indices; immutable base
+// positions stay in the analysis record. Oversized/perspective axes use the
+// full fitter.
 module autohint_frag;
 
 import resource_types;

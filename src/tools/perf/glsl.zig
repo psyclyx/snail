@@ -16,7 +16,6 @@ const cases = [_][]const u8{
     "text-lcd",
     "text-tt-hint",
     "text-autohint",
-    "text-autohint-fallback",
     "text-colr",
     "path",
     "text-sample-8",
@@ -29,89 +28,20 @@ const Args = struct {
     samples: usize = 15,
 };
 
-const glsl = snail.shader.glsl;
-const vertex_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.vertex_interface) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.vertex_body) ++ "\n" ++
-    "void main() { snailVertex(); }\n";
-const autohint_vertex_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.autohint_vertex_interface) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.vertex_body) ++ "\n" ++
-    glsl.source(.autohint_vertex_body) ++ "\n" ++
-    "void main() { snailAutohintVertex(); }\n";
-const autohint_fallback_vertex_source: [:0]const u8 =
-    "#version 330 core\n#define SNAIL_AH_FORCE_FRAGMENT 1\n" ++
-    glsl.source(.autohint_vertex_interface) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.vertex_body) ++ "\n" ++
-    glsl.source(.autohint_vertex_body) ++ "\n" ++
-    "void main() { snailAutohintVertex(); }\n";
-const regular_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.regular_text_body) ++ "\n" ++
-    "void main() { snailTextFragment(); }\n";
-const subpixel_fragment_source: [:0]const u8 =
-    "#version 330 core\n#define SNAIL_DUAL_SOURCE 1\n" ++
-    glsl.source(.text_subpixel_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_subpixel_body) ++ "\n" ++
-    "void main() { snailSubpixelFragment(); }\n";
-const autohint_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.autohint_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.autohint_warp) ++ "\n" ++
-    glsl.source(.autohint_fast_body) ++ "\n" ++
-    "void main() { snailAutohintFragment(); }\n";
-const tt_hinted_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.text_coverage_body) ++ "\n" ++
-    glsl.source(.tt_hinted_text_body) ++ "\n" ++
-    "void main() { snailTtHintedTextFragment(); }\n";
-const path_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.path_body) ++ "\n" ++
-    "void main() { snailPathFragment(); }\n";
-const colr_fragment_source: [:0]const u8 =
-    "#version 330 core\n" ++
-    glsl.source(.render_fragment_interface) ++ "\n" ++
-    glsl.source(.render_abi) ++ "\n" ++
-    glsl.source(.coverage_common) ++ "\n" ++
-    glsl.source(.color_common) ++ "\n" ++
-    glsl.source(.path_body) ++ "\n" ++
-    glsl.source(.colr_body) ++ "\n" ++
-    "void main() { snailColrFragment(); }\n";
+const slang_gen = @import("snail_shaders");
+const vertex_source = slang_gen.textGlsl330(.vertex);
+const autohint_vertex_source = slang_gen.autohintGlsl330(.vertex);
+const regular_fragment_source = slang_gen.textGlsl330(.fragment);
+const subpixel_fragment_source = slang_gen.subpixelFragGlsl330();
+const autohint_fragment_source = slang_gen.autohintGlsl330(.fragment);
+const tt_hinted_fragment_source = slang_gen.ttHintedFragGlsl330();
+const path_fragment_source = slang_gen.pathFragGlsl330();
+const colr_fragment_source = slang_gen.colrFragGlsl330();
 
-// Text-as-material rows measure the generated text_sample artifact (the
-// shipped module surface; the composed interface fragments are retired).
+// Text-as-material rows measure the generated text_sample artifact.
 // The fullscreen vertex feeds the scene position through the generated
 // module's location-0 varying (`snail_io0`); the fragment computes its own
 // footprint and reads glyph records from a R32UI texel buffer.
-const slang_gen = @import("snail_shaders");
 const sample_vertex_source: [:0]const u8 =
     \\#version 330 core
     \\out vec2 snail_io0;
@@ -230,15 +160,13 @@ pub fn main(init: std.process.Init) !void {
             c.glGetIntegerv(c.GL_MAX_DUAL_SOURCE_DRAW_BUFFERS, &max_dual_source);
             if (max_dual_source < 1) return error.DualSourceBlendUnavailable;
         }
-        const selected_vertex_source = if (std.mem.eql(u8, args.case, "text-autohint-fallback"))
-            autohint_fallback_vertex_source
-        else if (isAutohintCase(args.case))
+        const selected_vertex_source = if (isAutohintCase(args.case))
             autohint_vertex_source
         else
             vertex_source;
         program = try linkProgram(selected_vertex_source, fragment_source, dual_source);
         standard_geometry = initGeometry(emitted.instances[0..emitted.instance_len]);
-        bindStandardProgram(program, dual_source);
+        bindStandardProgram(program, standard_geometry.?.params_ubo, dual_source);
         if (dual_source) {
             c.glBlendFuncSeparate(c.GL_ONE, c.GL_ONE_MINUS_SRC1_COLOR, c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
         }
@@ -327,7 +255,7 @@ pub fn main(init: std.process.Init) !void {
 }
 
 fn isAutohintCase(case: []const u8) bool {
-    return std.mem.eql(u8, case, "text-autohint") or std.mem.eql(u8, case, "text-autohint-fallback");
+    return std.mem.eql(u8, case, "text-autohint");
 }
 
 const DrawContext = union(enum) {
@@ -560,11 +488,13 @@ const Geometry = struct {
     vao: c.GLuint,
     vbo: c.GLuint,
     ebo: c.GLuint,
+    params_ubo: c.GLuint,
 
     fn deinit(self: *Geometry) void {
         c.glDeleteVertexArrays(1, &self.vao);
         c.glDeleteBuffers(1, &self.vbo);
         c.glDeleteBuffers(1, &self.ebo);
+        c.glDeleteBuffers(1, &self.params_ubo);
     }
 };
 
@@ -574,6 +504,10 @@ fn initGeometry(instances: []const snail.render.records.Instance) Geometry {
     c.glGenVertexArrays(1, &out.vao);
     c.glGenBuffers(1, &out.vbo);
     c.glGenBuffers(1, &out.ebo);
+    c.glGenBuffers(1, &out.params_ubo);
+    c.glBindBuffer(c.GL_UNIFORM_BUFFER, out.params_ubo);
+    c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(slang_gen.reflection.PushConstants), null, c.GL_DYNAMIC_DRAW);
+    c.glBindBuffer(c.GL_UNIFORM_BUFFER, 0);
     c.glBindVertexArray(out.vao);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, out.vbo);
     c.glBufferData(c.GL_ARRAY_BUFFER, @intCast(std.mem.sliceAsBytes(instances).len), instances.ptr, c.GL_STATIC_DRAW);
@@ -637,21 +571,28 @@ fn intAttribute(location: c.GLuint, count: c.GLint, stride: c.GLsizei, offset: u
     c.glEnableVertexAttribArray(location);
 }
 
-fn bindStandardProgram(program: c.GLuint, subpixel: bool) void {
+fn bindStandardProgram(program: c.GLuint, params_ubo: c.GLuint, subpixel: bool) void {
     c.glUseProgram(program);
     const projection = snail.Mat4.ortho(0, @floatFromInt(fixtures.width), @floatFromInt(fixtures.height), 0, -1, 1);
-    c.glUniformMatrix4fv(c.glGetUniformLocation(program, "u_mvp"), 1, c.GL_FALSE, &projection.data);
-    c.glUniform2f(c.glGetUniformLocation(program, "u_viewport"), fixtures.width, fixtures.height);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_curve_tex"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_band_tex"), 1);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_layer_tex"), 2);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_image_tex"), 4);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_layer_base"), 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_subpixel_order"), if (subpixel) 1 else 0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_output_srgb"), 0);
-    c.glUniform1f(c.glGetUniformLocation(program, "u_coverage_exponent"), 1.0);
-    c.glUniform1f(c.glGetUniformLocation(program, "u_dither_scale"), 0.0);
-    c.glUniform1i(c.glGetUniformLocation(program, "u_mask_output"), 0);
+    const params = slang_gen.reflection.PushConstants{
+        .mvp = projection.data,
+        .viewport = .{ fixtures.width, fixtures.height },
+        .subpixel_order = if (subpixel) 1 else 0,
+        .output_srgb = 0,
+        .layer_base = 0,
+        .coverage_exponent = 1.0,
+        .dither_scale = 0.0,
+        .mask_output = 0,
+    };
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_curve_tex_name), 0);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_band_tex_name), 1);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_layer_tex_name), 2);
+    c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_image_tex_name), 4);
+    const block = c.glGetUniformBlockIndex(program, slang_gen.glsl_vertex_block_name);
+    c.glUniformBlockBinding(program, block, 0);
+    c.glBindBuffer(c.GL_UNIFORM_BUFFER, params_ubo);
+    c.glBufferSubData(c.GL_UNIFORM_BUFFER, 0, @sizeOf(@TypeOf(params)), &params);
+    c.glBindBufferBase(c.GL_UNIFORM_BUFFER, 0, params_ubo);
 }
 
 /// std140 mirror of the generated module's `SnailTextSampleParams` block.

@@ -15,16 +15,11 @@
 //
 // ── Vertex index ──
 //
-// Every SPIR-V leg (Vulkan AND the SPIRV-Cross GL dialects) uses the
-// spirv_asm raw-VertexIndex load, exactly like families/text.slang:
-// SV_VertexID lowers to VertexIndex − BaseVertex (D3D semantics), which
-// needs the DrawParameters device feature on Vulkan and is a hard error in
-// SPIRV-Cross's ES backend ("BaseVertex not supported in ES profile").
-// The naga era compiled this stage -emit-spirv-via-glsl (its fitter loops
-// hit naga's structurizer trap, and spirv_asm cannot compile via glsl) and
-// patched gl_BaseVertex to 0 in the output; SPIRV-Cross structurizes
-// slang's direct loops correctly, so the whole detour is gone. WGSL's
-// vertex_index is already raw and keeps SV_VertexID.
+// Vulkan uses the spirv_asm raw-VertexIndex load, exactly like
+// families/text.slang: SV_VertexID lowers to VertexIndex − BaseVertex and
+// needs the DrawParameters device feature. Direct GL uses SV_VertexID; the
+// dialect normalizer maps Slang's spelling to native gl_VertexID. WGSL's
+// vertex_index is already raw.
 module autohint;
 
 import resource_types;

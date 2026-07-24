@@ -1,6 +1,4 @@
-// Native-Slang port of snail_tt_hinted_text_frag_body.glsl. The GLSL
-// fragment is the behavioral spec: every epsilon, literal, and operation
-// order is preserved.
+// Canonical baked-TT-hint fragment implementation.
 //
 // Baked TT hints use the ordinary curve and band atlas (the text-family
 // glyph coverage evaluator). The small layer-info record exists only

@@ -43,8 +43,11 @@
 //!    ~107 KiB at -O2 with v2026.5.2), making a genuinely cold NVIDIA
 //!    pipeline compile needlessly expensive. The GL legs use the separate
 //!    source-compile recipe described below.
-//!  - `-O0` (coverage-heavy GL/GLES families only) preserves authored
-//!    helper boundaries in Slang's direct GLSL backend.
+//!  - `-O0` (coverage-heavy desktop-GL families only) preserves authored
+//!    helper boundaries in Slang's direct GLSL backend. GLES keeps Slang's
+//!    default O1: NVIDIA's GLES compiler reproducibly misrenders the O0
+//!    painted fragment while O1 retains the same cold link time and renders
+//!    identically on NVIDIA and Mesa.
 //!  - `-target glsl` preserves the source's structured control flow, but
 //!    Slang v2026.5.2 emits Vulkan-flavor surface syntax (`#version 450`,
 //!    resource bindings, and varying locations) even for `glsl_330`.
@@ -122,7 +125,8 @@ pub const Family = struct {
     /// Extra -D defines (family variants sharing one source).
     defines: []const []const u8 = &.{},
     stages: []const Stage,
-    /// Preserve authored helper boundaries in coverage-heavy direct GLSL.
+    /// Preserve authored helper boundaries in coverage-heavy desktop GLSL.
+    /// GLES intentionally keeps Slang's default O1; see the flag notes above.
     gl_o0: bool = false,
     /// Emit only the GL dialects (no spirv/wgsl artifacts): linear_resolve
     /// (Vulkan/WebGPU render to hardware-sRGB targets and have no resolve
@@ -583,14 +587,14 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
             // helper/control-flow shape. A mechanical post-pass selects the
             // 330-core / 300-es surface dialect and location-keyed varying
             // names; there is no SPIR-V translation in this path.
-            const gl_args: []const []const u8 = if (family.gl_o0)
-                &.{ "-target", "glsl", "-profile", "glsl_330", "-O0", "-line-directive-mode", "none", "-warnings-disable", "41012" }
-            else
-                &.{ "-target", "glsl", "-profile", "glsl_330", "-line-directive-mode", "none", "-warnings-disable", "41012" };
             inline for (.{ "glsl330", "gles300" }) |out_dir| {
                 const es = comptime std.mem.eql(u8, out_dir, "gles300");
                 const skip_dialect = family.no_gles and es;
                 if (!skip_dialect) {
+                    const gl_args: []const []const u8 = if (family.gl_o0 and !es)
+                        &.{ "-target", "glsl", "-profile", "glsl_330", "-O0", "-line-directive-mode", "none", "-warnings-disable", "41012" }
+                    else
+                        &.{ "-target", "glsl", "-profile", "glsl_330", "-line-directive-mode", "none", "-warnings-disable", "41012" };
                     const defines: []const []const u8 = if (es)
                         &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }
                     else

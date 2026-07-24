@@ -180,34 +180,35 @@ test "glyph word encoders reject unrepresentable semantic values" {
     try std.testing.expect(specialGlyphWord(std.math.maxInt(u16), .autohint, std.math.maxInt(u8)) != null);
 }
 
-test "GLSL render ABI constants match Zig constants" {
-    const glsl = @embedFile("../shader/glsl/snail_render_abi.glsl");
-    try expectGlslConst(glsl, "SNAIL_RENDER_ABI_VERSION", version);
-    try std.testing.expect(std.mem.indexOf(u8, glsl, "const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;") != null);
-    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
-    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
-    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_TT_HINTED_TEXT", @intFromEnum(SpecialLayerKind.tt_hinted_text));
-    try expectGlslConst(glsl, "SNAIL_SPECIAL_KIND_AUTOHINT", @intFromEnum(SpecialLayerKind.autohint));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_SOLID", @intFromEnum(PaintRecordKind.solid));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_LINEAR_GRADIENT", @intFromEnum(PaintRecordKind.linear_gradient));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_RADIAL_GRADIENT", @intFromEnum(PaintRecordKind.radial_gradient));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_IMAGE", @intFromEnum(PaintRecordKind.image));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_COMPOSITE_GROUP", @intFromEnum(PaintRecordKind.composite_group));
-    try expectGlslConst(glsl, "SNAIL_PAINT_KIND_CONIC_GRADIENT", @intFromEnum(PaintRecordKind.conic_gradient));
-    try expectGlslConst(glsl, "SNAIL_PAINT_TEXELS_PER_RECORD", paint_texels_per_record);
-    try expectGlslConst(glsl, "SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE", composite_mode_fill_stroke_inside);
+test "Slang render ABI constants match Zig constants" {
+    const slang = @embedFile("../shader/slang/render_abi.slang");
+    try expectSlangConst(slang, "SNAIL_RENDER_ABI_VERSION", version);
+    try std.testing.expect(std.mem.indexOf(u8, slang, "public static const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;") != null);
+    try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
+    try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
+    try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_TT_HINTED_TEXT", @intFromEnum(SpecialLayerKind.tt_hinted_text));
+    try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_AUTOHINT", @intFromEnum(SpecialLayerKind.autohint));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_SOLID", @intFromEnum(PaintRecordKind.solid));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_LINEAR_GRADIENT", @intFromEnum(PaintRecordKind.linear_gradient));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_RADIAL_GRADIENT", @intFromEnum(PaintRecordKind.radial_gradient));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_IMAGE", @intFromEnum(PaintRecordKind.image));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_COMPOSITE_GROUP", @intFromEnum(PaintRecordKind.composite_group));
+    try expectSlangConst(slang, "SNAIL_PAINT_KIND_CONIC_GRADIENT", @intFromEnum(PaintRecordKind.conic_gradient));
+    try expectSlangConst(slang, "SNAIL_PAINT_TEXELS_PER_RECORD", paint_texels_per_record);
+    try expectSlangConst(slang, "SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE", composite_mode_fill_stroke_inside);
 }
 
-test "autohint GLSL derives transient targets from immutable features" {
-    const glsl = @embedFile("../shader/glsl/snail_autohint_warp.glsl");
-    try std.testing.expect(std.mem.indexOf(u8, glsl, "snailDecodeAutohintPolicy") != null);
-    try std.testing.expect(std.mem.indexOf(u8, glsl, "snailFitAutohintAxis") != null);
-    try std.testing.expect(std.mem.indexOf(u8, glsl, "storedTarget") == null);
-    try std.testing.expect(std.mem.indexOf(u8, glsl, "SNAIL_AH_MAX_KNOTS = 32") != null);
+test "autohint Slang derives transient targets from immutable features" {
+    const slang = @embedFile("../shader/slang/autohint_warp.slang");
+    const fragment = @embedFile("../shader/slang/autohint_frag.slang");
+    try std.testing.expect(std.mem.indexOf(u8, slang, "snailDecodeAutohintPolicy") != null);
+    try std.testing.expect(std.mem.indexOf(u8, slang, "snailFitAutohintAxis") != null);
+    try std.testing.expect(std.mem.indexOf(u8, slang, "storedTarget") == null);
+    try std.testing.expect(std.mem.indexOf(u8, fragment, "SNAIL_AH_FRAG_KNOTS = 32") != null);
 }
 
-fn expectGlslConst(glsl: []const u8, name: []const u8, value: anytype) !void {
-    const needle = try std.fmt.allocPrint(std.testing.allocator, "const int {s} = {d};", .{ name, value });
+fn expectSlangConst(slang: []const u8, name: []const u8, value: anytype) !void {
+    const needle = try std.fmt.allocPrint(std.testing.allocator, "public static const int {s} = {d};", .{ name, value });
     defer std.testing.allocator.free(needle);
-    try std.testing.expect(std.mem.indexOf(u8, glsl, needle) != null);
+    try std.testing.expect(std.mem.indexOf(u8, slang, needle) != null);
 }

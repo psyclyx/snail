@@ -145,7 +145,7 @@ const records: snail.render.records.DrawRecords = .{
 };
 
 // Draw: your pipeline, your command buffer. One draw per batch and one quad
-// per instance, using stages composed from snail.shader.glsl fragments.
+// per instance, using the generated stages from @import("snail_shaders").
 ```
 
 If applying a successful `plan`/`planDelta` result fails, call
@@ -235,10 +235,9 @@ with straight (non-premultiplied) alpha. snail never interprets your colors;
 gradients interpolate and tints multiply in linear light, and fragment output
 is **premultiplied linear** — encode via an sRGB framebuffer or a resolve
 pass (blend state: `ONE, ONE_MINUS_SRC_ALPHA`). For targets without
-hardware sRGB encode, `shader.glsl` ships the linear-resolve fragments
-(`dependencies.linear_resolve`: float-intermediate seed/encode with
-premultiplication handled correctly); the demo GL renderers show the
-orchestration. If you author in sRGB, convert once at the boundary with
+hardware sRGB encode, `snail-shaders` ships the generated linear-resolve
+stages (float-intermediate seed/encode with premultiplication handled
+correctly); the demo GL renderers show the orchestration. If you author in sRGB, convert once at the boundary with
 `snail.color.srgbToLinearColor`.
 Font palette colors (CPAL, spec-defined sRGB) are converted at extraction.
 
@@ -267,20 +266,18 @@ Artifacts are not checked in: they are generated at build time, in the zig
 cache, only for builds that actually import the module — and per-target
 scopes of the same API (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`,
 `-msl`) generate only their own targets, so e.g. a WebGPU consumer runs
-`slangc` alone while only the GL dialects add SPIRV-Cross (the nix shell
-provides both) — consumers of `snail`/`snail-raster` alone never need
-either. Composition is
+`slangc` alone; the direct GLSL/GLES path also needs no second shader
+compiler. Consumers of `snail`/`snail-raster` alone never need `slangc`.
+Composition is
 Slang-level too: a caller-authored family can `import text_sample` and
 sample glyph coverage inside its own material shader — the game demo's
 [`game_material.slang`](src/demo/game/slang/game_material.slang) is the
 worked example. For OpenGL, prefer the driver-oriented complete stages in
-`shader.glsl.programs.Gl330` / `.Gles300`. They preserve authored helper and
-loop structure, expose one shared `painted_fragment` for both COLR and path,
-and avoid expensive driver re-optimization of SPIRV-Cross control flow.
-The atomic `shader.glsl.source` catalog remains the behavioral spec and
-source-injection surface for hosts composing custom entry points
-(`run-minimal-gl` demonstrates that route). WebGPU is validated by the
-`run-minimal-wgpu` example against the GL reference.
+the `snail-shaders-glsl330` / `snail-shaders-gl` module scopes. Slang emits
+them directly, preserving authored helpers and structured control flow;
+`paintedFrag*` is shared by COLR and path. `run-minimal-gl` demonstrates the
+generated-GL consumer route. WebGPU is validated by the `run-minimal-wgpu`
+example against the GL reference.
 
 **Render ABI.** Each packed instance is 72 bytes (18 words): an outward-rounded
 f16 local bbox, affine transform/origin, glyph words, four payload words, and
@@ -289,8 +286,8 @@ records are validated before a backend consumes them. Curves are RGBA16F,
 bands RG16UI, layer-info RGBA32F, plus the host-formatted image array. Layouts
 are versioned and documented in
 `snail.render` (byte-layout contract for caller-owned renderers), the
-`snail-shaders` module (per-target binding/name contracts of the
-generated shaders), and `snail.shader.glsl` (composable fragments).
+`snail-shaders` module (per-target binding/name contracts of the generated
+shaders), and the canonical Slang modules under `src/snail/shader/slang`.
 
 **Ownership and lifetimes.** Every allocating call takes an explicit
 allocator; the core preparation APIs keep no global or thread-local mutable
@@ -413,8 +410,8 @@ which compile-error if internals leak or module boundaries regress.
 ## Build
 
 Requires [Zig 0.16](https://ziglang.org/download/) and HarfBuzz (via
-pkg-config). The complete shader-contract suite additionally needs `slangc`,
-`spirv-cross`, and `naga`. Interactive demos need their corresponding window
+pkg-config). The complete shader-contract suite additionally needs `slangc`
+and `naga`. Interactive demos need their corresponding window
 system and graphics APIs (Wayland + EGL/OpenGL or Vulkan on Linux).
 
 ```sh
@@ -427,7 +424,7 @@ zig build run-minimal-wgpu        # same scene through wgpu-native (WebGPU) → 
 zig build run-minimal-d3d11       # same scene through D3D11 (cross-compiled, runs under Wine) → zig-out/minimal-d3d11.tga
 zig build run-minimal-metal       # same scene through Metal (macOS hosts; GPU-gated in CI) → zig-out/minimal-metal.tga
 zig build check-metal-demo        # cross-compile the Metal example for aarch64-macos (any host)
-zig build gen-shaders             # materialize the generated shader artifacts into zig-out/shaders for inspection (needs slang+spirv-cross)
+zig build gen-shaders             # materialize generated shader artifacts into zig-out/shaders (needs slang+naga)
 zig build run-banner-screenshot   # headless CPU render (also -gl, -gles30, -vulkan variants)
 zig build run-algorithm-diagrams  # regenerate the README diagrams (snail rendering itself)
 zig build run-backend-compare     # CPU vs GL divergence gate
