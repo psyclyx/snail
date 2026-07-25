@@ -1407,6 +1407,13 @@ pub fn build(b: *std.Build) void {
     // (naga over the subpixel WGSL); consumer scopes below do not.
     const generated_shaders = slang_shaders.createGeneratedModuleOpts(b, "snail-shaders", shader_artifacts, &.{ .spirv, .wgsl, .hlsl, .msl, .glsl330, .gles300 }, true);
 
+    // Vulkan/SPIR-V-only scope for consumers that render exclusively through
+    // SPIR-V (e.g. a Vulkan backend). It generates only the SPIR-V artifacts
+    // and skips validation, so such consumers never pull in WGSL/GL/HLSL/MSL
+    // generation or the `naga` toolchain requirement. Same accessor API +
+    // reflection as every other scope.
+    _ = slang_shaders.createGeneratedModule(b, "snail-shaders-vk", shader_artifacts, &.{.spirv});
+
     const modules = ProjectModules{
         .assets = assets_mod,
         .support = support_mod,
