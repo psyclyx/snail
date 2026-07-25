@@ -225,7 +225,8 @@ fn inspectShape(
 /// transform composed as `world_xform * shape.local_transform`, color as
 /// `shape.local_color`, tint as `world_tint`. Color and tint are linear
 /// light, straight alpha (see `color.zig`); the renderer multiplies them
-/// in linear space.
+/// in linear space. Composite COLR records are the exception: explicit
+/// palette layers ignore the shape color and use only `world_tint`.
 ///
 /// The operation is failure-atomic at the published slice boundary. On error,
 /// `instance_len`, `batch_len`, and every element below those input lengths are

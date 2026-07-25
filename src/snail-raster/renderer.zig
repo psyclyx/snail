@@ -243,6 +243,7 @@ pub const Renderer = struct {
     };
 
     pub const ReinitBufferError = BufferError || error{LinearResolveActive};
+    pub const FillRectError = BufferError || error{InvalidColor};
 
     /// Opaque capability for exactly one active resolve scope. All restoration
     /// state stays private inside the renderer.
@@ -409,16 +410,143 @@ pub const Renderer = struct {
     }
 
     fn fillResolveRect(self: *Renderer, rect: render_state.PixelRect, color: [4]f32) void {
+        switch (self.format) {
+            inline else => |fmt| {
+                const bytes = blend_mod.clearBytesForTarget(fmt, self.blendTarget(), color);
+                self.overwriteRect(fmt, rect, bytes);
+            },
+        }
+    }
+
+    /// Source-over a pixel-aligned solid rectangle without constructing path
+    /// geometry. `color` is linear-light straight alpha, matching `Shape` and
+    /// `Paint.solid`. The rectangle is clipped to the target and to any active
+    /// linear-resolve region. An opaque fill is prepacked once and written at
+    /// memory bandwidth; translucent fills use the normal format-aware blend.
+    pub fn fillRect(
+        self: *Renderer,
+        surface: render_state.TargetSurface,
+        rect: render_state.PixelRect,
+        color: [4]f32,
+    ) FillRectError!void {
+        try self.validateTarget(surface);
+        if (!validStraightColor(color)) return error.InvalidColor;
+        self.prepareSurfaceWrite(surface);
+        const clipped = self.clipPixelRect(rect);
+        if (clipped.w == 0 or clipped.h == 0 or color[3] <= 0) return;
+
+        if (color[3] >= 1) {
+            switch (self.format) {
+                inline else => |fmt| {
+                    const bytes = blend_mod.opaqueBytesForTarget(fmt, self.blendTarget(), color[0..3].*);
+                    self.overwriteRect(fmt, clipped, bytes);
+                },
+            }
+            return;
+        }
+
+        const premul = [4]f32{
+            color[0] * color[3],
+            color[1] * color[3],
+            color[2] * color[3],
+            color[3],
+        };
+        var row: u32 = @intCast(clipped.y);
+        const y1 = row + clipped.h;
+        while (row < y1) : (row += 1) {
+            var col: u32 = @intCast(clipped.x);
+            const x1 = col + clipped.w;
+            while (col < x1) : (col += 1) {
+                self.blendPremultipliedPixel(row, col, premul, false);
+            }
+        }
+    }
+
+    /// Replace a pixel-aligned rectangle without blending. `color_srgb` is
+    /// finite sRGB straight alpha in `[0, 1]`, matching framebuffer-clear and
+    /// `LinearResolve.Backdrop.clear` semantics. The rectangle is clipped to
+    /// the target and to any active linear-resolve region.
+    pub fn clearRect(
+        self: *Renderer,
+        surface: render_state.TargetSurface,
+        rect: render_state.PixelRect,
+        color_srgb: [4]f32,
+    ) FillRectError!void {
+        try self.validateTarget(surface);
+        if (!validUnitColor(color_srgb)) return error.InvalidColor;
+        self.prepareSurfaceWrite(surface);
+        const clipped = self.clipPixelRect(rect);
+        if (clipped.w == 0 or clipped.h == 0) return;
+        switch (self.format) {
+            inline else => |fmt| {
+                const bytes = blend_mod.clearBytesForTarget(fmt, self.blendTarget(), color_srgb);
+                self.overwriteRect(fmt, clipped, bytes);
+            },
+        }
+    }
+
+    fn validStraightColor(color: [4]f32) bool {
+        for (color) |component| if (!std.math.isFinite(component)) return false;
+        return color[3] >= 0 and color[3] <= 1;
+    }
+
+    fn validUnitColor(color: [4]f32) bool {
+        for (color) |component| {
+            if (!std.math.isFinite(component) or component < 0 or component > 1) return false;
+        }
+        return true;
+    }
+
+    fn prepareSurfaceWrite(self: *Renderer, surface: render_state.TargetSurface) void {
+        self.target_encoding = surface.encoding;
+        self.format = surface.format;
+        if (!self.linear_resolve_active) self.target_resolve = .{ .direct = {} };
+    }
+
+    fn clipPixelRect(self: *const Renderer, rect: render_state.PixelRect) render_state.PixelRect {
+        const target_clipped = rect.clipped(self.width, self.height);
+        if (target_clipped.w == 0 or target_clipped.h == 0) return .{};
+        const x0 = @max(@as(u32, @intCast(target_clipped.x)), self.col_clip_min);
+        const y0 = @max(@as(u32, @intCast(target_clipped.y)), self.row_clip_min);
+        const x1 = @min(@as(u32, @intCast(target_clipped.x)) + target_clipped.w, self.col_clip_max);
+        const y1 = @min(@as(u32, @intCast(target_clipped.y)) + target_clipped.h, self.row_clip_max);
+        if (x0 >= x1 or y0 >= y1) return .{};
+        return .{
+            .x = @intCast(x0),
+            .y = @intCast(y0),
+            .w = x1 - x0,
+            .h = y1 - y0,
+        };
+    }
+
+    fn overwriteRect(
+        self: *Renderer,
+        comptime fmt: render_state.PixelFormat,
+        rect: render_state.PixelRect,
+        bytes: [fmt.bytesPerPixel()]u8,
+    ) void {
         if (rect.w == 0 or rect.h == 0) return;
+        const bpp: usize = bytes.len;
         var row: u32 = @intCast(rect.y);
         const y1 = row + rect.h;
         while (row < y1) : (row += 1) {
-            var col: u32 = @intCast(rect.x);
-            const x1 = col + rect.w;
-            while (col < x1) : (col += 1) {
-                switch (self.format) {
-                    inline else => |fmt| blend_mod.writeClearPixel(fmt, self.blendTarget(), row, col, color),
+            const offset = @as(usize, row) * self.stride + @as(usize, @intCast(rect.x)) * bpp;
+            const dst = self.pixels[offset..][0 .. @as(usize, rect.w) * bpp];
+            if (comptime fmt == .r8_unorm or fmt == .a8_unorm) {
+                @memset(dst, bytes[0]);
+            } else if (comptime fmt != .rgba16f) {
+                const word: u32 = @as(u32, bytes[0]) |
+                    (@as(u32, bytes[1]) << 8) |
+                    (@as(u32, bytes[2]) << 16) |
+                    (@as(u32, bytes[3]) << 24);
+                if (@intFromPtr(dst.ptr) % @alignOf(u32) == 0) {
+                    const words: [*]u32 = @ptrCast(@alignCast(dst.ptr));
+                    @memset(words[0..rect.w], word);
+                } else {
+                    for (0..rect.w) |i| @memcpy(dst[i * bpp ..][0..bpp], &bytes);
                 }
+            } else {
+                for (0..rect.w) |i| @memcpy(dst[i * bpp ..][0..bpp], &bytes);
             }
         }
     }
@@ -773,7 +901,22 @@ pub const Renderer = struct {
         const first_tag = (fetchLayerInfoTexel(entry.data, entry.width, info_x, resolved.local_y, 0) orelse return)[3];
         if ((special_kind == .path or special_kind == .colr) and first_tag < 0.0) {
             const record = entry.pathRecordAt(info_x, resolved.local_y) orelse return;
-            self.renderPathBatchLayers(prepared, decoded.bbox, decoded.transform, decoded.tint, atlas_layer, entry, record, false);
+            self.renderPathBatchLayers(
+                prepared,
+                decoded.bbox,
+                decoded.transform,
+                // Composite COLR palette layers deliberately ignore the
+                // text foreground in decoded.color; arbitrary paths use it
+                // as their per-shape paint tint.
+                if (special_kind == .path)
+                    multiplyLinearColor(decoded.color, decoded.tint)
+                else
+                    decoded.tint,
+                atlas_layer,
+                entry,
+                record,
+                false,
+            );
         }
     }
 
@@ -2161,6 +2304,58 @@ test "renderer rejects corrupted internal clip bounds before writes" {
     };
     try testing.expectError(error.InvalidTargetSurface, renderer.validateTarget(surface));
     try testing.expectEqualSlices(u8, &.{ 1, 2, 3, 4 }, &pixels);
+}
+
+test "public solid rect clips and blends without path geometry" {
+    var pixels: [4 * 3 * 4]u8 = .{0} ** (4 * 3 * 4);
+    var renderer = try Renderer.init(&pixels, 4, 3, 4 * 4, .rgba8_unorm);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 4,
+        .pixel_height = 3,
+        .encoding = .srgb,
+    };
+
+    try renderer.clearRect(surface, surface.pixelRect(), .{ 0, 0, 1, 1 });
+    try renderer.fillRect(surface, .{ .x = -1, .y = 1, .w = 3, .h = 3 }, .{ 1, 0, 0, 1 });
+
+    const blue = pixels[0..4];
+    const red = pixels[1 * 16 + 0 * 4 ..][0..4];
+    const clipped_out = pixels[1 * 16 + 2 * 4 ..][0..4];
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, blue);
+    try testing.expectEqualSlices(u8, &.{ 255, 0, 0, 255 }, red);
+    try testing.expectEqualSlices(u8, &.{ 0, 0, 255, 255 }, clipped_out);
+
+    // Straight-alpha linear red over opaque linear blue: both surviving
+    // channels are 0.5 linear, which encodes to about 188 in sRGB.
+    try renderer.fillRect(surface, .{ .x = 3, .y = 0, .w = 1, .h = 1 }, .{ 1, 0, 0, 0.5 });
+    const mixed = pixels[3 * 4 ..][0..4];
+    try testing.expectApproxEqAbs(@as(f32, 188), @as(f32, @floatFromInt(mixed[0])), 1);
+    try testing.expectEqual(@as(u8, 0), mixed[1]);
+    try testing.expectApproxEqAbs(@as(f32, 188), @as(f32, @floatFromInt(mixed[2])), 1);
+    try testing.expectEqual(@as(u8, 255), mixed[3]);
+}
+
+test "public clear rect is format aware and rejects invalid color atomically" {
+    var pixels: [3]u8 = .{ 9, 9, 9 };
+    var renderer = try Renderer.init(&pixels, 3, 1, 3, .a8_unorm);
+    const surface = render_state.TargetSurface{
+        .pixel_width = 3,
+        .pixel_height = 1,
+        .encoding = .linear,
+        .format = .a8_unorm,
+    };
+
+    try renderer.clearRect(surface, .{ .x = 1, .y = 0, .w = 5, .h = 1 }, .{ 1, 0, 0, 0.5 });
+    try testing.expectEqual(@as(u8, 9), pixels[0]);
+    try testing.expectApproxEqAbs(@as(f32, 128), @as(f32, @floatFromInt(pixels[1])), 1);
+    try testing.expectEqual(pixels[1], pixels[2]);
+
+    const before = pixels;
+    try testing.expectError(
+        error.InvalidColor,
+        renderer.clearRect(surface, surface.pixelRect(), .{ std.math.nan(f32), 0, 0, 1 }),
+    );
+    try testing.expectEqualSlices(u8, &before, &pixels);
 }
 
 test "drawBatch rejects texture layer addition overflow before mutation" {

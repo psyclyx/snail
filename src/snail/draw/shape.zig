@@ -20,7 +20,9 @@ pub const Shape = struct {
     key: RecordKey,
     local_transform: Transform2D = .identity,
     /// Linear light, straight alpha (see `color.zig`); multiplied with the
-    /// emit-time `world_tint` in linear space.
+    /// emit-time `world_tint` in linear space. Composite COLR records ignore
+    /// this color for explicit palette layers; their 0xffff foreground
+    /// colors are resolved when the atlas record is built.
     local_color: [4]f32 = .{ 1, 1, 1, 1 },
     /// Draw-time fitting policy. Required exactly when `key` resolves to an
     /// immutable autohint analysis record.

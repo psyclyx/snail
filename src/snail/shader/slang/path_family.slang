@@ -47,6 +47,7 @@ public float4 pathFragment<let HAS_CONIC : bool>(
     PaintedFragmentInput input)
 {
     PaintedVaryings v;
+    v.color = input.color;
     v.tint = input.tint;
     v.texcoord = input.texcoord;
     v.banding = input.banding;

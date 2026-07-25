@@ -188,18 +188,28 @@ pub inline fn opaqueBytesForTarget(comptime fmt: PixelFormat, target: Target, co
     return buf;
 }
 
-/// Replace a target pixel with an sRGB straight-alpha clear color, converted
-/// to the target's byte layout and storage encoding.
-pub inline fn writeClearPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, color_srgb: [4]f32) void {
+/// Precompute one target pixel for an sRGB straight-alpha replacement color.
+pub inline fn clearBytesForTarget(comptime fmt: PixelFormat, target: Target, color_srgb: [4]f32) [fmt.bytesPerPixel()]u8 {
     const alpha = clamp01(color_srgb[3]);
     const linear = srgbColorToLinear(color_srgb);
-    const off = pixelOffset(fmt, target, row, col);
-    writePixel(fmt, target, off, .{
+    var buf: [fmt.bytesPerPixel()]u8 = undefined;
+    var t = target;
+    t.pixels = &buf;
+    writePixel(fmt, t, 0, .{
         linear[0] * alpha,
         linear[1] * alpha,
         linear[2] * alpha,
         alpha,
     }, 0.0, false);
+    return buf;
+}
+
+/// Replace a target pixel with an sRGB straight-alpha clear color, converted
+/// to the target's byte layout and storage encoding.
+pub inline fn writeClearPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, color_srgb: [4]f32) void {
+    const off = pixelOffset(fmt, target, row, col);
+    const bytes = clearBytesForTarget(fmt, target, color_srgb);
+    @memcpy(target.pixels[off..][0..fmt.bytesPerPixel()], &bytes);
 }
 
 pub inline fn blendPremultipliedPixel(comptime fmt: PixelFormat, target: Target, row: u32, col: u32, src: [4]f32, apply_dither: bool) void {

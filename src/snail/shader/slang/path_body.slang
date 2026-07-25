@@ -597,6 +597,7 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
     int2 infoBase,
     float4 header,
     int texLayer,
+    float4 color,
     float4 tint,
     float coverage_exponent)
 {
@@ -623,7 +624,7 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
             int2(bandMaxV, bandMaxH), band, texLayer,
             rec_fill_rule, coverage_exponent);
         PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, loc, info);
-        paint.color *= tint;
+        paint.color *= color * tint;
 
         if (composite_mode == SNAIL_PATH_COMPOSITE_MODE_FILL_STROKE_INSIDE && layer_count >= 2 && l < 2) {
             if (l == 0) {
@@ -655,6 +656,7 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
 }
 
 public struct PaintedVaryings {
+    public float4 color;
     public float4 tint;
     public float2 texcoord;
     public float4 banding;
@@ -684,12 +686,12 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool>(
     if (firstInfo.w >= 0.0) discard;
 
     int texLayer = p.layer_base + ((v.glyph.w >> 2) & 0xff);
-    // v.tint arrives as a linear-light f16 vertex attribute.
+    // v.color / v.tint arrive as linear-light f16 vertex attributes.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup<HAS_CONIC>(
             curve_tex, band_tex, layer_tex, image_tex, image_sampler,
-            rc, epp, ppe, infoBase, firstInfo, texLayer, v.tint,
+            rc, epp, ppe, infoBase, firstInfo, texLayer, v.color, v.tint,
             p.coverage_exponent);
         if (result.color.a < 1.0 / 255.0) discard;
         float4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color, frag_coord, p.dither_scale) : result.color;
@@ -708,7 +710,7 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool>(
         rec_fill_rule, p.coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, infoBase, firstInfo);
-    paint.color *= v.tint;
+    paint.color *= v.color * v.tint;
     float4 result = premultiplyColor(paint.color, cov);
     float4 emit = (paint.gradient > 0.5) ? ditherPremultipliedColor(result, frag_coord, p.dither_scale) : result;
     return (p.mask_output != 0) ? float4(emit.a) : ((p.output_srgb != 0) ? srgbEncodePremultiplied(emit) : emit);

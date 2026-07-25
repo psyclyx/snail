@@ -418,7 +418,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
     try testing.expect(has_blue);
 }
 
-test "draw renders image-painted shape through special-layer path" {
+test "draw applies per-shape local color to image-painted path" {
     const allocator = testing.allocator;
 
     const W: u32 = 32;
@@ -481,13 +481,19 @@ test "draw renders image-painted shape through special-layer path" {
     try cache.upload(allocator, &.{&atlas}, &bindings);
     const binding = bindings[0];
 
-    const px_size: f32 = 20.0;
-    const shape = @import("snail").Shape{
-        .key = key,
-        .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 6, .ty = 6 },
-        .local_color = .{ 1, 1, 1, 1 },
+    const px_size: f32 = 12.0;
+    const shapes = [_]@import("snail").Shape{
+        .{
+            .key = key,
+            .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 2, .ty = 10 },
+            .local_color = .{ 1, 1, 1, 1 },
+        },
+        .{
+            .key = key,
+            .local_transform = .{ .xx = px_size, .yy = px_size, .tx = 18, .ty = 10 },
+            .local_color = .{ 0.25, 1, 1, 1 },
+        },
     };
-    const shapes = [_]@import("snail").Shape{shape};
 
     const emit_mod = @import("snail").emit;
     const instances = try allocator.alloc(vertex.Instance, shapes.len);
@@ -501,21 +507,26 @@ test "draw renders image-painted shape through special-layer path" {
     const state = makeIdentityState(W, H);
     try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
 
-    var has_red: bool = false;
+    // The two halves contain identical instances of the same immutable
+    // image-paint record. Their only color difference is Shape.local_color.
+    var full_red: u8 = 0;
+    var quarter_red: u8 = 0;
     var row: u32 = 0;
     while (row < H) : (row += 1) {
         var col: u32 = 0;
         while (col < W) : (col += 1) {
             const off = row * STRIDE + col * 4;
-            if (px[off + 3] < 16) continue;
-            if (px[off] > 200 and px[off + 1] < 32 and px[off + 2] < 32) {
-                has_red = true;
-                break;
+            if (px[off + 3] < 220) continue;
+            if (col < W / 2) {
+                full_red = @max(full_red, px[off]);
+            } else {
+                quarter_red = @max(quarter_red, px[off]);
             }
         }
-        if (has_red) break;
     }
-    try testing.expect(has_red);
+    try testing.expect(full_red > 200);
+    try testing.expect(quarter_red > 32);
+    try testing.expect(@as(u16, quarter_red) + 32 < @as(u16, full_red));
 }
 
 test "draw threaded matches single-threaded pixel-for-pixel" {

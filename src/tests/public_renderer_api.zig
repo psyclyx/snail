@@ -89,6 +89,9 @@ test "core and external renderers need only the intentional public api" {
         if (@hasDecl(snail, "shader")) @compileError("generated shaders live in the separate snail-shaders module");
 
         _ = raster.Renderer;
+        _ = raster.Renderer.fillRect;
+        _ = raster.Renderer.clearRect;
+        _ = raster.FillRectError;
         _ = raster.DeviceAtlas;
         _ = raster.DeviceAtlasOptions;
         _ = raster.UploadError;

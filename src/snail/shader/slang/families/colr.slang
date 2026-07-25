@@ -30,6 +30,10 @@ SnailFloatTexture2D u_layer_tex;
 [shader("fragment")]
 float4 fragmentMain(PaintedFragmentInput input) : SV_Target {
     ColrVaryings v;
+    // Composite COLR records carry immutable palette colors. Do not apply
+    // input.color: text placement stores its foreground there, and only
+    // 0xffff foreground layers should inherit that color. Those layers are
+    // resolved explicitly when the composite atlas record is built.
     v.tint = input.tint;
     v.texcoord = input.texcoord;
     v.glyph = input.glyph;

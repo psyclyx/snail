@@ -31,6 +31,7 @@ pub const BufferError = renderer.Renderer.BufferError;
 pub const LinearResolveError = renderer.Renderer.LinearResolveError;
 pub const EndLinearResolveError = renderer.Renderer.EndLinearResolveError;
 pub const ReinitBufferError = renderer.Renderer.ReinitBufferError;
+pub const FillRectError = renderer.Renderer.FillRectError;
 pub const DrawBatchError = renderer.Renderer.DrawBatchError;
 pub const InstanceProfileEntry = renderer.InstanceProfileEntry;
 pub const InstanceProfileBuffer = renderer.InstanceProfileBuffer;
