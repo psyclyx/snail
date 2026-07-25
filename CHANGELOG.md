@@ -313,8 +313,8 @@ Treat this as a from-scratch migration.
 - **Slang module catalog is caller API.** build.zig exports the catalog
   path as the named lazy path `snail_slang`
   (`dependency.namedLazyPath("snail_slang")` → slangc `-I`); the
-  caller-facing module list is pinned in the "Caller integration"
-  section of `src/snail/shader/slang/README-notes`.
+  caller-facing module list is pinned in the "Custom families"
+  section of `src/snail/shader/slang/README.md`.
 
 ### Changed
 

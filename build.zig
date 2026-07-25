@@ -926,7 +926,7 @@ fn addMinimalD3d11Step(
 }
 
 /// Best-effort Metal demo (see src/demo/app/minimal_metal.zig and
-/// src/snail/shader/slang/README-notes "Metal stage"). Two steps:
+/// src/snail/shader/slang/README.md "Metal"). Two steps:
 ///
 ///  - `check-metal-demo` (any host): cross-compiles the demo and its snail
 ///    module (HarfBuzz amalgam included) for aarch64-macos into a static
@@ -1069,8 +1069,8 @@ fn addMinimalWgpuStep(
 pub fn build(b: *std.Build) void {
     const config = parseBuildConfig(b);
     // The native-Slang module catalog. Callers authoring their own Slang
-    // families `import` snail's caller-facing modules (see the "Caller
-    // integration" section of src/snail/shader/slang/README-notes for the
+    // families `import` snail's caller-facing modules (see the "Custom
+    // families" section of src/snail/shader/slang/README.md for the
     // public module list and the pattern) and pass this path to slangc via
     // `-I`; the in-tree reference is the game demo's material family
     // (src/demo/game/slang/game_material.slang).

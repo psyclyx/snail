@@ -13,7 +13,7 @@
 // tripwire. The Metal backend drops [[vk::index(1)]] like WGSL's
 // and emits plain MRT ([[color(0)]]/[[color(1)]]): a Metal dual-source
 // consumer must textually rewrite the blend output to
-// [[color(0), index(1)]] before compiling (see README-notes, Metal stage).
+// [[color(0), index(1)]] before compiling (see README.md, Metal).
 module text_subpixel_family;
 
 import resource_types;

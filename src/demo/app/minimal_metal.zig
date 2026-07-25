@@ -7,7 +7,7 @@
 //! aarch64-macos semantic analysis + codegen). macOS CI additionally
 //! runtime-compiles every generated MSL artifact, exercises the scene-used
 //! pipelines on a real Metal GPU, and pixel-gates the result. See
-//! src/snail/shader/slang/README-notes, "Metal stage", for coverage details.
+//! src/snail/shader/slang/README.md, "Metal", for coverage details.
 //!
 //! This file intentionally imports none of the demo renderer, cache, scene,
 //! platform, or support modules — and none of the Apple SDK headers: Metal
@@ -213,7 +213,7 @@ const Gpu = struct {
 
 /// Runtime-compile one generated MSL artifact into a MTLLibrary. On
 /// failure the NSError text is printed verbatim — paste it into the
-/// handoff notes (README-notes, Metal stage) when reporting.
+/// handoff notes (src/snail/shader/slang/README.md, Metal) when reporting.
 fn compileLibrary(device: id, source: [:0]const u8, label: []const u8) !id {
     const options = msg(id, msg(id, class("MTLCompileOptions"), "alloc", .{}), "init", .{});
     defer release(options);

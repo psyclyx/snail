@@ -487,6 +487,7 @@ const snail_dep = b.dependency("snail", .{ .target = target, .optimize = optimiz
 const compile = b.addSystemCommand(&.{
     "slangc",
     "-DSNAIL_TARGET_VULKAN", "-target", "spirv", "-profile", "spirv_1_3", "-O2",
+    "-default-image-format-unknown",
     "-entry", "fragmentMain", "-stage", "fragment",
     "-I",
 });
@@ -500,9 +501,8 @@ The reflected `snail-shaders*` binding contract still describes the vertex
 format and push constants, so a family that reuses snail's inputs stays
 layout-compatible with the built-in ones. The complete per-target flag matrix
 (defines, profiles, and GL/WGSL/Metal quirks) lives in
-[`build/slang_shaders.zig`](build/slang_shaders.zig), and the "Caller
-integration" section of
-[`src/snail/shader/slang/README-notes`](src/snail/shader/slang/README-notes)
+[`build/slang_shaders.zig`](build/slang_shaders.zig), and the
+[`src/snail/shader/slang/README.md`](src/snail/shader/slang/README.md)
 lists the public modules you can `import`.
 
 ## Status
