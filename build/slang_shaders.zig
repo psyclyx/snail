@@ -485,6 +485,14 @@ fn appendEntryValidated(b: *std.Build, list: *std.ArrayList(Entry), target: Targ
 fn nagaValidation(b: *std.Build, wgsl: std.Build.LazyPath) *std.Build.Step {
     const run = b.addSystemCommand(&.{"naga"});
     run.addFileArg(wgsl);
+    // `naga <file>` only validates — it writes no output file, so without a
+    // captured output Zig can't cache the step and re-runs it (and reprints
+    // naga's "Validation successful" chatter) on every build. Capturing stdout
+    // gives the step a tracked, content-addressed result: it becomes cacheable
+    // (unchanged WGSL → cache hit, no re-run) and the chatter goes to a cache
+    // file instead of the terminal. A validation failure still fails the build
+    // via naga's non-zero exit and its stderr.
+    _ = run.captureStdOut(.{});
     if (toolchainGates(b).naga_fail) |fail| run.step.dependOn(fail);
     return &run.step;
 }
