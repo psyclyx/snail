@@ -1,5 +1,20 @@
 # Changelog
 
+## 0.13.1 - 2026-07-24
+
+### Correctness and performance
+
+- Arbitrary-path paint now applies each `Shape.local_color` before the
+  emit-time `world_tint`, consistently across GPU shaders and the software
+  renderer. Composite COLRv0 records deliberately keep their immutable
+  palette colors; only their atlas-resolved foreground and `world_tint`
+  participate.
+- `snail-raster.Renderer` now exposes pixel-aligned `fillRect` and
+  `clearRect` operations. Solid fills use the renderer's canonical
+  linear-light source-over and target encoding (with a prepacked opaque fast
+  path); clear fills directly replace clipped target pixels without requiring
+  path geometry.
+
 ## 0.13.0 - 2026-07-24
 
 The public API was rewritten end-to-end around an embeddable-only design.
@@ -89,16 +104,6 @@ Treat this as a from-scratch migration.
 
 ### Correctness and performance
 
-- Arbitrary-path paint now applies each `Shape.local_color` before the
-  emit-time `world_tint`, consistently across GPU shaders and the software
-  renderer. Composite COLRv0 records deliberately keep their immutable
-  palette colors; only their atlas-resolved foreground and `world_tint`
-  participate.
-- `snail-raster.Renderer` now exposes pixel-aligned `fillRect` and
-  `clearRect` operations. Solid fills use the renderer's canonical
-  linear-light source-over and target encoding (with a prepacked opaque fast
-  path); clear fills directly replace clipped target pixels without requiring
-  path geometry.
 - CFF/CFF2 and path cubics are now adaptively lowered during preparation to
   tangent-preserving quadratic chains. The lowerer splits at axis extrema and
   inflections and uses a conservative convex-hull error bound; packed atlas
