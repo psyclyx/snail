@@ -85,8 +85,8 @@
 //! `src/snail/shader/generated_root.zig` (copied into one WriteFiles
 //! directory per module) and publishes the result as a module: the
 //! aggregate `snail-shaders` (every target) plus per-target scoped
-//! modules (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`; see
-//! build.zig). All modules share the one accessor root — Zig analyzes
+//! modules (`snail-shaders-vk`, `-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`;
+//! see build.zig). All modules share the one accessor root — Zig analyzes
 //! declarations lazily, so an accessor for a target absent from the
 //! module's WriteFiles dir is never analyzed and its `@embedFile` never
 //! fires, as long as the consumer doesn't call it. A module therefore

@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Build
+
+- Naga WGSL validation now captures its output as a content-addressed build
+  result, so unchanged shader artifacts reuse the Zig cache without rerunning
+  validation or printing repeated success messages.
+- Dependencies can import the new `snail-shaders-vk` scope to generate only
+  Vulkan SPIR-V artifacts, avoiding unrelated shader targets and any Naga
+  requirement.
+
 ## 0.13.1 - 2026-07-24
 
 ### Correctness and performance

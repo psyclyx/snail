@@ -10,7 +10,7 @@
 //!
 //! This file is the shared root of the generated-shaders modules: the
 //! aggregate `snail-shaders` (every target) and the per-target scopes
-//! (`snail-shaders-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`; see
+//! (`snail-shaders-vk`, `-gl`, `-glsl330`, `-wgsl`, `-hlsl`, `-msl`; see
 //! build.zig / build/slang_shaders.zig createGeneratedModule). The
 //! artifacts are NOT checked in: the build lays this file out next to a
 //! `generated/` tree of build-time compiler outputs — only the module's

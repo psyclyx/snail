@@ -467,10 +467,11 @@ exe.root_module.addImport(
 );
 ```
 
-Other shader scopes are `snail-shaders-gl` (GLSL 330 + GLES 300),
-`snail-shaders-wgsl`, `snail-shaders-hlsl`, and `snail-shaders-msl`.
-`snail-shaders` includes every target, including Vulkan SPIR-V. Omit shader
-imports when using only `snail` or `snail-raster`.
+Other shader scopes are `snail-shaders-vk` (Vulkan SPIR-V only),
+`snail-shaders-gl` (GLSL 330 + GLES 300), `snail-shaders-wgsl`,
+`snail-shaders-hlsl`, and `snail-shaders-msl`. `snail-shaders` includes every
+target and runs the generated-artifact validations. Omit shader imports when
+using only `snail` or `snail-raster`.
 
 ## Status
 
