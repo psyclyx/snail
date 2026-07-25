@@ -473,6 +473,38 @@ Other shader scopes are `snail-shaders-vk` (Vulkan SPIR-V only),
 target and runs the generated-artifact validations. Omit shader imports when
 using only `snail` or `snail-raster`.
 
+### Custom shader families
+
+To draw your own effects through snail's pipeline, author a Slang family that
+`import`s snail's caller-facing modules — the pattern the game demo uses in
+[`src/demo/game/slang/game_material.slang`](src/demo/game/slang/game_material.slang).
+snail publishes its Slang module catalog as the `snail_slang` named lazy path;
+hand it to `slangc` via `-I` and compile for your target:
+
+```zig
+const snail_dep = b.dependency("snail", .{ .target = target, .optimize = optimize });
+
+const compile = b.addSystemCommand(&.{
+    "slangc",
+    "-DSNAIL_TARGET_VULKAN", "-target", "spirv", "-profile", "spirv_1_3", "-O2",
+    "-entry", "fragmentMain", "-stage", "fragment",
+    "-I",
+});
+compile.addDirectoryArg(snail_dep.namedLazyPath("snail_slang"));
+compile.addFileArg(b.path("shaders/my_material.slang"));
+const spv = compile.addPrefixedOutputFileArg("-o", "my_material.frag.spv");
+// embed `spv` in your app.
+```
+
+The reflected `snail-shaders*` binding contract still describes the vertex
+format and push constants, so a family that reuses snail's inputs stays
+layout-compatible with the built-in ones. The complete per-target flag matrix
+(defines, profiles, and GL/WGSL/Metal quirks) lives in
+[`build/slang_shaders.zig`](build/slang_shaders.zig), and the "Caller
+integration" section of
+[`src/snail/shader/slang/README-notes`](src/snail/shader/slang/README-notes)
+lists the public modules you can `import`.
+
 ## Status
 
 Alpha. The embeddable-only rewrite is complete; the Zig API is settling but
