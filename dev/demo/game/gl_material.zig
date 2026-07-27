@@ -202,8 +202,25 @@ pub fn GlMaterial(comptime variant: Variant) type {
             _ = try snail.emit.emit(instances, &segs, &ilen, &blen, binding[0], &material_pass.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
 
             self.glyph_count = @intCast(ilen);
-            // The sample shader reads the packed instances as R32UI texels.
-            const words: []const u32 = @ptrCast(std.mem.sliceAsBytes(instances[0..ilen]));
+            // The sample shader reads packed instances, then one page base per
+            // instance and the two flat-atlas page strides from the same
+            // caller-owned R32UI storage.
+            const words_per_instance = snail.render.records.BYTES_PER_INSTANCE / @sizeOf(u32);
+            const record_words = ilen * words_per_instance;
+            const words = try allocator.alloc(u32, record_words + ilen + 2);
+            defer allocator.free(words);
+            @memcpy(
+                std.mem.sliceAsBytes(words[0..record_words]),
+                std.mem.sliceAsBytes(instances[0..ilen]),
+            );
+            for (segs[0..blen]) |batch| {
+                const first: usize = batch.first_instance;
+                const end = first + @as(usize, batch.instance_count);
+                @memset(words[record_words + first .. record_words + end], batch.page_base);
+            }
+            const flat = try snail.atlas_upload.FlatLayout.init(binding[0].pool);
+            words[record_words + ilen] = flat.curve_page_texels;
+            words[record_words + ilen + 1] = flat.band_page_texels;
             const wlen = words.len;
 
             switch (variant) {
@@ -278,7 +295,7 @@ pub fn GlMaterial(comptime variant: Variant) type {
             gl.glUniform1i(self.u_records, RECORD_UNIT);
 
             // Atlas plane, bound off the shared cache via snail's contract
-            // (layer_base/fill_rule live in the shader now: the emit path
+            // (page_base/fill_rule live in the shader now: the emit path
             // bakes the absolute atlas layer into each glyph word).
             const program = Program{
                 .curve_tex_loc = self.u_curve_tex,

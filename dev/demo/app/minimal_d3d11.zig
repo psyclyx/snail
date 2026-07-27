@@ -14,8 +14,8 @@
 //! TT-hinted, and COLR text plus filled and stroked paths.
 //!
 //! Binding contract (see `snail_shaders`): registers land on the
-//! Vulkan binding numbers — b0 = the 96-byte push-constant block as a
-//! constant buffer, t0 curve, t1 band, t2 layer-info, t3 image array,
+//! Vulkan binding numbers — b0 = the 104-byte push-constant payload in a
+//! 112-byte constant buffer, t0 curve, t1 band, t2 layer-info, t3 image array,
 //! s0 image sampler. Vertex-input semantics are `ATTRIB0..6` over the
 //! instance stream; entry points keep their Slang names
 //! (`vertexMain`/`fragmentMain`). D3D11 clip space is y-up like WebGPU's,
@@ -42,9 +42,13 @@ const ppem: u32 = 34 * 64;
 const slang_gen = @import("snail_shaders");
 
 /// The parameter block as a D3D11 constant buffer — the machine-derived
-/// layout from slangc reflection (the cbuffer packing matches the C
-/// struct's offsets; the size is a legal multiple of 16).
+/// layout from slangc reflection. `ParameterBuffer` adds the required
+/// constant-buffer tail padding without changing any field offset.
 const PushConstants = slang_gen.reflection.PushConstants;
+const ParameterBuffer = extern struct {
+    params: PushConstants,
+    padding: [slang_gen.uniform_parameter_buffer_size - @sizeOf(PushConstants)]u8 = .{0} ** (slang_gen.uniform_parameter_buffer_size - @sizeOf(PushConstants)),
+};
 
 fn check(hr: c.HRESULT, what: []const u8) !void {
     if (hr < 0) {
@@ -303,7 +307,7 @@ const GpuAtlas = struct {
         const pool_config = self.pool.config();
         const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
         const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers: u32 = @intCast(pool_config.max_layers);
+        const layers: u32 = @intCast(pool_config.max_pages);
 
         self.curve_tex = try createTexture(device, c.DXGI_FORMAT_R16G16B16A16_FLOAT, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), layers);
         self.band_tex = try createTexture(device, c.DXGI_FORMAT_R16G16_UINT, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), layers);
@@ -386,8 +390,12 @@ const GpuAtlas = struct {
             .bottom = region.row_base + region.height,
             .back = 1,
         };
-        // Subresource index = mip 0 of array slice `layer` (1 mip level).
-        ctx.*.lpVtbl.*.UpdateSubresource.?(ctx, @ptrCast(tex), region.layer, &box, region.src.ptr, region.width * bytes_per_texel, 0);
+        const slice = switch (region.target) {
+            .curve, .band => region.page,
+            .image => region.layer,
+            .layer_info => 0,
+        };
+        ctx.*.lpVtbl.*.UpdateSubresource.?(ctx, @ptrCast(tex), slice, &box, region.src.ptr, region.width * bytes_per_texel, 0);
     }
 };
 
@@ -413,7 +421,7 @@ pub fn main() !void {
     defer emoji.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });
@@ -598,25 +606,28 @@ pub fn main() !void {
     // b0: the push-constant block. D3D11 clip space is y-up like WebGPU's
     // (the shader flips y), so the projection matches minimal_wgpu:
     // `bottom = 0, top = height`.
-    const push_constants = PushConstants{
-        .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
-        .viewport = .{ width, height },
-        .subpixel_order = 0,
-        .output_srgb = 0, // hardware-sRGB render target: emit linear
-        .layer_base = 0,
-        .coverage_exponent = 1.0,
-        .dither_scale = 0.0,
-        .mask_output = 0,
+    const parameter_buffer = ParameterBuffer{
+        .params = .{
+            .mvp = snail.Mat4.ortho(0, width, 0, height, -1, 1).data,
+            .viewport = .{ width, height },
+            .subpixel_order = 0,
+            .output_srgb = 0, // hardware-sRGB render target: emit linear
+            .page_base = 0,
+            .coverage_exponent = 1.0,
+            .dither_scale = 0.0,
+            .mask_output = 0,
+            .atlas_page_texels = .{ 0, 0 },
+        },
     };
     const cbuffer_desc = c.D3D11_BUFFER_DESC{
-        .ByteWidth = @sizeOf(PushConstants),
+        .ByteWidth = @sizeOf(ParameterBuffer),
         .Usage = c.D3D11_USAGE_IMMUTABLE,
         .BindFlags = c.D3D11_BIND_CONSTANT_BUFFER,
         .CPUAccessFlags = 0,
         .MiscFlags = 0,
         .StructureByteStride = 0,
     };
-    const cbuffer_init = c.D3D11_SUBRESOURCE_DATA{ .pSysMem = &push_constants, .SysMemPitch = 0, .SysMemSlicePitch = 0 };
+    const cbuffer_init = c.D3D11_SUBRESOURCE_DATA{ .pSysMem = &parameter_buffer, .SysMemPitch = 0, .SysMemSlicePitch = 0 };
     var cbuffer: ?*c.ID3D11Buffer = null;
     try check(device.*.lpVtbl.*.CreateBuffer.?(device, &cbuffer_desc, &cbuffer_init, &cbuffer), "create constant buffer");
     defer release(cbuffer);

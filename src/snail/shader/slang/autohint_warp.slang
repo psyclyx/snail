@@ -14,6 +14,7 @@
 module autohint_warp;
 
 import resource_types;
+import binary16;
 
 public static const int SNAIL_AH_LEFT_SOURCE = 32;
 
@@ -73,21 +74,6 @@ public bool snailAhCount(int max_knots, float encoded, out int count) {
 // part of baseline GL 3.3 or GLES 3.0. Every binary16 value is exactly representable as an
 // f32, including subnormals. Preserve infinities and NaNs so the policy's
 // finite-value validation keeps rejecting corrupt/non-finite payloads.
-public float snailAhDecodeFloat16(uint bits) {
-    bits &= 0xffffu;
-    uint sign = (bits & 0x8000u) << 16u;
-    uint exponent = (bits >> 10u) & 31u;
-    uint fraction = bits & 1023u;
-    if (exponent == 0u) {
-        if (fraction == 0u) return asfloat(sign);
-        float magnitude = float(fraction) * 5.960464477539063e-8;
-        return sign == 0u ? magnitude : -magnitude;
-    }
-    if (exponent == 31u)
-        return asfloat(sign | 0x7f800000u | (fraction << 13u));
-    return asfloat(sign | ((exponent + 112u) << 23u) | (fraction << 13u));
-}
-
 public bool snailDecodeAutohintPolicy(uint4 words, out SnailAutohintPolicy p) {
     p = (SnailAutohintPolicy)0;
     uint config = words.x;
@@ -105,11 +91,11 @@ public bool snailDecodeAutohintPolicy(uint4 words, out SnailAutohintPolicy p) {
     if (p.xAlign > 1 || p.xStem > 2 || p.xPositioning > 1 ||
         p.xRegistration > 1 || p.yAlign > 2 || p.yStem > 2 || p.yOvershoot > 1)
         return false;
-    p.xRatio = snailAhDecodeFloat16(words.y);
-    p.xMaxPx = snailAhDecodeFloat16(words.y >> 16u);
-    p.yRatio = snailAhDecodeFloat16(words.z);
-    p.yMaxPx = snailAhDecodeFloat16(words.z >> 16u);
-    p.overshootMinPx = snailAhDecodeFloat16(words.w);
+    p.xRatio = snailDecodeFloat16Exact(words.y);
+    p.xMaxPx = snailDecodeFloat16Exact(words.y >> 16u);
+    p.yRatio = snailDecodeFloat16Exact(words.z);
+    p.yMaxPx = snailDecodeFloat16Exact(words.z >> 16u);
+    p.overshootMinPx = snailDecodeFloat16Exact(words.w);
     if ((p.xStem != 0 && (!snailAhFinite(p.xRatio) || p.xRatio < 0.0)) ||
         (p.xStem == 1 && (!snailAhFinite(p.xMaxPx) || p.xMaxPx < 0.0)) ||
         (p.yStem != 0 && (!snailAhFinite(p.yRatio) || p.yRatio < 0.0)) ||

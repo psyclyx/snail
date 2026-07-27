@@ -24,10 +24,11 @@ import subpixel_body;
 
 public SubpixelResult snailAutohintSubpixelFragment(
     AutohintVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
-    int layer_base,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int subpixel_order,
     int output_srgb,
     float coverage_exponent)
@@ -38,10 +39,10 @@ public SubpixelResult snailAutohintSubpixelFragment(
     float2 display_dx = ddx(unwarped);
     float2 display_dy = ddy(unwarped);
 
-    SnailAutohintWarped w = snailAutohintWarpSample(v, layer_tex, layer_base);
+    SnailAutohintWarped w = snailAutohintWarpSample(v, layer_tex, page_base);
     float4 cov_alpha = snailEvalGlyphCoverageSubpixelDerivs(
         w.rc, display_dx * w.slope, display_dy * w.slope,
-        w.gLoc, w.bandMax, w.band, w.texLayer,
+        w.gLoc, w.bandMax, w.band, w.texLayer, atlas_layout,
         subpixel_order, coverage_exponent, curve_tex, band_tex);
     // v.paint is the product of linear-light f16 color and tint.
     return snailPackSubpixelResult(v.paint, cov_alpha, output_srgb);

@@ -2,7 +2,8 @@
 // definition; Zig tests keep these values byte-identical to the CPU ABI.
 module render_abi;
 
-public static const int SNAIL_RENDER_ABI_VERSION = 2;
+public static const int SNAIL_RENDER_ABI_VERSION = 3;
+public static const int SNAIL_ATLAS_TEX_WIDTH = 4096;
 
 public static const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;
 public static const int SNAIL_SPECIAL_KIND_COLR = 0;

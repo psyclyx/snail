@@ -25,16 +25,18 @@
 //
 // ── Uniform block ──
 //
-// `SnailPushConstants` matches the 96-byte layout of
+// `SnailPushConstants` matches the 104-byte layout of
 // dev/demo/render/vulkan/contract.zig:PushConstants exactly (mvp @ 0,
-// viewport @ 64, subpixel_order @ 72, output_srgb @ 76, layer_base @ 80,
+// viewport @ 64, subpixel_order @ 72, output_srgb @ 76, page_base @ 80,
 // coverage_exponent @ 84, dither_scale @ 88, mask_output @ 92; std140 and
-// std430 agree on all of them). Vulkan binds it as the push-constant
+// atlas_page_texels @ 96; std140 and std430 agree on all of them). Vulkan
+// binds it as the push-constant
 // range; WGSL as a uniform buffer at @group(2) @binding(0) (the catalog's
 // binding contract); GL as a named uniform block.
 module text;
 
 import resource_types;
+import render_params;
 
 import render_abi;
 import color_common;
@@ -43,29 +45,18 @@ import text_coverage;
 import text_main;
 import vertex;
 
-public struct SnailPushConstants {
-    public float4x4 mvp;
-    public float2 viewport;
-    public int subpixel_order;
-    public int output_srgb;
-    public int layer_base;
-    public float coverage_exponent;
-    public float dither_scale;
-    public int mask_output;
-};
-
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 #else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
-SnailFloatTexture2DArray u_curve_tex;
-SnailUint2Texture2DArray u_band_tex;
+SnailCurveStorage u_curve_tex;
+SnailBandStorage u_band_tex;
 #endif
 
 struct VsInput {
@@ -162,6 +153,6 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     v.banding = input.banding;
     v.glyph = input.glyph;
     return snailTextFragment(v, u_curve_tex, u_band_tex,
-                             pc.layer_base, pc.output_srgb,
+                             pc.page_base, snailAtlasLayout(pc.atlas_page_texels), pc.output_srgb,
                              pc.coverage_exponent, pc.mask_output);
 }

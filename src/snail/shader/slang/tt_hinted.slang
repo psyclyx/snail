@@ -31,10 +31,11 @@ public struct TtHintedVaryings {
 
 public float4 snailTtHintedTextFragment(
     TtHintedVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
-    int layer_base,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int output_srgb,
     float coverage_exponent,
     int mask_output)
@@ -54,11 +55,11 @@ public float4 snailTtHintedTextFragment(
     int packed_counts = asint(header.z);
     int band_max_h = packed_counts & 0xFFFF;
     int band_max_v = (packed_counts >> 16) & 0xFFFF;
-    int atlas_layer = layer_base + ((v.glyph.w >> 2) & 0xff);
+    int atlas_layer = page_base + ((v.glyph.w >> 2) & 0xff);
 
     float cov = evalGlyphCoverage(rc, epp, ppe, int2(int(header.x), int(header.y)),
                                   int2(band_max_v, band_max_h), band,
-                                  atlas_layer, curve_tex, band_tex, coverage_exponent);
+                                  atlas_layer, atlas_layout, curve_tex, band_tex, coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
 
     float4 premul = premultiplyColor(v.color * v.tint, cov);

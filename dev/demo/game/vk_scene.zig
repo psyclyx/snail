@@ -198,8 +198,29 @@ pub const VkSceneRenderer = struct {
         var slen: usize = 0;
         _ = try snail.emit.emit(self.scratch, &self.segs, &wlen, &slen, self.material_b, &scene.material.text_atlas, shapes, .identity, .{ 1, 1, 1, 1 });
         self.glyph_count = @intCast(wlen);
-        self.records = try embed_vulkan.HostBuffer.init(self.ctx, @max(wlen * snail.render.records.BYTES_PER_INSTANCE, 4), vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT);
-        @memcpy(self.records.bytes()[0 .. wlen * snail.render.records.BYTES_PER_INSTANCE], std.mem.sliceAsBytes(self.scratch[0..wlen]));
+        const words_per_instance = snail.render.records.BYTES_PER_INSTANCE / @sizeOf(u32);
+        const record_words = wlen * words_per_instance;
+        const total_words = record_words + wlen + 2;
+        const record_storage = try self.allocator.alloc(u32, @max(total_words, 1));
+        defer self.allocator.free(record_storage);
+        @memcpy(
+            std.mem.sliceAsBytes(record_storage[0..record_words]),
+            std.mem.sliceAsBytes(self.scratch[0..wlen]),
+        );
+        for (self.segs[0..slen]) |batch| {
+            const first: usize = batch.first_instance;
+            const end = first + @as(usize, batch.instance_count);
+            @memset(record_storage[record_words + first .. record_words + end], batch.page_base);
+        }
+        const flat = try snail.atlas_upload.FlatLayout.init(self.material_b.pool);
+        record_storage[record_words + wlen] = flat.curve_page_texels;
+        record_storage[record_words + wlen + 1] = flat.band_page_texels;
+        self.records = try embed_vulkan.HostBuffer.init(
+            self.ctx,
+            record_storage.len * @sizeOf(u32),
+            vk.VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
+        );
+        @memcpy(self.records.bytes(), std.mem.sliceAsBytes(record_storage));
     }
 
     fn prepareLabelDepth(self: *VkSceneRenderer, scene: *Scene) !void {

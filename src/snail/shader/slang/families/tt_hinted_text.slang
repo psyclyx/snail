@@ -7,6 +7,7 @@
 module tt_hinted_text;
 
 import resource_types;
+import render_params;
 
 import render_abi;
 import color_common;
@@ -14,31 +15,20 @@ import coverage_common;
 import text_coverage;
 import tt_hinted;
 
-public struct SnailPushConstants {
-    public float4x4 mvp;
-    public float2 viewport;
-    public int subpixel_order;
-    public int output_srgb;
-    public int layer_base;
-    public float coverage_exponent;
-    public float dither_scale;
-    public int mask_output;
-};
-
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #else // GL family (desktop GLSL 330 / GLES 300 es), D3D11 HLSL (registers b0/t0..t3/s0 in declaration order), and Metal MSL ([[buffer(0)]] / [[texture(0..3)]] / [[sampler(0)]], same declaration order)
 ConstantBuffer<SnailPushConstants> pc;
-SnailFloatTexture2DArray u_curve_tex;
-SnailUint2Texture2DArray u_band_tex;
+SnailCurveStorage u_curve_tex;
+SnailBandStorage u_band_tex;
 SnailFloatTexture2D u_layer_tex;
 #endif
 
@@ -60,6 +50,6 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     v.banding = input.banding;
     v.glyph = input.glyph;
     return snailTtHintedTextFragment(v, u_curve_tex, u_band_tex, u_layer_tex,
-                                     pc.layer_base, pc.output_srgb,
+                                     pc.page_base, snailAtlasLayout(pc.atlas_page_texels), pc.output_srgb,
                                      pc.coverage_exponent, pc.mask_output);
 }

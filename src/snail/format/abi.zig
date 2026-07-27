@@ -3,6 +3,7 @@ const std = @import("std");
 /// Increment whenever persisted draw records or atlas textures become
 /// incompatible with the shipped shader decoders.
 pub const version: u32 = 3;
+pub const atlas_tex_width: u32 = 4096;
 
 /// Both ordinary and special records carry a full u8 atlas-array layer.
 pub const max_atlas_layers: u32 = std.math.maxInt(u8) + 1;
@@ -237,6 +238,7 @@ test "path curve classes preserve zero as the conservative fallback" {
 test "Slang render ABI constants match Zig constants" {
     const slang = @embedFile("../shader/slang/render_abi.slang");
     try expectSlangConst(slang, "SNAIL_RENDER_ABI_VERSION", version);
+    try expectSlangConst(slang, "SNAIL_ATLAS_TEX_WIDTH", atlas_tex_width);
     try std.testing.expect(std.mem.indexOf(u8, slang, "public static const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;") != null);
     try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));

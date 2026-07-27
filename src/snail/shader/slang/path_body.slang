@@ -23,7 +23,8 @@ static const float kParamEps = 1e-5;
 static const float kCoordEps = 1.0 / 65536.0;
 
 public struct PaintedParams {
-    public int layer_base;
+    public int page_base;
+    public SnailAtlasLayout atlas_layout;
     public int output_srgb;
     public float coverage_exponent;
     public float dither_scale;
@@ -113,20 +114,21 @@ float2 solveQuadraticVertDistances(float p0x, float p0y, float p1x, float p1y, f
 // every freed vector picture goes through `encodeDirectSingleGlyphCurves`
 // / `prefer_direct_encoding = true`, so segments are always direct.
 SegmentData fetchSegment<let HAS_CONIC : bool>(
-    SnailFloatTexture2DArray curve_tex,
+    SnailCurveStorage curve_tex,
     int2 loc,
     int layer,
+    SnailAtlasLayout atlas_layout,
     int kind)
 {
-    float4 tex0 = curve_tex.Load(int4(loc, layer, 0));
-    float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(loc, 1), layer, 0));
+    float4 tex0 = snailLoadCurve(curve_tex, loc, layer, atlas_layout);
+    float4 tex1 = snailLoadCurve(curve_tex, offsetCurveLoc(loc, 1), layer, atlas_layout);
     SegmentData seg;
     seg.kind = kind;
     seg.p0 = tex0.xy;
     seg.p1 = tex0.zw;
     seg.p2 = tex1.xy;
     if (HAS_CONIC && kind == 1) {
-        float4 tex2 = curve_tex.Load(int4(offsetCurveLoc(loc, 2), layer, 0));
+        float4 tex2 = snailLoadCurve(curve_tex, offsetCurveLoc(loc, 2), layer, atlas_layout);
         seg.weights = float3(tex2.w, tex2.x, tex2.y);
     } else {
         seg.weights = float3(1.0);
@@ -397,8 +399,8 @@ bool accumulateAxisCoverageSegment<let HAS_CONIC : bool>(
 }
 
 float2 evalAxisCoverageBands<let HAS_CONIC : bool>(
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     float2 sampleRc,
     float ppe,
     int2 gLoc,
@@ -406,6 +408,7 @@ float2 evalAxisCoverageBands<let HAS_CONIC : bool>(
     int firstBand,
     int lastBand,
     int layer,
+    SnailAtlasLayout atlas_layout,
     bool horizontal)
 {
     float cov = 0.0;
@@ -413,19 +416,19 @@ float2 evalAxisCoverageBands<let HAS_CONIC : bool>(
     bool dedup = firstBand != lastBand;
     for (int band = firstBand; band <= lastBand; band++) {
         int2 headerLoc = calcBandLoc(gLoc, uint(headerBase + band));
-        uint2 bd = band_tex.Load(int4(headerLoc, layer, 0)).xy;
+        uint2 bd = snailLoadBand(band_tex, headerLoc, layer, atlas_layout);
         int2 bandLoc = calcBandLoc(gLoc, bd.y);
         int count = int(bd.x);
         for (int i = 0; i < count; i++) {
             int2 bLoc = calcBandLoc(bandLoc, uint(i));
-            uint2 ref = band_tex.Load(int4(bLoc, layer, 0)).xy;
+            uint2 ref = snailLoadBand(band_tex, bLoc, layer, atlas_layout);
             if (dedup) {
                 int ownerBand = max(decodeBandCurveFirstMemberCommon(ref), firstBand);
                 if (band != ownerBand) continue;
             }
             int2 cLoc = decodeBandCurveLocCommon(ref);
             int kind = decodeBandCurveKindCommon(ref);
-            SegmentData seg = fetchSegment<HAS_CONIC>(curve_tex, cLoc, layer, kind);
+            SegmentData seg = fetchSegment<HAS_CONIC>(curve_tex, cLoc, layer, atlas_layout, kind);
             if (!accumulateAxisCoverageSegment<HAS_CONIC>(
                     cov, wgt, sampleRc, ppe, seg, horizontal))
                 break;
@@ -435,8 +438,8 @@ float2 evalAxisCoverageBands<let HAS_CONIC : bool>(
 }
 
 float evalPathGlyphCoverage<let HAS_CONIC : bool>(
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     float2 rc,
     float2 epp,
     float2 ppe,
@@ -444,6 +447,7 @@ float evalPathGlyphCoverage<let HAS_CONIC : bool>(
     int2 bandMax,
     float4 banding,
     int texLayer,
+    SnailAtlasLayout atlas_layout,
     int fill_rule,
     float coverage_exponent)
 {
@@ -454,10 +458,10 @@ float evalPathGlyphCoverage<let HAS_CONIC : bool>(
     CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, bandMax.x);
     float2 horiz = evalAxisCoverageBands<HAS_CONIC>(
         curve_tex, band_tex, rc, ppe.x, gLoc, 0,
-        hSpan.first, hSpan.last, texLayer, true);
+        hSpan.first, hSpan.last, texLayer, atlas_layout, true);
     float2 vert = evalAxisCoverageBands<HAS_CONIC>(
         curve_tex, band_tex, rc, ppe.y, gLoc, bandMax.y + 1,
-        vSpan.first, vSpan.last, texLayer, false);
+        vSpan.first, vSpan.last, texLayer, atlas_layout, false);
     float wsum = horiz.y + vert.y;
     float blended = horiz.x * horiz.y + vert.x * vert.y;
     float windingCoverage = max(
@@ -586,8 +590,8 @@ PathPaintSample samplePathPaint(SnailFloatTexture2D layer_tex, SnailFloatTexture
 }
 
 PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
     SnailFloatTexture2DArray image_tex,
     SnailSamplerState image_sampler,
@@ -599,7 +603,7 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
     int texLayer,
     float4 color,
     float4 tint,
-    float coverage_exponent)
+    PaintedParams p)
 {
     int layer_count = int(header.x + 0.5);
     int composite_mode = int(header.y + 0.5);
@@ -621,8 +625,8 @@ PathCompositeSample compositePathGroup<let HAS_CONIC : bool>(
         int bandMaxV = (asint(info.z) >> 16) & 0xFFFF;
         float cov = evalPathGlyphCoverage<HAS_CONIC>(
             curve_tex, band_tex, rc, epp, ppe, gLoc,
-            int2(bandMaxV, bandMaxH), band, texLayer,
-            rec_fill_rule, coverage_exponent);
+            int2(bandMaxV, bandMaxH), band, texLayer, p.atlas_layout,
+            rec_fill_rule, p.coverage_exponent);
         PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, loc, info);
         paint.color *= color * tint;
 
@@ -666,8 +670,8 @@ public struct PaintedVaryings {
 public float4 snailPaintedFragment<let HAS_CONIC : bool>(
     PaintedVaryings v,
     float2 frag_coord,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
     SnailFloatTexture2DArray image_tex,
     SnailSamplerState image_sampler,
@@ -685,14 +689,14 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool>(
     float4 firstInfo = layer_tex.Load(int3(infoBase, 0));
     if (firstInfo.w >= 0.0) discard;
 
-    int texLayer = p.layer_base + ((v.glyph.w >> 2) & 0xff);
+    int texLayer = p.page_base + ((v.glyph.w >> 2) & 0xff);
     // v.color / v.tint arrive as linear-light f16 vertex attributes.
 
     if (int(-firstInfo.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
         PathCompositeSample result = compositePathGroup<HAS_CONIC>(
             curve_tex, band_tex, layer_tex, image_tex, image_sampler,
             rc, epp, ppe, infoBase, firstInfo, texLayer, v.color, v.tint,
-            p.coverage_exponent);
+            p);
         if (result.color.a < 1.0 / 255.0) discard;
         float4 emit = (result.gradient > 0.5) ? ditherPremultipliedColor(result.color, frag_coord, p.dither_scale) : result.color;
         return (p.mask_output != 0) ? float4(emit.a) : ((p.output_srgb != 0) ? srgbEncodePremultiplied(emit) : emit);
@@ -706,7 +710,7 @@ public float4 snailPaintedFragment<let HAS_CONIC : bool>(
     int bandMaxV = (asint(firstInfo.z) >> 16) & 0xFFFF;
     float cov = evalPathGlyphCoverage<HAS_CONIC>(
         curve_tex, band_tex, rc, epp, ppe, gLoc,
-        int2(bandMaxV, bandMaxH), band, texLayer,
+        int2(bandMaxV, bandMaxH), band, texLayer, p.atlas_layout,
         rec_fill_rule, p.coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     PathPaintSample paint = samplePathPaint(layer_tex, image_tex, image_sampler, rc, infoBase, firstInfo);

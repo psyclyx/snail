@@ -38,7 +38,7 @@ float3 applyCoverageTransfer3(float3 cov, float coverage_exponent) {
 
 // Clamped, no-transfer variant of the glyph coverage evaluation (the
 // subpixel filter applies the transfer after filtering).
-float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
+float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailAtlasLayout atlas_layout, SnailCurveStorage curve_tex, SnailBandStorage band_tex) {
     CoverageBandSpan hSpan = computeCoverageBandSpan(rc.y, epp.y, banding.y, banding.w, band_max.y);
     CoverageBandSpan vSpan = computeCoverageBandSpan(rc.x, epp.x, banding.x, banding.z, band_max.x);
 
@@ -47,15 +47,15 @@ float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, in
         bool dedup = hSpan.first != hSpan.last;
         for (int band = hSpan.first; band <= hSpan.last; band++) {
             int2 h_header_loc = calcBandLoc(glyph_loc, uint(band));
-            uint2 hbd = band_tex.Load(int4(h_header_loc, layer, 0)).xy;
+            uint2 hbd = snailLoadBand(band_tex, h_header_loc, layer, atlas_layout);
             int2 h_loc = calcBandLoc(glyph_loc, hbd.y);
             int h_count = int(hbd.x);
             for (int i = 0; i < h_count; i++) {
                 int2 b_loc = calcBandLoc(h_loc, uint(i));
-                uint2 ref = band_tex.Load(int4(b_loc, layer, 0)).xy;
+                uint2 ref = snailLoadBand(band_tex, b_loc, layer, atlas_layout);
                 if (dedup && !isCoverageBandSpanOwner(ref, band, hSpan.first)) continue;
                 int2 c_loc = decodeBandCurveLoc(ref);
-                if (!accumulateHorizContribution(xcov, xwgt, rc, ppe, c_loc, layer, curve_tex)) break;
+                if (!accumulateHorizContribution(xcov, xwgt, rc, ppe, c_loc, layer, atlas_layout, curve_tex)) break;
             }
         }
     }
@@ -65,15 +65,15 @@ float evalGlyphCoverageRaw(float2 rc, float2 epp, float2 ppe, int2 glyph_loc, in
         bool dedup = vSpan.first != vSpan.last;
         for (int band = vSpan.first; band <= vSpan.last; band++) {
             int2 v_header_loc = calcBandLoc(glyph_loc, uint(band_max.y + 1 + band));
-            uint2 vbd = band_tex.Load(int4(v_header_loc, layer, 0)).xy;
+            uint2 vbd = snailLoadBand(band_tex, v_header_loc, layer, atlas_layout);
             int2 v_loc = calcBandLoc(glyph_loc, vbd.y);
             int v_count = int(vbd.x);
             for (int i = 0; i < v_count; i++) {
                 int2 b_loc = calcBandLoc(v_loc, uint(i));
-                uint2 ref = band_tex.Load(int4(b_loc, layer, 0)).xy;
+                uint2 ref = snailLoadBand(band_tex, b_loc, layer, atlas_layout);
                 if (dedup && !isCoverageBandSpanOwner(ref, band, vSpan.first)) continue;
                 int2 c_loc = decodeBandCurveLoc(ref);
-                if (!accumulateVertContribution(ycov, ywgt, rc, ppe, c_loc, layer, curve_tex)) break;
+                if (!accumulateVertContribution(ycov, ywgt, rc, ppe, c_loc, layer, atlas_layout, curve_tex)) break;
             }
         }
     }
@@ -109,15 +109,15 @@ float2 subpixelCoverageEdgePixels(float2 display_dx, float2 display_dy, int subp
         : dx + dy * (1.0 / 3.0);
 }
 
-float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
+float evalGlyphSample(float2 rc, float2 display_epp, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailAtlasLayout atlas_layout, SnailCurveStorage curve_tex, SnailBandStorage band_tex) {
     float2 ppe = float2(1.0 / max(display_epp.x, 1.0 / 65536.0), 1.0 / max(display_epp.y, 1.0 / 65536.0));
-    return evalGlyphCoverageRaw(rc, display_epp, ppe, glyph_loc, band_max, banding, layer, curve_tex, band_tex);
+    return evalGlyphCoverageRaw(rc, display_epp, ppe, glyph_loc, band_max, banding, layer, atlas_layout, curve_tex, band_tex);
 }
 
 // Deriv-parameterized evaluator: callers with a remapped sample space
 // (autohint's inverse warp) pass display-space derivatives already scaled
 // into that space; the plain wrapper below feeds raw ddx/ddy.
-public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
+public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx, float2 display_dy, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailAtlasLayout atlas_layout, int subpixel_order, float coverage_exponent, SnailCurveStorage curve_tex, SnailBandStorage band_tex) {
     float2 sample_step = ((subpixel_order <= 2) ? display_dx : display_dy) * (1.0 / 3.0);
     float2 display_epp = subpixelCoverageEdgePixels(display_dx, display_dy, subpixel_order);
     // One evaluator call site avoids cloning the complete coverage call graph
@@ -126,7 +126,7 @@ public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx,
     for (int tap = 0; tap < 7; ++tap) {
         samples[tap] = evalGlyphSample(
             rc + sample_step * float(tap - 3),
-            display_epp, glyph_loc, band_max, banding, layer,
+            display_epp, glyph_loc, band_max, banding, layer, atlas_layout,
             curve_tex, band_tex
         );
     }
@@ -143,8 +143,8 @@ public float4 snailEvalGlyphCoverageSubpixelDerivs(float2 rc, float2 display_dx,
     return float4(applyCoverageTransfer3(coverage.rgb, coverage_exponent), applyCoverageTransfer(coverage.a, coverage_exponent));
 }
 
-public float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, int subpixel_order, float coverage_exponent, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex) {
-    return snailEvalGlyphCoverageSubpixelDerivs(rc, ddx(rc), ddy(rc), glyph_loc, band_max, banding, layer, subpixel_order, coverage_exponent, curve_tex, band_tex);
+public float4 evalGlyphCoverageSubpixel(float2 rc, int2 glyph_loc, int2 band_max, float4 banding, int layer, SnailAtlasLayout atlas_layout, int subpixel_order, float coverage_exponent, SnailCurveStorage curve_tex, SnailBandStorage band_tex) {
+    return snailEvalGlyphCoverageSubpixelDerivs(rc, ddx(rc), ddy(rc), glyph_loc, band_max, banding, layer, atlas_layout, subpixel_order, coverage_exponent, curve_tex, band_tex);
 }
 
 // Shared dual-source packaging: `color` is the linear, unpremultiplied,
@@ -175,9 +175,10 @@ public SubpixelResult snailPackSubpixelResult(float4 color, float4 cov_alpha, in
 
 public SubpixelResult snailSubpixelFragment(
     SubpixelVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
-    int layer_base,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int subpixel_order,
     int output_srgb,
     float coverage_exponent)
@@ -189,12 +190,12 @@ public SubpixelResult snailSubpixelFragment(
 
     if ((uint(v.glyph.w) & 0x8000u) != 0u) { r.discard_fragment = true; return r; }
     int layer_byte = (v.glyph.z >> 8) & 0xFF;
-    int layer = layer_base + layer_byte;
+    int layer = page_base + layer_byte;
 
     float2 rc = v.texcoord;
     int2 band_max = int2((v.glyph.z >> 4) & 0xF, v.glyph.z & 0xF);
     int2 glyph_loc = v.glyph.xy;
-    float4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v.banding, layer,
+    float4 cov_alpha = evalGlyphCoverageSubpixel(rc, glyph_loc, band_max, v.banding, layer, atlas_layout,
                                                 subpixel_order, coverage_exponent, curve_tex, band_tex);
 
     // v.color / v.tint arrive as linear-light f16 vertex attributes.

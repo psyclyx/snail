@@ -71,9 +71,9 @@ public float2 solveVertPoly(float4 p12, float2 p3) {
 // Accumulate one quadratic's horizontal coverage contribution. Returns
 // false when the curve's max-along is behind sampleRc, so ordered band
 // scans can stop early.
-public bool accumulateHorizContribution(inout float xcov, inout float xwgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailFloatTexture2DArray curve_tex) {
-    float4 tex0 = curve_tex.Load(int4(cLoc, texLayer, 0));
-    float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(cLoc, 1), texLayer, 0));
+public bool accumulateHorizContribution(inout float xcov, inout float xwgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailAtlasLayout atlas_layout, SnailCurveStorage curve_tex) {
+    float4 tex0 = snailLoadCurve(curve_tex, cLoc, texLayer, atlas_layout);
+    float4 tex1 = snailLoadCurve(curve_tex, offsetCurveLoc(cLoc, 1), texLayer, atlas_layout);
     float4 p12 = float4(tex0.xy, tex0.zw) - float4(rc, rc);
     float2 p3 = tex1.xy - rc;
     if (max(max(p12.x, p12.z), p3.x) * ppe.x < -0.5) return false;
@@ -86,9 +86,9 @@ public bool accumulateHorizContribution(inout float xcov, inout float xwgt, floa
     return true;
 }
 
-public bool accumulateVertContribution(inout float ycov, inout float ywgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailFloatTexture2DArray curve_tex) {
-    float4 tex0 = curve_tex.Load(int4(cLoc, texLayer, 0));
-    float4 tex1 = curve_tex.Load(int4(offsetCurveLoc(cLoc, 1), texLayer, 0));
+public bool accumulateVertContribution(inout float ycov, inout float ywgt, float2 rc, float2 ppe, int2 cLoc, int texLayer, SnailAtlasLayout atlas_layout, SnailCurveStorage curve_tex) {
+    float4 tex0 = snailLoadCurve(curve_tex, cLoc, texLayer, atlas_layout);
+    float4 tex1 = snailLoadCurve(curve_tex, offsetCurveLoc(cLoc, 1), texLayer, atlas_layout);
     float4 p12 = float4(tex0.xy, tex0.zw) - float4(rc, rc);
     float2 p3 = tex1.xy - rc;
     if (max(max(p12.y, p12.w), p3.y) * ppe.y < -0.5) return false;
@@ -101,7 +101,7 @@ public bool accumulateVertContribution(inout float ycov, inout float ywgt, float
     return true;
 }
 
-public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int2 bandMax, float4 banding, int texLayer, SnailFloatTexture2DArray curve_tex, SnailUint2Texture2DArray band_tex, float coverage_exponent) {
+public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int2 bandMax, float4 banding, int texLayer, SnailAtlasLayout atlas_layout, SnailCurveStorage curve_tex, SnailBandStorage band_tex, float coverage_exponent) {
     // Evaluate every band the pixel footprint touches and de-duplicate
     // curves that span multiple bands by counting them only at their
     // owner band. Mirrors the path-shader fix from commit 94d76bd.
@@ -113,15 +113,15 @@ public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int
         bool dedup = hSpan.first != hSpan.last;
         for (int band = hSpan.first; band <= hSpan.last; band++) {
             int2 hHeaderLoc = calcBandLoc(gLoc, uint(band));
-            uint2 hbd = band_tex.Load(int4(hHeaderLoc, texLayer, 0)).xy;
+            uint2 hbd = snailLoadBand(band_tex, hHeaderLoc, texLayer, atlas_layout);
             int2 hLoc = calcBandLoc(gLoc, hbd.y);
             int hCount = int(hbd.x);
             for (int i = 0; i < hCount; i++) {
                 int2 bLoc_h = calcBandLoc(hLoc, uint(i));
-                uint2 ref = band_tex.Load(int4(bLoc_h, texLayer, 0)).xy;
+                uint2 ref = snailLoadBand(band_tex, bLoc_h, texLayer, atlas_layout);
                 if (dedup && !isCoverageBandSpanOwner(ref, band, hSpan.first)) continue;
                 int2 cLoc = decodeBandCurveLoc(ref);
-                if (!accumulateHorizContribution(xcov, xwgt, rc, ppe, cLoc, texLayer, curve_tex)) break;
+                if (!accumulateHorizContribution(xcov, xwgt, rc, ppe, cLoc, texLayer, atlas_layout, curve_tex)) break;
             }
         }
     }
@@ -131,15 +131,15 @@ public float evalGlyphCoverage(float2 rc, float2 epp, float2 ppe, int2 gLoc, int
         bool dedup = vSpan.first != vSpan.last;
         for (int band = vSpan.first; band <= vSpan.last; band++) {
             int2 vHeaderLoc = calcBandLoc(gLoc, uint(bandMax.y + 1 + band));
-            uint2 vbd = band_tex.Load(int4(vHeaderLoc, texLayer, 0)).xy;
+            uint2 vbd = snailLoadBand(band_tex, vHeaderLoc, texLayer, atlas_layout);
             int2 vLoc = calcBandLoc(gLoc, vbd.y);
             int vCount = int(vbd.x);
             for (int i = 0; i < vCount; i++) {
                 int2 bLoc_v = calcBandLoc(vLoc, uint(i));
-                uint2 ref = band_tex.Load(int4(bLoc_v, texLayer, 0)).xy;
+                uint2 ref = snailLoadBand(band_tex, bLoc_v, texLayer, atlas_layout);
                 if (dedup && !isCoverageBandSpanOwner(ref, band, vSpan.first)) continue;
                 int2 cLoc = decodeBandCurveLoc(ref);
-                if (!accumulateVertContribution(ycov, ywgt, rc, ppe, cLoc, texLayer, curve_tex)) break;
+                if (!accumulateVertContribution(ycov, ywgt, rc, ppe, cLoc, texLayer, atlas_layout, curve_tex)) break;
             }
         }
     }

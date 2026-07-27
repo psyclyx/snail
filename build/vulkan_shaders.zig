@@ -17,16 +17,16 @@ pub fn createModule(b: *std.Build) *std.Build.Module {
     // Fragment-only families share the native text vertex module.
     const native_text = slang_shaders.vulkanTextSpv(b);
     mod.addAnonymousImport("snail_text_native.vert.spv", .{ .root_source_file = native_text.vert });
-    mod.addAnonymousImport("snail_text_native.frag.spv", .{ .root_source_file = native_text.frag });
-    mod.addAnonymousImport("snail_colr_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "colr") });
-    mod.addAnonymousImport("snail_path_quadratic_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path_quadratic") });
-    mod.addAnonymousImport("snail_path_conic_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path_conic") });
-    mod.addAnonymousImport("snail_path_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path") });
-    mod.addAnonymousImport("snail_tt_hinted_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text") });
+    mod.addAnonymousImport("snail_text_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "text_flat") });
+    mod.addAnonymousImport("snail_colr_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "colr_flat") });
+    mod.addAnonymousImport("snail_path_quadratic_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path_quadratic_flat") });
+    mod.addAnonymousImport("snail_path_conic_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path_conic_flat") });
+    mod.addAnonymousImport("snail_path_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "path_flat") });
+    mod.addAnonymousImport("snail_tt_hinted_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text_flat") });
     mod.addAnonymousImport("snail_autohint_native.vert.spv", .{ .root_source_file = slang_shaders.vulkanVertexSpv(b, "autohint") });
-    mod.addAnonymousImport("snail_autohint_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint") });
-    mod.addAnonymousImport("snail_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "text_subpixel") });
-    mod.addAnonymousImport("snail_tt_hinted_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text_subpixel") });
-    mod.addAnonymousImport("snail_autohint_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint_subpixel") });
+    mod.addAnonymousImport("snail_autohint_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint_flat") });
+    mod.addAnonymousImport("snail_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "text_subpixel_flat") });
+    mod.addAnonymousImport("snail_tt_hinted_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "tt_hinted_text_subpixel_flat") });
+    mod.addAnonymousImport("snail_autohint_subpixel_native.frag.spv", .{ .root_source_file = slang_shaders.vulkanFragmentSpv(b, "autohint_subpixel_flat") });
     return mod;
 }

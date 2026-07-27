@@ -11,7 +11,7 @@
 //!
 //! Binding contract (see `snail_shaders`): group 0 = atlas textures
 //! at the Vulkan binding numbers, group 1 = the split samplers, group 2 =
-//! the Vulkan push-constant block as a 96-byte uniform buffer.
+//! the 104-byte Vulkan push-constant payload in a 112-byte uniform buffer.
 //!
 //! Environment knobs (both optional): `SNAIL_WGPU_BACKEND=vulkan|gl` pins the
 //! adapter's backend (useful with `VK_DRIVER_FILES` pointing at llvmpipe for
@@ -332,7 +332,7 @@ const Layouts = struct {
                 .visibility = both,
                 .buffer = std.mem.zeroInit(c.WGPUBufferBindingLayout, .{
                     .type = c.WGPUBufferBindingType_Uniform,
-                    .minBindingSize = @sizeOf(PushConstants),
+                    .minBindingSize = slang_gen.uniform_parameter_buffer_size,
                 }),
             }),
         };
@@ -586,7 +586,7 @@ const GpuAtlas = struct {
         const pool_config = self.pool.config();
         const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
         const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers = pool_config.max_layers;
+        const layers = pool_config.max_pages;
 
         self.curve_tex = try createTexture(self.gpu.device, "snail-curves", c.WGPUTextureFormat_RGBA16Float, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(layers));
         self.band_tex = try createTexture(self.gpu.device, "snail-bands", c.WGPUTextureFormat_RG16Uint, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(layers));
@@ -658,7 +658,15 @@ const GpuAtlas = struct {
         const dst = c.WGPUTexelCopyTextureInfo{
             .texture = texture,
             .mipLevel = 0,
-            .origin = .{ .x = region.col_base, .y = region.row_base, .z = region.layer },
+            .origin = .{
+                .x = region.col_base,
+                .y = region.row_base,
+                .z = switch (region.target) {
+                    .curve, .band => region.page,
+                    .image => region.layer,
+                    .layer_info => 0,
+                },
+            },
             .aspect = c.WGPUTextureAspect_All,
         };
         const layout = c.WGPUTexelCopyBufferLayout{
@@ -693,7 +701,7 @@ pub fn main() !void {
     defer emoji.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });
@@ -861,7 +869,7 @@ pub fn main() !void {
     const uniform_buffer = c.wgpuDeviceCreateBuffer(gpu.device, &std.mem.zeroInit(c.WGPUBufferDescriptor, .{
         .label = sv("snail-push-constants"),
         .usage = c.WGPUBufferUsage_Uniform | c.WGPUBufferUsage_CopyDst,
-        .size = @sizeOf(PushConstants),
+        .size = slang_gen.uniform_parameter_buffer_size,
     })) orelse return error.BufferFailed;
     defer c.wgpuBufferRelease(uniform_buffer);
     // Vulkan-style projection (y flipped relative to the GL example's
@@ -873,10 +881,11 @@ pub fn main() !void {
         .viewport = .{ width, height },
         .subpixel_order = subpixel_order,
         .output_srgb = 0, // hardware-sRGB render target: emit linear
-        .layer_base = 0,
+        .page_base = 0,
         .coverage_exponent = 1.0,
         .dither_scale = 0.0,
         .mask_output = 0,
+        .atlas_page_texels = .{ 0, 0 },
     };
     c.wgpuQueueWriteBuffer(gpu.queue, uniform_buffer, 0, &push_constants, @sizeOf(PushConstants));
 
@@ -911,7 +920,7 @@ pub fn main() !void {
     defer c.wgpuBindGroupRelease(sampler_group);
 
     var uniform_entries = [1]c.WGPUBindGroupEntry{
-        std.mem.zeroInit(c.WGPUBindGroupEntry, .{ .binding = 0, .buffer = uniform_buffer, .size = @sizeOf(PushConstants) }),
+        std.mem.zeroInit(c.WGPUBindGroupEntry, .{ .binding = 0, .buffer = uniform_buffer, .size = slang_gen.uniform_parameter_buffer_size }),
     };
     const uniform_group = c.wgpuDeviceCreateBindGroup(gpu.device, &.{
         .nextInChain = null,

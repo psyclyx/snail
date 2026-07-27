@@ -17,10 +17,11 @@ import subpixel_body;
 
 public SubpixelResult snailTtHintedSubpixelFragment(
     TtHintedVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
-    int layer_base,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int subpixel_order,
     int output_srgb,
     float coverage_exponent)
@@ -41,10 +42,10 @@ public SubpixelResult snailTtHintedSubpixelFragment(
     int packed_counts = asint(header.z);
     int band_max_h = packed_counts & 0xFFFF;
     int band_max_v = (packed_counts >> 16) & 0xFFFF;
-    int atlas_layer = layer_base + ((v.glyph.w >> 2) & 0xff);
+    int atlas_layer = page_base + ((v.glyph.w >> 2) & 0xff);
 
     float4 cov_alpha = evalGlyphCoverageSubpixel(rc, int2(int(header.x), int(header.y)),
-                                                int2(band_max_v, band_max_h), band, atlas_layer,
+                                                int2(band_max_v, band_max_h), band, atlas_layer, atlas_layout,
                                                 subpixel_order, coverage_exponent,
                                                 curve_tex, band_tex);
     // v.color / v.tint arrive as linear-light f16 vertex attributes.

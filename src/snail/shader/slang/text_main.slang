@@ -18,22 +18,23 @@ public struct TextVaryings {
 
 public float4 snailTextFragment(
     TextVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
-    int layer_base,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int output_srgb,
     float coverage_exponent,
     int mask_output)
 {
     if ((uint(v.glyph.w) & 0x8000u) != 0u) discard;
     int layer_byte = (v.glyph.z >> 8) & 0xFF;
-    int atlas_layer = layer_base + layer_byte;
+    int atlas_layer = page_base + layer_byte;
     float2 rc = v.texcoord;
     float2 epp = fwidth(rc);
     float2 ppe = float2(1.0 / max(epp.x, 1.0 / 65536.0), 1.0 / max(epp.y, 1.0 / 65536.0));
     float cov = evalGlyphCoverage(rc, epp, ppe, v.glyph.xy,
                                                    int2((v.glyph.z >> 4) & 0xF, v.glyph.z & 0xF),
-                                  v.banding, atlas_layer,
+                                  v.banding, atlas_layer, atlas_layout,
                                   curve_tex, band_tex, coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     // v.color / v.tint arrive as linear-light f16 vertex attributes.

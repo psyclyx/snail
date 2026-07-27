@@ -109,6 +109,8 @@ const vertex_stage = Stage{ .entry = "vertexMain", .stage = "vertex", .short = "
 const fragment_stage = Stage{ .entry = "fragmentMain", .stage = "fragment", .short = "frag" };
 
 pub const Family = struct {
+    pub const Storage = enum { array, flat };
+
     /// Artifact base name (generated/<target>/<name>.<stage>.<ext>).
     name: []const u8,
     /// Family entry file under `dir`.
@@ -135,6 +137,18 @@ pub const Family = struct {
     /// Skip the GLES 3.0 artifact (subpixel: ES 3.0 has no dual-source
     /// blending).
     no_gles: bool = false,
+    storage: Storage = .array,
+    shared_params: bool = false,
+    dual_source: bool = false,
+
+    fn flat(comptime self: Family) Family {
+        var result = self;
+        result.name = self.name ++ "_flat";
+        result.stages = &.{fragment_stage};
+        result.no_gles = true;
+        result.storage = .flat;
+        return result;
+    }
 };
 
 /// slangc arguments for the D3D11 HLSL leg (SM 5.0, FXC/d3dcompiler_47
@@ -189,7 +203,7 @@ const hlsl_args: []const []const u8 = &.{ "-target", "hlsl", "-profile", "sm_5_0
 ///    every other target; no matrix flag is passed.
 ///  - The parameter block is `constant SnailPushConstants_natural*` at
 ///    [[buffer(0)]] with NATURAL (C) layout — identical offsets to the
-///    96-byte PushConstants extern struct (all fields naturally aligned).
+///    104-byte PushConstants extern struct (all fields naturally aligned).
 ///  - Resources land on the Vulkan binding numbers in declaration order:
 ///    [[texture(0)]] curve, [[texture(1)]] band, [[texture(2)]] layer-info
 ///    (= the records texture_buffer for text_sample), [[texture(3)]] image
@@ -221,31 +235,54 @@ const msl_args: []const []const u8 = &.{ "-target", "metal", "-ignore-capabiliti
 /// The families gen-shaders produces. Vertex artifacts exist only where the
 /// stage differs from the shared text vertex (colr/path/tt_hinted reuse
 /// text.vert.* — identical source, identical interface).
+const text = Family{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage }, .shared_params = true };
+const colr = Family{ .name = "colr", .source = "families/colr.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .shared_params = true };
+const path_quadratic = Family{ .name = "path_quadratic", .source = "families/path_quadratic.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .shared_params = true };
+const path_conic = Family{ .name = "path_conic", .source = "families/path_conic.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .shared_params = true };
+const path = Family{ .name = "path", .source = "families/path.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .shared_params = true };
+const tt_hinted_text = Family{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .shared_params = true };
+const autohint = Family{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .shared_params = true };
+const text_subpixel = Family{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true, .shared_params = true, .dual_source = true };
+const tt_hinted_text_subpixel = Family{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true, .shared_params = true, .dual_source = true };
+const autohint_subpixel = Family{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true, .shared_params = true, .dual_source = true };
+const text_sample = Family{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true };
+
 pub const families = [_]Family{
-    .{ .name = "text", .source = "families/text.slang", .stages = &.{ vertex_stage, fragment_stage } },
-    .{ .name = "colr", .source = "families/colr.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_quadratic", .source = "families/path_quadratic.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path_conic", .source = "families/path_conic.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "path", .source = "families/path.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "tt_hinted_text", .source = "families/tt_hinted_text.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
-    .{ .name = "autohint", .source = "families/autohint.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true },
+    text,
+    colr,
+    path_quadratic,
+    path_conic,
+    path,
+    tt_hinted_text,
+    autohint,
     // The WGSL artifact carries a dual-source entry (`fragmentDualMain`,
     // @blend_src 0/1) synthesized after slangc by
     // build/wgsl_gen_dual_entry.zig; the plain `fragmentMain` entry keeps
     // MRT locations 0/1. naga validates the transformed artifact.
-    .{ .name = "text_subpixel", .source = "families/text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
+    text_subpixel,
     // LCD subpixel variants of the hinted text families. Fragment-only:
     // tt_hinted_text_subpixel pairs with text.vert, autohint_subpixel with
     // autohint.vert (identical varying interfaces). Same dual-source and
     // WGSL post-generation transform as text_subpixel.
-    .{ .name = "tt_hinted_text_subpixel", .source = "families/tt_hinted_text_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
-    .{ .name = "autohint_subpixel", .source = "families/autohint_subpixel.slang", .stages = &.{fragment_stage}, .gl_o0 = true, .no_gles = true },
+    tt_hinted_text_subpixel,
+    autohint_subpixel,
+    text.flat(),
+    colr.flat(),
+    path_quadratic.flat(),
+    path_conic.flat(),
+    path.flat(),
+    tt_hinted_text.flat(),
+    autohint.flat(),
+    text_subpixel.flat(),
+    tt_hinted_text_subpixel.flat(),
+    autohint_subpixel.flat(),
     // Canonical artifacts for every target. Desktop GL is a plain
     // `usamplerBuffer` texel buffer. GLES 3.0 has no texel buffers at any
     // extension level (GL_EXT_texture_buffer requires ES 3.1), so its leg
     // compiles with -DSNAIL_TARGET_GLES and binds the emit words as a 2D
     // R32UI texture instead.
-    .{ .name = "text_sample", .source = "families/text_sample_family.slang", .stages = &.{fragment_stage}, .gl_o0 = true },
+    text_sample,
+    text_sample.flat(),
     // The game demo's text-as-material shader: a caller-authored family
     // importing the library's text_sample module. GL dialects are wired as
     // anonymous imports next to the consumer (build.zig addGameShaderGl);
@@ -336,6 +373,7 @@ fn slangcFamily(
     const cmd = b.addSystemCommand(&.{"slangc"});
     attachSlangcGate(b, &cmd.step);
     for (target_defines) |d| cmd.addArg(b.fmt("-D{s}", .{d}));
+    if (family.storage == .flat) cmd.addArg("-DSNAIL_FLAT_STORAGE");
     cmd.addArgs(&.{
         "-entry",
         stage.entry,
@@ -393,17 +431,8 @@ fn stageReflectionJson(b: *std.Build, comptime family: Family, stage: Stage, tar
 /// reflections feed the generated parameter-ABI module (reflection.zig).
 /// text_sample / linear_resolve / the game material own different
 /// parameter blocks.
-fn familyHasReflectionContract(comptime name: []const u8) bool {
-    return comptime std.mem.eql(u8, name, "text") or
-        std.mem.eql(u8, name, "colr") or
-        std.mem.eql(u8, name, "path_quadratic") or
-        std.mem.eql(u8, name, "path_conic") or
-        std.mem.eql(u8, name, "path") or
-        std.mem.eql(u8, name, "tt_hinted_text") or
-        std.mem.eql(u8, name, "autohint") or
-        std.mem.eql(u8, name, "text_subpixel") or
-        std.mem.eql(u8, name, "tt_hinted_text_subpixel") or
-        std.mem.eql(u8, name, "autohint_subpixel");
+fn familyHasReflectionContract(comptime family: Family) bool {
+    return family.shared_params and family.storage == .array;
 }
 
 /// Compile the native text family to Vulkan SPIR-V (both stages). Used by
@@ -433,7 +462,11 @@ pub fn vulkanVertexSpv(b: *std.Build, comptime name: []const u8) std.Build.LazyP
 /// compiled by the demo build like the library families (the GL dialects
 /// the GL hosts embed come from `Artifacts.game`, see collectArtifacts).
 pub fn vulkanGameMaterialSpv(b: *std.Build) struct { vert: std.Build.LazyPath, frag: std.Build.LazyPath } {
-    const family = comptime findFamily("game_material");
+    const family = comptime blk: {
+        var f = findFamily("game_material");
+        f.storage = .flat;
+        break :blk f;
+    };
     return .{
         .vert = vulkanStageSpv(b, family, vertex_stage),
         .frag = vulkanStageSpv(b, family, fragment_stage),
@@ -545,7 +578,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
     const reflection_zig = reflection_gen.addOutputFileArg("reflection.zig");
     reflection_gen.addFileArg(stageReflectionJson(b, comptime findFamily("text"), fragment_stage, "SNAIL_TARGET_WGSL", &.{ "-target", "wgsl" }, "wgsl"));
     inline for (families) |family| {
-        if (comptime familyHasReflectionContract(family.name)) {
+        if (comptime familyHasReflectionContract(family)) {
             inline for (family.stages) |stage| {
                 reflection_gen.addFileArg(stageReflectionJson(b, family, stage, "SNAIL_TARGET_VULKAN", &.{ "-target", "spirv", "-profile", "spirv_1_3" }, "vk"));
             }
@@ -578,10 +611,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                 const patch_wgsl = b.addRunArtifact(wgsl_patch_direct_tool);
                 patch_wgsl.addFileArg(raw_wgsl);
                 const direct_wgsl = patch_wgsl.addOutputFileArg("patched-" ++ family.name ++ "." ++ stage.short ++ ".wgsl");
-                const is_dual_source_family = comptime std.mem.eql(u8, family.name, "text_subpixel") or
-                    std.mem.eql(u8, family.name, "tt_hinted_text_subpixel") or
-                    std.mem.eql(u8, family.name, "autohint_subpixel");
-                const wgsl = if (is_dual_source_family) blk: {
+                const wgsl = if (family.dual_source) blk: {
                     const gen = b.addRunArtifact(wgsl_dual_entry_tool);
                     gen.addFileArg(direct_wgsl);
                     break :blk gen.addOutputFileArg("dual-" ++ family.name ++ "." ++ stage.short ++ ".wgsl");

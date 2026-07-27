@@ -84,7 +84,7 @@ pub fn main(init: std.process.Init) !void {
         .regular;
 
     const pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -433,12 +433,12 @@ const GpuAtlas = struct {
         c.glGenTextures(1, &self.curve_tex);
         c.glActiveTexture(c.GL_TEXTURE0);
         c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RGBA16F, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(pool_config.max_layers), 0, c.GL_RGBA, c.GL_HALF_FLOAT, null);
+        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RGBA16F, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(pool_config.max_pages), 0, c.GL_RGBA, c.GL_HALF_FLOAT, null);
         setNearest(c.GL_TEXTURE_2D_ARRAY);
         c.glGenTextures(1, &self.band_tex);
         c.glActiveTexture(c.GL_TEXTURE1);
         c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RG16UI, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(pool_config.max_layers), 0, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, null);
+        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RG16UI, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(pool_config.max_pages), 0, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, null);
         setNearest(c.GL_TEXTURE_2D_ARRAY);
         c.glGenTextures(1, &self.layer_tex);
         c.glActiveTexture(c.GL_TEXTURE2);
@@ -458,12 +458,12 @@ const GpuAtlas = struct {
             .curve => {
                 c.glActiveTexture(c.GL_TEXTURE0);
                 c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RGBA, c.GL_HALF_FLOAT, region.src.ptr);
+                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.page), @intCast(region.width), @intCast(region.height), 1, c.GL_RGBA, c.GL_HALF_FLOAT, region.src.ptr);
             },
             .band => {
                 c.glActiveTexture(c.GL_TEXTURE1);
                 c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, region.src.ptr);
+                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.page), @intCast(region.width), @intCast(region.height), 1, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, region.src.ptr);
             },
             .layer_info => {
                 c.glActiveTexture(c.GL_TEXTURE2);
@@ -506,7 +506,7 @@ fn initGeometry(instances: []const snail.render.records.Instance) Geometry {
     c.glGenBuffers(1, &out.ebo);
     c.glGenBuffers(1, &out.params_ubo);
     c.glBindBuffer(c.GL_UNIFORM_BUFFER, out.params_ubo);
-    c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(slang_gen.reflection.PushConstants), null, c.GL_DYNAMIC_DRAW);
+    c.glBufferData(c.GL_UNIFORM_BUFFER, slang_gen.uniform_parameter_buffer_size, null, c.GL_DYNAMIC_DRAW);
     c.glBindBuffer(c.GL_UNIFORM_BUFFER, 0);
     c.glBindVertexArray(out.vao);
     c.glBindBuffer(c.GL_ARRAY_BUFFER, out.vbo);
@@ -579,10 +579,11 @@ fn bindStandardProgram(program: c.GLuint, params_ubo: c.GLuint, subpixel: bool) 
         .viewport = .{ fixtures.width, fixtures.height },
         .subpixel_order = if (subpixel) 1 else 0,
         .output_srgb = 0,
-        .layer_base = 0,
+        .page_base = 0,
         .coverage_exponent = 1.0,
         .dither_scale = 0.0,
         .mask_output = 0,
+        .atlas_page_texels = .{ 0, 0 },
     };
     c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_curve_tex_name), 0);
     c.glUniform1i(c.glGetUniformLocation(program, slang_gen.glsl_band_tex_name), 1);
@@ -599,8 +600,10 @@ fn bindStandardProgram(program: c.GLuint, params_ubo: c.GLuint, subpixel: bool) 
 const SampleParams = extern struct {
     glyph_count: i32,
     words_per_glyph: i32,
-    layer_base: i32,
+    page_base: i32,
     coverage_exponent: f32,
+    atlas_page_texels: [2]i32,
+    padding: [2]u32 = .{ 0, 0 },
 };
 
 fn bindSampleProgram(program: c.GLuint, params_ubo: c.GLuint, glyph_count: usize) void {
@@ -614,8 +617,9 @@ fn bindSampleProgram(program: c.GLuint, params_ubo: c.GLuint, glyph_count: usize
     const params = SampleParams{
         .glyph_count = @intCast(glyph_count),
         .words_per_glyph = snail.render.records.BYTES_PER_INSTANCE / 4,
-        .layer_base = 0,
+        .page_base = 0,
         .coverage_exponent = 1.0,
+        .atlas_page_texels = .{ 0, 0 },
     };
     c.glBindBuffer(c.GL_UNIFORM_BUFFER, params_ubo);
     c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(SampleParams), &params, c.GL_STATIC_DRAW);

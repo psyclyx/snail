@@ -14,6 +14,7 @@
 module autohint_subpixel_family;
 
 import resource_types;
+import render_params;
 
 import render_abi;
 import color_common;
@@ -24,31 +25,20 @@ import autohint_frag;
 import autohint_subpixel_frag;
 import subpixel_body;
 
-public struct SnailPushConstants {
-    public float4x4 mvp;
-    public float2 viewport;
-    public int subpixel_order;
-    public int output_srgb;
-    public int layer_base;
-    public float coverage_exponent;
-    public float dither_scale;
-    public int mask_output;
-};
-
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #else // GL family (desktop GLSL 330; no GLES leg), D3D11 HLSL, and Metal MSL
 ConstantBuffer<SnailPushConstants> pc;
-SnailFloatTexture2DArray u_curve_tex;
-SnailUint2Texture2DArray u_band_tex;
+SnailCurveStorage u_curve_tex;
+SnailBandStorage u_band_tex;
 SnailFloatTexture2D u_layer_tex;
 #endif
 
@@ -94,7 +84,7 @@ FsOutput fragmentMain(VsOutput input) {
     v.x_sources = input.x_sources;
     v.y_sources = input.y_sources;
     SubpixelResult r = snailAutohintSubpixelFragment(v, u_curve_tex, u_band_tex, u_layer_tex,
-                                                     pc.layer_base, pc.subpixel_order,
+                                                     pc.page_base, snailAtlasLayout(pc.atlas_page_texels), pc.subpixel_order,
                                                      pc.output_srgb, pc.coverage_exponent);
     if (r.discard_fragment) discard;
     FsOutput o;

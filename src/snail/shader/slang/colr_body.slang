@@ -13,7 +13,8 @@ import color_common;
 import text_coverage;
 
 public struct ColrParams {
-    public int layer_base;
+    public int page_base;
+    public SnailAtlasLayout atlas_layout;
     public int output_srgb;
     public float coverage_exponent;
     public int mask_output;
@@ -34,14 +35,15 @@ int2 offsetColrInfoLoc(SnailFloatTexture2D layer_tex, int2 base, int offset) {
 }
 
 float colrLayerCoverage(
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
     float2 rc,
     float2 epp,
     float2 ppe,
     int2 record_loc,
     int tex_layer,
+    SnailAtlasLayout atlas_layout,
     float coverage_exponent)
 {
     float4 info = layer_tex.Load(int3(record_loc, 0));
@@ -60,6 +62,7 @@ float colrLayerCoverage(
         int2(band_max_v, band_max_h),
         band,
         tex_layer,
+        atlas_layout,
         curve_tex,
         band_tex,
         coverage_exponent);
@@ -71,8 +74,8 @@ float4 colrSolidColor(SnailFloatTexture2D layer_tex, int2 record_loc) {
 
 public float4 snailColrFragment(
     ColrVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
     ColrParams p)
 {
@@ -84,7 +87,7 @@ public float4 snailColrFragment(
     float2 ppe = 1.0 / max(epp, float2(1.0 / 65536.0));
     int2 info_base = v.glyph.xy;
     float4 first_info = layer_tex.Load(int3(info_base, 0));
-    int tex_layer = p.layer_base + ((v.glyph.w >> 2) & 0xff);
+    int tex_layer = p.page_base + ((v.glyph.w >> 2) & 0xff);
     float4 result = float4(0.0);
 
     if (int(-first_info.w + 0.5) == SNAIL_PAINT_KIND_COMPOSITE_GROUP) {
@@ -103,6 +106,7 @@ public float4 snailColrFragment(
                 ppe,
                 record_loc,
                 tex_layer,
+                p.atlas_layout,
                 p.coverage_exponent);
             float4 premul = premultiplyColor(colrSolidColor(layer_tex, record_loc) * v.tint, cov);
             result = premul + result * (1.0 - premul.a);
@@ -117,6 +121,7 @@ public float4 snailColrFragment(
             ppe,
             info_base,
             tex_layer,
+            p.atlas_layout,
             p.coverage_exponent);
         result = premultiplyColor(colrSolidColor(layer_tex, info_base) * v.tint, cov);
     }

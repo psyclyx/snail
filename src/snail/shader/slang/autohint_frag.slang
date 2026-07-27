@@ -107,7 +107,7 @@ public struct SnailAutohintWarped {
 public SnailAutohintWarped snailAutohintWarpSample(
     AutohintVaryings v,
     SnailFloatTexture2D layer_tex,
-    int layer_base)
+    int page_base)
 {
     SnailAutohintWarped w;
     float4 h0 = layer_tex.Load(int3(v.info, 0));
@@ -116,7 +116,7 @@ public SnailAutohintWarped snailAutohintWarpSample(
     int packedBands = asint(h0.z);
     int bandMaxH = packedBands & 0xFFFF;
     int bandMaxV = (packedBands >> 16) & 0xFFFF;
-    int texLayer = layer_base + int(v.texcoord_layer.z);
+    int texLayer = page_base + int(v.texcoord_layer.z);
 
     float2 rc = v.texcoord_layer.xy;
     float2 epp = fwidth(rc);
@@ -177,18 +177,19 @@ public SnailAutohintWarped snailAutohintWarpSample(
 
 public float4 snailAutohintFragment(
     AutohintVaryings v,
-    SnailFloatTexture2DArray curve_tex,
-    SnailUint2Texture2DArray band_tex,
+    SnailCurveStorage curve_tex,
+    SnailBandStorage band_tex,
     SnailFloatTexture2D layer_tex,
-    int layer_base,
+    int page_base,
+    SnailAtlasLayout atlas_layout,
     int output_srgb,
     float coverage_exponent,
     int mask_output)
 {
-    SnailAutohintWarped w = snailAutohintWarpSample(v, layer_tex, layer_base);
+    SnailAutohintWarped w = snailAutohintWarpSample(v, layer_tex, page_base);
     float2 epp = w.epp * w.slope;
     float2 ppe = float2(1.0 / max(epp.x, 1.0 / 65536.0), 1.0 / max(epp.y, 1.0 / 65536.0));
-    float cov = evalGlyphCoverage(w.rc, epp, ppe, w.gLoc, w.bandMax, w.band, w.texLayer,
+    float cov = evalGlyphCoverage(w.rc, epp, ppe, w.gLoc, w.bandMax, w.band, w.texLayer, atlas_layout,
                                   curve_tex, band_tex, coverage_exponent);
     if (cov < 1.0 / 255.0) discard;
     float4 premul = premultiplyColor(v.paint, cov);

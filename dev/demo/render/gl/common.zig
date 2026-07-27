@@ -38,6 +38,7 @@ pub const LinearResolvePass = enum(c_int) {
 /// on every offset of this block). The GL hosts upload it into a UBO
 /// instead of setting loose uniforms.
 pub const NativeTextPushBlock = @import("snail_shaders").reflection.PushConstants;
+pub const NATIVE_TEXT_UBO_SIZE = @import("snail_shaders").uniform_parameter_buffer_size;
 
 /// The UBO binding point both native text uniform blocks are bound to.
 pub const NATIVE_TEXT_UBO_BINDING: c_uint = 0;

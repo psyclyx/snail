@@ -6,24 +6,25 @@
 module colr;
 
 import resource_types;
+import render_params;
 
 import colr_body;
 import painted_family_common;
 
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #elif defined(SNAIL_TARGET_WGSL)
 [[vk::binding(0, 2)]] ConstantBuffer<SnailPushConstants> pc;
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 [[vk::binding(2, 0)]] SnailFloatTexture2D u_layer_tex;
 #else // GL family, D3D11 HLSL, and Metal MSL use declaration order.
 ConstantBuffer<SnailPushConstants> pc;
-SnailFloatTexture2DArray u_curve_tex;
-SnailUint2Texture2DArray u_band_tex;
+SnailCurveStorage u_curve_tex;
+SnailBandStorage u_band_tex;
 SnailFloatTexture2D u_layer_tex;
 #endif
 
@@ -38,7 +39,8 @@ float4 fragmentMain(PaintedFragmentInput input) : SV_Target {
     v.texcoord = input.texcoord;
     v.glyph = input.glyph;
     ColrParams p;
-    p.layer_base = pc.layer_base;
+    p.page_base = pc.page_base;
+    p.atlas_layout = snailAtlasLayout(pc.atlas_page_texels);
     p.output_srgb = pc.output_srgb;
     p.coverage_exponent = pc.coverage_exponent;
     p.mask_output = pc.mask_output;

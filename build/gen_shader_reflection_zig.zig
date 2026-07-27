@@ -2,11 +2,11 @@
 //! from `slangc -reflection-json` output.
 //!
 //! Boundary: snail ships Slang source plus the machinery to make it work;
-//! the parameter-passing ABI (block layout, binding slots) is not a
-//! hand-pinned promise but a per-compile fact DERIVED from the compiler's
-//! own reflection. This tool turns that fact into Zig the hosts consume
-//! (the CPU-side parameter struct, the binding slot numbers), replacing
-//! the hand-mirrored copies the reference renderers used to carry. The
+//! the Vulkan push-constant layout and resource slots are per-compile facts
+//! derived from the compiler's reflection. This tool turns those facts into
+//! Zig the hosts consume, replacing hand-mirrored copies. Uniform-buffer
+//! allocation extents remain target ABI requirements named by the generated
+//! accessor rather than being misrepresented as reflected facts. The
 //! DATA ABI — instance-stream semantics, atlas texel layouts, blend
 //! semantics — is not reflectable and stays owned in
 //! `src/snail/format/abi.zig` and the emit/record contracts.
@@ -203,8 +203,7 @@ pub fn main(init: std.process.Init) !void {
         \\
         \\
     );
-    try out.appendSlice(arena, "/// The per-draw parameter block, laid out exactly as every compiled\n");
-    try out.appendSlice(arena, "/// target reads it (Vulkan push constants; a UBO elsewhere).\n");
+    try out.appendSlice(arena, "/// The per-draw parameter fields and offsets reflected from Vulkan.\n");
     try out.appendSlice(arena, "pub const PushConstants = extern struct {\n");
     for (fields.items) |f| {
         try out.print(arena, "    {s}: {s},\n", .{ f.name, f.zig_type });
@@ -215,7 +214,7 @@ pub fn main(init: std.process.Init) !void {
         try out.print(arena, "    if (@offsetOf(PushConstants, \"{s}\") != {d}) @compileError(\"PushConstants.{s} offset drifted from reflection\");\n", .{ f.name, f.offset, f.name });
     }
     try out.appendSlice(arena, "}\n\n");
-    try out.print(arena, "pub const params_size: u32 = {d};\n\n", .{block_size});
+    try out.print(arena, "pub const vulkan_push_constant_size: u32 = {d};\n\n", .{block_size});
     try out.appendSlice(arena, "/// Descriptor slots (Vulkan set-0 bindings; the canonical numbers the\n");
     try out.appendSlice(arena, "/// other targets map in declaration order).\n");
     try out.appendSlice(arena, "pub const binding = struct {\n");

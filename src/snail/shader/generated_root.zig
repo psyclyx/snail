@@ -27,19 +27,18 @@
 //!
 //! ## Interface contracts
 //!
-//! The parameter-passing ABI (the shared parameter block's layout and the
-//! binding slot numbers) is NOT a hand-pinned promise: it is derived from
-//! slangc reflection at generation time and shipped as the `reflection`
-//! module below — consume `reflection.PushConstants` /
-//! `reflection.binding` instead of hard-coding numbers. What snail OWNS
+//! The Vulkan push-constant field layout and resource binding slots are
+//! derived from slangc reflection at generation time and shipped as the
+//! `reflection` module below — consume `reflection.PushConstants` /
+//! `reflection.binding` instead of hard-coding numbers. Uniform-buffer
+//! allocation extents are separately named target ABI rules. What snail OWNS
 //! is the data ABI: instance-stream semantics, atlas texel layouts, and
 //! blend semantics (src/snail/format/abi.zig + the emit/record
 //! contracts). The per-target notes:
 //!
-//!  - `spirv`: bound as the push-constant range; curve/band textures are
-//!    sampled images at set 0, bindings 0/1 (compatible with the existing
-//!    COMBINED_IMAGE_SAMPLER descriptor set layout). Entry points are
-//!    named `main`.
+//!  - `spirv`: bound as the push-constant range. Ordinary curve/band variants
+//!    are sampled images at set 0, bindings 0/1; flat fragment variants are
+//!    uniform texel buffers at those bindings. Entry points are named `main`.
 //!  - `wgsl`: uniform buffer at `@group(2) @binding(0)`; textures at
 //!    `@group(0)` bindings 0/1 (the WGSL catalog's binding contract; no
 //!    samplers — the text family only `Load`s). Entry points keep their
@@ -48,11 +47,15 @@
 //!    family declares ONE std140 uniform block named
 //!    `block_SnailPushConstants_0` (identical definition in both stages, so
 //!    the linker merges them — bind the single block index to one binding
-//!    point backed by a single 96-byte UBO). GL-specialized Slang resource
+//!    point backed by a 112-byte UBO containing the 104-byte reflected
+//!    payload). GL-specialized Slang resource
 //!    aliases emit ordinary combined samplers named `u_*_0`. Varyings are renamed to the
 //!    location-keyed `snail_io<N>` table at generation time (GLSL <4.10
 //!    links varyings by name). Vertex inputs keep locations 0..6 of the
 //!    instance stream; entry point is `main`.
+//!    Flat GLSL 330 fragment variants expose curve/band data as
+//!    `samplerBuffer`/`usamplerBuffer` and pair with the ordinary vertex
+//!    stage. GLES 300 intentionally has no flat variant.
 //!  - `hlsl` (D3D11, SM 5.0 / FXC class — compiles with d3dcompiler_47 and
 //!    dxc alike): the parameter block is `cbuffer` register b0; textures
 //!    sit on the Vulkan binding numbers as registers t0 curve, t1 band,
@@ -63,7 +66,7 @@
 //!    SV_Target0/SV_Target1 — D3D11 dual-source (SRC1 blend factors).
 //!  - `msl` (Metal, runtime-compile with `newLibraryWithSource:`): the
 //!    parameter block is `constant SnailPushConstants_natural*` at
-//!    [[buffer(0)]] — NATURAL (C) layout, byte-identical to the 96-byte
+//!    [[buffer(0)]] — NATURAL (C) layout, byte-identical to the 104-byte
 //!    extern struct. Textures land on the Vulkan binding numbers as
 //!    [[texture(0)]] curve, [[texture(1)]] band, [[texture(2)]]
 //!    layer-info (= the records `texture_buffer<uint>` for text_sample,
@@ -83,12 +86,17 @@ const std = @import("std");
 
 pub const Stage = enum { vertex, fragment };
 
-/// The machine-derived parameter ABI (generated per build from slangc
-/// reflection over the shared-parameter-block families; see
-/// build/gen_shader_reflection_zig.zig): the `PushConstants` CPU struct
-/// and the `binding` slot numbers. Hosts consume these instead of
-/// hand-mirroring layouts.
+/// Vulkan-reflected parameter fields and binding slots (generated per build
+/// from the shared-parameter-block families). Hosts consume these instead of
+/// hand-mirroring Vulkan layouts.
 pub const reflection = @import("reflection.zig");
+
+/// Required allocation/binding extent for uniform/constant-buffer targets.
+/// This is a host ABI rule: those targets round the reflected Vulkan field
+/// extent to 16 bytes. It is intentionally distinct from
+/// `reflection.vulkan_push_constant_size`.
+pub const uniform_parameter_buffer_size: usize =
+    std.mem.alignForward(usize, @sizeOf(reflection.PushConstants), 16);
 
 /// GLSL uniform-block name the GL hosts resolve with
 /// `glGetUniformBlockIndex`. Both stages of every family declare the same
@@ -119,6 +127,44 @@ pub const wgsl_fragment_entry = "fragmentMain";
 pub const hlsl_vertex_entry = "vertexMain";
 pub const hlsl_fragment_entry = "fragmentMain";
 pub const hlsl_attrib_semantic = "ATTRIB";
+
+/// Fragment families using flat curve/band buffers. They pair with the
+/// corresponding ordinary vertex stage (`text` or `autohint`).
+pub const FlatFamily = enum {
+    text,
+    colr,
+    path_quadratic,
+    path_conic,
+    path,
+    tt_hinted_text,
+    autohint,
+    text_subpixel,
+    tt_hinted_text_subpixel,
+    autohint_subpixel,
+    text_sample,
+};
+
+pub fn flatFragGlsl330(comptime family: FlatFamily) [:0]const u8 {
+    return @embedFile("generated/glsl330/" ++ @tagName(family) ++ "_flat.frag.glsl");
+}
+
+pub fn flatFragWgsl(comptime family: FlatFamily) [:0]const u8 {
+    return @embedFile("generated/wgsl/" ++ @tagName(family) ++ "_flat.frag.wgsl");
+}
+
+pub fn flatFragHlsl(comptime family: FlatFamily) [:0]const u8 {
+    return @embedFile("generated/hlsl/" ++ @tagName(family) ++ "_flat.frag.hlsl");
+}
+
+pub fn flatFragMsl(comptime family: FlatFamily) [:0]const u8 {
+    return @embedFile("generated/msl/" ++ @tagName(family) ++ "_flat.frag.metal");
+}
+
+/// Raw flat-resource SPIR-V. Copy to 4-byte-aligned storage before creating a
+/// VkShaderModule, or use an aligned host embedding facility.
+pub fn flatFragSpvRaw(comptime family: FlatFamily) []const u8 {
+    return @embedFile("generated/spirv/" ++ @tagName(family) ++ "_flat.frag.spv");
+}
 
 pub fn textGlsl330(comptime stage: Stage) [:0]const u8 {
     return switch (stage) {
@@ -721,6 +767,12 @@ test "generated artifacts carry the documented interface names" {
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), glsl_text_sample_block_name) != null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "usamplerBuffer") == null);
     try std.testing.expect(std.mem.indexOf(u8, textSampleFragGles300(), "precision highp float;") != null);
+    // The canonical flat text-sample variant must exist on every typed-buffer
+    // target; this is the integration path custom Vulkan materials consume.
+    try std.testing.expect(std.mem.readInt(u32, flatFragSpvRaw(.text_sample)[0..4], .little) == 0x0723_0203);
+    try std.testing.expect(std.mem.indexOf(u8, flatFragGlsl330(.text_sample), "samplerBuffer " ++ glsl_curve_tex_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, flatFragGlsl330(.text_sample), "usamplerBuffer " ++ glsl_band_tex_name) != null);
+    try std.testing.expect(std.mem.indexOf(u8, flatFragWgsl(.text_sample), "var<storage, read>") != null);
     // Linear resolve: block + sampler names must survive.
     inline for (.{ linearResolveGlsl330(.fragment), linearResolveGles300(.fragment) }) |src| {
         try std.testing.expect(std.mem.indexOf(u8, src, glsl_linear_resolve_block_name) != null);

@@ -28,11 +28,11 @@ const ppem: u32 = 34 * 64;
 
 const vertex_source = slang_gen.textGlsl330(.vertex);
 const autohint_vertex_source = slang_gen.autohintGlsl330(.vertex);
-const regular_fragment_source = slang_gen.textGlsl330(.fragment);
-const autohint_fragment_source = slang_gen.autohintGlsl330(.fragment);
-const tt_hint_fragment_source = slang_gen.ttHintedFragGlsl330();
-const path_fragment_source = slang_gen.pathFragGlsl330();
-const colr_fragment_source = slang_gen.colrFragGlsl330();
+const regular_fragment_source = slang_gen.flatFragGlsl330(.text);
+const autohint_fragment_source = slang_gen.flatFragGlsl330(.autohint);
+const tt_hint_fragment_source = slang_gen.flatFragGlsl330(.tt_hinted_text);
+const path_fragment_source = slang_gen.flatFragGlsl330(.path);
+const colr_fragment_source = slang_gen.flatFragGlsl330(.colr);
 
 const Programs = struct {
     regular: c.GLuint,
@@ -52,7 +52,7 @@ const Programs = struct {
         self.colr = try linkProgram(vertex_source, colr_fragment_source);
         c.glGenBuffers(1, &self.params_ubo);
         c.glBindBuffer(c.GL_UNIFORM_BUFFER, self.params_ubo);
-        c.glBufferData(c.GL_UNIFORM_BUFFER, @sizeOf(slang_gen.reflection.PushConstants), null, c.GL_DYNAMIC_DRAW);
+        c.glBufferData(c.GL_UNIFORM_BUFFER, slang_gen.uniform_parameter_buffer_size, null, c.GL_DYNAMIC_DRAW);
         c.glBindBuffer(c.GL_UNIFORM_BUFFER, 0);
         inline for (.{ self.regular, self.autohint, self.tt_hint, self.path, self.colr }) |program| {
             setupProgram(program);
@@ -86,7 +86,10 @@ const GpuAtlas = struct {
     pool: *snail.PagePool,
     curve_tex: c.GLuint = 0,
     band_tex: c.GLuint = 0,
+    curve_buf: c.GLuint = 0,
+    band_buf: c.GLuint = 0,
     layer_tex: c.GLuint = 0,
+    flat: snail.atlas_upload.FlatLayout,
     uploads: snail.atlas_upload.OwnedPlanner,
     binding: ?snail.render.records.Binding = null,
 
@@ -101,6 +104,7 @@ const GpuAtlas = struct {
     fn init(allocator: std.mem.Allocator, pool: *snail.PagePool) !GpuAtlas {
         var self = GpuAtlas{
             .pool = pool,
+            .flat = try snail.atlas_upload.FlatLayout.init(pool),
             .uploads = try snail.atlas_upload.OwnedPlanner.init(allocator, pool, options),
         };
         errdefer self.uploads.deinit();
@@ -112,26 +116,28 @@ const GpuAtlas = struct {
         c.glDeleteTextures(1, &self.curve_tex);
         c.glDeleteTextures(1, &self.band_tex);
         c.glDeleteTextures(1, &self.layer_tex);
+        c.glDeleteBuffers(1, &self.curve_buf);
+        c.glDeleteBuffers(1, &self.band_buf);
         self.uploads.deinit();
         self.* = undefined;
     }
 
     fn createTextures(self: *GpuAtlas) void {
-        const pool_config = self.pool.config();
-        const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
-        const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-
+        c.glGenBuffers(1, &self.curve_buf);
+        c.glBindBuffer(c.GL_TEXTURE_BUFFER, self.curve_buf);
+        c.glBufferData(c.GL_TEXTURE_BUFFER, @intCast(self.flat.curveByteSize()), null, c.GL_DYNAMIC_DRAW);
         c.glGenTextures(1, &self.curve_tex);
         c.glActiveTexture(c.GL_TEXTURE0);
-        c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RGBA16F, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), @intCast(pool_config.max_layers), 0, c.GL_RGBA, c.GL_HALF_FLOAT, null);
-        setNearest(c.GL_TEXTURE_2D_ARRAY);
+        c.glBindTexture(c.GL_TEXTURE_BUFFER, self.curve_tex);
+        c.glTexBuffer(c.GL_TEXTURE_BUFFER, c.GL_RGBA16F, self.curve_buf);
 
+        c.glGenBuffers(1, &self.band_buf);
+        c.glBindBuffer(c.GL_TEXTURE_BUFFER, self.band_buf);
+        c.glBufferData(c.GL_TEXTURE_BUFFER, @intCast(self.flat.bandByteSize()), null, c.GL_DYNAMIC_DRAW);
         c.glGenTextures(1, &self.band_tex);
         c.glActiveTexture(c.GL_TEXTURE1);
-        c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-        c.glTexImage3D(c.GL_TEXTURE_2D_ARRAY, 0, c.GL_RG16UI, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), @intCast(pool_config.max_layers), 0, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, null);
-        setNearest(c.GL_TEXTURE_2D_ARRAY);
+        c.glBindTexture(c.GL_TEXTURE_BUFFER, self.band_tex);
+        c.glTexBuffer(c.GL_TEXTURE_BUFFER, c.GL_RG16UI, self.band_buf);
 
         c.glGenTextures(1, &self.layer_tex);
         c.glActiveTexture(c.GL_TEXTURE2);
@@ -164,14 +170,14 @@ const GpuAtlas = struct {
     fn apply(self: *GpuAtlas, region: snail.atlas_upload.Region) void {
         switch (region.target) {
             .curve => {
-                c.glActiveTexture(c.GL_TEXTURE0);
-                c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RGBA, c.GL_HALF_FLOAT, region.src.ptr);
+                const copy = self.flat.translate(region) catch unreachable orelse unreachable;
+                c.glBindBuffer(c.GL_TEXTURE_BUFFER, self.curve_buf);
+                c.glBufferSubData(c.GL_TEXTURE_BUFFER, @intCast(copy.byte_offset), @intCast(copy.src.len), copy.src.ptr);
             },
             .band => {
-                c.glActiveTexture(c.GL_TEXTURE1);
-                c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
-                c.glTexSubImage3D(c.GL_TEXTURE_2D_ARRAY, 0, @intCast(region.col_base), @intCast(region.row_base), @intCast(region.layer), @intCast(region.width), @intCast(region.height), 1, c.GL_RG_INTEGER, c.GL_UNSIGNED_SHORT, region.src.ptr);
+                const copy = self.flat.translate(region) catch unreachable orelse unreachable;
+                c.glBindBuffer(c.GL_TEXTURE_BUFFER, self.band_buf);
+                c.glBufferSubData(c.GL_TEXTURE_BUFFER, @intCast(copy.byte_offset), @intCast(copy.src.len), copy.src.ptr);
             },
             .layer_info => {
                 c.glActiveTexture(c.GL_TEXTURE2);
@@ -184,9 +190,9 @@ const GpuAtlas = struct {
 
     fn bind(self: *const GpuAtlas) void {
         c.glActiveTexture(c.GL_TEXTURE0);
-        c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.curve_tex);
+        c.glBindTexture(c.GL_TEXTURE_BUFFER, self.curve_tex);
         c.glActiveTexture(c.GL_TEXTURE1);
-        c.glBindTexture(c.GL_TEXTURE_2D_ARRAY, self.band_tex);
+        c.glBindTexture(c.GL_TEXTURE_BUFFER, self.band_tex);
         c.glActiveTexture(c.GL_TEXTURE2);
         c.glBindTexture(c.GL_TEXTURE_2D, self.layer_tex);
     }
@@ -214,7 +220,7 @@ pub fn main() !void {
     defer emoji.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });
@@ -348,7 +354,7 @@ pub fn main() !void {
         const run = instances[batch.first_instance..][0..batch.instance_count];
         const run_bytes = std.mem.sliceAsBytes(run);
         const program = programs.forKind(batch.kind);
-        bindProgram(program, programs.params_ubo, projection);
+        bindProgram(program, programs.params_ubo, projection, batch.page_base, gpu.flat);
         c.glBindBuffer(c.GL_ARRAY_BUFFER, geometry.vbo);
         c.glBufferSubData(c.GL_ARRAY_BUFFER, 0, @intCast(run_bytes.len), run_bytes.ptr);
         c.glDrawElementsInstanced(c.GL_TRIANGLES, 6, c.GL_UNSIGNED_INT, null, @intCast(batch.instance_count));
@@ -553,16 +559,17 @@ fn setupProgram(program: c.GLuint) void {
     c.glUniformBlockBinding(program, block, 0);
 }
 
-fn bindProgram(program: c.GLuint, params_ubo: c.GLuint, projection: snail.Mat4) void {
+fn bindProgram(program: c.GLuint, params_ubo: c.GLuint, projection: snail.Mat4, page_base: u32, flat: snail.atlas_upload.FlatLayout) void {
     const params = slang_gen.reflection.PushConstants{
         .mvp = projection.data,
         .viewport = .{ width, height },
         .subpixel_order = 0,
         .output_srgb = 0,
-        .layer_base = 0,
+        .page_base = @intCast(page_base),
         .coverage_exponent = 1.0,
         .dither_scale = 0.0,
         .mask_output = 0,
+        .atlas_page_texels = .{ @intCast(flat.curve_page_texels), @intCast(flat.band_page_texels) },
     };
     c.glUseProgram(program);
     c.glBindBuffer(c.GL_UNIFORM_BUFFER, params_ubo);

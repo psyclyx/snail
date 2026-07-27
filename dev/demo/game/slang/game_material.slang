@@ -6,8 +6,9 @@
 // anonymous imports (build.zig addGameShaderGl); the demo Vulkan build
 // compiles the SPIR-V leg directly (build.zig addGameShaderSpirv).
 //
-// Per-target record storage (the ISnailTextRecords implementations):
-//   Vulkan      read-only SSBO, caller-owned set 1 binding 0
+// Per-target record storage (the ISnailTextSource implementations):
+//   Vulkan      flat atlas texel buffers in caller-owned set 0 plus a
+//               read-only records SSBO in caller-owned set 1 binding 0
 //   desktop GL  R32UI texel buffer (usamplerBuffer)
 //   GLES 3.0    2D R32UI texture, row-major at a fixed width (no texel
 //               buffers in ES 3.0 — GL_EXT_texture_buffer needs ES 3.1);
@@ -52,12 +53,19 @@ public struct GameMaterialParams {
 #if defined(SNAIL_TARGET_VULKAN)
 [[vk::push_constant]] ConstantBuffer<GameMaterialParams> pc;
 // snail's atlas plane (set 0) — reuse the device-atlas descriptor set.
-[[vk::binding(0, 0)]] SnailFloatTexture2DArray u_curve_tex;
-[[vk::binding(1, 0)]] SnailUint2Texture2DArray u_band_tex;
+[[vk::binding(0, 0)]] SnailCurveStorage u_curve_tex;
+[[vk::binding(1, 0)]] SnailBandStorage u_band_tex;
 // Caller-owned records SSBO (set 1).
 [[vk::binding(0, 1)]] StructuredBuffer<uint> u_snail_text_records;
-struct Records : ISnailTextRecords {
+struct Records : ISnailTextSource {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }
+    uint pageBase(int glyph_index) {
+        return u_snail_text_records[pc.glyph_count * SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + glyph_index];
+    }
+    SnailAtlasLayout atlasLayout() {
+        int base = pc.glyph_count * (SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + 1);
+        return snailAtlasLayout(int2(u_snail_text_records[base], u_snail_text_records[base + 1]));
+    }
 };
 #elif defined(SNAIL_TARGET_GLES)
 ConstantBuffer<GameMaterialParams> pc;
@@ -68,10 +76,17 @@ SnailUint2Texture2DArray u_band_tex;
 // tail row with zeros at the same width).
 SnailUintTexture2D u_snail_text_records;
 static const int SNAIL_TEXT_RECORDS_TEX_WIDTH = 1024;
-struct Records : ISnailTextRecords {
+struct Records : ISnailTextSource {
     uint word(int linear_index) {
         return u_snail_text_records.Load(int3(linear_index % SNAIL_TEXT_RECORDS_TEX_WIDTH,
                                               linear_index / SNAIL_TEXT_RECORDS_TEX_WIDTH, 0)).x;
+    }
+    uint pageBase(int glyph_index) {
+        return word(pc.glyph_count * SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + glyph_index);
+    }
+    SnailAtlasLayout atlasLayout() {
+        int base = pc.glyph_count * (SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + 1);
+        return snailAtlasLayout(int2(word(base), word(base + 1)));
     }
 };
 #else // Desktop GL: R32UI texel buffer.
@@ -79,8 +94,15 @@ ConstantBuffer<GameMaterialParams> pc;
 SnailFloatTexture2DArray u_curve_tex;
 SnailUint2Texture2DArray u_band_tex;
 Buffer<uint> u_snail_text_records;
-struct Records : ISnailTextRecords {
+struct Records : ISnailTextSource {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }
+    uint pageBase(int glyph_index) {
+        return u_snail_text_records[pc.glyph_count * SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + glyph_index];
+    }
+    SnailAtlasLayout atlasLayout() {
+        int base = pc.glyph_count * (SNAIL_TEXT_RECORD_WORDS_PER_GLYPH + 1);
+        return snailAtlasLayout(int2(u_snail_text_records[base], u_snail_text_records[base + 1]));
+    }
 };
 #endif
 
@@ -88,7 +110,6 @@ float4 snailGameTextSample(float2 scene_pos, float2 scene_dx, float2 scene_dy) {
     Records records;
     return snailTextSamplePremulLinearWithFootprint(
         records, SNAIL_TEXT_RECORD_WORDS_PER_GLYPH, pc.glyph_count,
-        0,   // layer_base: emit bakes the absolute atlas layer into each word
         1.0, // coverage exponent: identity transfer
         u_curve_tex, u_band_tex, scene_pos, scene_dx, scene_dy);
 }
