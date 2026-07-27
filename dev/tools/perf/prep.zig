@@ -27,6 +27,9 @@ const cases = [_][]const u8{
     "atlas-build-autohint",
     "atlas-build-path",
     "atlas-build-mixed",
+    "atlas-build-mixed-tail",
+    "atlas-pack-mixed",
+    "atlas-pack-mixed-tail",
     "atlas-build-colr",
     "atlas-upload-plan",
     "emit-text",
@@ -87,17 +90,23 @@ pub fn main(init: std.process.Init) !void {
     } else if (std.mem.eql(u8, args.case, "path-pack")) {
         try pathPackCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "atlas-build-text")) {
-        try atlasBuildCase(allocator, args, .regular);
+        try atlasBuildCase(allocator, args, .regular, 12);
     } else if (std.mem.eql(u8, args.case, "atlas-build-tt-hint")) {
-        try atlasBuildCase(allocator, args, .tt_hinted);
+        try atlasBuildCase(allocator, args, .tt_hinted, 12);
     } else if (std.mem.eql(u8, args.case, "atlas-build-autohint")) {
-        try atlasBuildCase(allocator, args, .autohint);
+        try atlasBuildCase(allocator, args, .autohint, 12);
     } else if (std.mem.eql(u8, args.case, "atlas-build-path")) {
-        try atlasBuildCase(allocator, args, .path);
+        try atlasBuildCase(allocator, args, .path, 12);
     } else if (std.mem.eql(u8, args.case, "atlas-build-mixed")) {
-        try atlasBuildCase(allocator, args, .mixed);
+        try atlasBuildCase(allocator, args, .mixed, 12);
+    } else if (std.mem.eql(u8, args.case, "atlas-build-mixed-tail")) {
+        try atlasBuildCase(allocator, args, .mixed, 1);
+    } else if (std.mem.eql(u8, args.case, "atlas-pack-mixed")) {
+        try atlasPackMixedCase(allocator, args, 12);
+    } else if (std.mem.eql(u8, args.case, "atlas-pack-mixed-tail")) {
+        try atlasPackMixedCase(allocator, args, 1);
     } else if (std.mem.eql(u8, args.case, "atlas-build-colr")) {
-        try atlasBuildCase(allocator, args, .colr);
+        try atlasBuildCase(allocator, args, .colr, 12);
     } else if (std.mem.eql(u8, args.case, "atlas-upload-plan")) {
         try uploadPlanCase(allocator, args);
     } else if (std.mem.eql(u8, args.case, "emit-text")) {
@@ -524,7 +533,7 @@ fn pathPackCase(allocator: std.mem.Allocator, args: common.Args) !void {
 
 fn initPool(allocator: std.mem.Allocator) !*snail.PagePool {
     return snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -534,13 +543,19 @@ const AtlasBuildContext = struct {
     allocator: std.mem.Allocator,
     pool: *snail.PagePool,
     entries: []const snail.AtlasEntry,
+    packing: snail.Atlas.Packing = .{},
     output_pages: usize = 0,
     output_records: usize = 0,
     output_paint_records: usize = 0,
     checksum: u64 = 14695981039346656037,
 
     pub fn run(self: *AtlasBuildContext) !void {
-        var atlas = try snail.Atlas.from(self.allocator, self.pool, self.entries);
+        var atlas = try snail.Atlas.fromWithPacking(
+            self.allocator,
+            self.pool,
+            self.entries,
+            self.packing,
+        );
         defer atlas.deinit();
         self.output_pages = atlas.pageCount();
         self.output_records = atlas.recordCount();
@@ -551,12 +566,17 @@ const AtlasBuildContext = struct {
     }
 };
 
-fn atlasBuildCase(allocator: std.mem.Allocator, args: common.Args, kind: fixtures.SceneKind) !void {
+fn atlasBuildCase(allocator: std.mem.Allocator, args: common.Args, kind: fixtures.SceneKind, packing_window: u8) !void {
     const pool = try initPool(allocator);
     defer pool.deinit();
     var scene = try fixtures.buildScene(allocator, pool, kind);
     defer scene.deinit();
-    var context = AtlasBuildContext{ .allocator = allocator, .pool = pool, .entries = scene.entries() };
+    var context = AtlasBuildContext{
+        .allocator = allocator,
+        .pool = pool,
+        .entries = scene.entries(),
+        .packing = .{ .recent_page_limit = packing_window },
+    };
     const result = try common.measure(allocator, &context, iterations(args, 512), args.samples);
     reportPrep(
         args.case,
@@ -569,6 +589,39 @@ fn atlasBuildCase(allocator: std.mem.Allocator, args: common.Args, kind: fixture
             .{ .name = "output_paint_records", .value = context.output_paint_records },
             .{ .name = "output_pages", .value = context.output_pages },
             .{ .name = "colr_layers", .value = scene.colrLayerCount() },
+        },
+        context.checksum,
+    );
+}
+
+/// Exercise placement across many deliberately small pages. This keeps the
+/// existing atlas-build benchmark stable while making the bounded scan cost
+/// and its response to a high-variance mixed glyph/path stream measurable.
+fn atlasPackMixedCase(allocator: std.mem.Allocator, args: common.Args, packing_window: u8) !void {
+    const pool = try snail.PagePool.init(allocator, .{
+        .max_pages = 128,
+        .curve_words_per_page = 1 << 12,
+        .band_words_per_page = 1 << 10,
+    });
+    defer pool.deinit();
+    var scene = try fixtures.buildScene(allocator, pool, .mixed);
+    defer scene.deinit();
+    var context = AtlasBuildContext{
+        .allocator = allocator,
+        .pool = pool,
+        .entries = scene.entries(),
+        .packing = .{ .recent_page_limit = packing_window },
+    };
+    const result = try common.measure(allocator, &context, iterations(args, 512), args.samples);
+    reportPrep(
+        args.case,
+        result,
+        scene.entries().len,
+        "atlas_entry",
+        &.{
+            .{ .name = "input_entries", .value = scene.entries().len },
+            .{ .name = "output_pages", .value = context.output_pages },
+            .{ .name = "packing_window", .value = packing_window },
         },
         context.checksum,
     );
