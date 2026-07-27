@@ -113,7 +113,7 @@ fn TextStateFor(comptime backend: Backend) type {
             coverage_exponent_set: bool = false,
             coverage_exponent: f32 = 0,
             // Native-Slang text program only: shadow of the last-uploaded
-            // 96-byte UBO block.
+            // 112-byte UBO with a 104-byte payload.
             push_block_set: bool = false,
             push_block: gl_common.NativeTextPushBlock = undefined,
         };
@@ -279,7 +279,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 };
                 const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
                 _ = scratch;
-                try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
+                try self.drawBatch(cache, draw_state, batch_instances, batch.kind, batch.page_base);
             }
         }
 
@@ -311,7 +311,7 @@ fn TextStateFor(comptime backend: Backend) type {
             self.cached_heterogeneous_vao_bound = true;
         }
 
-        fn drawBatch(self: *GlTextState, cache: *const GlDeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: ShapeKind) DrawError!void {
+        fn drawBatch(self: *GlTextState, cache: *const GlDeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: ShapeKind, page_base: u32) DrawError!void {
             const total_glyphs = instances.len;
             if (total_glyphs == 0) return;
             self.ensureHeterogeneousVaoBound();
@@ -330,7 +330,7 @@ fn TextStateFor(comptime backend: Backend) type {
                 .tt_hinted_text => try self.ensureTtHintedTextProgram(run_mode),
                 .autohint => try self.ensureAutohintProgram(run_mode),
             };
-            self.bindProgramState(cache, prog_state, draw_state, run_mode);
+            self.bindProgramState(cache, prog_state, draw_state, run_mode, page_base);
             self.drawGlyphRange(instances, 0, total_glyphs);
         }
 
@@ -340,7 +340,7 @@ fn TextStateFor(comptime backend: Backend) type {
         /// per-call uniforms (mvp/viewport/subpixel_order/output_srgb/
         /// coverage_exponent) are shadow-cached per program so steady-
         /// state frames upload only what actually changed.
-        fn bindProgramState(self: *GlTextState, cache: *const GlDeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
+        fn bindProgramState(self: *GlTextState, cache: *const GlDeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode, page_base: u32) void {
             const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
             if (program_changed) {
                 gl.glUseProgram(prog_state.handle);
@@ -361,9 +361,9 @@ fn TextStateFor(comptime backend: Backend) type {
                     if (prog_state.image_tex_loc >= 0 and cache.image_array_tex != 0) gl.glBindTextureUnit(3, cache.image_array_tex);
                 } else {
                     gl.glActiveTexture(gl.GL_TEXTURE0);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.curve_array);
+                    gl.glBindTexture(gl.GL_TEXTURE_BUFFER, cache.curve_array);
                     gl.glActiveTexture(gl.GL_TEXTURE1);
-                    gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, cache.band_array);
+                    gl.glBindTexture(gl.GL_TEXTURE_BUFFER, cache.band_array);
                     if (prog_state.layer_tex_loc >= 0 and cache.layer_info_tex != 0) {
                         gl.glActiveTexture(gl.GL_TEXTURE2);
                         gl.glBindTexture(gl.GL_TEXTURE_2D, cache.layer_info_tex);
@@ -378,7 +378,8 @@ fn TextStateFor(comptime backend: Backend) type {
             const cache_slot = self.programUniformCache(prog_state.handle);
 
             // Native-Slang text program: every per-draw parameter lives in
-            // one 96-byte UBO block; upload it when it changed and (re)bind
+            // one 112-byte UBO; upload its 104-byte payload when it changed
+            // and (re)bind
             // the buffer to the block binding point. Loose-uniform locs are
             // all -1 for this program, so the code below is a no-op for it —
             // return early instead of probing them.
@@ -389,10 +390,11 @@ fn TextStateFor(comptime backend: Backend) type {
                     .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
                     .subpixel_order = order,
                     .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
-                    .layer_base = 0,
+                    .page_base = @intCast(page_base),
                     .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
                     .dither_scale = draw_state.surface.format.ditherAmplitude(),
                     .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+                    .atlas_page_texels = cache.atlasPageTexels(),
                 };
                 gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
                 gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, prog_state.ubo);

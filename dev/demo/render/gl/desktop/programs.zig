@@ -11,7 +11,7 @@ pub const ProgramError = error{
 
 pub const ProgramState = struct {
     handle: gl.GLuint = 0,
-    /// Non-zero for the native-Slang text program: the 96-byte UBO backing
+    /// Non-zero for the native-Slang text program: the 112-byte UBO backing
     /// its `SnailPushConstants` uniform blocks (loose-uniform locs stay -1).
     ubo: gl.GLuint = 0,
     mvp_loc: gl.GLint = -1,
@@ -91,7 +91,7 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
 }
 
 /// Link a native-Slang program (generated GLSL 330; see
-/// `snail_shaders`). Uniforms live in one 96-byte std140
+/// `snail_shaders`). Uniforms live in one 112-byte std140
 /// block per stage — both block indices are bound to
 /// `NATIVE_TEXT_UBO_BINDING`, backed by the UBO created here — and the
 /// generated combined samplers are pinned to texture units 0..3
@@ -119,7 +119,7 @@ pub fn loadNativeProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_
 
     gl.glGenBuffers(1, &ps.ubo);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, ps.ubo);
-    gl.glBufferData(gl.GL_UNIFORM_BUFFER, @sizeOf(gl_common.NativeTextPushBlock), null, gl.GL_DYNAMIC_DRAW);
+    gl.glBufferData(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_SIZE, null, gl.GL_DYNAMIC_DRAW);
     gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, 0);
 
     // Direct Slang GLSL uses one combined image sampler for both Load and

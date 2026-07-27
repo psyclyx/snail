@@ -149,11 +149,11 @@ pub const Gles30TextState = struct {
             };
             const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
             _ = scratch;
-            try self.drawBatch(cache, draw_state, batch_instances, batch.kind);
+            try self.drawBatch(cache, draw_state, batch_instances, batch.kind, batch.page_base);
         }
     }
 
-    fn drawBatch(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: draw_records_mod.ShapeKind) DrawError!void {
+    fn drawBatch(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, draw_state: DrawState, instances: []const vertex.Instance, kind: draw_records_mod.ShapeKind, page_base: u32) DrawError!void {
         const total_glyphs = instances.len;
         if (total_glyphs == 0) return;
 
@@ -168,11 +168,11 @@ pub const Gles30TextState = struct {
             .tt_hinted_text => try self.ensureTtHintedTextProgram(),
             .autohint => try self.ensureAutohintProgram(),
         };
-        self.bindProgramState(cache, prog_state, draw_state, run_mode);
+        self.bindProgramState(cache, prog_state, draw_state, run_mode, page_base);
         self.drawGlyphRange(instances, 0, total_glyphs);
     }
 
-    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode) void {
+    fn bindProgramState(self: *Gles30TextState, cache: *const gles30_upload.Gles30DeviceAtlas, prog_state: *const ProgramState, draw_state: DrawState, render_mode: TextRenderMode, page_base: u32) void {
         const program_changed = prog_state.handle != self.active_program or !self.frame_begun;
         if (program_changed) {
             gl.glUseProgram(prog_state.handle);
@@ -196,7 +196,7 @@ pub const Gles30TextState = struct {
         // time by the program loader; no per-draw glUniform1i needed.
 
         // Native-Slang text program: every per-draw parameter lives in one
-        // 96-byte UBO block; loose-uniform locs are all -1 for it.
+        // 112-byte UBO with a 104-byte payload; loose-uniform locs are -1.
         if (prog_state.ubo != 0) {
             const order = if (render_mode == .grayscale) SubpixelOrder.none else draw_state.raster.subpixel_order;
             const block = gl_common.NativeTextPushBlock{
@@ -204,10 +204,11 @@ pub const Gles30TextState = struct {
                 .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
                 .subpixel_order = @intFromEnum(order),
                 .output_srgb = @intFromBool(draw_state.surface.encoding.shaderEncodesSrgb() and !self.linear_resolve.active),
-                .layer_base = 0,
+                .page_base = @intCast(page_base),
                 .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
                 .dither_scale = draw_state.surface.format.ditherAmplitude(),
                 .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+                .atlas_page_texels = .{ 0, 0 },
             };
             gl.glBindBufferBase(gl.GL_UNIFORM_BUFFER, gl_common.NATIVE_TEXT_UBO_BINDING, prog_state.ubo);
             gl.glBindBuffer(gl.GL_UNIFORM_BUFFER, prog_state.ubo);

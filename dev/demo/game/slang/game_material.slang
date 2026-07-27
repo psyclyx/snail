@@ -91,8 +91,8 @@ struct Records : ISnailTextSource {
 };
 #else // Desktop GL: R32UI texel buffer.
 ConstantBuffer<GameMaterialParams> pc;
-SnailFloatTexture2DArray u_curve_tex;
-SnailUint2Texture2DArray u_band_tex;
+SnailCurveStorage u_curve_tex;
+SnailBandStorage u_band_tex;
 Buffer<uint> u_snail_text_records;
 struct Records : ISnailTextSource {
     uint word(int linear_index) { return u_snail_text_records[linear_index]; }

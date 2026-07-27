@@ -5,8 +5,8 @@
 //!
 //! Per-cache resident state:
 //!
-//! - `curve_array`, `band_array` — `TEXTURE_2D_ARRAY` sized to
-//!   `pool.config().max_layers`. Pages stream in via `glTexSubImage3D`.
+//! - desktop GL: `curve_array` / `band_array` are texture-buffer views over
+//!   flat formatted buffers; GLES 3.0 retains `TEXTURE_2D_ARRAY`.
 //! - `layer_info_tex` — single `TEXTURE_2D` of `INFO_WIDTH × options
 //!   .layer_info_height` `RGBA32F` texels. Each binding occupies a
 //!   row band starting at `binding.info_row_base`.
@@ -65,7 +65,8 @@ pub const DeviceAtlasOptions = struct {
     max_image_height: u32 = 1024,
 };
 
-pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
+pub const UploadError = upload_plan.Error || upload_plan.FlatLayout.Error || std.mem.Allocator.Error || error{
+    InvalidOptions,
     ImageTooLarge,
     BindingOutputLengthMismatch,
     ActiveBindingCountOverflow,
@@ -81,9 +82,13 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         pool: *PagePool,
         options: DeviceAtlasOptions,
 
-        // Pool-wide resident curve/band texture arrays.
+        // Pool-wide curve/band views. Desktop uses texture buffers; GLES uses
+        // arrays because ES 3.0 has no core texture-buffer support.
         curve_array: gl.GLuint = 0,
         band_array: gl.GLuint = 0,
+        curve_buffer: gl.GLuint = 0,
+        band_buffer: gl.GLuint = 0,
+        flat: upload_plan.FlatLayout,
         curve_height: u32 = 0,
         band_height: u32 = 0,
         layer_count: u32 = 0,
@@ -125,7 +130,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             const band_height = pool_config.band_words_per_page / BAND_WORDS_PER_ROW;
             if (curve_height > std.math.maxInt(i32) or
                 band_height > std.math.maxInt(i32) or
-                pool_config.max_layers > std.math.maxInt(i32) or
+                pool_config.max_pages > std.math.maxInt(i32) or
                 options.layer_info_height > std.math.maxInt(i32) or
                 options.max_image_width > std.math.maxInt(i32) or
                 options.max_image_height > std.math.maxInt(i32) or
@@ -162,6 +167,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
                 .allocator = allocator,
                 .pool = pool,
                 .options = options,
+                .flat = try upload_plan.FlatLayout.init(pool),
                 .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
                 .plan_gen = gen,
                 .plan_curve = curve_words,
@@ -203,6 +209,10 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             return self.band_array;
         }
 
+        pub fn atlasPageTexels(self: *const Self) [2]i32 {
+            return .{ @intCast(self.flat.curve_page_texels), @intCast(self.flat.band_page_texels) };
+        }
+
         pub fn layerInfoTexHandle(self: *const Self) gl.GLuint {
             return self.layer_info_tex;
         }
@@ -231,10 +241,14 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             if (self.band_array != 0) gl.glDeleteTextures(1, &self.band_array);
             if (self.layer_info_tex != 0) gl.glDeleteTextures(1, &self.layer_info_tex);
             if (self.image_array_tex != 0) gl.glDeleteTextures(1, &self.image_array_tex);
+            if (self.curve_buffer != 0) gl.glDeleteBuffers(1, &self.curve_buffer);
+            if (self.band_buffer != 0) gl.glDeleteBuffers(1, &self.band_buffer);
             self.curve_array = 0;
             self.band_array = 0;
             self.layer_info_tex = 0;
             self.image_array_tex = 0;
+            self.curve_buffer = 0;
+            self.band_buffer = 0;
         }
 
         // ── Persistent resource lifecycle ──
@@ -338,9 +352,9 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             // run it before the void GL allocations so an allocator failure
             // leaves the cache's handles untouched.
             try self.ensureImageArrayTexture(atlases);
-            self.ensurePoolTextures();
+            try self.ensurePoolTextures();
             self.ensureLayerInfoTexture();
-            for (staged_regions.items) |region| self.applyRegion(region);
+            try self.applyRegions(staged_regions.items);
             self.active_bindings = next_active;
         }
 
@@ -390,9 +404,9 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
             errdefer self.planner.invalidateUploads();
             try self.ensureImageArrayTexture(&.{atlas});
-            self.ensurePoolTextures();
+            try self.ensurePoolTextures();
             self.ensureLayerInfoTexture();
-            for (self.plan_regions[0..len]) |r| self.applyRegion(r);
+            try self.applyRegions(self.plan_regions[0..len]);
             _ = scratch;
             return binding;
         }
@@ -406,23 +420,16 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
 
         // ── Per-pool-layer (curve/band) texture upload ──
 
-        fn ensurePoolTextures(self: *Self) void {
+        fn ensurePoolTextures(self: *Self) UploadError!void {
             if (self.curve_array != 0 and self.band_array != 0) return;
 
             const options = self.pool.config();
             self.curve_height = options.curve_words_per_page / CURVE_WORDS_PER_ROW;
             self.band_height = options.band_words_per_page / BAND_WORDS_PER_ROW;
-            self.layer_count = options.max_layers;
+            self.layer_count = options.max_pages;
             std.debug.assert(self.curve_height > 0 and self.band_height > 0);
 
-            if (comptime variant.supportsDsa()) {
-                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &self.curve_array);
-                gl.glTextureStorage3D(self.curve_array, 1, gl.GL_RGBA16F, @intCast(CURVE_TEX_WIDTH), @intCast(self.curve_height), @intCast(self.layer_count));
-                setSampleParamsDsa(self.curve_array, .nearest);
-                gl.glCreateTextures(gl.GL_TEXTURE_2D_ARRAY, 1, &self.band_array);
-                gl.glTextureStorage3D(self.band_array, 1, gl.GL_RG16UI, @intCast(BAND_TEX_WIDTH), @intCast(self.band_height), @intCast(self.layer_count));
-                setSampleParamsDsa(self.band_array, .nearest);
-            } else {
+            if (comptime variant == .gles30) {
                 gl.glGenTextures(1, &self.curve_array);
                 gl.glActiveTexture(gl.GL_TEXTURE0);
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.curve_array);
@@ -434,6 +441,39 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
                 gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.band_array);
                 gl.glTexImage3D(gl.GL_TEXTURE_2D_ARRAY, 0, gl.GL_RG16UI, @intCast(BAND_TEX_WIDTH), @intCast(self.band_height), @intCast(self.layer_count), 0, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, null);
                 setSampleParamsBind(gl.GL_TEXTURE_2D_ARRAY, .nearest);
+                return;
+            }
+
+            var max_texels: gl.GLint = 0;
+            gl.glGetIntegerv(gl.GL_MAX_TEXTURE_BUFFER_SIZE, &max_texels);
+            if (max_texels <= 0 or
+                self.flat.curve_total_texels > @as(u32, @intCast(max_texels)) or
+                self.flat.band_total_texels > @as(u32, @intCast(max_texels)))
+            {
+                return error.InvalidOptions;
+            }
+
+            gl.glGenBuffers(1, &self.curve_buffer);
+            gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, self.curve_buffer);
+            gl.glBufferData(gl.GL_TEXTURE_BUFFER, @intCast(self.flat.curveByteSize()), null, gl.GL_DYNAMIC_DRAW);
+            gl.glGenBuffers(1, &self.band_buffer);
+            gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, self.band_buffer);
+            gl.glBufferData(gl.GL_TEXTURE_BUFFER, @intCast(self.flat.bandByteSize()), null, gl.GL_DYNAMIC_DRAW);
+
+            if (comptime variant.supportsDsa()) {
+                gl.glCreateTextures(gl.GL_TEXTURE_BUFFER, 1, &self.curve_array);
+                gl.glTextureBuffer(self.curve_array, gl.GL_RGBA16F, self.curve_buffer);
+                gl.glCreateTextures(gl.GL_TEXTURE_BUFFER, 1, &self.band_array);
+                gl.glTextureBuffer(self.band_array, gl.GL_RG16UI, self.band_buffer);
+            } else {
+                gl.glGenTextures(1, &self.curve_array);
+                gl.glActiveTexture(gl.GL_TEXTURE0);
+                gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.curve_array);
+                gl.glTexBuffer(gl.GL_TEXTURE_BUFFER, gl.GL_RGBA16F, self.curve_buffer);
+                gl.glGenTextures(1, &self.band_array);
+                gl.glActiveTexture(gl.GL_TEXTURE1);
+                gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.band_array);
+                gl.glTexBuffer(gl.GL_TEXTURE_BUFFER, gl.GL_RG16UI, self.band_buffer);
             }
         }
 
@@ -508,12 +548,70 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             }
         }
 
-        // ── Apply a planner Region to the caller's textures ──
+        // ── Apply planner regions to the caller's textures ──
 
-        fn applyRegion(self: *Self, r: upload_plan.Region) void {
+        fn applyRegions(self: *Self, regions: []const upload_plan.Region) UploadError!void {
+            if (comptime variant == .gles30) {
+                for (regions) |region| self.applyImageRegion(region);
+                return;
+            }
+
+            // Bind each backing buffer once per upload. Adjacent planner
+            // regions normally point at adjacent page bytes, so fold them
+            // into one driver call without imposing a size-class allocator
+            // on high-variance glyph data.
+            try self.applyFlatPlane(regions, .curve, self.curve_buffer);
+            try self.applyFlatPlane(regions, .band, self.band_buffer);
+            for (regions) |region| switch (region.target) {
+                .image, .layer_info => self.applyImageRegion(region),
+                .curve, .band => {},
+            };
+        }
+
+        fn applyFlatPlane(
+            self: *Self,
+            regions: []const upload_plan.Region,
+            target: upload_plan.FlatLayout.FlatTarget,
+            buffer: gl.GLuint,
+        ) UploadError!void {
+            gl.glBindBuffer(gl.GL_TEXTURE_BUFFER, buffer);
+
+            var run_offset: u64 = 0;
+            var run_ptr: [*]const u8 = undefined;
+            var run_len: usize = 0;
+            for (regions) |region| {
+                const copy = (try self.flat.translate(region)) orelse continue;
+                if (copy.target != target) continue;
+
+                const adjacent_destination = run_len != 0 and
+                    run_offset + run_len == copy.byte_offset;
+                const adjacent_source = run_len != 0 and
+                    @intFromPtr(run_ptr) + run_len == @intFromPtr(copy.src.ptr);
+                if (adjacent_destination and adjacent_source) {
+                    run_len += copy.src.len;
+                    continue;
+                }
+                if (run_len != 0) flushFlatRun(run_offset, run_ptr, run_len);
+                run_offset = copy.byte_offset;
+                run_ptr = copy.src.ptr;
+                run_len = copy.src.len;
+            }
+            if (run_len != 0) flushFlatRun(run_offset, run_ptr, run_len);
+        }
+
+        fn flushFlatRun(offset: u64, ptr: [*]const u8, len: usize) void {
+            gl.glBufferSubData(
+                gl.GL_TEXTURE_BUFFER,
+                @intCast(offset),
+                @intCast(len),
+                ptr,
+            );
+        }
+
+        fn applyImageRegion(self: *Self, r: upload_plan.Region) void {
             switch (r.target) {
-                .curve => self.texSubImage3D(self.curve_array, 0, r.layer, r.col_base, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_HALF_FLOAT, r.src.ptr),
-                .band => self.texSubImage3D(self.band_array, 1, r.layer, r.col_base, r.row_base, r.width, r.height, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, r.src.ptr),
+                .curve => if (comptime variant == .gles30) self.texSubImage3D(self.curve_array, 0, r.page, r.col_base, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_HALF_FLOAT, r.src.ptr),
+                .band => if (comptime variant == .gles30) self.texSubImage3D(self.band_array, 1, r.page, r.col_base, r.row_base, r.width, r.height, gl.GL_RG_INTEGER, gl.GL_UNSIGNED_SHORT, r.src.ptr),
                 .image => self.texSubImage3D(self.image_array_tex, 3, r.layer, r.col_base, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_UNSIGNED_BYTE, r.src.ptr),
                 .layer_info => self.texSubImage2D(self.layer_info_tex, 2, r.row_base, r.width, r.height, gl.GL_RGBA, gl.GL_FLOAT, r.src.ptr),
             }
@@ -574,7 +672,7 @@ const testing = std.testing;
 
 test "GlDeviceAtlas init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 2,
         .band_words_per_page = BAND_WORDS_PER_ROW * 2,
     });

@@ -23,7 +23,7 @@ pub const DrawState = struct {
     subpixel_order: render_state.SubpixelOrder = .none,
     output_srgb: bool = false,
     coverage_transfer: render_state.CoverageTransfer = .identity,
-    layer_base: u32 = 0,
+    page_base: u32 = 0,
 };
 
 pub const GlProgram = struct {
@@ -75,9 +75,9 @@ fn GlBackendFor(comptime variant: Variant) type {
                     gl.glBindTextureUnit(@intCast(program.image_tex_unit), self.tex.image_array_tex);
             } else {
                 gl.glActiveTexture(textureUnitEnum(program.curve_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.curve_array);
+                gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.tex.curve_array);
                 gl.glActiveTexture(textureUnitEnum(program.band_tex_unit));
-                gl.glBindTexture(gl.GL_TEXTURE_2D_ARRAY, self.tex.band_array);
+                gl.glBindTexture(gl.GL_TEXTURE_BUFFER, self.tex.band_array);
                 if (program.layer_tex_loc >= 0 and self.tex.layer_info_tex != 0) {
                     gl.glActiveTexture(textureUnitEnum(program.layer_tex_unit));
                     gl.glBindTexture(gl.GL_TEXTURE_2D, self.tex.layer_info_tex);
@@ -103,7 +103,7 @@ fn GlBackendFor(comptime variant: Variant) type {
             if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
             if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
             if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
-            if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
+            if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.page_base));
         }
 
         fn textureUnitEnum(unit: gl_bindings.gl.GLint) gl_bindings.gl.GLenum {
@@ -151,7 +151,7 @@ pub const Gles30Backend = struct {
         if (program.subpixel_order_loc >= 0) gl.glUniform1i(program.subpixel_order_loc, @intFromEnum(state.subpixel_order));
         if (program.output_srgb_loc >= 0) gl.glUniform1i(program.output_srgb_loc, @intFromBool(state.output_srgb));
         if (program.coverage_exponent_loc >= 0) gl.glUniform1f(program.coverage_exponent_loc, state.coverage_transfer.shaderExponent());
-        if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.layer_base));
+        if (program.layer_base_loc >= 0) gl.glUniform1i(program.layer_base_loc, @intCast(state.page_base));
     }
 
     fn textureUnitEnumGles(unit: gles30_bindings.gl.GLint) gles30_bindings.gl.GLenum {

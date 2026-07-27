@@ -138,6 +138,9 @@ pub const Family = struct {
     /// blending).
     no_gles: bool = false,
     storage: Storage = .array,
+    /// Use the flat atlas only for this family's desktop GL artifacts.
+    /// Caller-authored families may still retain a GLES array artifact.
+    desktop_gl_flat: bool = false,
     shared_params: bool = false,
     dual_source: bool = false,
 
@@ -288,7 +291,7 @@ pub const families = [_]Family{
     // anonymous imports next to the consumer (build.zig addGameShaderGl);
     // the Vulkan leg is compiled by the demo build directly (build.zig
     // addGameShaderSpirv), like the library families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "dev/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "dev/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true, .desktop_gl_flat = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
     .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
@@ -644,6 +647,8 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
                         &.{ "-target", "glsl", "-profile", "glsl_330", "-line-directive-mode", "none", "-warnings-disable", "41012" };
                     const defines: []const []const u8 = if (es)
                         &.{ "SNAIL_TARGET_GL", "SNAIL_TARGET_GLES" }
+                    else if (family.desktop_gl_flat)
+                        &.{ "SNAIL_TARGET_GL", "SNAIL_FLAT_STORAGE" }
                     else
                         &.{"SNAIL_TARGET_GL"};
                     const raw = slangcFamily(
