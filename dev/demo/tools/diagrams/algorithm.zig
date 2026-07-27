@@ -505,26 +505,26 @@ fn diagramCurves(ctx: *Ctx) !void {
     _ = try ctx.text("control", c.x + 5, c.y + 1, small_em, rose, .regular);
     _ = try ctx.text("on-curve", p1.x + 6, p1.y + 8, small_em, muted, .regular);
 
-    // Curve texture strip: 16 segments × 4 texels, highlighted segment lit.
+    // Dense font curve strip: 16 segments × 2 texels, highlighted segment lit.
     try ctx.panel(.{ .x = 175, .y = 30, .w = 132, .h = 158 });
     _ = try ctx.text("curve texture", 184, 46, label_em, muted, .regular);
     const strip_x: f32 = 184;
     const strip_y: f32 = 56;
     const cell: f32 = 5.4;
     const gapx: f32 = 1.2;
-    const group_w = 4 * cell + 3 * gapx;
+    const group_w = 2 * cell + gapx;
     for (0..16) |seg| {
         const row: f32 = @floatFromInt(seg / 4);
         const col: f32 = @floatFromInt(seg % 4);
         const gx = strip_x + col * (group_w + 4);
         const gy = strip_y + row * (cell + 6);
         const lit = seg == 7;
-        for (0..4) |t| {
+        for (0..2) |t| {
             const tx = gx + @as(f32, @floatFromInt(t)) * (cell + gapx);
             try ctx.fillRect(.{ .x = tx, .y = gy, .w = cell, .h = cell }, if (lit) blue else blue_soft);
         }
     }
-    _ = try ctx.text("4 texels per segment,", 184, 118, label_em, muted, .regular);
+    _ = try ctx.text("2 texels per segment,", 184, 118, label_em, muted, .regular);
     _ = try ctx.text("em coordinates, f16", 184, 129, label_em, muted, .regular);
     _ = try ctx.text("16 segments = one", 184, 147, label_em, ink, .regular);
     _ = try ctx.text("unhinted glyph record", 184, 158, label_em, ink, .regular);

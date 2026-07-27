@@ -167,8 +167,8 @@ them in groups of 256; flat typed-buffer backends address them with fixed
 page strides. Either path avoids eviction solely because one texture array
 is full. The default packer considers only the 12 most recent pages and
 chooses the tightest fit across both curve and band capacity; set
-`Atlas.Packing{ .recent_page_limit = 1 }` selects tail-only placement. The bounded window makes
-insertion cost independent of total atlas size.
+`Atlas.Packing{ .recent_page_limit = 1 }` selects tail-only placement. The
+bounded window makes insertion cost independent of total atlas size.
 
 On a direct append-only atlas child, `planDelta` emits only changed page
 regions and appended side data. Layer-info and image storage are fixed
@@ -204,11 +204,12 @@ uses a conservative error bound with a default tolerance of `1/8192` in
 prepared coordinates (one em for normalized font outlines) and a maximum
 subdivision depth of 10.
 
-Every prepared line, quadratic, or conic segment occupies four `RGBA16F`
-texels. Unhinted and autohint records are ppem-independent. TrueType
-grid-fitted curve records are ppem-specific.
+Font lines and quadratics use two `RGBA16F` texels per segment. General paths
+use four so they can carry explicit segment kind and rational-conic metadata.
+Unhinted and autohint records are ppem-independent. TrueType grid-fitted
+curve records are ppem-specific.
 
-<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its four texels in the curve texture" width="640">
+<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its two texels in the dense font curve texture" width="640">
 
 **2. Prepare: bands index the curves.** The record's box is divided into
 equal horizontal and vertical bands. Each band lists the segments whose
