@@ -333,7 +333,7 @@ const VulkanDriver = struct {
     const UploadCache = struct {
         driver: *VulkanDriver,
 
-        fn upload(
+        pub fn upload(
             self: *UploadCache,
             allocator: std.mem.Allocator,
             atlases: []const *const snail.Atlas,
@@ -350,7 +350,7 @@ const VulkanDriver = struct {
             );
         }
 
-        fn uploadDelta(
+        pub fn uploadDelta(
             self: *UploadCache,
             allocator: std.mem.Allocator,
             previous: snail.render.records.Binding,
@@ -367,7 +367,7 @@ const VulkanDriver = struct {
             );
         }
 
-        fn release(self: *UploadCache, binding: snail.render.records.Binding) void {
+        pub fn release(self: *UploadCache, binding: snail.render.records.Binding) void {
             self.driver.cache.?.release(binding);
         }
     };
