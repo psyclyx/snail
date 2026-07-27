@@ -59,7 +59,7 @@ pub const geometry = struct {
     pub const CurveSegment = curve_mod.CurveSegment;
     pub const GlyphBandEntry = band_texture_mod.GlyphBandEntry;
 
-    pub const CURVE_SEGMENT_TEXELS = curve_texture_mod.SEGMENT_TEXELS;
+    pub const CURVE_SEGMENT_TEXELS = curve_texture_mod.GENERAL_SEGMENT_TEXELS;
     pub const PACKED_ANCHOR_CHUNK_EXTENT = curve_texture_mod.PACKED_ANCHOR_CHUNK_EXTENT;
     pub const DIRECT_ENCODING_KIND_BIAS = curve_texture_mod.DIRECT_ENCODING_KIND_BIAS;
     pub const decodePackedAnchor = curve_texture_mod.decodePackedAnchor;

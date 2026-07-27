@@ -26,6 +26,7 @@ const page_mod = @import("../atlas/page.zig");
 const page_pool_mod = @import("../atlas/page_pool.zig");
 const record_key_mod = @import("../atlas/record_key.zig");
 const autohint_policy = @import("../font/autohint/policy.zig");
+const render_abi = @import("../format/abi.zig");
 const draw_records = @import("records.zig");
 const shape_mod = @import("shape.zig");
 
@@ -60,8 +61,6 @@ pub const EmitError = error{
     InvalidAutohintPolicy,
     /// `instances_buf` or `batches_buf` ran out of room.
     BufferTooSmall,
-    /// A page index exceeded the vertex format's u8 `atlas_layer` slot.
-    AtlasLayerOverflow,
     /// `binding.info_row_base + paint_info.info_y` exceeded the
     /// vertex format's u16 `info_y` slot. Caller's cache holds too
     /// much layer-info; either release retired bindings or shrink.
@@ -107,6 +106,7 @@ const InspectedShape = struct {
     rec: atlas_mod.AtlasRecord,
     mode: ShapeMode,
     atlas_layer: u8,
+    page_base: u32,
     final_transform: Transform2D,
     info_x: u16 = 0,
     info_y: u16 = 0,
@@ -156,20 +156,25 @@ fn inspectShape(
 
     if (rec.page_index >= atlas.pages.len) return error.InvalidAtlasRecord;
     const page = atlas.pages[rec.page_index];
-    const layer = page_mod.layerIndex(page);
-    if (!page_pool_mod.ownsPage(binding.pool, layer, page) or
+    const page_index = page_mod.pageIndex(page);
+    if (!page_pool_mod.ownsPage(binding.pool, page_index, page) or
         rec.page_generation != page_mod.currentGeneration(page))
     {
         return error.InvalidAtlasRecord;
     }
-    const curve_texels = std.math.mul(u32, rec.curve_count, curve_tex_format.SEGMENT_TEXELS) catch return error.InvalidAtlasRecord;
+    const curve_texels = std.math.mul(
+        u32,
+        rec.curve_count,
+        rec.encoding.texelsPerSegment(),
+    ) catch return error.InvalidAtlasRecord;
     const curve_end = std.math.add(u32, rec.curve_texel, curve_texels) catch return error.InvalidAtlasRecord;
     if (curve_end > page_mod.publishedWords(page).curve / 4 or
         !validInstanceBBox(rec.bbox))
     {
         return error.InvalidAtlasRecord;
     }
-    if (layer > std.math.maxInt(u8)) return error.AtlasLayerOverflow;
+    const address = render_abi.PageAddress.init(page_index) orelse
+        return error.InvalidAtlasRecord;
 
     const final_transform = Transform2D.multiply(world_xform, shape.local_transform);
     if (!validTransform(final_transform)) return error.InvalidTransform;
@@ -177,7 +182,8 @@ fn inspectShape(
     var inspected = InspectedShape{
         .rec = rec,
         .mode = .regular,
-        .atlas_layer = @intCast(layer),
+        .atlas_layer = address.local_layer,
+        .page_base = address.page_base,
         .final_transform = final_transform,
     };
 
@@ -264,6 +270,7 @@ pub fn emit(
     var merge_into_existing: bool = false;
     var existing_increment: u32 = 0;
     var previous_kind: ?draw_records.ShapeKind = null;
+    var previous_page_base: u32 = 0;
 
     for (shapes) |shape| {
         const inspected = (try inspectShape(binding, atlas, shape, world_xform, world_tint)) orelse continue;
@@ -355,12 +362,15 @@ pub fn emit(
 
         const instance_index = cursor / WORDS_PER_INSTANCE - 1;
         const kind = inspected.mode.kind();
+        const same_batch_key = previous_kind != null and
+            previous_kind.? == kind and previous_page_base == inspected.page_base;
         if (previous_kind == null) {
             if (batch_len.* > 0) {
                 const last = batches_buf[batch_len.* - 1];
                 const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return error.InvalidCursor;
                 merge_into_existing = last_end == @as(u32, @intCast(instance_len.*)) and
-                    last.binding.eql(binding) and last.kind == kind;
+                    last.binding.eql(binding) and last.kind == kind and
+                    last.page_base == inspected.page_base;
             }
             if (merge_into_existing) {
                 existing_increment = 1;
@@ -368,6 +378,7 @@ pub fn emit(
                 if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
                 batches_buf[working_batch_len] = .{
                     .binding = binding,
+                    .page_base = inspected.page_base,
                     .first_instance = @intCast(instance_index),
                     .instance_count = 1,
                     .kind = kind,
@@ -375,7 +386,7 @@ pub fn emit(
                 working_batch_len += 1;
                 batches_added += 1;
             }
-        } else if (previous_kind.? == kind) {
+        } else if (same_batch_key) {
             if (merge_into_existing and working_batch_len == batch_len.*) {
                 existing_increment = std.math.add(u32, existing_increment, 1) catch return error.OutputTooLarge;
             } else {
@@ -385,6 +396,7 @@ pub fn emit(
             if (working_batch_len >= batches_buf.len) return error.BufferTooSmall;
             batches_buf[working_batch_len] = .{
                 .binding = binding,
+                .page_base = inspected.page_base,
                 .first_instance = @intCast(instance_index),
                 .instance_count = 1,
                 .kind = kind,
@@ -393,6 +405,7 @@ pub fn emit(
             batches_added += 1;
         }
         previous_kind = kind;
+        previous_page_base = inspected.page_base;
         emitted += 1;
     }
 
@@ -420,7 +433,7 @@ const PagePool = page_pool_mod.PagePool;
 const GlyphCurves = curves_mod.GlyphCurves;
 
 fn makeTinyCurves(allocator: std.mem.Allocator) !GlyphCurves {
-    const curve_words = curve_tex_format.SEGMENT_TEXELS * 4; // one segment
+    const curve_words = curve_tex_format.GENERAL_SEGMENT_TEXELS * 4; // one segment
     const curve_bytes = try allocator.alloc(u16, curve_words);
     for (curve_bytes, 0..) |*w, i| w.* = @intCast(@as(u16, @intCast(i)) +% 0x100);
     curve_bytes[10] = 0; // packed quadratic
@@ -507,7 +520,7 @@ fn instanceWords(instances: []const Instance, index: usize) []const u32 {
 
 test "autohint shapes share lookup data and emit distinct compact policies" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -549,7 +562,7 @@ test "autohint shapes share lookup data and emit distinct compact policies" {
 
 test "emit enforces autohint policy presence and placement" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -579,7 +592,7 @@ test "emit enforces autohint policy presence and placement" {
 
 test "emit writes one instance per shape" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -615,9 +628,39 @@ test "emit writes one instance per shape" {
     try testing.expectApproxEqAbs(@as(f32, 20), inst0.origin[1], 1e-5);
 }
 
+test "emit splits logical pages into 256-layer banks" {
+    var pool = try PagePool.init(testing.allocator, .{
+        .max_pages = 257,
+        .curve_words_per_page = curve_tex_format.GENERAL_SEGMENT_TEXELS * 4,
+        .band_words_per_page = 12,
+    });
+    defer pool.deinit();
+
+    var keys: [257]u16 = undefined;
+    for (&keys, 0..) |*key, i| key.* = @intCast(i);
+    var atlas = try buildTestAtlas(pool, &keys);
+    defer atlas.deinit();
+
+    const shapes = [_]Shape{
+        .{ .key = record_key_mod.unhintedGlyph(0, 0) },
+        .{ .key = record_key_mod.unhintedGlyph(0, 256) },
+    };
+    var instances: [2]Instance = undefined;
+    var batches: [2]DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try emit(&instances, &batches, &ilen, &blen, .{ .pool = pool }, &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+
+    try testing.expectEqual(@as(usize, 2), blen);
+    try testing.expectEqual(@as(u32, 0), batches[0].page_base);
+    try testing.expectEqual(@as(u32, 256), batches[1].page_base);
+    try testing.expectEqual(@as(u8, 0), render_abi.glyphWordAtlasLayer(instances[0].glyph[1]));
+    try testing.expectEqual(@as(u8, 0), render_abi.glyphWordAtlasLayer(instances[1].glyph[1]));
+}
+
 test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -661,7 +704,7 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
         },
         local_color,
         world_tint,
-        @intCast(page_mod.layerIndex(atlas.pages[rec.page_index])),
+        @intCast(page_mod.pageIndex(atlas.pages[rec.page_index])),
         final_t,
     ));
 
@@ -670,7 +713,7 @@ test "emit matches generateGlyphVerticesTransformedTinted byte-for-byte" {
 
 test "emit reports MissingRecord on unknown key" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -691,7 +734,7 @@ test "emit reports MissingRecord on unknown key" {
 
 test "emit reports BufferTooSmall without publishing partial records" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -718,7 +761,7 @@ test "emit reports BufferTooSmall without publishing partial records" {
 
 test "emit reports InvalidTransform for a degenerate composed transform" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -742,7 +785,7 @@ test "emit reports InvalidTransform for a degenerate composed transform" {
 
 test "emit coalesces adjacent same-binding calls" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -769,7 +812,7 @@ test "emit coalesces adjacent same-binding calls" {
 
 test "emit splits contiguous shapes into exact semantic batches" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -828,13 +871,13 @@ test "emit splits contiguous shapes into exact semantic batches" {
 
 test "emit produces separate batches for different bindings" {
     var pool_a = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
     defer pool_a.deinit();
     var pool_b = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -863,7 +906,7 @@ test "emit produces separate batches for different bindings" {
 
 test "emit rejects a binding from another pool before writing" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -898,7 +941,7 @@ test "emit rejects a binding from another pool before writing" {
 
 test "emit validates cursors instead of subtracting past buffer bounds" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -939,7 +982,7 @@ test "emit validates cursors instead of subtracting past buffer bounds" {
 
 test "emit leaves published prefixes unchanged for errors discovered late" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });
@@ -974,7 +1017,7 @@ test "emit leaves published prefixes unchanged for errors discovered late" {
 
 test "emit leaves cursors unchanged when batch capacity is exhausted" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 512,
         .band_words_per_page = 128,
     });

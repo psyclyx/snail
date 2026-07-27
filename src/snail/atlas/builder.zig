@@ -43,7 +43,7 @@ const PaintLookup = atlas_mod.PaintLookup;
 const TtAdvanceLookup = atlas_mod.TtAdvanceLookup;
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
-const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
+const CURVE_SEGMENT_TEXELS = curve_tex_format.GENERAL_SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
@@ -78,6 +78,7 @@ pub const Builder = struct {
     revision: u64,
     snapshot_id: u64,
     parent_snapshot_id: u64,
+    packing: Atlas.Packing,
     /// Explicit paint-header/layer boundaries in slab order.
     paint_records: std.ArrayList(PaintRecordDescriptor),
     unique_image_count: u32,
@@ -87,7 +88,11 @@ pub const Builder = struct {
     source_images: std.AutoHashMapUnmanaged(u32, *const Image),
     indexed_image_source: ?*const Atlas,
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool) PagePool.IdentityError!Builder {
+    pub fn init(
+        allocator: std.mem.Allocator,
+        pool: *PagePool,
+        packing: Atlas.Packing,
+    ) PagePool.IdentityError!Builder {
         const snapshot_id = try page_pool_mod.nextAtlasSnapshotId(pool);
         return .{
             .allocator = allocator,
@@ -109,6 +114,7 @@ pub const Builder = struct {
             .revision = 0,
             .snapshot_id = snapshot_id,
             .parent_snapshot_id = 0,
+            .packing = packing,
         };
     }
 
@@ -144,6 +150,7 @@ pub const Builder = struct {
             .revision = revision,
             .snapshot_id = snapshot_id,
             .parent_snapshot_id = base.snapshot_id,
+            .packing = base.packing,
         };
         errdefer b.abort();
 
@@ -390,6 +397,7 @@ pub const Builder = struct {
             .revision = self.revision,
             .snapshot_id = self.snapshot_id,
             .parent_snapshot_id = self.parent_snapshot_id,
+            .packing = self.packing,
             .pages = pages_slice,
             .lookup = self.lookup,
             .layer_info_data = layer_info_data,
@@ -408,6 +416,7 @@ pub const Builder = struct {
         page_generation: u64,
         curve_texel: u32,
         curve_count: u16,
+        encoding: curve_tex_format.Encoding,
         bands: GlyphBandEntry,
     };
 
@@ -417,8 +426,9 @@ pub const Builder = struct {
     fn placeCurves(self: *Builder, curves: GlyphCurves) InsertError!Placement {
         const curve_words: u32 = @intCast(curves.curve_bytes.len);
         const band_words: u32 = @intCast(curves.band_bytes.len);
-        std.debug.assert(curve_words % CURVE_SEGMENT_WORDS == 0);
-        std.debug.assert(curve_words / CURVE_SEGMENT_WORDS == curves.curve_count);
+        const segment_words = curves.encoding.texelsPerSegment() * 4;
+        std.debug.assert(curve_words % segment_words == 0);
+        std.debug.assert(curve_words / segment_words == curves.curve_count);
 
         const pool_config = self.pool.config();
         if (curve_words > pool_config.curve_words_per_page or
@@ -433,12 +443,45 @@ pub const Builder = struct {
         var placed = false;
 
         if (self.pages.items.len > 0) {
-            const tail = self.pages.items[self.pages.items.len - 1];
-            if (page_mod.reserve(tail, curve_words, band_words)) |r| {
-                page = tail;
-                page_idx = @intCast(self.pages.items.len - 1);
-                reservation = r;
-                placed = true;
+            // Search only a bounded recent window. Choose the page whose
+            // normalized worst-axis remainder is smallest after placement;
+            // this recovers complementary curve/band holes without turning
+            // insertion into an O(total_pages) operation.
+            const window: usize = self.packing.recent_page_limit;
+            const first = self.pages.items.len - @min(self.pages.items.len, window);
+            const Candidate = struct { index: usize, score: u64 };
+            var candidates: [64]Candidate = undefined;
+            var candidate_count: usize = 0;
+            var i = self.pages.items.len;
+            while (i > first) {
+                i -= 1;
+                const remaining = page_mod.remainingWords(self.pages.items[i]);
+                if (remaining.curve < curve_words or remaining.band < band_words) continue;
+                const curve_slack = remaining.curve - curve_words;
+                const band_slack = remaining.band - band_words;
+                const curve_score = @as(u64, curve_slack) * pool_config.band_words_per_page;
+                const band_score = @as(u64, band_slack) * pool_config.curve_words_per_page;
+                const score = @max(curve_score, band_score);
+                // Keep the bounded candidates sorted so a concurrent
+                // producer consuming the best page cannot cause false
+                // exhaustion while another observed candidate still fits.
+                var insert_at = candidate_count;
+                while (insert_at > 0 and score < candidates[insert_at - 1].score) {
+                    candidates[insert_at] = candidates[insert_at - 1];
+                    insert_at -= 1;
+                }
+                candidates[insert_at] = .{ .index = i, .score = score };
+                candidate_count += 1;
+            }
+            for (candidates[0..candidate_count]) |candidate_info| {
+                const candidate = self.pages.items[candidate_info.index];
+                if (page_mod.reserve(candidate, curve_words, band_words)) |r| {
+                    page = candidate;
+                    page_idx = @intCast(candidate_info.index);
+                    reservation = r;
+                    placed = true;
+                    break;
+                }
             }
         }
 
@@ -472,6 +515,7 @@ pub const Builder = struct {
             .page_generation = page_mod.currentGeneration(page),
             .curve_texel = base_curve_texel,
             .curve_count = curves.curve_count,
+            .encoding = curves.encoding,
             .bands = .{
                 .glyph_x = @intCast(glyph_band_texel % BAND_TEX_WIDTH),
                 .glyph_y = @intCast(glyph_band_texel / BAND_TEX_WIDTH),
@@ -532,8 +576,8 @@ pub const Builder = struct {
 
         // Walk extra_placements alongside the non-empty entries of extra_layers.
         var place_index: usize = 0;
-        for (extra_layers, 0..) |layer, layer_index| {
-            if (promoted_extra == layer_index) continue;
+        for (extra_layers, 0..) |layer, page_index| {
+            if (promoted_extra == page_index) continue;
             if (layer.curves.isEmpty()) continue;
             try self.writeLayerRecord(layer_texel, extra_placements[place_index].bands, layer.paint, layer.fill_rule);
             layer_texel += paint_records.texels_per_record;
@@ -642,12 +686,12 @@ pub const Builder = struct {
         // layer instead of silently discarding the whole composite; omitting
         // a transparent leading layer preserves source-over ordering.
         if (curves.isEmpty()) {
-            for (entry.extra_layers, 0..) |layer, layer_index| {
+            for (entry.extra_layers, 0..) |layer, page_index| {
                 if (layer.curves.isEmpty()) continue;
                 curves = layer.curves;
                 base_paint = layer.paint;
                 base_fill_rule = layer.fill_rule;
-                promoted_extra = layer_index;
+                promoted_extra = page_index;
                 break;
             }
         }
@@ -692,8 +736,8 @@ pub const Builder = struct {
             heap_placements = try self.allocator.alloc(Placement, nonempty_extra_count);
             break :blk heap_placements.?;
         };
-        for (entry.extra_layers, 0..) |layer, layer_index| {
-            if (promoted_extra == layer_index) continue;
+        for (entry.extra_layers, 0..) |layer, page_index| {
+            if (promoted_extra == page_index) continue;
             if (layer.curves.isEmpty()) continue;
             extras_storage[extra_count] = try self.placeCurves(layer.curves);
             bbox = bbox.merge(layer.curves.bbox);
@@ -705,6 +749,7 @@ pub const Builder = struct {
             .page_generation = base_placement.page_generation,
             .curve_texel = base_placement.curve_texel,
             .curve_count = base_placement.curve_count,
+            .encoding = base_placement.encoding,
             .bands = base_placement.bands,
             // Target-free analyses retain the base bbox. Device-space emit
             // supplies the conservative pixel expansion when fitting is used.
@@ -747,8 +792,8 @@ pub const Builder = struct {
         const composite_base_paint = base_paint orelse Paint{ .solid = .{ 0, 0, 0, 0 } };
         var colr_solid = glyph_solid and entry.composite_mode == .source_over;
         var path_curve_class = curves.path_curve_class;
-        for (entry.extra_layers, 0..) |layer, layer_index| {
-            if (promoted_extra == layer_index or layer.curves.isEmpty()) continue;
+        for (entry.extra_layers, 0..) |layer, page_index| {
+            if (promoted_extra == page_index or layer.curves.isEmpty()) continue;
             colr_solid = colr_solid and isSolidPaint(layer.paint) and
                 layer.fill_rule == .non_zero and
                 layer.curves.path_curve_class == .quadratic;
@@ -821,6 +866,7 @@ pub const Builder = struct {
         new_rec.page_index = placement.page_index;
         new_rec.page_generation = placement.page_generation;
         new_rec.curve_texel = placement.curve_texel;
+        new_rec.encoding = placement.encoding;
         new_rec.bands = placement.bands;
         try self.lookupPut(key, new_rec);
 
@@ -846,12 +892,14 @@ pub const Builder = struct {
         defer scratch.free(local_band);
         extractAndLocalizeBand(src_page, rec, local_band);
 
-        const curve_words: u32 = @as(u32, rec.curve_count) * CURVE_SEGMENT_WORDS;
+        const curve_words: u32 = @as(u32, rec.curve_count) *
+            rec.encoding.texelsPerSegment() * 4;
         return self.placeCurves(.{
             .allocator = scratch,
             .curve_bytes = page_mod.curveWordsUsed(src_page)[rec.curve_texel * 4 ..][0..curve_words],
             .band_bytes = local_band,
             .curve_count = rec.curve_count,
+            .encoding = rec.encoding,
             .h_band_count = rec.bands.h_band_count,
             .v_band_count = rec.bands.v_band_count,
             .band_scale_x = rec.bands.band_scale_x,
@@ -898,10 +946,10 @@ pub const Builder = struct {
 
         if (is_composite) try self.appendPaintRecord(null, dst_texel, @intCast(layer_count));
 
-        var layer_index: u32 = 0;
-        while (layer_index < layer_count) : (layer_index += 1) {
+        var page_index: u32 = 0;
+        while (page_index < layer_count) : (page_index += 1) {
             const layer_offset: u32 = if (is_composite)
-                1 + layer_index * paint_records.texels_per_record
+                1 + page_index * paint_records.texels_per_record
             else
                 0;
             const src_layer_texel = src_texel + layer_offset;
@@ -911,7 +959,7 @@ pub const Builder = struct {
             const gx_raw: u16 = @intFromFloat(t0[0]);
             const fill_bit: u16 = gx_raw & paint_records.FILL_RULE_BIT;
 
-            const new_bands: GlyphBandEntry = if (layer_index == 0)
+            const new_bands: GlyphBandEntry = if (page_index == 0)
                 new_base_bands
             else blk: {
                 // Recover the layer's curve block from its band refs, then
@@ -927,12 +975,15 @@ pub const Builder = struct {
                     .band_offset_x = t1[2],
                     .band_offset_y = t1[3],
                 };
-                const range = curveRangeForBands(src_page, src_bands) orelse break :blk src_bands;
+                const encoding = curveEncodingForBands(src_page, src_bands) orelse
+                    return error.CorruptPaintRecord;
+                const range = curveRangeForBands(src_page, src_bands, encoding) orelse break :blk src_bands;
                 const layer_placement = try self.repackRecordGeometry(src_page, .{
                     .page_index = 0,
                     .page_generation = 0,
                     .curve_texel = range.texel,
                     .curve_count = range.count,
+                    .encoding = encoding,
                     .bands = src_bands,
                     .bbox = .{ .min = .zero, .max = .zero },
                 }, scratch);
@@ -982,7 +1033,26 @@ pub const Builder = struct {
 /// The contiguous curve block a set of bands references: minimum and
 /// maximum referenced segment, recovered by walking the band refs (refs
 /// store absolute page texels). Null when the bands reference no curves.
-fn curveRangeForBands(src_page: *const AtlasPage, bands: GlyphBandEntry) ?struct { texel: u32, count: u16 } {
+fn curveEncodingForBands(
+    src_page: *const AtlasPage,
+    bands: GlyphBandEntry,
+) ?curve_tex_format.Encoding {
+    const glyph_texel = @as(usize, bands.glyph_y) * BAND_TEX_WIDTH_USIZE +
+        @as(usize, bands.glyph_x);
+    if (glyph_texel < band_tex_format.block_prefix_texels) return null;
+    const prefix_texel = glyph_texel - band_tex_format.block_prefix_texels;
+    const words = page_mod.bandWordsUsed(src_page);
+    const word = prefix_texel * 2;
+    if (word + 3 >= words.len) return null;
+    const prefix = band_tex_format.unpackBlockPrefix(words[word..][0..4].*) orelse return null;
+    return if (prefix.dense_quadratic) .dense_quadratic else .general;
+}
+
+fn curveRangeForBands(
+    src_page: *const AtlasPage,
+    bands: GlyphBandEntry,
+    encoding: curve_tex_format.Encoding,
+) ?struct { texel: u32, count: u16 } {
     const band_data = page_mod.bandWordsUsed(src_page);
     const headers: usize = @as(usize, bands.h_band_count) + @as(usize, bands.v_band_count);
     if (headers == 0) return null;
@@ -1005,7 +1075,7 @@ fn curveRangeForBands(src_page: *const AtlasPage, bands: GlyphBandEntry) ?struct
     }
     return .{
         .texel = min_texel,
-        .count = @intCast((max_texel - min_texel) / CURVE_SEGMENT_TEXELS + 1),
+        .count = @intCast((max_texel - min_texel) / encoding.texelsPerSegment() + 1),
     };
 }
 

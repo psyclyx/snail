@@ -25,8 +25,10 @@ const band_tex = @import("../format/band_texture.zig");
 pub const Word = u16;
 
 pub const SEGMENT_WORDS_PER_TEXEL: u32 = 4;
-pub const CURVE_SEGMENT_TEXELS: u32 = curve_tex.SEGMENT_TEXELS;
+pub const CURVE_SEGMENT_TEXELS: u32 = curve_tex.GENERAL_SEGMENT_TEXELS;
 pub const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * SEGMENT_WORDS_PER_TEXEL;
+pub const MIN_CURVE_SEGMENT_WORDS: u32 =
+    curve_tex.DENSE_QUADRATIC_SEGMENT_TEXELS * SEGMENT_WORDS_PER_TEXEL;
 pub const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 pub const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
 
@@ -56,13 +58,18 @@ pub const PublishedWords = struct {
     band: u32,
 };
 
+pub const RemainingWords = struct {
+    curve: u32,
+    band: u32,
+};
+
 /// Opaque page handle stored by `Atlas`. Storage, reservations, publication,
 /// generation identity, and reference counts stay inside this module.
 pub const AtlasPage = opaque {};
 
 const Page = struct {
     allocator: std.mem.Allocator,
-    layer_index: u16,
+    page_index: u16,
     generation: std.atomic.Value(u64),
     refcount: std.atomic.Value(u32),
     curve: Buffer,
@@ -78,7 +85,7 @@ const Page = struct {
 
     pub fn init(
         allocator: std.mem.Allocator,
-        layer_index: u16,
+        page_index: u16,
         curve_capacity_words: u32,
         band_capacity_words: u32,
     ) !*Page {
@@ -93,7 +100,7 @@ const Page = struct {
         // at written regions; unwritten words are never accessed.
         page.* = .{
             .allocator = allocator,
-            .layer_index = layer_index,
+            .page_index = page_index,
             .generation = std.atomic.Value(u64).init(1),
             .refcount = std.atomic.Value(u32).init(0),
             .curve = Buffer.init(curve_buf),
@@ -178,6 +185,17 @@ const Page = struct {
         };
     }
 
+    pub fn remainingWords(self: *Page) RemainingWords {
+        while (self.reservation_lock.cmpxchgWeak(0, 1, .acquire, .monotonic) != null) {
+            std.atomic.spinLoopHint();
+        }
+        defer self.reservation_lock.store(0, .release);
+        return .{
+            .curve = self.curve.capacity_words - self.reserved_curve_words,
+            .band = self.band.capacity_words - self.reserved_band_words,
+        };
+    }
+
     fn packWords(words: PublishedWords) u64 {
         return @as(u64, words.curve) | (@as(u64, words.band) << 32);
     }
@@ -255,11 +273,11 @@ fn pageImplConst(page: *const AtlasPage) *const Page {
 
 pub fn init(
     allocator: std.mem.Allocator,
-    layer_index: u16,
+    page_index: u16,
     curve_capacity_words: u32,
     band_capacity_words: u32,
 ) !*AtlasPage {
-    return @ptrCast(try Page.init(allocator, layer_index, curve_capacity_words, band_capacity_words));
+    return @ptrCast(try Page.init(allocator, page_index, curve_capacity_words, band_capacity_words));
 }
 
 pub fn deinit(page: *AtlasPage) void {
@@ -299,8 +317,8 @@ pub fn recycle(page: *AtlasPage) void {
     pageImpl(page).recycle();
 }
 
-pub fn layerIndex(page: *const AtlasPage) u16 {
-    return pageImplConst(page).layer_index;
+pub fn pageIndex(page: *const AtlasPage) u16 {
+    return pageImplConst(page).page_index;
 }
 
 pub fn currentGeneration(page: *const AtlasPage) u64 {
@@ -309,6 +327,10 @@ pub fn currentGeneration(page: *const AtlasPage) u64 {
 
 pub fn publishedWords(page: *const AtlasPage) PublishedWords {
     return pageImplConst(page).publishedWords();
+}
+
+pub fn remainingWords(page: *AtlasPage) RemainingWords {
+    return pageImpl(page).remainingWords();
 }
 
 pub fn reserve(page: *AtlasPage, curve_words: u32, band_words: u32) ?Reservation {

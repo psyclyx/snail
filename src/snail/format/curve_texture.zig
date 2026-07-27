@@ -5,7 +5,29 @@ const BBox = bezier_mod.BBox;
 const Vec2 = @import("../math/vec.zig").Vec2;
 
 pub const TEX_WIDTH: u32 = 4096;
-pub const SEGMENT_TEXELS: u32 = 4;
+pub const GENERAL_SEGMENT_TEXELS: u32 = 4;
+/// Direct line/quadratic records need only p0, p1, and p2. Curve kind lives
+/// in every band reference and non-rational segments have implicit unit
+/// weights, so font outlines can omit the two metadata texels.
+pub const DENSE_QUADRATIC_SEGMENT_TEXELS: u32 = 2;
+
+/// Physical curve-record encoding. This is the single source of truth for
+/// curve stride and the dense-format bit carried by band blocks.
+pub const Encoding = enum(u8) {
+    general,
+    dense_quadratic,
+
+    pub fn texelsPerSegment(self: Encoding) u32 {
+        return switch (self) {
+            .general => GENERAL_SEGMENT_TEXELS,
+            .dense_quadratic => DENSE_QUADRATIC_SEGMENT_TEXELS,
+        };
+    }
+
+    pub fn isDenseQuadratic(self: Encoding) bool {
+        return self == .dense_quadratic;
+    }
+};
 pub const PACKED_ANCHOR_CHUNK_EXTENT: f32 = 256.0;
 pub const PACKED_POINT_DELTA_LIMIT: f32 = 256.0;
 pub const PACKED_BAND_DILATION: f32 = 1.0;
@@ -145,6 +167,7 @@ pub const GlyphCurveEntry = struct {
     start_y: u16,
     count: u16,
     offset: u32,
+    encoding: Encoding = .general,
 };
 
 /// Builds persistent curve texture data plus scratch glyph entries.
@@ -162,7 +185,7 @@ const direct_kind_f16: [4]u16 = blk: {
 };
 
 /// Write one curve into the direct-encoding texel block. `data` must
-/// be at least `SEGMENT_TEXELS * 4` u16s; only those words are touched.
+/// be at least `GENERAL_SEGMENT_TEXELS * 4` u16s; only those words are touched.
 pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
     // Cache the f16'd weights once — the encoding repeats weights[1] and
     // weights[2] (slots 8/9 and 12/13) so otherwise we'd do four
@@ -189,7 +212,7 @@ pub fn writeDirectCurveTexels(data: []u16, curve: CurveSegment) void {
 }
 
 /// Allocate and direct-encode a single glyph's prepared curves into a
-/// `prepared.len * SEGMENT_TEXELS * 4` u16 buffer. Skips the
+/// `prepared.len * GENERAL_SEGMENT_TEXELS * 4` u16 buffer. Skips the
 /// `buildCurveTexture` TEX_WIDTH-row padding — for single-glyph callers
 /// (`font.extractCurves`, TT-hinted snapshots), the padding is pure waste.
 pub fn encodeDirectSingleGlyphCurves(
@@ -200,13 +223,46 @@ pub fn encodeDirectSingleGlyphCurves(
     for (prepared) |curve| {
         if (!curveFitsDirectF16(curve)) return error.InvalidCurveData;
     }
-    const words_per_segment: usize = SEGMENT_TEXELS * 4;
+    const words_per_segment: usize = GENERAL_SEGMENT_TEXELS * 4;
     const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
         return error.ShapeTooComplex;
     const buf = try allocator.alloc(u16, total_words);
     var cursor: usize = 0;
     for (prepared) |curve| {
         writeDirectCurveTexels(buf[cursor..][0..words_per_segment], curve);
+        cursor += words_per_segment;
+    }
+    return buf;
+}
+
+/// Encode a line/quadratic-only glyph using two RGBA16F texels per segment.
+/// These texels are byte-identical to the coordinate portion of the general
+/// direct encoding. Kind comes from the band reference; weights are unit.
+pub fn encodeDenseQuadraticSingleGlyphCurves(
+    allocator: std.mem.Allocator,
+    prepared: []const CurveSegment,
+) ![]u16 {
+    try validateCurveData(prepared, .zero);
+    const words_per_segment: usize = DENSE_QUADRATIC_SEGMENT_TEXELS * 4;
+    const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
+        return error.ShapeTooComplex;
+    const buf = try allocator.alloc(u16, total_words);
+    errdefer allocator.free(buf);
+    var cursor: usize = 0;
+    for (prepared) |curve| {
+        if ((curve.kind != .line and curve.kind != .quadratic) or
+            !curveFitsDirectF16(curve))
+        {
+            return error.InvalidCurveData;
+        }
+        buf[cursor + 0] = f32ToF16(curve.p0.x);
+        buf[cursor + 1] = f32ToF16(curve.p0.y);
+        buf[cursor + 2] = f32ToF16(curve.p1.x);
+        buf[cursor + 3] = f32ToF16(curve.p1.y);
+        buf[cursor + 4] = f32ToF16(curve.p2.x);
+        buf[cursor + 5] = f32ToF16(curve.p2.y);
+        buf[cursor + 6] = 0;
+        buf[cursor + 7] = 0;
         cursor += words_per_segment;
     }
     return buf;
@@ -223,7 +279,7 @@ pub fn buildCurveTexture(
         if (g.prepared_curves) |prepared| try validateCurveData(prepared, .zero);
         const curve_count = if (g.prepared_curves) |prepared| prepared.len else g.curves.len;
         const count_u16 = std.math.cast(u16, curve_count) orelse return error.ShapeTooComplex;
-        const glyph_texels = std.math.mul(u32, count_u16, SEGMENT_TEXELS) catch return error.ShapeTooComplex;
+        const glyph_texels = std.math.mul(u32, count_u16, GENERAL_SEGMENT_TEXELS) catch return error.ShapeTooComplex;
         total_texels = std.math.add(u32, total_texels, glyph_texels) catch return error.ShapeTooComplex;
     }
 
@@ -276,7 +332,7 @@ pub fn buildCurveTexture(
                 data[base + 11] = f32ToF16(quantized_curve.weights[0]);
                 data[base + 12] = f32ToF16(quantized_curve.weights[1]);
                 data[base + 13] = f32ToF16(quantized_curve.weights[2]);
-                texel_idx += SEGMENT_TEXELS;
+                texel_idx += GENERAL_SEGMENT_TEXELS;
             }
         } else {
             var owned_prepared_curves: ?[]CurveSegment = null;
@@ -312,7 +368,7 @@ pub fn buildCurveTexture(
                 data[base + 11] = f32ToF16(curve.weights[0]);
                 data[base + 12] = f32ToF16(curve.weights[1]);
                 data[base + 13] = f32ToF16(curve.weights[2]);
-                texel_idx += SEGMENT_TEXELS;
+                texel_idx += GENERAL_SEGMENT_TEXELS;
             }
         }
     }
@@ -599,7 +655,7 @@ pub fn prepareGlyphCurvesForDirectEncodingWithBBoxes(
 
 pub fn decodeSegmentAt(data: []const u16, curve_texel: u32) ?CurveSegment {
     const index = std.math.mul(usize, curve_texel, 4) catch return null;
-    const segment_words: usize = SEGMENT_TEXELS * 4;
+    const segment_words: usize = GENERAL_SEGMENT_TEXELS * 4;
     const end = std.math.add(usize, index, segment_words) catch return null;
     if (end > data.len) return null;
     const stored = data[index..end];
@@ -675,7 +731,7 @@ test "f32ToF16 basic conversions" {
 }
 
 test "decodeSegmentAt rejects malformed half-float payloads" {
-    var words = [_]u16{0} ** (SEGMENT_TEXELS * 4);
+    var words = [_]u16{0} ** (GENERAL_SEGMENT_TEXELS * 4);
     try std.testing.expect(decodeSegmentAt(&words, 0) != null);
 
     words[0] = @bitCast(std.math.nan(f16));
@@ -783,7 +839,7 @@ test "buildCurveTexture rebases coordinates by glyph origin" {
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
-    const decoded = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const decoded = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
     try std.testing.expectApproxEqAbs(0.0, decoded.p0.x, 0.001);
     try std.testing.expectApproxEqAbs(0.0, decoded.p0.y, 0.001);
     try std.testing.expectApproxEqAbs(20.0, decoded.p1.x, 0.001);
@@ -811,7 +867,7 @@ test "buildCurveTexture reconstructs large anchors and local deltas" {
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
-    const decoded = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const decoded = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
     try std.testing.expectApproxEqAbs(curves[0].p0.x, decoded.p0.x, 0.13);
     try std.testing.expectApproxEqAbs(curves[0].p0.y, decoded.p0.y, 0.13);
     try std.testing.expectApproxEqAbs(curves[0].p1.x, decoded.p1.x, 0.13);
@@ -837,7 +893,7 @@ test "quantizedLocalCurve matches packed decode" {
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
-    const decoded = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const decoded = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
     const quantized = quantizedLocalCurve(curve, .zero);
 
     try std.testing.expectApproxEqAbs(decoded.p0.x, quantized.p0.x, 0.001);
@@ -961,7 +1017,7 @@ test "buildCurveTexture supports direct encoding for font glyphs" {
 
     try std.testing.expectEqual(f32ToF16(DIRECT_ENCODING_KIND_BIAS), result.texture.data[10]);
 
-    const decoded = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
+    const decoded = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(0.25)), decoded.p0.x, 0.001);
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(0.5)), decoded.p0.y, 0.001);
     try std.testing.expectApproxEqAbs(f16BitsToF32(f32ToF16(0.75)), decoded.p1.x, 0.001);
@@ -999,8 +1055,8 @@ test "buildCurveTexture direct encoding preserves adjacent joins" {
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
-    const first = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
-    const second = decodeStoredSegment(result.texture.data[SEGMENT_TEXELS * 4 .. SEGMENT_TEXELS * 8]);
+    const first = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
+    const second = decodeStoredSegment(result.texture.data[GENERAL_SEGMENT_TEXELS * 4 .. GENERAL_SEGMENT_TEXELS * 8]);
     try std.testing.expectApproxEqAbs(first.endPoint().x, second.p0.x, 0.0001);
     try std.testing.expectApproxEqAbs(first.endPoint().y, second.p0.y, 0.0001);
 }
@@ -1034,8 +1090,8 @@ test "buildCurveTexture preserves closed contour wrap" {
     defer result.texture.deinit();
     defer std.testing.allocator.free(result.entries);
 
-    const first = decodeStoredSegment(result.texture.data[0 .. SEGMENT_TEXELS * 4]);
-    const second = decodeStoredSegment(result.texture.data[SEGMENT_TEXELS * 4 .. SEGMENT_TEXELS * 8]);
+    const first = decodeStoredSegment(result.texture.data[0 .. GENERAL_SEGMENT_TEXELS * 4]);
+    const second = decodeStoredSegment(result.texture.data[GENERAL_SEGMENT_TEXELS * 4 .. GENERAL_SEGMENT_TEXELS * 8]);
     try std.testing.expectApproxEqAbs(second.endPoint().x, first.p0.x, 0.0001);
     try std.testing.expectApproxEqAbs(second.endPoint().y, first.p0.y, 0.0001);
 }

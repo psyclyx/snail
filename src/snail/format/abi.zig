@@ -2,10 +2,34 @@ const std = @import("std");
 
 /// Increment whenever persisted draw records or atlas textures become
 /// incompatible with the shipped shader decoders.
-pub const version: u32 = 2;
+pub const version: u32 = 3;
 
 /// Both ordinary and special records carry a full u8 atlas-array layer.
 pub const max_atlas_layers: u32 = std.math.maxInt(u8) + 1;
+/// Logical pages are banked into 256-layer resource windows. Page indices are
+/// u16 throughout the atlas graph, so one pool can address all 65,536 pages.
+pub const max_atlas_pages: u32 = std.math.maxInt(u16) + 1;
+
+/// One logical atlas page split into the draw ABI's aligned page base and
+/// bank-local resource layer. All CPU-side page/bank arithmetic goes through
+/// this type.
+pub const PageAddress = struct {
+    page: u32,
+    page_base: u32,
+    local_layer: u8,
+    bank: u32,
+
+    pub fn init(page: u32) ?PageAddress {
+        if (page >= max_atlas_pages) return null;
+        const page_base = page & ~(max_atlas_layers - 1);
+        return .{
+            .page = page,
+            .page_base = page_base,
+            .local_layer = @intCast(page - page_base),
+            .bank = page_base / max_atlas_layers,
+        };
+    }
+};
 
 pub const SpecialLayerKind = enum(u8) {
     colr = 0,

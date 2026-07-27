@@ -85,7 +85,14 @@ pub fn draw(
             .layer_info_count = layer_info_count,
         };
         const batch_instances = records.instances[batch.first_instance..][0..batch.instance_count];
-        try renderer_mod.drawPreparedBatch(renderer, &prepared, batch_instances, state, 0, thread_pool);
+        try renderer_mod.drawPreparedBatch(
+            renderer,
+            &prepared,
+            batch_instances,
+            state,
+            batch.page_base,
+            thread_pool,
+        );
     }
 }
 
@@ -117,13 +124,13 @@ test "draw MissingBinding when no cache covers the binding's pool" {
 
     const upload_plan = @import("snail").atlas_upload;
     var pool_a = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = upload_plan.CURVE_TEX_WIDTH * 4,
         .band_words_per_page = upload_plan.BAND_TEX_WIDTH * 2,
     });
     defer pool_a.deinit();
     var pool_b = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = upload_plan.CURVE_TEX_WIDTH * 4,
         .band_words_per_page = upload_plan.BAND_TEX_WIDTH * 2,
     });
@@ -173,7 +180,7 @@ test "draw autohint fits per size without mutating atlas resources" {
     try testing.expect(glyph_features.x.len > 0 or glyph_features.y.len > 0);
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -272,7 +279,7 @@ test "draw renders a small Picture into non-zero pixels" {
     defer for (&owned) |*c| c.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -349,7 +356,7 @@ test "draw renders gradient-painted glyph through special-layer path" {
     defer curves.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -442,7 +449,7 @@ test "draw applies per-shape local color to image-painted path" {
     defer image.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -555,7 +562,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     defer entries.deinit(allocator);
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -647,7 +654,7 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
     defer curves.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -736,7 +743,7 @@ test "cubic stroke has no detached coverage island near its start cap" {
     defer curves.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -814,7 +821,7 @@ test "compact preserves rendering byte-for-byte across record kinds" {
     defer shaped_latin.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -944,7 +951,7 @@ test "draw scissor_rect clips writes to the rect" {
     defer curves.deinit();
 
     var pool = try @import("snail").PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });

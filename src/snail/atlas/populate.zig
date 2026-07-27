@@ -480,7 +480,7 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });
@@ -507,7 +507,7 @@ test "unhinted runs commit several shaped runs as one snapshot" {
     defer second.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 15,
         .band_words_per_page = 1 << 13,
     });
@@ -540,7 +540,7 @@ test "outline_only COLR handling records base outlines and ignores layers" {
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });
@@ -574,7 +574,7 @@ test "layers COLR handling records per-layer glyphs for fanout placement" {
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });
@@ -608,7 +608,7 @@ test "autohint and TT-hint run helpers cover empty and visible glyphs" {
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });
@@ -650,7 +650,7 @@ test "TtAdvanceSource reads recorded advances and falls back to the VM" {
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });
@@ -707,7 +707,7 @@ test "TT run failure is atomic and leaves the VM reusable" {
     const shaped = text_mod.ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 13,
     });

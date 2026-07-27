@@ -20,6 +20,7 @@ const page_pool_mod = @import("page_pool.zig");
 const draw_records = @import("../draw/records.zig");
 const paint_records = @import("paint_records.zig");
 const band_tex_format = @import("../format/band_texture.zig");
+const render_abi = @import("../format/abi.zig");
 const upload_patch = @import("upload_patch.zig");
 const image_mod = @import("../image.zig");
 
@@ -34,9 +35,9 @@ pub const INFO_WIDTH: u32 = paint_records.info_width;
 pub const Target = enum { curve, band, layer_info, image };
 
 /// One texel copy the caller must apply to its own texture. `src` are the
-/// packed source bytes for exactly `width * height` texels. `layer` is the
-/// destination array layer (curve/band/image). `(col_base, row_base)` is
-/// the destination texel origin: page-local for curve/band (deltas
+/// packed source bytes for exactly `width * height` texels. Curve/band copies
+/// use the logical `page`; image copies use the physical array `layer`.
+/// `(col_base, row_base)` is the destination texel origin: page-local for curve/band (deltas
 /// re-upload only the grown texel span of an append-only page, split into
 /// at most a partial head row, full middle rows, and a partial tail row),
 /// absolute (the binding's slot rows) for layer_info.
@@ -48,12 +49,145 @@ pub const Target = enum { curve, band, layer_info, image };
 /// copies; don't `deinit`, `compact`, or extend them in between.
 pub const Region = struct {
     target: Target,
+    page: u32 = 0,
     layer: u32 = 0,
     row_base: u32 = 0,
     col_base: u32 = 0,
     src: []const u8,
     width: u32,
     height: u32,
+
+    /// Resource-array bank for curve/band uploads. Other targets are not
+    /// atlas-page banked.
+    pub fn atlasBank(self: Region) ?u32 {
+        return switch (self.target) {
+            .curve, .band => (render_abi.PageAddress.init(self.page) orelse return null).bank,
+            else => null,
+        };
+    }
+
+    /// Array-local layer for curve/band uploads.
+    pub fn bankLayer(self: Region) ?u8 {
+        return switch (self.target) {
+            .curve, .band => (render_abi.PageAddress.init(self.page) orelse return null).local_layer,
+            else => null,
+        };
+    }
+};
+
+/// Flat typed-buffer layout for backends that do not want texture arrays.
+/// The buffers retain the existing RGBA16F/RG16UI texel formats. Pages occupy
+/// fixed contiguous strides, so shaders calculate addresses without a page
+/// table or dependent header load.
+pub const FlatLayout = struct {
+    logical_pages: u32,
+    curve_page_texels: u32,
+    band_page_texels: u32,
+    curve_total_texels: u32,
+    band_total_texels: u32,
+
+    pub const Error = error{InvalidFlatLayout};
+
+    pub fn init(pool: *const PagePool) FlatLayout.Error!FlatLayout {
+        const config = pool.config();
+        const curve_page_texels = config.curve_words_per_page / 4;
+        const band_page_texels = config.band_words_per_page / 2;
+        const curve_total = std.math.mul(u32, config.max_pages, curve_page_texels) catch
+            return error.InvalidFlatLayout;
+        const band_total = std.math.mul(u32, config.max_pages, band_page_texels) catch
+            return error.InvalidFlatLayout;
+        // Flat shader addressing uses signed int arithmetic on the oldest
+        // target languages. Reject layouts that would change sign.
+        if (curve_total > std.math.maxInt(i32) or band_total > std.math.maxInt(i32)) {
+            return error.InvalidFlatLayout;
+        }
+        return .{
+            .logical_pages = config.max_pages,
+            .curve_page_texels = curve_page_texels,
+            .band_page_texels = band_page_texels,
+            .curve_total_texels = curve_total,
+            .band_total_texels = band_total,
+        };
+    }
+
+    pub fn curveByteSize(self: FlatLayout) u64 {
+        return @as(u64, self.curve_total_texels) * 8;
+    }
+
+    pub fn bandByteSize(self: FlatLayout) u64 {
+        return @as(u64, self.band_total_texels) * 4;
+    }
+
+    pub fn curvePageBase(self: FlatLayout, page: u32) ?u32 {
+        if (page >= self.logical_pages) return null;
+        return page * self.curve_page_texels;
+    }
+
+    pub fn bandPageBase(self: FlatLayout, page: u32) ?u32 {
+        if (page >= self.logical_pages) return null;
+        return page * self.band_page_texels;
+    }
+
+    pub const FlatTarget = enum { curve, band };
+
+    pub const Copy = struct {
+        target: FlatTarget,
+        byte_offset: u64,
+        src: []const u8,
+    };
+
+    /// Translate a curve/band texture region into one tightly packed buffer
+    /// copy. Planner plane regions are either one partial row or whole rows,
+    /// so their source bytes are contiguous at the same flat destination.
+    pub fn translate(self: FlatLayout, region: Region) FlatLayout.Error!?Copy {
+        const Spec = struct {
+            target: FlatTarget,
+            page_base: u32,
+            page_texels: u32,
+            width: u32,
+            bytes_per_texel: u32,
+        };
+        const spec: Spec = switch (region.target) {
+            .curve => .{
+                .target = FlatTarget.curve,
+                .page_base = self.curvePageBase(region.page) orelse return error.InvalidFlatLayout,
+                .page_texels = self.curve_page_texels,
+                .width = CURVE_TEX_WIDTH,
+                .bytes_per_texel = @as(u32, 8),
+            },
+            .band => .{
+                .target = FlatTarget.band,
+                .page_base = self.bandPageBase(region.page) orelse return error.InvalidFlatLayout,
+                .page_texels = self.band_page_texels,
+                .width = BAND_TEX_WIDTH,
+                .bytes_per_texel = @as(u32, 4),
+            },
+            else => return null,
+        };
+        const col_end = std.math.add(u32, region.col_base, region.width) catch
+            return error.InvalidFlatLayout;
+        const texel_count = std.math.mul(u64, region.width, region.height) catch
+            return error.InvalidFlatLayout;
+        const expected_bytes = std.math.mul(u64, texel_count, spec.bytes_per_texel) catch
+            return error.InvalidFlatLayout;
+        const local_texel = std.math.add(
+            u64,
+            std.math.mul(u64, region.row_base, spec.width) catch return error.InvalidFlatLayout,
+            region.col_base,
+        ) catch return error.InvalidFlatLayout;
+        const local_end = std.math.add(u64, local_texel, texel_count) catch
+            return error.InvalidFlatLayout;
+        if (region.width == 0 or region.height == 0 or
+            col_end > spec.width or
+            local_end > spec.page_texels or
+            expected_bytes != region.src.len or
+            (region.height > 1 and (region.col_base != 0 or region.width != spec.width)))
+        {
+            return error.InvalidFlatLayout;
+        }
+        const byte_offset = (@as(u64, spec.page_base) + local_texel) * spec.bytes_per_texel;
+        return .{ .target = spec.target, .byte_offset = byte_offset, .src = region.src };
+    }
 };
 
 pub const Options = struct {
@@ -112,7 +246,7 @@ pub const Sizes = struct {
 pub fn sizes(pool: *const PagePool, opts: Options) InitError!Sizes {
     const bindings: usize = @intCast(opts.max_bindings);
     const images: usize = @intCast(opts.max_images);
-    const layers: usize = @intCast(pool.config().max_layers);
+    const layers: usize = @intCast(pool.config().max_pages);
     const info_free = std.math.add(usize, bindings, 1) catch return error.InvalidOptions;
     const image_free = info_free;
     const page_regions = std.math.mul(usize, layers, 6) catch return error.InvalidOptions;
@@ -257,7 +391,7 @@ pub const Planner = struct {
         image_free_backing: []Range,
     ) InitError!Planner {
         const pool_config = pool.config();
-        const layers: usize = @intCast(pool_config.max_layers);
+        const layers: usize = @intCast(pool_config.max_pages);
         const binding_count = std.math.cast(usize, opts.max_bindings) orelse return error.InvalidOptions;
         const free_count = std.math.add(usize, binding_count, 1) catch return error.InvalidOptions;
         if (generation.len < layers or
@@ -423,12 +557,12 @@ pub const Planner = struct {
         const replace_side_data = !exact_snapshot and !direct_child;
         var info_from_row: u32 = 0;
         for (atlas.pages) |p| {
-            const layer: u32 = page_mod.layerIndex(p);
-            if (!page_pool_mod.ownsPage(self.pool, layer, p)) return error.PageNotInPool;
+            const page_index: u32 = page_mod.pageIndex(p);
+            if (!page_pool_mod.ownsPage(self.pool, page_index, p)) return error.PageNotInPool;
             const published = page_mod.publishedWords(p);
-            const stale = self.prepared_generation[layer] != page_mod.currentGeneration(p) or
-                published.curve != self.prepared_curve_words[layer] or
-                published.band != self.prepared_band_words[layer];
+            const stale = self.prepared_generation[page_index] != page_mod.currentGeneration(p) or
+                published.curve != self.prepared_curve_words[page_index] or
+                published.band != self.prepared_band_words[page_index];
             if (stale) region_count += 6;
         }
         if (atlas.paint_records) |records| {
@@ -473,7 +607,7 @@ pub const Planner = struct {
         if (region_count > out.len) return error.RegionBufferFull;
 
         for (atlas.pages) |p| {
-            const layer: u32 = page_mod.layerIndex(p);
+            const layer: u32 = page_mod.pageIndex(p);
             const cur_gen = page_mod.currentGeneration(p);
             const published = page_mod.publishedWords(p);
             const cur_curve = published.curve;
@@ -577,7 +711,7 @@ pub const Planner = struct {
                 const byte_len = @as(usize, count_texels) * wpt * @sizeOf(page_mod.Word);
                 try emitRegion(o, len, .{
                     .target = t,
-                    .layer = l,
+                    .page = l,
                     .row_base = row,
                     .col_base = col,
                     .src = @as([*]const u8, @ptrCast(d.ptr))[byte_base .. byte_base + byte_len],
@@ -763,7 +897,7 @@ test "FreeList matches RangeAllocator take/release semantics" {
 test "OwnedPlanner owns only backend-neutral planner storage" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -799,7 +933,7 @@ fn exerciseOwnedPlannerAllocationFailures(allocator: std.mem.Allocator, pool: *P
 
 test "OwnedPlanner init cleans up every allocation failure" {
     var pool = try PagePool.init(std.testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -814,7 +948,7 @@ test "OwnedPlanner init cleans up every allocation failure" {
 test "bindings are scoped to the exact planner even within one pool" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -846,7 +980,7 @@ test "bindings are scoped to the exact planner even within one pool" {
 test "Planner preflights atomically and is bound to one page pool" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4 * 2,
         .band_words_per_page = BAND_TEX_WIDTH * 2 * 2,
     });
@@ -895,7 +1029,7 @@ test "Planner preflights atomically and is bound to one page pool" {
     var region_len: usize = 0;
     try std.testing.expectError(error.RegionBufferFull, planner.plan(&atlas, regions[0..0], &region_len, &.{}));
     try std.testing.expect(!slots[0].active);
-    try std.testing.expectEqual(@as(u64, 0), generation[page_mod.layerIndex(atlas.pages[0])]);
+    try std.testing.expectEqual(@as(u64, 0), generation[page_mod.pageIndex(atlas.pages[0])]);
 
     const binding = try planner.plan(&atlas, regions, &region_len, &.{});
     try std.testing.expectEqual(@as(usize, 2), region_len);
@@ -913,7 +1047,7 @@ test "Planner preflights atomically and is bound to one page pool" {
 test "planDelta fully replaces side data for an unrelated same-height atlas" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -974,7 +1108,7 @@ test "planDelta fully replaces side data for an unrelated same-height atlas" {
 test "planner enforces image dimensions and format and retries invalidated uploads" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -1057,7 +1191,7 @@ test "planDelta uploads only the grown row band of an append-only page" {
     const segment_words: u32 = 16; // CURVE_SEGMENT_TEXELS * 4
 
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = curve_row_words * 4,
         .band_words_per_page = band_row_words * 2,
     });
@@ -1179,7 +1313,7 @@ test "planDelta uploads only the grown row band of an append-only page" {
 test "planDelta uploads only appended layer-info rows" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = CURVE_TEX_WIDTH * 4,
         .band_words_per_page = BAND_TEX_WIDTH * 2,
     });
@@ -1240,4 +1374,62 @@ test "planDelta uploads only appended layer-info rows" {
     }
     try std.testing.expect(saw_pages);
     try std.testing.expect(planner.release(first.binding));
+}
+
+test "flat layout fixed strides and region offsets address logical pages" {
+    var pool = try PagePool.init(std.testing.allocator, .{
+        .max_pages = 257,
+        .curve_words_per_page = CURVE_TEX_WIDTH * 4 * 4,
+        .band_words_per_page = BAND_TEX_WIDTH * 2 * 4,
+    });
+    defer pool.deinit();
+
+    const flat = try FlatLayout.init(pool);
+    const page: u32 = 256;
+    const curve_base = flat.curvePageBase(page).?;
+    try std.testing.expectEqual(page * flat.curve_page_texels, curve_base);
+    try std.testing.expectEqual(page * flat.band_page_texels, flat.bandPageBase(page).?);
+
+    const bytes = [_]u8{0} ** 32;
+    const copy = (try flat.translate(.{
+        .target = .curve,
+        .page = page,
+        .row_base = 2,
+        .col_base = 7,
+        .src = &bytes,
+        .width = 4,
+        .height = 1,
+    })).?;
+    try std.testing.expectEqual(
+        (@as(u64, curve_base) + 2 * CURVE_TEX_WIDTH + 7) * 8,
+        copy.byte_offset,
+    );
+
+    try std.testing.expectError(error.InvalidFlatLayout, flat.translate(.{
+        .target = .curve,
+        .page = page,
+        .row_base = 3,
+        .col_base = CURVE_TEX_WIDTH - 2,
+        .src = &bytes,
+        .width = 4,
+        .height = 1,
+    }));
+    try std.testing.expectError(error.InvalidFlatLayout, flat.translate(.{
+        .target = .curve,
+        .page = page,
+        .row_base = 0,
+        .col_base = 1,
+        .src = &bytes,
+        .width = 4,
+        .height = 2,
+    }));
+    try std.testing.expectError(error.InvalidFlatLayout, flat.translate(.{
+        .target = .curve,
+        .page = page,
+        .row_base = 0,
+        .col_base = 0,
+        .src = bytes[0..31],
+        .width = 4,
+        .height = 1,
+    }));
 }

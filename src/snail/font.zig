@@ -320,7 +320,7 @@ fn packGlyphCurves(
     // it on the floor) — write the curve bytes directly into a tight
     // buffer the atlas can consume verbatim.
     const curve_count = try checkedCurveCount(prepared.len);
-    const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, prepared);
+    const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, prepared);
     errdefer allocator.free(curve_bytes);
 
     const entry = curve_tex.GlyphCurveEntry{
@@ -328,6 +328,7 @@ fn packGlyphCurves(
         .start_y = 0,
         .count = curve_count,
         .offset = 0,
+        .encoding = .dense_quadratic,
     };
     // Band data goes straight to the output allocator — no intermediate
     // dupe. Internal working buffers (curve_bboxes, sort arrays,
@@ -353,6 +354,7 @@ fn packGlyphCurves(
         .curve_bytes = curve_bytes,
         .band_bytes = band_bytes,
         .curve_count = curve_count,
+        .encoding = .dense_quadratic,
         .path_curve_class = curves_mod.classifyPathCurves(lowered),
         .h_band_count = bd.h_band_count,
         .v_band_count = bd.v_band_count,
@@ -423,12 +425,8 @@ test "static CFF font lowers cubic outlines for Slug coverage" {
     try std.testing.expect(curves.curve_count > 0);
     try std.testing.expect(curves.band_bytes.len > 0);
     try std.testing.expectEqual(curves_mod.PathCurveClass.quadratic, curves.path_curve_class);
-    for (0..curves.curve_count) |curve_index| {
-        const texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
-        const segment = curve_tex.decodeSegmentAt(curves.curve_bytes, texel) orelse
-            return error.InvalidCurves;
-        try std.testing.expect(segment.kind != .cubic);
-    }
+    try std.testing.expectEqual(curve_tex.Encoding.dense_quadratic, curves.encoding);
+    try curves.validate();
 }
 
 test "CFF2 variable coordinates affect axes metrics and outlines" {
@@ -541,10 +539,7 @@ test "TrueType collections use the selected native face" {
     try std.testing.expect(curves.curve_count > 0);
 }
 
-test "extractCurves matches existing curve packing path byte-for-byte" {
-    // The producer reuses `buildCurveTexture` and `buildGlyphBandData` from
-    // render/format. For a single-glyph input, the produced curve_bytes
-    // must equal the prefix of the existing packed curve-texture data.
+test "extractCurves matches dense quadratic packing byte-for-byte" {
     const font_data = @import("assets").noto_sans_regular;
     var font = try Font.init(font_data);
 
@@ -566,19 +561,8 @@ test "extractCurves matches existing curve packing path byte-for-byte" {
     }
     const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(std.testing.allocator, segs.items, .zero);
     defer std.testing.allocator.free(prepared);
-    const render_bbox = glyphRenderBBox(glyph.metrics.bbox, prepared);
-
-    const single = [_]curve_tex.GlyphCurves{.{
-        .curves = segs.items,
-        .bbox = render_bbox,
-        .logical_curve_count = segs.items.len,
-        .prefer_direct_encoding = true,
-        .prepared_curves = prepared,
-    }};
-    var ct = try curve_tex.buildCurveTexture(std.testing.allocator, std.testing.allocator, &single);
-    defer ct.texture.deinit();
-    defer std.testing.allocator.free(ct.entries);
-
-    const used_words: usize = @as(usize, curves.curve_count) * curve_tex.SEGMENT_TEXELS * 4;
-    try std.testing.expectEqualSlices(u16, ct.texture.data[0..used_words], curves.curve_bytes);
+    const expected = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(std.testing.allocator, prepared);
+    defer std.testing.allocator.free(expected);
+    try std.testing.expectEqual(curve_tex.Encoding.dense_quadratic, curves.encoding);
+    try std.testing.expectEqualSlices(u16, expected, curves.curve_bytes);
 }

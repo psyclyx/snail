@@ -19,6 +19,7 @@ const BandBlock = struct {
     h_band_count: usize,
     v_band_count: usize,
     end: usize,
+    dense_quadratic: bool,
 };
 
 // Physical band-block prefix from snail/format/band_texture.zig. The software
@@ -43,7 +44,8 @@ fn nextBandBlock(band_data: []const u16, cursor: *usize) error{InvalidBandData}!
             continue;
         }
 
-        const h_count = band_data[prefix_word + 2];
+        const raw_h_count = band_data[prefix_word + 2];
+        const h_count = raw_h_count & 0x7fff;
         const v_count = band_data[prefix_word + 3];
         if (h_count == 0 or v_count == 0 or h_count > max_band_count or v_count > max_band_count) {
             return error.InvalidBandData;
@@ -72,6 +74,7 @@ fn nextBandBlock(band_data: []const u16, cursor: *usize) error{InvalidBandData}!
             .h_band_count = h_count,
             .v_band_count = v_count,
             .end = block_end,
+            .dense_quadratic = raw_h_count & 0x8000 != 0,
         };
     }
     return null;
@@ -115,6 +118,7 @@ fn prepareBandHeader(
     axis_band_count: usize,
     curves: []PreparedAxisCurve,
     cold_curves: *std.ArrayList(PreparedAxisCurveCold),
+    dense_quadratic: bool,
     comptime horizontal: bool,
 ) PreparePageError!void {
     const references = try bandReferenceRange(page.band_data, block_base, header_count, header_index);
@@ -127,12 +131,21 @@ fn prepareBandHeader(
         if (curves[texel_index].valid) continue;
         const curve_ref = readBandCurveRef(page, texel_index) orelse return error.InvalidBandData;
         if (curve_ref.first_member_band >= axis_band_count) return error.InvalidBandData;
-        const curve_end = std.math.add(usize, curve_ref.base, 16) catch return error.InvalidBandData;
+        const curve_words: usize = if (dense_quadratic) 8 else 16;
+        const curve_end = std.math.add(usize, curve_ref.base, curve_words) catch return error.InvalidBandData;
         if (curve_end > page.curve_data.len) return error.InvalidBandData;
+        const segment = if (dense_quadratic)
+            texture.decodeDenseQuadraticSegment(
+                texture.readCurveTexelF32Base(page, curve_ref.base),
+                texture.readCurveTexelF32Base(page, curve_ref.base + 4),
+                curve_ref.kind,
+            )
+        else
+            decodeCurveSegmentFromWords(page.curve_data, curve_ref.base);
         var prepared = try coverage.prepareAxisCurve(
             allocator,
             cold_curves,
-            decodeCurveSegmentFromWords(page.curve_data, curve_ref.base) orelse return error.InvalidBandData,
+            segment orelse return error.InvalidBandData,
             horizontal,
         );
         prepared.first_member_band = @intCast(curve_ref.first_member_band);
@@ -166,6 +179,7 @@ fn prepareBandBlocks(
                 block.h_band_count,
                 axis_curves,
                 h_cold_curves,
+                block.dense_quadratic,
                 true,
             );
         }
@@ -179,6 +193,7 @@ fn prepareBandBlocks(
                 block.v_band_count,
                 axis_curves,
                 v_cold_curves,
+                block.dense_quadratic,
                 false,
             );
         }

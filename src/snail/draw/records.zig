@@ -59,12 +59,22 @@ pub const Binding = struct {
 /// and a semantic family.
 pub const DrawBatch = struct {
     binding: Binding,
+    /// Aligned logical-page bank base added to the instance's local layer
+    /// byte. Backends with separate 256-layer resources select this bank;
+    /// backends with a larger array pass it through to the shader.
+    page_base: u32 = 0,
     /// Index into `DrawRecords.instances` of this batch's first instance.
     first_instance: u32,
     /// Number of instances in this batch.
     instance_count: u32,
     /// Exact semantic family shared by every instance in this batch.
     kind: ShapeKind,
+
+    /// Select this curve/band texture-array bank when the backend represents
+    /// logical pages as separate 256-layer resources.
+    pub fn atlasBank(self: DrawBatch) u32 {
+        return abi_mod.PageAddress.init(self.page_base).?.bank;
+    }
 };
 
 pub const DrawRecords = struct {
@@ -79,6 +89,7 @@ pub const DrawRecords = struct {
         UncoveredInstances,
         InvalidInstance,
         BatchKindMismatch,
+        InvalidPageBase,
     };
 
     /// Validate the complete renderer-facing record stream. Batches must form
@@ -88,6 +99,11 @@ pub const DrawRecords = struct {
         var cursor: usize = 0;
         for (self.batches) |batch| {
             if (batch.instance_count == 0) return error.EmptyBatch;
+            const address = abi_mod.PageAddress.init(batch.page_base) orelse
+                return error.InvalidPageBase;
+            if (address.page_base != batch.page_base or
+                batch.page_base >= batch.binding.pool.config().max_pages)
+                return error.InvalidPageBase;
             if (@as(usize, batch.first_instance) != cursor) return error.NonContiguousBatch;
             const end = std.math.add(
                 usize,
@@ -99,6 +115,11 @@ pub const DrawRecords = struct {
                 vertex_mod.validateInstance(instance) catch return error.InvalidInstance;
                 const kind = shapeKind(instance) orelse return error.InvalidInstance;
                 if (kind != batch.kind) return error.BatchKindMismatch;
+                const absolute_page = batch.page_base +
+                    @as(u32, abi_mod.glyphWordAtlasLayer(instance.glyph[1]));
+                if (absolute_page >= batch.binding.pool.config().max_pages) {
+                    return error.InvalidPageBase;
+                }
             }
             cursor = end;
         }
@@ -113,7 +134,7 @@ pub fn mergeIfAdjacent(batches: []DrawBatch, len: *usize, next: DrawBatch) bool 
     if (len.* == 0) return false;
     const last = &batches[len.* - 1];
     if (!last.binding.eql(next.binding)) return false;
-    if (last.kind != next.kind) return false;
+    if (last.kind != next.kind or last.page_base != next.page_base) return false;
     const last_end = std.math.add(u32, last.first_instance, last.instance_count) catch return false;
     if (last_end != next.first_instance) return false;
     last.instance_count = std.math.add(u32, last.instance_count, next.instance_count) catch return false;
@@ -140,7 +161,7 @@ pub fn shapeKind(instance: *const Instance) ?ShapeKind {
 
 test "binding equality compares pool, generation, and offsets" {
     var pool_a = try PagePool.init(std.testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 128,
         .band_words_per_page = 64,
     });
@@ -160,7 +181,7 @@ test "binding equality compares pool, generation, and offsets" {
 
 test "mergeIfAdjacent merges only contiguous homogeneous batches" {
     var pool = try PagePool.init(std.testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 128,
         .band_words_per_page = 64,
     });
@@ -199,7 +220,7 @@ test "mergeIfAdjacent merges only contiguous homogeneous batches" {
 
 test "DrawRecords validation rejects malformed ranges and kind mismatches" {
     var pool = try PagePool.init(std.testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 128,
         .band_words_per_page = 64,
     });

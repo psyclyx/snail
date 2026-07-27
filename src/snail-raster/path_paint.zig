@@ -254,9 +254,9 @@ fn countPreparedPathLayerInfo(
             return error.InvalidLayerInfo, 1) catch return error.InvalidLayerInfo;
         if (record_texels > texel_count - texel or
             layer_count > descriptors.len - descriptor_index - 1) return error.InvalidLayerInfo;
-        for (0..layer_count) |layer_index| {
-            const layer_descriptor = descriptors[descriptor_index + 1 + layer_index];
-            const expected_offset = texel + 1 + @as(u32, @intCast(layer_index)) * 6;
+        for (0..layer_count) |page_index| {
+            const layer_descriptor = descriptors[descriptor_index + 1 + page_index];
+            const expected_offset = texel + 1 + @as(u32, @intCast(page_index)) * 6;
             if (layer_descriptor.layer_count != 1 or layer_descriptor.texel_offset != expected_offset) {
                 return error.InvalidLayerInfo;
             }
@@ -287,7 +287,7 @@ pub fn preparePathLayerInfoRecords(
     errdefer allocator.free(layers);
 
     var record_index: usize = 0;
-    var layer_index: usize = 0;
+    var page_index: usize = 0;
     var descriptor_index: usize = 0;
     while (descriptor_index < descriptors.len) {
         const descriptor = descriptors[descriptor_index];
@@ -299,20 +299,20 @@ pub fn preparePathLayerInfoRecords(
             .texel_offset = texel,
             .tag = tag,
             .composite_mode = if (descriptor_count > 1) @intFromFloat(info[1]) else 0,
-            .layer_start = layer_index,
+            .layer_start = page_index,
             .layer_count = descriptor_count,
         };
         if (descriptor_count == 1) {
-            layers[layer_index] = preparePathLayerFromLayerInfoOffset(data, descriptor);
+            layers[page_index] = preparePathLayerFromLayerInfoOffset(data, descriptor);
             descriptor_index += 1;
         } else {
             for (0..descriptor_count) |i| {
-                layers[layer_index + i] = preparePathLayerFromLayerInfoOffset(data, descriptors[descriptor_index + 1 + i]);
+                layers[page_index + i] = preparePathLayerFromLayerInfoOffset(data, descriptors[descriptor_index + 1 + i]);
             }
             descriptor_index += 1 + descriptor_count;
         }
         record_index += 1;
-        layer_index += descriptor_count;
+        page_index += descriptor_count;
     }
 
     return .{ .records = records, .layers = layers };

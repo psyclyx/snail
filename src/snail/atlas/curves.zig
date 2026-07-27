@@ -36,9 +36,9 @@ pub fn classifyPathCurves(curves: []const bezier.CurveSegment) PathCurveClass {
 
 pub const GlyphCurves = struct {
     allocator: std.mem.Allocator,
-    /// Packed curve texture bytes (u16 half-floats, four texels per segment).
-    /// Laid out exactly as the existing `format/curve_texture.zig`
-    /// format expects, with the glyph's first segment at byte 0.
+    /// Packed curve texture bytes (u16 half-floats): two texels per dense
+    /// line/quadratic segment or four for the general format. The glyph's
+    /// first segment starts at byte zero.
     curve_bytes: []const u16,
     /// Packed band texture bytes (u16 indices). Each non-empty block starts
     /// with the private self-describing prefix from `format/band_texture.zig`;
@@ -53,8 +53,11 @@ pub const GlyphCurves = struct {
     /// allocations into one (eg. the TtHintVm's cached-glyph clone). When
     /// null, `deinit` frees `curve_bytes` and `band_bytes` independently.
     backing: ?[]u16 = null,
-    /// Number of curve segments (each segment occupies `SEGMENT_TEXELS` texels).
+    /// Number of curve segments.
     curve_count: u16,
+    /// Physical curve layout. Dense quadratic records halve font storage by
+    /// omitting metadata already carried by band references.
+    encoding: curve_tex.Encoding = .general,
     /// Strongest path evaluator required by the packed segments. `.cubic`
     /// remains the zero-compatible general-path ABI value, but native cubic
     /// payloads are rejected by `validate`.
@@ -112,6 +115,7 @@ pub const GlyphCurves = struct {
             .curve_bytes = &[_]u16{},
             .band_bytes = &[_]u16{},
             .curve_count = 0,
+            .encoding = .dense_quadratic,
             .path_curve_class = .quadratic,
             .h_band_count = 0,
             .v_band_count = 0,
@@ -134,18 +138,27 @@ pub const GlyphCurves = struct {
     /// the atlas cannot assume its slices and scalar metadata were emitted by
     /// snail's own packers.
     pub fn validate(self: *const GlyphCurves) ValidationError!void {
-        const segment_words = curve_tex.SEGMENT_TEXELS * 4;
+        const segment_texels = self.encoding.texelsPerSegment();
+        const segment_words = segment_texels * 4;
         const expected_curve_words = @as(usize, self.curve_count) * segment_words;
         if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
-        for (0..self.curve_count) |curve_index| {
-            const curve_texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
-            const segment = curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) orelse return error.InvalidCurves;
-            const required: PathCurveClass = switch (segment.kind) {
-                .line, .quadratic => .quadratic,
-                .conic => .conic,
-                .cubic => return error.InvalidCurves,
-            };
-            if (self.path_curve_class.combine(required) != self.path_curve_class) return error.InvalidCurves;
+        if (self.encoding == .general) {
+            for (0..self.curve_count) |curve_index| {
+                const curve_texel: u32 = @intCast(curve_index * curve_tex.GENERAL_SEGMENT_TEXELS);
+                const segment = curve_tex.decodeSegmentAt(self.curve_bytes, curve_texel) orelse return error.InvalidCurves;
+                const required: PathCurveClass = switch (segment.kind) {
+                    .line, .quadratic => .quadratic,
+                    .conic => .conic,
+                    .cubic => return error.InvalidCurves,
+                };
+                if (self.path_curve_class.combine(required) != self.path_curve_class) return error.InvalidCurves;
+            }
+        } else {
+            if (self.path_curve_class != .quadratic) return error.InvalidCurves;
+            for (self.curve_bytes) |word| {
+                const value: f16 = @bitCast(word);
+                if (!std.math.isFinite(value)) return error.InvalidCurves;
+            }
         }
 
         const scalar_values = [_]f32{
@@ -192,6 +205,9 @@ pub const GlyphCurves = struct {
         if (prefix.h_band_count != self.h_band_count or prefix.v_band_count != self.v_band_count) {
             return error.InvalidCurves;
         }
+        if (prefix.dense_quadratic != self.encoding.isDenseQuadratic()) {
+            return error.InvalidCurves;
+        }
 
         var expected_ref_texel = prefix_texels + header_count;
         for (0..header_count) |band_index| {
@@ -217,9 +233,13 @@ pub const GlyphCurves = struct {
                 // this glyph's local curve block.
                 const curve_texel = @as(u32, w1 & 0x3fff) * curve_tex.TEX_WIDTH +
                     @as(u32, w0 & 0x0fff);
-                if (curve_texel % curve_tex.SEGMENT_TEXELS != 0 or
-                    curve_texel / curve_tex.SEGMENT_TEXELS >= self.curve_count)
+                if (curve_texel % segment_texels != 0 or
+                    curve_texel / segment_texels >= self.curve_count)
                 {
+                    return error.InvalidCurves;
+                }
+                const kind = w1 >> 14;
+                if (self.encoding.isDenseQuadratic() and kind != 0 and kind != 3) {
                     return error.InvalidCurves;
                 }
             }
@@ -270,7 +290,7 @@ test "validate rejects inconsistent and out-of-range packed payloads" {
     empty.curve_count = 1;
     try std.testing.expectError(error.InvalidCurves, empty.validate());
 
-    var curve_words = [_]u16{0} ** (curve_tex.SEGMENT_TEXELS * 4);
+    var curve_words = [_]u16{0} ** (curve_tex.GENERAL_SEGMENT_TEXELS * 4);
     // Two one-band headers followed by one reference for each axis.
     var band_words = band_tex.packBlockPrefix(1, 1) ++ [_]u16{ 1, 2, 1, 3, 0, 0, 0, 0 };
     const valid = GlyphCurves{

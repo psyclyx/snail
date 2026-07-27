@@ -192,7 +192,7 @@ test "pathToCurves lowers cubic fills to quadratic records" {
 
     try testing.expectEqual(curves_mod.PathCurveClass.quadratic, curves.path_curve_class);
     for (0..curves.curve_count) |curve_index| {
-        const texel: u32 = @intCast(curve_index * curve_tex.SEGMENT_TEXELS);
+        const texel: u32 = @intCast(curve_index * curve_tex.GENERAL_SEGMENT_TEXELS);
         const segment = curve_tex.decodeSegmentAt(curves.curve_bytes, texel) orelse
             return error.InvalidCurves;
         try testing.expectEqual(bezier.CurveKind.quadratic, segment.kind);
@@ -251,7 +251,7 @@ test "pathToCurves: round-trip into atlas" {
     defer curves.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 12,
     });

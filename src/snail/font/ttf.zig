@@ -637,11 +637,11 @@ pub const Font = struct {
         pub fn next(self: *ColrLayerIterator) ?ColrLayer {
             if (self.index >= self.num_layers) return null;
 
-            const layer_index = self.index;
+            const page_index = self.index;
             self.index += 1;
 
             const layer_rec = @as(usize, self.colr_offset) + @as(usize, self.layer_off) +
-                (@as(usize, self.first_layer) + @as(usize, layer_index)) * 4;
+                (@as(usize, self.first_layer) + @as(usize, page_index)) * 4;
             const layer_gid = readU16(self.data, layer_rec) catch {
                 self.index = self.num_layers;
                 return null;

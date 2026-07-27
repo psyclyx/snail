@@ -165,18 +165,18 @@ pub const DeviceAtlas = struct {
     /// Invalid/unrepresentable options and allocation failure leave no live
     /// partial cache.
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool, options: DeviceAtlasOptions) !DeviceAtlas {
-        const max_layers = pool.config().max_layers;
+        const max_pages = pool.config().max_pages;
 
         var planner = try upload_plan.OwnedPlanner.init(allocator, pool, plannerOptions(pool, options));
         errdefer planner.deinit();
 
-        const prepared = try allocator.alloc(?PreparedAtlasPage, max_layers);
+        const prepared = try allocator.alloc(?PreparedAtlasPage, max_pages);
         errdefer allocator.free(prepared);
-        const gen = try allocator.alloc(u64, max_layers);
+        const gen = try allocator.alloc(u64, max_pages);
         errdefer allocator.free(gen);
-        const curve_words = try allocator.alloc(u32, max_layers);
+        const curve_words = try allocator.alloc(u32, max_pages);
         errdefer allocator.free(curve_words);
-        const band_words = try allocator.alloc(u32, max_layers);
+        const band_words = try allocator.alloc(u32, max_pages);
         errdefer allocator.free(band_words);
         @memset(prepared, null);
         @memset(gen, 0);
@@ -470,7 +470,7 @@ pub const DeviceAtlas = struct {
 
         for (plan.regions) |region| switch (region.target) {
             .curve, .band => {
-                const layer: usize = region.layer;
+                const layer: usize = region.page;
                 if (layer >= self.prepared.len) return error.PageNotInPool;
                 if (pending_by_layer[layer] != std.math.maxInt(usize)) continue;
 
@@ -501,7 +501,7 @@ pub const DeviceAtlas = struct {
                 }
 
                 pending_pages.append(scratch, .{
-                    .layer = region.layer,
+                    .layer = region.page,
                     .generation = generation,
                     .curve_words = curve_words,
                     .band_words = band_words,
@@ -520,8 +520,8 @@ pub const DeviceAtlas = struct {
 
         for (plan.regions) |region| switch (region.target) {
             .curve, .band => {
-                if (region.layer >= pending_by_layer.len) return error.PageNotInPool;
-                const pending_index = pending_by_layer[region.layer];
+                if (region.page >= pending_by_layer.len) return error.PageNotInPool;
+                const pending_index = pending_by_layer[region.page];
                 if (pending_index == std.math.maxInt(usize)) return error.InvalidUploadRegion;
                 const pending = &pending_pages.items[pending_index];
                 switch (region.target) {
@@ -724,7 +724,7 @@ const testing = std.testing;
 
 test "cache init allocates fixed-capacity buffers" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 2,
         .band_words_per_page = BAND_WORDS_PER_ROW * 2,
     });
@@ -757,7 +757,7 @@ test "release returns range to free list and allows reuse" {
     defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -846,13 +846,13 @@ test "uploadDelta errors for unknown pool" {
     defer curves2.deinit();
 
     var pool_a = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
     defer pool_a.deinit();
     var pool_b = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -883,7 +883,7 @@ test "uploadDelta errors for released binding" {
     defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -931,7 +931,7 @@ test "uploadDelta accepts a different atlas on the same pool" {
     defer curves_b.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -964,7 +964,7 @@ test "sibling snapshots prepare every self-described block on their shared page"
     defer curves.deinit();
 
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -1035,7 +1035,7 @@ test "upload rejects malformed layer-info transactionally" {
     var curves = try font.extractCurves(testing.allocator, testing.allocator, gid);
     defer curves.deinit();
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });

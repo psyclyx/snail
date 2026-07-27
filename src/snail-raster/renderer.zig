@@ -1073,7 +1073,7 @@ pub const Renderer = struct {
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         layer: PreparedPathLayer,
-        layer_index: usize,
+        page_index: usize,
         programs: PathCompositePrograms,
         local: Vec2,
         tint: [4]f32,
@@ -1101,8 +1101,8 @@ pub const Renderer = struct {
                 layer.fill_rule,
             ));
 
-        if (programs.outline and layer_index < 2) {
-            if (layer_index == 0) {
+        if (programs.outline and page_index < 2) {
+            if (page_index == 0) {
                 accum.fill_cov = cov;
                 if (max3(cov.rgb) > 0.0 or cov.alpha > 0.0) {
                     const paint = programs.fill.sample(local);
@@ -1160,7 +1160,7 @@ pub const Renderer = struct {
         page: *const PreparedAtlasPage,
         raster: PathRasterState,
         layer: PreparedPathLayer,
-        layer_index: usize,
+        page_index: usize,
         programs: PathCompositePrograms,
         local: Vec2,
         tint: [4]f32,
@@ -1199,9 +1199,9 @@ pub const Renderer = struct {
             ));
         } else self.scalarPathLayerCoverage(page, raster, layer, local);
 
-        if (programs.outline and layer_index < 2) {
+        if (programs.outline and page_index < 2) {
             const subpixel_cov: SubpixelCoverage = .{ .rgb = .{ cov, cov, cov }, .alpha = cov };
-            if (layer_index == 0) {
+            if (page_index == 0) {
                 accum.fill_cov = subpixel_cov;
                 if (cov > 0.0) {
                     const paint = programs.fill.sample(local);
@@ -1274,13 +1274,13 @@ pub const Renderer = struct {
         sat_states: ?[]const SaturatedRowState,
     ) PathCompositePixel {
         var accum: PathCompositeAccum = .{};
-        for (layers, 0..) |layer, layer_index| {
-            const rs: ?*const RowHorizState = if (row_states) |states| &states[layer_index] else null;
-            const ss: ?*const SaturatedRowState = if (sat_states) |states| &states[layer_index] else null;
+        for (layers, 0..) |layer, page_index| {
+            const rs: ?*const RowHorizState = if (row_states) |states| &states[page_index] else null;
+            const ss: ?*const SaturatedRowState = if (sat_states) |states| &states[page_index] else null;
             if (raster.use_subpixel) {
-                self.recordCompositeSubpixelLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs);
+                self.recordCompositeSubpixelLayer(&accum, page, raster, layer, page_index, programs, local, tint, rs);
             } else {
-                self.recordCompositeScalarLayer(&accum, page, raster, layer, layer_index, programs, local, tint, rs, ss);
+                self.recordCompositeScalarLayer(&accum, page, raster, layer, page_index, programs, local, tint, rs, ss);
             }
         }
         if (programs.outline) finishOutlineComposite(&accum, raster.use_subpixel);

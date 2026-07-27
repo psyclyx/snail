@@ -18,6 +18,7 @@ const band_curve_loc_y_mask: u32 = (1 << band_curve_loc_y_bits) - 1;
 pub const BandCurveRef = struct {
     base: usize,
     first_member_band: u32,
+    kind: bezier.CurveKind,
 };
 
 // ---------------------------------------------------------------------------
@@ -50,6 +51,29 @@ pub fn readBandCurveRef(page: anytype, texel_idx: usize) ?BandCurveRef {
     return .{
         .base = @as(usize, (curve_y * page.curve_width + curve_x) * 4),
         .first_member_band = raw[0] >> band_curve_loc_x_bits,
+        .kind = switch (raw[1] >> band_curve_loc_y_bits) {
+            0 => .quadratic,
+            1 => .conic,
+            2 => .cubic,
+            3 => .line,
+            else => unreachable,
+        },
+    };
+}
+
+pub fn decodeDenseQuadraticSegment(
+    tex0: [4]f32,
+    tex1: [4]f32,
+    kind: bezier.CurveKind,
+) ?CurveSegment {
+    if (kind != .line and kind != .quadratic) return null;
+    return .{
+        .kind = kind,
+        .p0 = .{ .x = tex0[0], .y = tex0[1] },
+        .p1 = .{ .x = tex0[2], .y = tex0[3] },
+        .p2 = .{ .x = tex1[0], .y = tex1[1] },
+        .p3 = .zero,
+        .weights = .{ 1, 1, 1 },
     };
 }
 

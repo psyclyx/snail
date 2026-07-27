@@ -14,6 +14,7 @@
 
 const std = @import("std");
 const bezier = @import("../math/bezier.zig");
+const curve_texture = @import("../format/curve_texture.zig");
 
 pub const BBox = bezier.BBox;
 
@@ -38,8 +39,9 @@ pub const AtlasRecord = struct {
     page_generation: u64,
     /// Starting texel within the page's curve texture.
     curve_texel: u32,
-    /// Number of curve segments (each occupies `SEGMENT_TEXELS` texels).
+    /// Number of curve segments.
     curve_count: u16,
+    encoding: curve_texture.Encoding = .general,
     /// Band-lookup metadata for the page's band texture.
     bands: GlyphBandEntry,
     /// Local-space bounding box.

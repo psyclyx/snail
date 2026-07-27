@@ -24,17 +24,37 @@ const max_band_count = 12;
 pub const block_prefix_texels: u32 = 2;
 pub const block_magic = [2]u16{ 0x534e, 0x4149 }; // "SNAI"
 
-pub const BlockPrefix = struct { h_band_count: u16, v_band_count: u16 };
+const dense_quadratic_flag: u16 = 1 << 15;
+
+pub const BlockPrefix = struct {
+    h_band_count: u16,
+    v_band_count: u16,
+    dense_quadratic: bool = false,
+};
 
 pub fn packBlockPrefix(h_band_count: u16, v_band_count: u16) [4]u16 {
-    return .{ block_magic[0], block_magic[1], h_band_count, v_band_count };
+    return packBlockPrefixFormat(h_band_count, v_band_count, false);
+}
+
+pub fn packBlockPrefixFormat(
+    h_band_count: u16,
+    v_band_count: u16,
+    dense_quadratic: bool,
+) [4]u16 {
+    return .{
+        block_magic[0],
+        block_magic[1],
+        h_band_count | (if (dense_quadratic) dense_quadratic_flag else 0),
+        v_band_count,
+    };
 }
 
 pub fn unpackBlockPrefix(words: [4]u16) ?BlockPrefix {
     if (words[0] != block_magic[0] or words[1] != block_magic[1]) return null;
     return .{
-        .h_band_count = words[2],
+        .h_band_count = words[2] & ~dense_quadratic_flag,
         .v_band_count = words[3],
+        .dense_quadratic = words[2] & dense_quadratic_flag != 0,
     };
 }
 
@@ -305,10 +325,10 @@ comptime {
     }
 }
 
-fn curveRefTexel(offset: u32, curve_idx: u16) error{ShapeTooComplex}!u32 {
-    const span = std.math.mul(u32, @as(u32, curve_idx), curve_tex.SEGMENT_TEXELS) catch
+fn curveRefTexel(entry: curve_tex.GlyphCurveEntry, curve_idx: u16) error{ShapeTooComplex}!u32 {
+    const span = std.math.mul(u32, @as(u32, curve_idx), entry.encoding.texelsPerSegment()) catch
         return error.ShapeTooComplex;
-    return std.math.add(u32, offset, span) catch return error.ShapeTooComplex;
+    return std.math.add(u32, entry.offset, span) catch return error.ShapeTooComplex;
 }
 
 fn packBandCurveRef(curve_texel: u32, first_member_band: u16, kind: bezier_mod.CurveKind) error{ShapeTooComplex}![2]u16 {
@@ -437,7 +457,11 @@ fn packBandLists(
     errdefer allocator.free(data);
     // No @memset: prefix, header, and ref-list writes cover every word.
 
-    const prefix = packBlockPrefix(lists.h_band_count, lists.v_band_count);
+    const prefix = packBlockPrefixFormat(
+        lists.h_band_count,
+        lists.v_band_count,
+        curve_entry.encoding.isDenseQuadratic(),
+    );
     @memcpy(data[0..prefix.len], &prefix);
 
     // Header offsets stay relative to the public glyph location, which points
@@ -464,7 +488,7 @@ fn packBandLists(
     var write_pos: u32 = block_prefix_texels + header_count;
     for (0..h_bands) |bi| {
         for (lists.hBand(bi)) |curve_idx| {
-            const curve_texel = try curveRefTexel(curve_entry.offset, curve_idx);
+            const curve_texel = try curveRefTexel(curve_entry, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
             const encoded = try packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
@@ -475,7 +499,7 @@ fn packBandLists(
 
     for (0..v_bands) |bi| {
         for (lists.vBand(bi)) |curve_idx| {
-            const curve_texel = try curveRefTexel(curve_entry.offset, curve_idx);
+            const curve_texel = try curveRefTexel(curve_entry, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
             const encoded = try packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];

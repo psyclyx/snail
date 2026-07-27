@@ -7,7 +7,7 @@
 //!
 //! ## Capacity model
 //!
-//! The `PagePool` is the caller's residency budget: `max_layers` pages of
+//! The `PagePool` is the caller's residency budget: `max_pages` pages of
 //! fixed curve/band capacity, sized once at init. Recording is incremental
 //! and idempotent — an app can add glyphs for its whole lifetime and each
 //! `record*Run` costs only the genuinely new records — but nothing is ever
@@ -114,7 +114,7 @@ pub const AutohintAnalysis = struct {
 };
 
 const CURVE_TEX_WIDTH = curve_tex_format.TEX_WIDTH;
-const CURVE_SEGMENT_TEXELS = curve_tex_format.SEGMENT_TEXELS;
+const CURVE_SEGMENT_TEXELS = curve_tex_format.GENERAL_SEGMENT_TEXELS;
 const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * 4;
 const BAND_TEX_WIDTH = band_tex_format.TEX_WIDTH;
 const BAND_TEX_WIDTH_USIZE: usize = BAND_TEX_WIDTH;
@@ -178,9 +178,23 @@ pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || Page
     LayerInfoTooLarge,
     CorruptPaintRecord,
     InvalidEntry,
+    InvalidPacking,
 };
 
 pub const Atlas = struct {
+    pub const Packing = struct {
+        /// Maximum recent pages considered by the bounded best-fit packer.
+        /// One selects tail-only placement. The hard cap keeps insertion
+        /// independent of the total atlas size.
+        recent_page_limit: u8 = 12,
+
+        fn validate(self: Packing) error{InvalidPacking}!void {
+            if (self.recent_page_limit == 0 or self.recent_page_limit > 64) {
+                return error.InvalidPacking;
+            }
+        }
+    };
+
     allocator: std.mem.Allocator,
     /// The pool from which `pages` were allocated. `null` only on the
     /// identity atlas (`empty(allocator)`); operations that allocate pages
@@ -197,6 +211,9 @@ pub const Atlas = struct {
     snapshot_id: u64 = 0,
     /// Exact source snapshot for an extension, or zero for a fresh root.
     parent_snapshot_id: u64 = 0,
+    /// Placement policy belongs to this atlas lineage, not its shared page
+    /// residency pool. Extensions and compaction preserve it.
+    packing: Packing = .{},
     /// Refcounted opaque page handles. Index into this slice is what
     /// `AtlasRecord.page_index` refers to; callers cannot inspect or mutate
     /// the underlying storage.
@@ -241,6 +258,7 @@ pub const Atlas = struct {
             .revision = 0,
             .snapshot_id = 0,
             .parent_snapshot_id = 0,
+            .packing = .{},
             .pages = &.{},
             .lookup = RecordLookup.init(allocator, .{}),
             .paint_lookup = PaintLookup.init(allocator, .{}),
@@ -254,8 +272,21 @@ pub const Atlas = struct {
     /// populated with `extend` / `extendInPlace`; it is useful for callers
     /// whose atlas starts empty and grows on demand.
     pub fn init(allocator: std.mem.Allocator, pool: *PagePool) PagePool.IdentityError!Atlas {
+        return initWithPacking(allocator, pool, .{}) catch |err| switch (err) {
+            error.InvalidPacking => unreachable,
+            error.IdentityExhausted => error.IdentityExhausted,
+        };
+    }
+
+    pub fn initWithPacking(
+        allocator: std.mem.Allocator,
+        pool: *PagePool,
+        packing: Packing,
+    ) (PagePool.IdentityError || error{InvalidPacking})!Atlas {
+        try packing.validate();
         var atlas = empty(allocator);
         atlas.pool = pool;
+        atlas.packing = packing;
         atlas.snapshot_id = try page_pool_mod.nextAtlasSnapshotId(pool);
         atlas.lineage = atlas.snapshot_id;
         return atlas;
@@ -371,7 +402,17 @@ pub const Atlas = struct {
         pool: *PagePool,
         entries: []const Entry,
     ) InsertError!Atlas {
-        var builder = try Builder.init(allocator, pool);
+        return fromWithPacking(allocator, pool, entries, .{});
+    }
+
+    pub fn fromWithPacking(
+        allocator: std.mem.Allocator,
+        pool: *PagePool,
+        entries: []const Entry,
+        packing: Packing,
+    ) InsertError!Atlas {
+        try packing.validate();
+        var builder = try Builder.init(allocator, pool, packing);
         errdefer builder.abort();
 
         for (entries) |entry| {
@@ -498,7 +539,7 @@ pub const Atlas = struct {
         filter: ?RecordFilter,
     ) InsertError!Atlas {
         const pool = self.pool orelse return Atlas.empty(allocator);
-        var builder = try Builder.init(allocator, pool);
+        var builder = try Builder.init(allocator, pool, self.packing);
         errdefer builder.abort();
 
         // Two passes: autohint records re-alias their base glyphs, so the
@@ -591,6 +632,100 @@ fn makeTestCurves(allocator: std.mem.Allocator) !GlyphCurves {
     };
 }
 
+fn makeSizedTestCurves(
+    allocator: std.mem.Allocator,
+    segment_count: u16,
+    reference_count: u16,
+) !GlyphCurves {
+    std.debug.assert(segment_count > 0 and reference_count >= 2);
+    const curve_bytes = try allocator.alloc(u16, @as(usize, segment_count) * CURVE_SEGMENT_WORDS);
+    errdefer allocator.free(curve_bytes);
+    for (0..segment_count) |curve_index| {
+        const base = curve_index * CURVE_SEGMENT_WORDS;
+        @memset(curve_bytes[base..][0..CURVE_SEGMENT_WORDS], 0);
+        curve_bytes[base + 10] = 0; // packed quadratic
+    }
+
+    const band_bytes = try allocator.alloc(u16, 8 + @as(usize, reference_count) * 2);
+    errdefer allocator.free(band_bytes);
+    const prefix = band_tex_format.packBlockPrefix(1, 1);
+    @memcpy(band_bytes[0..prefix.len], &prefix);
+    const h_refs = reference_count / 2;
+    const v_refs = reference_count - h_refs;
+    band_bytes[4] = h_refs;
+    band_bytes[5] = 2;
+    band_bytes[6] = v_refs;
+    band_bytes[7] = 2 + h_refs;
+    for (0..reference_count) |ref_index| {
+        const curve_index = ref_index % segment_count;
+        band_bytes[8 + ref_index * 2] = @intCast(curve_index * CURVE_SEGMENT_TEXELS);
+        band_bytes[8 + ref_index * 2 + 1] = 0;
+    }
+
+    return .{
+        .allocator = allocator,
+        .curve_bytes = curve_bytes,
+        .band_bytes = band_bytes,
+        .curve_count = segment_count,
+        .h_band_count = 1,
+        .v_band_count = 1,
+        .band_scale_x = 1,
+        .band_scale_y = 1,
+        .band_offset_x = 0,
+        .band_offset_y = 0,
+        .bbox = .{ .min = .zero, .max = .{ .x = 1, .y = 1 } },
+    };
+}
+
+test "bounded best-fit recovers complementary high-variance page holes" {
+    const entries_keys = [_]RecordKey{
+        record_key_mod.unhintedGlyph(0, 1),
+        record_key_mod.unhintedGlyph(0, 2),
+        record_key_mod.unhintedGlyph(0, 3),
+    };
+    var a = try makeSizedTestCurves(testing.allocator, 6, 6); // 96 curve, 20 band
+    defer a.deinit();
+    var b = try makeSizedTestCurves(testing.allocator, 5, 12); // 80 curve, 32 band
+    defer b.deinit();
+    var c = try makeSizedTestCurves(testing.allocator, 2, 6); // 32 curve, 20 band
+    defer c.deinit();
+    const entries = [_]Entry{
+        .{ .key = entries_keys[0], .curves = a },
+        .{ .key = entries_keys[1], .curves = b },
+        .{ .key = entries_keys[2], .curves = c },
+    };
+
+    var best_fit_pool = try PagePool.init(testing.allocator, .{
+        .max_pages = 3,
+        .curve_words_per_page = 160,
+        .band_words_per_page = 40,
+    });
+    defer best_fit_pool.deinit();
+    var best_fit = try Atlas.fromWithPacking(
+        testing.allocator,
+        best_fit_pool,
+        &entries,
+        .{ .recent_page_limit = 12 },
+    );
+    defer best_fit.deinit();
+    try testing.expectEqual(@as(u32, 2), best_fit_pool.stats().pages_in_use);
+
+    var tail_pool = try PagePool.init(testing.allocator, .{
+        .max_pages = 3,
+        .curve_words_per_page = 160,
+        .band_words_per_page = 40,
+    });
+    defer tail_pool.deinit();
+    var tail = try Atlas.fromWithPacking(
+        testing.allocator,
+        tail_pool,
+        &entries,
+        .{ .recent_page_limit = 1 },
+    );
+    defer tail.deinit();
+    try testing.expectEqual(@as(u32, 3), tail_pool.stats().pages_in_use);
+}
+
 fn exerciseAtlasBuildAllocationFailures(
     allocator: std.mem.Allocator,
     pool: *PagePool,
@@ -610,7 +745,7 @@ fn exerciseAtlasBuildAllocationFailures(
 
 test "Atlas.from cleans up every allocation failure without leaking pages" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -628,7 +763,7 @@ test "Atlas.from cleans up every allocation failure without leaking pages" {
 
 test "Atlas extension reports page reference exhaustion atomically" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -651,7 +786,7 @@ test "Atlas extension reports page reference exhaustion atomically" {
 
 test "from packs entries into pages and records lookup" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -689,7 +824,7 @@ test "from packs entries into pages and records lookup" {
 
 test "from rejects malformed caller-provided curves before reserving a page" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -711,7 +846,7 @@ test "from rejects malformed caller-provided curves before reserving a page" {
 
 test "image paint records carry stable preassigned unique layers" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 3,
+        .max_pages = 3,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -751,7 +886,7 @@ test "image paint records carry stable preassigned unique layers" {
 
 test "from rewrites band refs to page-absolute texels" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -787,7 +922,7 @@ test "from rewrites band refs to page-absolute texels" {
 
 test "atlas placement and compaction preserve band-reference curve kinds" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 3,
+        .max_pages = 3,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -819,7 +954,7 @@ test "atlas placement and compaction preserve band-reference curve kinds" {
 
 test "extend keeps original atlas valid" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -852,7 +987,7 @@ test "extend keeps original atlas valid" {
 
 test "extendBatchesInPlace commits many slices as one snapshot" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -890,7 +1025,7 @@ test "extendBatchesInPlace commits many slices as one snapshot" {
 
 test "snapshot identities distinguish roots, extensions, and branches" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -932,7 +1067,7 @@ test "snapshot identities distinguish roots, extensions, and branches" {
 
 test "aborted extension preserves its parent while keeping page publication monotonic" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -970,7 +1105,7 @@ test "aborted extension preserves its parent while keeping page publication mono
 test "related atlas snapshots extend and release concurrently" {
     const allocator = std.heap.page_allocator;
     var pool = try PagePool.init(allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 16384,
         .band_words_per_page = 8192,
     });
@@ -1019,7 +1154,7 @@ test "related atlas snapshots extend and release concurrently" {
 
 test "an empty composite base promotes its first visible extra layer" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1056,7 +1191,7 @@ test "TT advance batches are allocation-failure atomic" {
 
 test "extend dedups keys against existing atlas" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1083,7 +1218,7 @@ test "extend dedups keys against existing atlas" {
 
 test "one immutable autohint record serves multiple sizes and policies" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1130,7 +1265,7 @@ test "one immutable autohint record serves multiple sizes and policies" {
 
 test "autohint entry with a missing base key errors" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1148,7 +1283,7 @@ test "autohint entry with a missing base key errors" {
 
 test "autohint entry rejects oversized immutable analysis" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1176,7 +1311,7 @@ test "autohint entry rejects oversized immutable analysis" {
 
 test "deinit releases pages back to the pool" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1202,7 +1337,7 @@ test "atlas + font extract: end-to-end smoke test" {
     var font = try font_mod.Font.init(font_data);
 
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });
@@ -1242,7 +1377,7 @@ test "atlas + font extract: end-to-end smoke test" {
 
 test "compact preserves keys" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1279,7 +1414,7 @@ test "compact preserves keys" {
 
 test "compact carries paint layers, autohint analyses, and advances byte-for-byte" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });
@@ -1370,7 +1505,7 @@ test "compact carries paint layers, autohint analyses, and advances byte-for-byt
 
 test "filtered compact evicts records and closes dependencies" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 1024,
         .band_words_per_page = 256,
     });

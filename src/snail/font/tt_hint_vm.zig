@@ -234,7 +234,7 @@ pub const TtHintVm = struct {
         // `buildCurveTexture` TEX_WIDTH padding.
         const curve_count = std.math.cast(u16, hint_value.prepared_curves.len) orelse
             return error.ShapeTooComplex;
-        const curve_bytes = try curve_tex.encodeDirectSingleGlyphCurves(allocator, hint_value.prepared_curves);
+        const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, hint_value.prepared_curves);
         errdefer allocator.free(curve_bytes);
 
         const entry = curve_tex.GlyphCurveEntry{
@@ -242,6 +242,7 @@ pub const TtHintVm = struct {
             .start_y = 0,
             .count = curve_count,
             .offset = 0,
+            .encoding = .dense_quadratic,
         };
         // Band data goes straight to the output allocator. The
         // BandLists / sort-array intermediates stay on scratch.
@@ -264,6 +265,7 @@ pub const TtHintVm = struct {
             .curve_bytes = curve_bytes,
             .band_bytes = bd.data,
             .curve_count = curve_count,
+            .encoding = .dense_quadratic,
             .path_curve_class = curves_mod.classifyPathCurves(hint_value.curves),
             .h_band_count = bd.h_band_count,
             .v_band_count = bd.v_band_count,
@@ -412,7 +414,7 @@ test "TtHintVm hint output round-trips through an atlas" {
     defer hinter.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_layers = 2,
+        .max_pages = 2,
         .curve_words_per_page = 1 << 16,
         .band_words_per_page = 1 << 14,
     });

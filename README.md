@@ -100,12 +100,14 @@ defer shaped.deinit();
 
 // Record: prepare missing glyphs and commit them to the persistent store.
 var pool = try snail.PagePool.init(alloc, .{
-    .max_layers = 8,
+    .max_pages = 8, // may exceed 256 with a banked/flat backend
     .curve_words_per_page = 1 << 17,
     .band_words_per_page = 1 << 14,
 });
 defer pool.deinit();
-var atlas = try snail.Atlas.init(alloc, pool);
+var atlas = try snail.Atlas.initWithPacking(
+    alloc, pool, .{ .recent_page_limit = 12 },
+);
 defer atlas.deinit();
 try snail.recordUnhintedRun(&atlas, alloc, &faces, &shaped, .{});
 
@@ -156,6 +158,17 @@ are in [Embedding snail](INTEGRATION.md).
 what to evict; `Atlas.compact(..., filter)` rebuilds a retained working set.
 Compaction needs free-page headroom because it acquires replacement pages
 before the old snapshot releases its pages.
+
+Font outlines containing only lines and quadratics use a two-texel dense
+segment format; general paths retain the four-texel format. Page height is a
+host budget (`curve_words_per_page` / `band_words_per_page`), not a fixed
+shader dimension. Logical pages are allocated lazily. Array backends bank
+them in groups of 256; flat typed-buffer backends address them with fixed
+page strides. Either path avoids eviction solely because one texture array
+is full. The default packer considers only the 12 most recent pages and
+chooses the tightest fit across both curve and band capacity; set
+`Atlas.Packing{ .recent_page_limit = 1 }` selects tail-only placement. The bounded window makes
+insertion cost independent of total atlas size.
 
 On a direct append-only atlas child, `planDelta` emits only changed page
 regions and appended side data. Layer-info and image storage are fixed
@@ -292,7 +305,7 @@ data, and dynamic dilation follow the current public reference.
 |---|---|
 | Selects one horizontal and one vertical band list at the sample center | Visits every band touched by the local pixel footprint and deduplicates shared curves |
 | Evaluates quadratic Béziers | Evaluates lines, quadratics, and rational conics; cubics are lowered on the CPU |
-| Stores a quadratic in two curve texels, often sharing endpoints | Reserves four texels per segment for packed anchors/deltas, kind, and conic weights |
+| Stores a quadratic in two curve texels, often sharing endpoints | Uses two direct texels for font lines/quadratics; general paths use four for kind and conic metadata |
 | Uses raw floating-point sign bits for root eligibility | Snaps values within `1/65536` of the ray to positive zero before using the same table |
 | Uses the direct quadratic formula | Uses a cancellation-resistant, order-preserving Vieta form |
 | Accepts a caller-built bounding polygon | `emit` always produces a simple quad and the vertex shader dilates its four corners |
@@ -396,8 +409,9 @@ most likely to affect a first integration are:
 Generated complete shaders cover Vulkan SPIR-V, WGSL, GLSL 330, GLES 300,
 D3D11 HLSL, and Metal MSL. The authored source of truth is
 [`src/snail/shader/slang`](src/snail/shader/slang). The render ABI is
-versioned; each packed instance is 72 bytes (18 words), and all 256 atlas
-layers are representable.
+versioned; each packed instance is 72 bytes (18 words). Instances carry an
+8-bit bank-local layer while draw batches carry the aligned logical-page
+base, so one pool can address up to 65,536 pages.
 
 ## Modules
 
