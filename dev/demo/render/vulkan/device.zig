@@ -10,18 +10,25 @@ pub fn createBuffer(self: anytype, size: vk.VkDeviceSize, usage: vk.VkBufferUsag
         .usage = usage,
         .sharingMode = vk.VK_SHARING_MODE_EXCLUSIVE,
     });
-    try check(vk.vkCreateBuffer(self.ctx.device, &ci, null, buffer));
+    var new_buffer: vk.VkBuffer = null;
+    try check(vk.vkCreateBuffer(self.ctx.device, &ci, null, &new_buffer));
+    errdefer vk.vkDestroyBuffer(self.ctx.device, new_buffer, null);
 
     var req: vk.VkMemoryRequirements = undefined;
-    vk.vkGetBufferMemoryRequirements(self.ctx.device, buffer.*, &req);
+    vk.vkGetBufferMemoryRequirements(self.ctx.device, new_buffer, &req);
 
     const ai = std.mem.zeroInit(vk.VkMemoryAllocateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
         .allocationSize = req.size,
         .memoryTypeIndex = findMemoryType(self, req.memoryTypeBits, properties) orelse return error.NoSuitableMemory,
     });
-    try check(vk.vkAllocateMemory(self.ctx.device, &ai, null, memory));
-    try check(vk.vkBindBufferMemory(self.ctx.device, buffer.*, memory.*, 0));
+    var new_memory: vk.VkDeviceMemory = null;
+    try check(vk.vkAllocateMemory(self.ctx.device, &ai, null, &new_memory));
+    errdefer vk.vkFreeMemory(self.ctx.device, new_memory, null);
+    try check(vk.vkBindBufferMemory(self.ctx.device, new_buffer, new_memory, 0));
+
+    buffer.* = new_buffer;
+    memory.* = new_memory;
 }
 
 fn findMemoryType(self: anytype, type_filter: u32, properties: vk.VkMemoryPropertyFlags) ?u32 {
@@ -161,6 +168,8 @@ pub fn transitionImageLayout(
         dst_access = vk.VK_ACCESS_SHADER_READ_BIT;
         src_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
         dst_stage = shader_stages;
+    } else {
+        unreachable;
     }
 
     const barrier = std.mem.zeroInit(vk.VkImageMemoryBarrier, .{
