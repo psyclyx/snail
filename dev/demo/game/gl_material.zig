@@ -188,8 +188,8 @@ pub fn GlMaterial(comptime variant: Variant) type {
 
         fn uploadRecords(self: *Self, allocator: std.mem.Allocator, cache: *Cache, material_pass: anytype) !void {
             // Upload the material text atlas into the shared cache, emit its
-            // words (encoding the absolute atlas layer), then mirror the words
-            // into the records storage the shader samples.
+            // packed instance words, then mirror them and their batch page
+            // bases into the records storage the shader samples.
             var binding: [1]snail.render.records.Binding = undefined;
             try cache.upload(allocator, &.{&material_pass.text_atlas}, &binding);
 
@@ -294,9 +294,9 @@ pub fn GlMaterial(comptime variant: Variant) type {
             }
             gl.glUniform1i(self.u_records, RECORD_UNIT);
 
-            // Atlas plane, bound off the shared cache via snail's contract
-            // (page_base/fill_rule live in the shader now: the emit path
-            // bakes the absolute atlas layer into each glyph word).
+            // Atlas plane, bound off the shared cache via snail's contract.
+            // The caller-owned record tail carries one batch page base per
+            // glyph plus both flat-buffer page strides.
             const program = Program{
                 .curve_tex_loc = self.u_curve_tex,
                 .band_tex_loc = self.u_band_tex,

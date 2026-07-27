@@ -76,6 +76,21 @@ renderer integrations receive immutable `atlas_upload.Region` copies.
 [`dev/support/working_set.zig`](dev/support/working_set.zig) is a demo-only
 working-set example.
 
+`max_pages` is the logical page count (up to 65,536), and page CPU storage
+is allocated lazily. `pages_total` and `*_bytes_total` report logical
+capacity; `pages_allocated` and `*_bytes_allocated` report actual retained
+CPU storage. Font line/quadratic segments take two `RGBA16F` texels instead
+of the general path format's four. Raising `curve_words_per_page` is
+therefore an independent, shader-compatible way to make pages taller.
+
+Placement uses a bounded two-dimensional best-fit scan over the most recent
+`Atlas.Packing.recent_page_limit` pages (12 by default), balancing curve and
+band leftovers. The work is capped at 64 candidates regardless of atlas
+size; set the limit to one for tail-only behavior. Use
+`Atlas.fromWithPacking` or its extension counterparts to override it. This
+is deliberately not a size-class allocator: insertion cost stays bounded
+when glyph sizes vary heavily.
+
 Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
 copies the atlas's flat page-pointer and paint-side-data arrays once. Bulk
 callers should pass one entry slice or use `extendBatchesInPlace`; do not put
@@ -162,7 +177,7 @@ texels and decodes RGB to linear for each sample.
 
 ## GPU resources and shaders
 
-The atlas uses:
+The classic atlas resource layout uses:
 
 - an `RGBA16F` curve texture array;
 - an `RG16UI` band texture array;
@@ -172,6 +187,68 @@ The atlas uses:
 These are the atlas resources, not the complete GPU footprint. A host also
 provides the 72-byte-per-instance stream, the shared parameter block,
 pipelines, samplers where required, and ordinary command-buffer state.
+
+Curve/band pages are logical, not limited to one texture array. Each
+`DrawBatch` contains an aligned `page_base`; its `atlasBank()` selects a
+256-layer resource bank, while the packed instance retains the bank-local
+layer. Curve/band upload `Region`s expose the matching `atlasBank()` and
+`bankLayer()`. A banked-array backend selects the bank and sends zero as the
+shader `page_base`; a backend with one sufficiently deep resource binds it
+directly and sends `DrawBatch.page_base`.
+
+Backends may instead use `snail.atlas_upload.FlatLayout`. It maps every
+logical page into two flat typed buffers while retaining `RGBA16F` curve and
+`RG16UI` band texels. Allocate `curveByteSize()` and `bandByteSize()`, apply
+each curve/band upload using the byte offset returned by
+`FlatLayout.translate`, and pass
+`.{ flat.curve_page_texels, flat.band_page_texels }` in
+`atlas_page_texels`. Pages use fixed strides, so the shader computes the
+address directly; there is no page-table fetch. Use the `flatFrag*` accessor
+for the batch's `FlatFamily` and pass `DrawBatch.page_base` unchanged.
+
+On desktop OpenGL 3.3 the flat variants are ordinary `samplerBuffer` and
+`usamplerBuffer` shaders: create texture-buffer objects with `GL_RGBA16F`
+and `GL_RG16UI`, respectively. No SSBO or newer GL extension is required.
+Validate both total texel counts against `GL_MAX_TEXTURE_BUFFER_SIZE`.
+The desktop reference cache uses this path and binds each backing buffer once
+per upload while coalescing adjacent dirty regions. GLES 3.0 has no core
+texture buffers and therefore retains 256-layer array storage.
+
+For Vulkan, the compact path is two buffers with
+`VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT`, viewed as
+`VK_FORMAT_R16G16B16A16_SFLOAT` and `VK_FORMAT_R16G16_UINT`, and exposed at
+bindings 0 and 1 as `VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER`. Check
+`maxTexelBufferElements`, image dimension/layer limits, and the required
+format features. Vulkan SSBOs are also available, but formatted uniform texel
+buffers are the natural fit here: they preserve compact half/u16 storage and
+perform typed conversion in the texture path without shader-side unpacking.
+
+There are two Vulkan integration levels:
+
+1. For complete engine control, consume `atlas_upload.Region` and
+   `FlatLayout` directly. The engine owns every buffer, allocation, mapping,
+   copy command, barrier, submission, and completion primitive.
+2. The code under
+   [`dev/demo/render/vulkan`](dev/demo/render/vulkan) is a caller-side
+   reference encoder. Create its resident `VulkanDeviceAtlas`, begin your own
+   graphics-capable command buffer, construct an `UploadRecorder` over that
+   command buffer, and call `upload` or `uploadDelta`. The call only records
+   work. End and submit the command buffer yourself; after your fence or
+   timeline value signals, call `UploadRecorder.releaseCompleted` to retire
+   staging. Do not abandon a successfully recorded upload while continuing
+   to use that cache, because its next transition assumes the recorded work
+   remains ordered.
+
+The reference encoder intentionally requires a graphics-capable queue: its
+release barriers target vertex and fragment shader reads. It does not claim
+dedicated-transfer-queue support. An engine using a transfer-only queue
+should take the first integration level and record the appropriate
+queue-family release/acquire pair in its own upload graph. The blocking
+`uploadAndWait` helpers are demo caller conveniences, not library behavior.
+
+WebGPU has no texel-buffer resource, so its flat WGSL variant uses compact
+32-bit storage words and decodes the same half/u16 records. D3D11 and Metal
+flat variants use their native typed-buffer representation.
 
 The native Slang modules under
 [`src/snail/shader/slang`](src/snail/shader/slang) are the authored source
@@ -194,14 +271,18 @@ the repository's additional `naga` validation step.
 For custom materials, caller-authored Slang can `import text_sample` and
 sample glyph coverage inside its own fragment shader. The worked example is
 [`dev/demo/game/slang/game_material.slang`](dev/demo/game/slang/game_material.slang).
+Its caller-owned record plane demonstrates the complete flat-addressing
+payload: `N × 18` packed instance words, then `N` per-glyph
+`DrawBatch.page_base` words, then the curve and band page strides. This keeps
+batch placement and atlas layout out of global shader state.
 
 ## Render ABI
 
 The render ABI is versioned. Each packed instance is 72 bytes (18 32-bit
 words): an outward-rounded f16 local bounding box, affine transform and
-origin, glyph words, four payload words, and linear-f16 color/tint. All 256
-atlas layers are representable. Backends validate packed records before
-consuming them.
+origin, glyph words, four payload words, and linear-f16 color/tint. Its layer
+byte is local to a 256-page bank; `DrawBatch.page_base` supplies the high
+logical-page bits. Backends validate packed records before consuming them.
 
 The public byte-layout and decoding contracts live in `snail.render`; shader
 binding contracts live in `snail-shaders`; the canonical shader-side layout
@@ -235,3 +316,10 @@ concurrently, and use distinct allocators or a thread-safe allocator.
 single-threaded unless their documentation says otherwise. Construct one
 `Faces` per shaping thread. `snail-raster` provides an optional,
 caller-driven `ThreadPool`.
+
+The same boundary applies to GPU work: `snail` never creates a Vulkan, GL,
+D3D, Metal, or WebGPU object; allocates device or staging memory; records a
+command; submits a queue; or owns synchronization. `atlas_upload` returns
+layouts and borrowed byte regions. Generated shaders define the other side
+of that data contract. Code under `dev/demo/render` is integration guidance,
+not library runtime or an ownership transfer.
