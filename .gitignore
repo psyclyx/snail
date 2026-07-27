@@ -6,7 +6,7 @@ zig-out/
 # Generated shader artifacts live in the zig cache (snail-shaders module);
 # builds must never recreate them in-tree.
 /src/snail/shader/generated/
-/src/demo/game/generated/
+/dev/demo/game/generated/
 result
 vgcore.*
 perf.data

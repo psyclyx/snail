@@ -170,7 +170,7 @@ jobs:
         run: |
           nix-shell --run "zig build run-screenshot -Dcpu=baseline"
           nix-shell --run "zig build run-banner-screenshot -Dcpu=baseline"
-          cmp zig-out/demo-screenshot.tga src/demo/tools/screenshots/demo_cpu_reference.tga
+          cmp zig-out/demo-screenshot.tga dev/demo/tools/screenshots/demo_cpu_reference.tga
 
       # Native Vulkan through the pinned mesa's lavapipe. VK_DRIVER_FILES
       # (not exported globally by shell.nix so local machines keep their real
@@ -265,7 +265,7 @@ jobs:
       # minimal-example gates.
       - name: Gate the WebGPU render
         run: |
-          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
           echo "pixels over 4% channel delta: $n (threshold 2000; llvmpipe-GL baseline: 0)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
@@ -285,7 +285,7 @@ jobs:
       # threshold rationale); llvmpipe-measured d3d11 baseline: 680.
       - name: Gate the D3D11 render
         run: |
-          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-d3d11.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/minimal-d3d11.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
           echo "pixels over 4% channel delta: $n (threshold 2000; wgpu/d3d11 baseline: ~680)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
@@ -312,7 +312,7 @@ jobs:
 
       - name: Gate the Wine WebGPU render
         run: |
-          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/windows-gates/zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/windows-gates/zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
           echo "pixels over 4% channel delta: $n (threshold 2000; Wine/vkd3d baseline: 683)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
@@ -328,7 +328,7 @@ jobs:
       - name: Write diff image on failure
         if: failure()
         run: |
-          nix-shell --run "magick compare src/demo/app/minimal_reference.png \
+          nix-shell --run "magick compare dev/demo/app/minimal_reference.png \
             zig-out/minimal-d3d11.tga zig-out/minimal-d3d11-diff.png" || true
 
       - name: Upload renders
@@ -458,7 +458,7 @@ jobs:
 
       - name: Gate the CPU render
         run: |
-          n=$(nix-shell --run 'magick src/demo/tools/screenshots/demo_cpu_reference.tga zig-out/demo-screenshot.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          n=$(nix-shell --run 'magick dev/demo/tools/screenshots/demo_cpu_reference.tga zig-out/demo-screenshot.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
           echo "pixels over 4% channel delta: $n (threshold 0; canonical CPU reference)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
@@ -480,7 +480,7 @@ jobs:
           nix-shell --keep SDKROOT --run "zig build run-minimal-metal -Dcpu=baseline"
 
       # Reference is the GL render of the identical scene
-      # (src/demo/app/minimal_reference.png, from zig-out/minimal-gl.tga).
+      # (dev/demo/app/minimal_reference.png, from zig-out/minimal-gl.tga).
       # Measured Apple-GPU class (M-series, 2026-07, fast-math disabled —
       # confirmed by the compile-options marker in the log): 2883 over 4%,
       # 1252 over 25%, 386 over 50%; artifact analysis showed interiors
@@ -497,7 +497,7 @@ jobs:
       - name: Gate the Metal render
         run: |
           diff_count() {
-            nix-shell --run "magick src/demo/app/minimal_reference.png zig-out/minimal-metal.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold $1% -format '%[fx:round(mean*w*h)]' info:"
+            nix-shell --run "magick dev/demo/app/minimal_reference.png zig-out/minimal-metal.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold $1% -format '%[fx:round(mean*w*h)]' info:"
           }
           n4=$(diff_count 4); n25=$(diff_count 25)
           echo "pixels over 4%: $n4 (limit 4000; measured Apple class 2883)"
@@ -515,7 +515,7 @@ jobs:
 
       - name: Gate the WebGPU render
         run: |
-          n=$(nix-shell --run 'magick src/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
+          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
           echo "pixels over 4% channel delta: $n (threshold 2000; wgpu baseline: 679)"
           case "$n" in
             ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
@@ -525,7 +525,7 @@ jobs:
       - name: Write diff image on failure
         if: failure()
         run: |
-          nix-shell --run "magick compare src/demo/app/minimal_reference.png \
+          nix-shell --run "magick compare dev/demo/app/minimal_reference.png \
             zig-out/minimal-metal.tga zig-out/minimal-metal-diff.png" || true
 
       - name: Upload macOS renders
