@@ -52,16 +52,42 @@ Recording is idempotent, so repeated characters add no atlas work. Stable
 new `Faces`, but existing atlas keys remain valid while those identities do
 not change.
 
+## Cell-filling symbols
+
+Do not fit an ordinary font glyph's ink bounds to a cell. Side bearings and
+overshoot are part of the design, and non-uniform fitting distorts strokes.
+It also cannot guarantee that adjacent box-drawing glyphs meet on the same
+device pixels.
+
+Filled Powerline separators are a different case: author them as unit
+`[0, 1] × [0, 1]` paths, prepare and record each path once, then place its
+`Shape` with a non-uniform transform whose x/y scales are the cell width and
+height. They contain no strokes, so this is exact, scalable, and uses only
+Snail's backend-neutral path/atlas API.
+
+Box Drawing and Block Elements that must tile seamlessly should be generated
+from the host's live device-pixel cell rectangle. Emit pixel-snapped solid
+rectangles (or paths for the curved/diagonal cases), with light/heavy stroke
+weights chosen by the terminal. This remains host policy: font-derived
+weights, fixed pixel weights, and user-configurable weights are all reasonable
+and Snail cannot select among them. The same geometry can feed a GPU host's
+solid-rectangle path and `snail-raster`; it does not justify a GPU renderer
+inside Snail.
+
+This split is intentional. A generic “make glyph cell-sized” API would make
+Powerline slightly shorter to express while giving the wrong semantics for
+font glyphs and box drawing.
+
 The current color-font path is COLRv0. Dynamic terminals can record
 `ColrHandling.layers` and place with `colr = true`; that expands solid
 palette layers into ordinary glyph shapes and avoids binding-relative paint
 side-data growth. Composite COLR records instead use layer-info side data and
 can require a new binding when its fixed reservation is exhausted.
 
-The full demo is [`src/demo/app/terminal.zig`](src/demo/app/terminal.zig),
-with an independent [cell model](src/demo/terminal/screen.zig),
-[simulation](src/demo/terminal/simulation.zig), and
-[snail-backed view](src/demo/terminal/view.zig). Run it with:
+The full demo is [`dev/demo/app/terminal.zig`](dev/demo/app/terminal.zig),
+with an independent [cell model](dev/demo/terminal/screen.zig),
+[simulation](dev/demo/terminal/simulation.zig), and
+[snail-backed view](dev/demo/terminal/view.zig). Run it with:
 
 ```sh
 zig build run-terminal

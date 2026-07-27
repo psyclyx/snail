@@ -1,11 +1,8 @@
-//! Shared state used by the optional software renderer and the reference GPU
-//! callers. This is deliberately not part of the `snail` compiler module:
-//! applications with their own renderer can define their own target policy.
+//! Backend-neutral target and per-draw state shared by the shader contract,
+//! caller-owned GPU renderers, and the optional software renderer.
 
 const std = @import("std");
-const snail = @import("snail");
-
-const Mat4 = snail.Mat4;
+const Mat4 = @import("math/vec.zig").Mat4;
 
 pub const SubpixelOrder = enum(i32) {
     none = 0,

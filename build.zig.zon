@@ -1,6 +1,6 @@
 .{
     .name = .snail,
-    .version = "0.13.2",
+    .version = "0.14.0",
     .fingerprint = 0x1a87b1b848f90ebf,
     // Publish only the consumable project. Repository administration, CI,
     // Nix pins, local plans, and generated outputs are not package inputs.
@@ -9,8 +9,12 @@
         "build.zig.zon",
         "build",
         "src",
+        "dev",
         "assets",
         "README.md",
+        "INTEGRATION.md",
+        "TERMINAL.md",
+        "FONT_SUPPORT.md",
         "LICENSE",
         "valgrind.supp",
     },

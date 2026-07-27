@@ -73,6 +73,10 @@ test "core and external renderers need only the intentional public api" {
         _ = snail.render.records.DrawBatch;
         _ = snail.render.records.ShapeKind;
         _ = snail.render.records.unpackBandCounts;
+        _ = snail.render.target.DrawState;
+        _ = snail.render.target.TargetSurface;
+        _ = snail.render.target.SubpixelOrder;
+        _ = snail.render.target.PixelFormat;
         _ = snail.render.geometry.autohint.DecodedRecord;
         _ = snail.render.geometry.autohint.DecodeError;
         _ = snail.render.geometry.autohint.decode;

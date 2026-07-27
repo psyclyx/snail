@@ -1,10 +1,10 @@
 //! The module-creation layer of the build: constructors for every
-//! `std.Build.Module` the project wires together (the public `snail` module and
-//! its raster/render-state companions, the reference caller renderers, demo
-//! platform glue), plus the small config/aggregate types that thread through
-//! the step functions in `build.zig`. These are leaves — the step functions
-//! call them, never the reverse — so they live here and `build.zig` stays the
-//! orchestrator.
+//! `std.Build.Module` the project wires together (the published `snail` and
+//! `snail-raster` modules, plus development-only reference renderers and
+//! platform glue), and the small config/aggregate types threaded through
+//! `build.zig`. This file is an implementation detail of Snail's own build.
+//! Dependents import modules by name from `b.dependency("snail", ...)`; the
+//! constructors here are deliberately not re-exported by `build.zig`.
 
 const std = @import("std");
 const slang_shaders = @import("slang_shaders.zig");
@@ -65,17 +65,15 @@ pub fn createDemoVulkanPlatformModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
-    render_state_mod: *std.Build.Module,
     vulkan_types_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/platform/vulkan.zig"),
+        .root_source_file = b.path("dev/demo/platform/vulkan.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
-            .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "vulkan_types", .module = vulkan_types_mod },
         },
     });
@@ -84,26 +82,24 @@ pub fn createDemoVulkanPlatformModule(
 }
 
 /// The reusable reference caller renderer for the Vulkan embeddable path
-/// (`src/demo/render/vulkan/root.zig`). Bound to a specific `snail` module so its vk
+/// (`dev/demo/render/vulkan/root.zig`). Bound to a specific `snail` module so its vk
 /// types match the consumer's; created per consumer group (demo tools).
 pub fn createEmbedVulkanModule(
     b: *std.Build,
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
-    render_state_mod: *std.Build.Module,
     vk_shaders: *std.Build.Module,
     vulkan_types_mod: *std.Build.Module,
     shaders_reflection_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
-        .root_source_file = b.path("src/demo/render/vulkan/root.zig"),
+        .root_source_file = b.path("dev/demo/render/vulkan/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
-            .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "vulkan_shaders", .module = vk_shaders },
             .{ .name = "vulkan_types", .module = vulkan_types_mod },
             .{ .name = "snail_shaders", .module = shaders_reflection_mod },
@@ -117,7 +113,7 @@ pub fn createDemoVulkanTypesModule(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/render/vulkan/types.zig"),
+        .root_source_file = b.path("dev/demo/render/vulkan/types.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -135,17 +131,15 @@ pub fn createEmbedGlModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
-    render_state_mod: *std.Build.Module,
     shaders_mod: *std.Build.Module,
 ) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/render/gl/root.zig"),
+        .root_source_file = b.path("dev/demo/render/gl/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
         .imports = &.{
             .{ .name = "snail", .module = snail_mod },
-            .{ .name = "render-state", .module = render_state_mod },
             .{ .name = "snail_shaders", .module = shaders_mod },
         },
     });
@@ -160,7 +154,7 @@ pub fn createSupportModule(
     assets_mod: *std.Build.Module,
 ) *std.Build.Module {
     return b.createModule(.{
-        .root_source_file = b.path("src/support/root.zig"),
+        .root_source_file = b.path("dev/support/root.zig"),
         .target = target,
         .optimize = optimize,
         .link_libc = true,
@@ -202,7 +196,6 @@ pub fn createRasterModule(
     target: std.Build.ResolvedTarget,
     optimize: std.builtin.OptimizeMode,
     snail_mod: *std.Build.Module,
-    render_state_mod: *std.Build.Module,
     assets_mod: ?*std.Build.Module,
     strip: ?bool,
     public_name: ?[]const u8,
@@ -216,29 +209,8 @@ pub fn createRasterModule(
     };
     const raster = if (public_name) |name| b.addModule(name, module_options) else b.createModule(module_options);
     raster.addImport("snail", snail_mod);
-    raster.addImport("render-state", render_state_mod);
-    raster.addImport("snail-raster-support", b.createModule(.{
-        .root_source_file = b.path("src/snail/raster_support.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "snail", .module = snail_mod }},
-    }));
     if (assets_mod) |assets| raster.addImport("assets", assets);
     return raster;
-}
-
-pub fn createRenderStateModule(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    snail_mod: *std.Build.Module,
-) *std.Build.Module {
-    return b.createModule(.{
-        .root_source_file = b.path("src/render_state.zig"),
-        .target = target,
-        .optimize = optimize,
-        .imports = &.{.{ .name = "snail", .module = snail_mod }},
-    });
 }
 
 pub fn createSnailModule(
@@ -247,32 +219,6 @@ pub fn createSnailModule(
     optimize: std.builtin.OptimizeMode,
 ) *std.Build.Module {
     return createSnailModuleFull(b, target, optimize, null, null, null);
-}
-
-/// For use as a dependency: returns the backend-neutral snail module plus its
-/// shader contracts. The software renderer is constructed separately with
-/// `rasterModule`.
-pub fn module(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    return createSnailModule(b, target, optimize);
-}
-
-pub fn rasterModule(
-    b: *std.Build,
-    target: std.Build.ResolvedTarget,
-    optimize: std.builtin.OptimizeMode,
-    snail_mod: *std.Build.Module,
-) *std.Build.Module {
-    const render_state_mod = createRenderStateModule(b, target, optimize, snail_mod);
-    return createRasterModule(
-        b,
-        target,
-        optimize,
-        snail_mod,
-        render_state_mod,
-        null,
-        null,
-        null,
-    );
 }
 
 pub const BuildConfig = struct {
@@ -300,7 +246,6 @@ pub const ProjectModules = struct {
     vk_shaders: *std.Build.Module,
     demo_vulkan_types: *std.Build.Module,
     snail: *std.Build.Module,
-    render_state: *std.Build.Module,
     raster: *std.Build.Module,
     /// The public aggregate `snail-shaders` module (every generated
     /// target; needs slangc when consumed). Used by the
@@ -329,7 +274,7 @@ pub const ProjectModules = struct {
 };
 
 /// Compile the game's custom Vulkan material shaders (native Slang; the
-/// caller-authored family src/demo/game/slang/game_material.slang imports
+/// caller-authored family dev/demo/game/slang/game_material.slang imports
 /// snail's text_sample module) to SPIR-V and inject them into `mod` as
 /// anonymous imports for `game/game_shaders.zig`.
 pub fn addGameShaderSpirv(b: *std.Build, mod: *std.Build.Module) void {

@@ -24,7 +24,7 @@
 //! resolution-independent (one per glyph, ever — the mode to prefer under
 //! continuous zoom), while TT-hinted records are per (glyph, ppem) and
 //! accumulate with every distinct size (`ns.tt_advance` values are
-//! page-free and never pressure the pool). `src/support/working_set.zig`
+//! page-free and never pressure the pool). `dev/support/working_set.zig`
 //! is the worked example of a bounded-residency policy over this model.
 //!
 //! See the README's "Capacity and eviction" section for the public recipe.

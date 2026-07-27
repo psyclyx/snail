@@ -2,7 +2,7 @@
 //! (gl33 / gl44 / gles30).
 //!
 //! This is the "custom shader" showcase: a caller-authored material shader
-//! (src/demo/game/slang/game_material.slang) that imports snail's
+//! (dev/demo/game/slang/game_material.slang) that imports snail's
 //! `text_sample` Slang module and samples glyph coverage at arbitrary UVs,
 //! lighting it over an opaque panel. The translated GL dialects are
 //! generated at build time (build.zig addGameShaderGl); this file embeds

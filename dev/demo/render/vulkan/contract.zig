@@ -1,6 +1,6 @@
 //! Complete pipeline contract for Snail's reference Vulkan renderer.
 //!
-//! This intentionally lives under `src/demo`: it includes complete SPIR-V,
+//! This intentionally lives under `dev/demo`: it includes complete SPIR-V,
 //! Vulkan pipeline structs, blend state, and dispatch policy. The library
 //! exports only the data ABI and includable shader pieces; applications own
 //! these renderer choices.
@@ -20,7 +20,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 const vertex = snail.render.records;
 const vulkan_types = @import("vulkan_types");
 const vk_shaders = @import("vulkan_shaders");

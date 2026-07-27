@@ -73,7 +73,7 @@ Keep enough `pool.stats().pages_free` headroom for the compacted result
 instead of waiting until the pool is completely full. `PagePool.config()`
 returns the immutable capacity configuration. Atlas page handles are opaque;
 renderer integrations receive immutable `atlas_upload.Region` copies.
-[`src/support/working_set.zig`](src/support/working_set.zig) is a demo-only
+[`dev/support/working_set.zig`](dev/support/working_set.zig) is a demo-only
 working-set example.
 
 Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
@@ -193,7 +193,7 @@ the repository's additional `naga` validation step.
 
 For custom materials, caller-authored Slang can `import text_sample` and
 sample glyph coverage inside its own fragment shader. The worked example is
-[`src/demo/game/slang/game_material.slang`](src/demo/game/slang/game_material.slang).
+[`dev/demo/game/slang/game_material.slang`](dev/demo/game/slang/game_material.slang).
 
 ## Render ABI
 

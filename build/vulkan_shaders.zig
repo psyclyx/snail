@@ -11,7 +11,7 @@ const slang_shaders = @import("slang_shaders.zig");
 
 pub fn createModule(b: *std.Build) *std.Build.Module {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/render/vulkan/shaders.zig"),
+        .root_source_file = b.path("dev/demo/render/vulkan/shaders.zig"),
     });
 
     // Fragment-only families share the native text vertex module.

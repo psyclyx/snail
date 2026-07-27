@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 const color_mod = @import("color.zig");
 const coverage_mod = @import("coverage.zig");
 

@@ -251,7 +251,7 @@ pub const families = [_]Family{
     // anonymous imports next to the consumer (build.zig addGameShaderGl);
     // the Vulkan leg is compiled by the demo build directly (build.zig
     // addGameShaderSpirv), like the library families.
-    .{ .name = "game_material", .source = "game_material.slang", .dir = "src/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
+    .{ .name = "game_material", .source = "game_material.slang", .dir = "dev/demo/game/slang", .owner = .game, .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },
     // GL-only fullscreen seed/encode pass (Vulkan/WebGPU demo paths render
     // to hardware-sRGB targets and have no linear-resolve pass).
     .{ .name = "linear_resolve", .source = "families/linear_resolve.slang", .stages = &.{ vertex_stage, fragment_stage }, .gl_o0 = true, .gl_only = true },

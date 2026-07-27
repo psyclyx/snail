@@ -1,5 +1,5 @@
 // Canonical transient autohint fitting (a bounded port of
-// font/autohint/warp.zig fitAxis + inverseWarp).
+// snail-raster/autohint_warp.zig fitAxis + inverseWarp).
 //
 // Shader-specific plumbing:
 //  - The stage split (SNAIL_AUTOHINT_VERTEX: 16-knot bound, resolved

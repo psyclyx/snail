@@ -1,7 +1,7 @@
 // Text-as-material sampler family: canonical native-Slang artifacts for the
 // `text_sample` module. The real consumer is a CALLER-authored Slang
 // family that imports the module into its own material shader (the game's
-// src/demo/game/slang/game_material.slang is the worked example); this
+// dev/demo/game/slang/game_material.slang is the worked example); this
 // family exists so gen-shaders continuously compiles the module for every
 // target and records the canonical binding flavors:
 //

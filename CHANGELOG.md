@@ -1,5 +1,27 @@
 # Changelog
 
+## 0.14.0 - 2026-07-27
+
+### Changed (breaking)
+
+- Runtime source now lives only under `src/snail` and `src/snail-raster`;
+  tests, tools, support conveniences, demos, and complete caller-owned GPU
+  renderers moved under `dev`.
+- Public build-time module constructors were removed. Dependents now use the
+  published named modules instead of constructing modules from source paths.
+  `snail-raster` depends only on `snail`: shared target/draw policy is the
+  public backend-neutral `snail.render.target` contract, and the CPU autohint
+  implementation is private to the raster package.
+
+### Documentation
+
+- The terminal guide now distinguishes scalable unit-cell filled paths from
+  device-pixel procedural box drawing instead of introducing a generic glyph
+  stretching API.
+- `FONT_SUPPORT.md` records the current color/variation support matrix and a
+  unified HarfBuzz paint traversal for future COLRv1, CBDT/CBLC, `sbix`, and
+  SVG support without adding an image codec or GPU backend to Snail.
+
 ## 0.13.2 - 2026-07-25
 
 ### Build
@@ -347,7 +369,7 @@ Treat this as a from-scratch migration.
   in a separate release.
 - All library-side caches (glyph caches, shaped-run caches, backend
   caches). Demo-only conveniences (`Picture`, `ShapedRunCache`,
-  `WorkingSet`) live in the internal `src/support` module and are not part
+  `WorkingSet`) live in the internal `dev/support` module and are not part
   of the published API.
 - `TextBlobBundle`, `TrueTypeHintContext`, `GlyphHintSnapshot`, `Shaper`,
   `Hinter`, `TextAtlas`, and the rest of the 0.12 surface.
@@ -949,7 +971,7 @@ migration recipes below each entry.
 - Source files are now split by ownership: `src/snail` contains only the
   library, `src/snail/renderer/{gl,vulkan,cpu}.zig` contains the renderer
   backends, and demo/window/offscreen platform code lives under
-  `src/demo/platform` as demo-private support code.
+  `dev/demo/platform` as demo-private support code.
 - `backend-compare -Dvulkan=true` now applies a dedicated GL-vs-Vulkan
   consistency check. GL and Vulkan may differ by at most 2 LSB per channel;
   the looser near-tangent CPU-vs-GPU outlier budget no longer applies to that

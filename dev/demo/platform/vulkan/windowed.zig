@@ -3,7 +3,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const SubpixelOrder = @import("render-state").SubpixelOrder;
+const SubpixelOrder = @import("snail").render.target.SubpixelOrder;
 pub const presentation = @import("../presentation.zig");
 const wayland = @import("../wayland.zig");
 

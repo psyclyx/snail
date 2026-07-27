@@ -2,7 +2,7 @@ const std = @import("std");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
 const slang_shaders = @import("build/slang_shaders.zig");
 
-const version = "0.13.2";
+const version = "0.14.0";
 
 // The module-creation layer lives in build/modules.zig; alias its public
 // declarations so the step functions below read unqualified. build.zig stays
@@ -21,16 +21,11 @@ const createEmbedGlModule = build_mods.createEmbedGlModule;
 const createSupportModule = build_mods.createSupportModule;
 const createSnailModuleFull = build_mods.createSnailModuleFull;
 const createRasterModule = build_mods.createRasterModule;
-const createRenderStateModule = build_mods.createRenderStateModule;
 const createSnailModule = build_mods.createSnailModule;
 const parseBuildConfig = build_mods.parseBuildConfig;
 const addSnailModule = build_mods.addSnailModule;
 const addGameShaderSpirv = build_mods.addGameShaderSpirv;
 const addGameShaderGl = build_mods.addGameShaderGl;
-
-/// Public build-time API for dependents (thin re-exports of build/modules.zig).
-pub const module = build_mods.module;
-pub const rasterModule = build_mods.rasterModule;
 
 fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
     test_exe.setExecCmd(&.{
@@ -57,12 +52,11 @@ fn addTestSteps(
     test_step.dependOn(core_test_step);
     const snail_tests = createSnailModuleFull(b, config.target, config.optimize, null, modules.assets, null);
     core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
-    const test_render_state = createRenderStateModule(b, config.target, config.optimize, snail_tests);
-    const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, test_render_state, modules.assets, null, null);
+    const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, modules.assets, null, null);
     core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = raster_tests })).step);
 
     const public_api_tests = b.createModule(.{
-        .root_source_file = b.path("src/tests/public_renderer_api.zig"),
+        .root_source_file = b.path("dev/tests/public_renderer_api.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .imports = &.{
@@ -73,7 +67,7 @@ fn addTestSteps(
     core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
 
     const public_shader_api_tests = b.createModule(.{
-        .root_source_file = b.path("src/tests/public_shader_api.zig"),
+        .root_source_file = b.path("dev/tests/public_shader_api.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .imports = &.{
@@ -96,14 +90,14 @@ fn addTestSteps(
 
     // The dependency-free TGA pixel gate used by the Windows CI job.
     const pixelgate_tests = b.addTest(.{ .root_module = b.createModule(.{
-        .root_source_file = b.path("src/tools/pixelgate.zig"),
+        .root_source_file = b.path("dev/tools/pixelgate.zig"),
         .target = config.target,
         .optimize = config.optimize,
     }) });
     core_test_step.dependOn(&b.addRunArtifact(pixelgate_tests).step);
 
     const autohint_compare_test_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -120,7 +114,7 @@ fn addTestSteps(
     core_test_step.dependOn(&run_autohint_compare_tests.step);
 
     const character_diff_test_module = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -140,8 +134,7 @@ fn addTestSteps(
     const vg_snail_tests = b.addTest(.{ .root_module = vg_snail });
     configureValgrindTest(vg_snail_tests);
     test_valgrind_step.dependOn(&b.addRunArtifact(vg_snail_tests).step);
-    const vg_render_state = createRenderStateModule(b, config.target, config.optimize, vg_snail);
-    const vg_raster = createRasterModule(b, config.target, config.optimize, vg_snail, vg_render_state, modules.assets, true, null);
+    const vg_raster = createRasterModule(b, config.target, config.optimize, vg_snail, modules.assets, true, null);
     const vg_raster_tests = b.addTest(.{ .root_module = vg_raster });
     configureValgrindTest(vg_raster_tests);
     test_valgrind_step.dependOn(&b.addRunArtifact(vg_raster_tests).step);
@@ -153,15 +146,14 @@ fn addScreenshotSteps(
     modules: ProjectModules,
 ) void {
     const release_snail_mod = createSnailModule(b, config.target, .ReleaseFast);
-    const release_render_state_mod = createRenderStateModule(b, config.target, .ReleaseFast, release_snail_mod);
-    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, null, null, null);
+    const release_raster_mod = createRasterModule(b, config.target, .ReleaseFast, release_snail_mod, null, null, null);
     const release_support_mod = createSupportModule(b, config.target, .ReleaseFast, release_snail_mod, modules.assets);
-    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
-    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.shaders_gl);
+    const embed_vulkan_mod = createEmbedVulkanModule(b, config.target, .ReleaseFast, release_snail_mod, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
+    const embed_gl_mod = createEmbedGlModule(b, config.target, .ReleaseFast, release_snail_mod, modules.shaders_gl);
 
     // CPU screenshot.
     const screenshot_cpu_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -180,7 +172,7 @@ fn addScreenshotSteps(
 
     // CPU coverage-parity probe (affine twin of the composite probe).
     const coverage_parity_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -199,7 +191,7 @@ fn addScreenshotSteps(
 
     // README banner and algorithm diagrams — CPU backend.
     const algorithm_diagrams_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -218,7 +210,7 @@ fn addScreenshotSteps(
 
     // Composable autohint policy comparison — CPU backend.
     const autohint_shot_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -238,7 +230,7 @@ fn addScreenshotSteps(
 
     // Autohint xy policy vs TT-hint agreement metric + overlay — CPU backend.
     const autohint_diff_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -256,7 +248,7 @@ fn addScreenshotSteps(
     autohint_diff_step.dependOn(&run_autohint_diff.step);
 
     const character_diff_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -275,7 +267,7 @@ fn addScreenshotSteps(
 
     // Proportional-face spot check — CPU backend.
     const prop_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -300,7 +292,7 @@ fn addScreenshotSteps(
         .imports = &.{.{ .name = "assets", .module = modules.assets }},
     });
     const tt_probe_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/tt_ppem_probe.zig"),
+        .root_source_file = b.path("dev/tools/tt_ppem_probe.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -316,7 +308,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — full interactive-demo scene through CPU backend.
     const banner_screenshot_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -335,7 +327,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — GL 3.3 offscreen.
     const banner_screenshot_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -355,7 +347,7 @@ fn addScreenshotSteps(
 
     // Banner screenshot — GLES 3.0 offscreen.
     const banner_screenshot_gles30_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -375,9 +367,9 @@ fn addScreenshotSteps(
 
     // Banner screenshot — Vulkan offscreen.
     {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, modules.demo_vulkan_types);
         const banner_screenshot_vk_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -399,7 +391,7 @@ fn addScreenshotSteps(
 
     // GL screenshot.
     const screenshot_gl_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -419,9 +411,9 @@ fn addScreenshotSteps(
 
     // Offscreen Vulkan game-scene screenshot (depth-tested) → zig-out/game-vulkan.tga.
     {
-        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
+        const release_vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, modules.demo_vulkan_types);
         const game_shot_vk_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -446,7 +438,7 @@ fn addScreenshotSteps(
     // headless verification harness. Writes zig-out/game-<backend>.tga.
     {
         const game_shot_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -471,7 +463,7 @@ fn addScreenshotSteps(
     // panel through perspective and fails if any interior coverage hole appears.
     {
         const comp_probe_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -494,7 +486,7 @@ fn addScreenshotSteps(
     // grazing-corner hole deterministically (both conic solvers, swept footprint).
     {
         const cov_probe_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -513,7 +505,7 @@ fn addScreenshotSteps(
 
     // CPU-vs-GL pixel parity gate over the shared content scene.
     const backend_compare_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -535,7 +527,7 @@ fn addScreenshotSteps(
     // solid scene, CPU vs GL33 vs GLES30, checked exactly against the analytic
     // encode. Immune to AA-edge differences that backend-compare tolerates.
     const gamma_probe_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -555,7 +547,7 @@ fn addScreenshotSteps(
 
     // GLES screenshot.
     const screenshot_gles30_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -575,9 +567,9 @@ fn addScreenshotSteps(
 
     // Vulkan screenshot.
     {
-        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, release_render_state_mod, modules.demo_vulkan_types);
+        const vk_platform_mod = createDemoVulkanPlatformModule(b, config.target, .ReleaseFast, release_snail_mod, modules.demo_vulkan_types);
         const screenshot_vulkan_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = config.target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -605,10 +597,10 @@ fn createInteractiveDemoModule(
     demo_optimize: std.builtin.OptimizeMode,
     entry: DemoEntry,
 ) *std.Build.Module {
-    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.shaders_gl);
-    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
+    const demo_embed_gl_mod = createEmbedGlModule(b, config.target, demo_optimize, modules.snail, modules.shaders_gl);
+    const demo_embed_vulkan_mod = createEmbedVulkanModule(b, config.target, demo_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection);
     const demo_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = demo_optimize,
         .link_libc = true,
@@ -624,9 +616,9 @@ fn createInteractiveDemoModule(
     });
     selectDemoEntry(b, demo_mod, entry);
     demo_mod.linkSystemLibrary("wayland-client", .{});
-    demo_mod.addIncludePath(b.path("src/demo/platform"));
-    demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-    demo_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/presentation-time-client-protocol.c") });
+    demo_mod.addIncludePath(b.path("dev/demo/platform"));
+    demo_mod.addCSourceFile(.{ .file = b.path("dev/demo/platform/xdg-shell-client-protocol.c") });
+    demo_mod.addCSourceFile(.{ .file = b.path("dev/demo/platform/presentation-time-client-protocol.c") });
     demo_mod.linkSystemLibrary("EGL", .{});
     demo_mod.linkSystemLibrary("wayland-egl", .{});
     demo_mod.linkSystemLibrary("OpenGL", .{});
@@ -691,9 +683,9 @@ fn addGameDemoStep(
     // runtime — a 3D scene whose custom material shader samples snail glyph
     // coverage. It owns both window-system integrations and their API links.
     const game_optimize = if (b.user_input_options.contains("optimize")) config.optimize else .ReleaseFast;
-    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.shaders_gl);
+    const game_embed_gl_mod = createEmbedGlModule(b, config.target, game_optimize, modules.snail, modules.shaders_gl);
     const game_mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/root.zig"),
+        .root_source_file = b.path("dev/demo/root.zig"),
         .target = config.target,
         .optimize = game_optimize,
         .link_libc = true,
@@ -709,9 +701,9 @@ fn addGameDemoStep(
     selectDemoEntry(b, game_mod, .game);
     addGameShaderGl(b, game_mod, modules.game_material_gl);
     game_mod.linkSystemLibrary("wayland-client", .{});
-    game_mod.addIncludePath(b.path("src/demo/platform"));
-    game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/xdg-shell-client-protocol.c") });
-    game_mod.addCSourceFile(.{ .file = b.path("src/demo/platform/presentation-time-client-protocol.c") });
+    game_mod.addIncludePath(b.path("dev/demo/platform"));
+    game_mod.addCSourceFile(.{ .file = b.path("dev/demo/platform/xdg-shell-client-protocol.c") });
+    game_mod.addCSourceFile(.{ .file = b.path("dev/demo/platform/presentation-time-client-protocol.c") });
     game_mod.linkSystemLibrary("EGL", .{});
     game_mod.linkSystemLibrary("wayland-egl", .{});
     game_mod.linkSystemLibrary("OpenGL", .{});
@@ -719,7 +711,7 @@ fn addGameDemoStep(
     // vk_scene uses the reference caller renderer; the windowed Vulkan
     // platform is a relative file compiled into game_mod (its own vk cImport
     // via linkSystemLibrary). game/game_shaders.zig gets the material SPIR-V.
-    game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.render_state, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection));
+    game_mod.addImport("embed_vulkan", createEmbedVulkanModule(b, config.target, game_optimize, modules.snail, modules.vk_shaders, modules.demo_vulkan_types, modules.shaders_reflection));
     game_mod.addImport("vulkan_types", modules.demo_vulkan_types);
     addGameShaderSpirv(b, game_mod);
     game_mod.linkSystemLibrary("vulkan", .{});
@@ -740,7 +732,7 @@ fn addMinimalGlStep(
     modules: ProjectModules,
 ) void {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/app/minimal_gl.zig"),
+        .root_source_file = b.path("dev/demo/app/minimal_gl.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -759,7 +751,7 @@ fn addMinimalGlStep(
 }
 
 /// Cross-compiled Windows demo: `zig build run-minimal-d3d11` builds
-/// src/demo/app/minimal_d3d11.zig for x86_64-windows-gnu (zig's bundled
+/// dev/demo/app/minimal_d3d11.zig for x86_64-windows-gnu (zig's bundled
 /// mingw provides d3d11.h/dxgi.h/d3dcompiler.h and the import libraries)
 /// and runs it headless under Wine with a hermetic prefix in zig-out.
 /// The one non-bundled dependency is HarfBuzz: the Windows snail module
@@ -797,7 +789,7 @@ fn addMinimalD3d11Step(
     });
 
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/app/minimal_d3d11.zig"),
+        .root_source_file = b.path("dev/demo/app/minimal_d3d11.zig"),
         .target = win_target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -843,11 +835,10 @@ fn addMinimalD3d11Step(
     // the checked-in Linux CPU reference. Reuses the amalgam-HarfBuzz snail
     // module above.
     {
-        const render_state_win = createRenderStateModule(b, win_target, .ReleaseFast, snail_win);
-        const raster_win = createRasterModule(b, win_target, .ReleaseFast, snail_win, render_state_win, null, null, null);
+        const raster_win = createRasterModule(b, win_target, .ReleaseFast, snail_win, null, null, null);
         const support_win = createSupportModule(b, win_target, .ReleaseFast, snail_win, modules.assets);
         const screenshot_cpu_win_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/root.zig"),
+            .root_source_file = b.path("dev/demo/root.zig"),
             .target = win_target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -861,7 +852,7 @@ fn addMinimalD3d11Step(
         selectDemoEntry(b, screenshot_cpu_win_mod, .screenshot_cpu);
         const screenshot_cpu_win_exe = b.addExecutable(.{ .name = "snail-screenshot-cpu", .root_module = screenshot_cpu_win_mod });
         gates_step.dependOn(&b.addInstallArtifact(screenshot_cpu_win_exe, .{ .dest_dir = .{ .override = gates_dir } }).step);
-        gates_step.dependOn(&b.addInstallFile(b.path("src/demo/tools/screenshots/demo_cpu_reference.tga"), "windows-gates/demo_cpu_reference.tga").step);
+        gates_step.dependOn(&b.addInstallFile(b.path("dev/demo/tools/screenshots/demo_cpu_reference.tga"), "windows-gates/demo_cpu_reference.tga").step);
     }
 
     // Cross-built WebGPU demo (wgpu-native's D3D12 backend on the Windows
@@ -870,7 +861,7 @@ fn addMinimalD3d11Step(
     // wgpu-native), ships wgpu_native.dll next to the exe.
     if (b.graph.environ_map.get("SNAIL_WGPU_WINDOWS")) |wgpu_win| {
         const wgpu_win_mod = b.createModule(.{
-            .root_source_file = b.path("src/demo/app/minimal_wgpu.zig"),
+            .root_source_file = b.path("dev/demo/app/minimal_wgpu.zig"),
             .target = win_target,
             .optimize = .ReleaseFast,
             .link_libc = true,
@@ -903,21 +894,21 @@ fn addMinimalD3d11Step(
     const pixelgate_win = b.addExecutable(.{
         .name = "pixelgate",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/pixelgate.zig"),
+            .root_source_file = b.path("dev/tools/pixelgate.zig"),
             .target = win_target,
             .optimize = .ReleaseFast,
         }),
     });
     gates_step.dependOn(&b.addInstallArtifact(exe, .{ .dest_dir = .{ .override = gates_dir } }).step);
     gates_step.dependOn(&b.addInstallArtifact(pixelgate_win, .{ .dest_dir = .{ .override = gates_dir } }).step);
-    gates_step.dependOn(&b.addInstallFile(b.path("src/demo/app/minimal_reference.tga"), "windows-gates/minimal_reference.tga").step);
+    gates_step.dependOn(&b.addInstallFile(b.path("dev/demo/app/minimal_reference.tga"), "windows-gates/minimal_reference.tga").step);
 
     // A native pixelgate too (zig-out/bin), so the same gate is runnable
     // locally against Wine-produced TGAs.
     const pixelgate_native = b.addExecutable(.{
         .name = "pixelgate",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/tools/pixelgate.zig"),
+            .root_source_file = b.path("dev/tools/pixelgate.zig"),
             .target = b.graph.host,
             .optimize = .ReleaseFast,
         }),
@@ -925,7 +916,7 @@ fn addMinimalD3d11Step(
     gates_step.dependOn(&b.addInstallArtifact(pixelgate_native, .{}).step);
 }
 
-/// Best-effort Metal demo (see src/demo/app/minimal_metal.zig and
+/// Best-effort Metal demo (see dev/demo/app/minimal_metal.zig and
 /// src/snail/shader/slang/README.md "Metal"). Two steps:
 ///
 ///  - `check-metal-demo` (any host): cross-compiles the demo and its snail
@@ -973,7 +964,7 @@ fn addMinimalMetalStep(
                 .language = .cpp,
             });
             const mod = bb.createModule(.{
-                .root_source_file = bb.path("src/demo/app/minimal_metal.zig"),
+                .root_source_file = bb.path("dev/demo/app/minimal_metal.zig"),
                 .target = target,
                 .optimize = .ReleaseFast,
                 .link_libc = true,
@@ -1037,7 +1028,7 @@ fn addMinimalWgpuStep(
     modules: ProjectModules,
 ) void {
     const mod = b.createModule(.{
-        .root_source_file = b.path("src/demo/app/minimal_wgpu.zig"),
+        .root_source_file = b.path("dev/demo/app/minimal_wgpu.zig"),
         .target = config.target,
         .optimize = .ReleaseFast,
         .link_libc = true,
@@ -1073,12 +1064,11 @@ pub fn build(b: *std.Build) void {
     // families" section of src/snail/shader/slang/README.md for the
     // public module list and the pattern) and pass this path to slangc via
     // `-I`; the in-tree reference is the game demo's material family
-    // (src/demo/game/slang/game_material.slang).
+    // (dev/demo/game/slang/game_material.slang).
     b.addNamedLazyPath("snail_slang", b.path(slang_shaders.module_dir));
     const assets_mod = b.createModule(.{ .root_source_file = b.path("assets/assets.zig") });
     const snail_mod = addSnailModule(b, config);
-    const render_state_mod = createRenderStateModule(b, config.target, config.optimize, snail_mod);
-    const raster_mod = createRasterModule(b, config.target, config.optimize, snail_mod, render_state_mod, null, null, "snail-raster");
+    const raster_mod = createRasterModule(b, config.target, config.optimize, snail_mod, null, null, "snail-raster");
     const support_mod = createSupportModule(b, config.target, config.optimize, snail_mod, assets_mod);
     const vk_shaders_mod = vulkan_shaders.createModule(b);
     const demo_vulkan_types_mod = createDemoVulkanTypesModule(b, config.target, config.optimize);
@@ -1107,7 +1097,6 @@ pub fn build(b: *std.Build) void {
         .vk_shaders = vk_shaders_mod,
         .demo_vulkan_types = demo_vulkan_types_mod,
         .snail = snail_mod,
-        .render_state = render_state_mod,
         .raster = raster_mod,
         .shaders = generated_shaders.module,
         .shaders_root = generated_shaders.root,
@@ -1135,7 +1124,7 @@ pub fn build(b: *std.Build) void {
 
 fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) void {
     const prep_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/perf/prep.zig"),
+        .root_source_file = b.path("dev/tools/perf/prep.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -1147,7 +1136,7 @@ fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) voi
     const prep_exe = b.addExecutable(.{ .name = "snail-perf-prep", .root_module = prep_mod });
 
     const raster_perf_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/perf/raster.zig"),
+        .root_source_file = b.path("dev/tools/perf/raster.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,
@@ -1160,7 +1149,7 @@ fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) voi
     const raster_perf_exe = b.addExecutable(.{ .name = "snail-perf-raster", .root_module = raster_perf_mod });
 
     const glsl_perf_mod = b.createModule(.{
-        .root_source_file = b.path("src/tools/perf/glsl.zig"),
+        .root_source_file = b.path("dev/tools/perf/glsl.zig"),
         .target = config.target,
         .optimize = config.optimize,
         .link_libc = true,

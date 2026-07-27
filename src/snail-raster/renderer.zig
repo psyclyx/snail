@@ -9,12 +9,12 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 const bezier = @import("snail").render.geometry;
 const band_tex = @import("snail").render.geometry;
 const render_abi = @import("snail").render.records;
 const autohint_record = @import("snail").render.geometry.autohint;
-const autohint_warp = @import("snail-raster-support").autohint.warp;
+const autohint_warp = @import("autohint_warp.zig");
 const autohint_policy = @import("snail").autohint.policy;
 const vertex = @import("snail").render.records;
 const ThreadPool = @import("thread_pool.zig").ThreadPool;

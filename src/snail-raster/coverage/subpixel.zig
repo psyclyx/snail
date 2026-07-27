@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 const color = @import("../color.zig");
 
 const SubpixelOrder = render_state.SubpixelOrder;

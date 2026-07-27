@@ -13,7 +13,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 
 pub const contract = @import("contract.zig");
 pub const vk = contract.vk;

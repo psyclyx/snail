@@ -75,6 +75,8 @@ better fit for static, fixed-size UI text.
 
 snail does not perform paragraph bidi, line breaking, wrapping, Unicode
 grapheme or terminal-width policy, cursor movement, or image-file decoding.
+See [Font format support](FONT_SUPPORT.md) for the detailed matrix and the
+planned unified COLRv1/CBDT/`sbix`/SVG integration boundary.
 
 ## The pipeline
 
@@ -142,10 +144,10 @@ const records: snail.render.records.DrawRecords = .{
 ```
 
 The complete raw-OpenGL version is
-[`src/demo/app/minimal_gl.zig`](src/demo/app/minimal_gl.zig), runnable with
+[`dev/demo/app/minimal_gl.zig`](dev/demo/app/minimal_gl.zig), runnable with
 `zig build run-minimal-gl`. Reference GPU integrations live under
-[`src/demo/render/gl`](src/demo/render/gl) and
-[`src/demo/render/vulkan`](src/demo/render/vulkan). The software-renderer
+[`dev/demo/render/gl`](dev/demo/render/gl) and
+[`dev/demo/render/vulkan`](dev/demo/render/vulkan). The software-renderer
 flow and the detailed upload, lifetime, color, threading, and ABI contracts
 are in [Embedding snail](INTEGRATION.md).
 
@@ -361,7 +363,7 @@ For measurement with TrueType-hinted advances,
 Terminal integrations should use `placeCellRun`, which preserves HarfBuzz
 cluster offsets while the host supplies exact source ranges and columns. See
 [Terminal-style cell grids](TERMINAL.md) and the
-[`run-terminal`](src/demo/app/terminal.zig) example.
+[`run-terminal`](dev/demo/app/terminal.zig) example.
 
 General paths use the same atlas and draw pipeline. Author a `Path`, call
 `prepare`, obtain fill or stroke curves, and place the result with a
@@ -406,12 +408,17 @@ layers are representable.
   `draw`, including linear-light blending and subpixel AA.
 - **`snail-shaders*`** — generated complete stages and reflected binding
   contracts. Import only the target scope needed by the host.
-- `src/demo`, `src/support`, and `src/tools` — unpublished demos, reference
-  callers, probes, and conveniences.
+- `src/snail` and `src/snail-raster` — the only hand-written runtime
+  packages. The raster package's helper modules are private implementation
+  details wired into the published `snail-raster` module.
+- `dev` — development-only tests, tools, asset support, demos, and complete
+  reference renderers. In particular, the OpenGL and Vulkan code here is
+  caller-owned example code, not a Snail GPU backend or public runtime
+  module.
 
 Public module boundaries are gated by
-[`src/tests/public_renderer_api.zig`](src/tests/public_renderer_api.zig) and
-[`src/tests/public_shader_api.zig`](src/tests/public_shader_api.zig).
+[`dev/tests/public_renderer_api.zig`](dev/tests/public_renderer_api.zig) and
+[`dev/tests/public_shader_api.zig`](dev/tests/public_shader_api.zig).
 
 ## Build
 
@@ -467,6 +474,13 @@ exe.root_module.addImport(
 );
 ```
 
+Use these named modules instead of constructing modules from
+`snail_dep.path("src/...")`. The named `snail-raster` module already contains
+all of its implementation wiring and depends only on the named `snail`
+module. Shared backend-neutral target values live at `snail.render.target`.
+Passing `target` and `optimize` to `b.dependency` binds all selected Snail
+modules to the consumer's build configuration.
+
 Other shader scopes are `snail-shaders-vk` (Vulkan SPIR-V only),
 `snail-shaders-gl` (GLSL 330 + GLES 300), `snail-shaders-wgsl`,
 `snail-shaders-hlsl`, and `snail-shaders-msl`. `snail-shaders` includes every
@@ -477,7 +491,7 @@ using only `snail` or `snail-raster`.
 
 To draw your own effects through snail's pipeline, author a Slang family that
 `import`s snail's caller-facing modules — the pattern the game demo uses in
-[`src/demo/game/slang/game_material.slang`](src/demo/game/slang/game_material.slang).
+[`dev/demo/game/slang/game_material.slang`](dev/demo/game/slang/game_material.slang).
 snail publishes its Slang module catalog as the `snail_slang` named lazy path;
 hand it to `slangc` via `-I` and compile for your target:
 

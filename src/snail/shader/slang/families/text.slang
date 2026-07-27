@@ -26,7 +26,7 @@
 // ── Uniform block ──
 //
 // `SnailPushConstants` matches the 96-byte layout of
-// src/demo/render/vulkan/contract.zig:PushConstants exactly (mvp @ 0,
+// dev/demo/render/vulkan/contract.zig:PushConstants exactly (mvp @ 0,
 // viewport @ 64, subpixel_order @ 72, output_srgb @ 76, layer_base @ 80,
 // coverage_exponent @ 84, dither_scale @ 88, mask_output @ 92; std140 and
 // std430 agree on all of them). Vulkan binds it as the push-constant

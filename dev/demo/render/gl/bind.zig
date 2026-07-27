@@ -11,7 +11,7 @@
 //! texture handles; `.from(handles)` then `bindProgram` + `bindDrawState`.
 
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 
 const gl_bindings = @import("desktop/bindings.zig");
 const gles30_bindings = @import("gles30/bindings.zig");

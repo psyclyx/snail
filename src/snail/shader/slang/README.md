@@ -87,7 +87,7 @@ track snail's own record layouts and generated bindings and may change with
 the render ABI.
 
 The in-tree reference for a caller-owned family is
-`src/demo/game/slang/game_material.slang`. A custom family that consumes
+`dev/demo/game/slang/game_material.slang`. A custom family that consumes
 snail's instance records should assert its stride against
 `snail.render.records.BYTES_PER_INSTANCE`.
 

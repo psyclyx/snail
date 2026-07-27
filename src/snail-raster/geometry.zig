@@ -2,7 +2,7 @@
 
 const std = @import("std");
 const snail = @import("snail");
-const render_state = @import("render-state");
+const render_state = @import("snail").render.target;
 
 const Vec2 = snail.Vec2;
 const Transform2D = snail.Transform2D;

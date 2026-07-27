@@ -12,7 +12,7 @@
 
 const renderer = @import("renderer.zig");
 const device_atlas = @import("device_atlas.zig");
-const target = @import("render-state");
+const target = @import("snail").render.target;
 
 pub const SubpixelOrder = target.SubpixelOrder;
 pub const ColorEncoding = target.ColorEncoding;

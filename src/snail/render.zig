@@ -13,6 +13,11 @@ const band_texture_mod = @import("format/band_texture.zig");
 const autohint_record_mod = @import("format/autohint_record.zig");
 const curve_mod = @import("math/bezier.zig");
 
+/// Backend-neutral framebuffer and per-draw policy. These values describe
+/// shader inputs and target semantics; they do not allocate resources, issue
+/// commands, or select a graphics API.
+pub const target = @import("render_target.zig");
+
 /// Emitted packed instances, batch metadata, and symbolic record decoders.
 pub const records = struct {
     pub const abi_version = abi_mod.version;
@@ -73,4 +78,5 @@ pub const geometry = struct {
 test {
     _ = records;
     _ = geometry;
+    _ = target;
 }

@@ -275,7 +275,7 @@ pub fn linearResolveGles300(comptime stage: Stage) [:0]const u8 {
 // ── Text-as-material sampler (canonical artifacts for every target; the
 // game's material shader — the one shipped consumer — is its own Slang
 // family importing the same text_sample module, see
-// src/demo/game/slang/game_material.slang) ──
+// dev/demo/game/slang/game_material.slang) ──
 //
 // The desktop GL record buffer is a plain `usamplerBuffer`; the GLES 3.0
 // dialect compiles with
