@@ -182,8 +182,12 @@ pub const View = struct {
         errdefer tt_vm.deinit();
 
         const pool = try snail.PagePool.init(allocator, .{
-            .max_layers = 16,
-            .curve_words_per_page = 1 << 18,
+            .max_pages = 16,
+            // CJK outlines are curve-heavy. Thirty-two RGBA16F rows per
+            // layer keep a complete high-variance sweep resident longer;
+            // dense quadratic font records make the effective gain 4x over
+            // the former four-texel/16-row geometry.
+            .curve_words_per_page = 1 << 19,
             .band_words_per_page = 1 << 15,
         });
         errdefer pool.deinit();
