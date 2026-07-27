@@ -160,7 +160,7 @@ const ContentCache = struct {
 
     fn init(allocator: std.mem.Allocator) !ContentCache {
         const pool = try snail.PagePool.init(allocator, .{
-            .max_layers = 24,
+            .max_pages = 24,
             .curve_words_per_page = 1 << 18,
             .band_words_per_page = 1 << 16,
         });

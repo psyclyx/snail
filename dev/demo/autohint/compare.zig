@@ -522,7 +522,7 @@ test "comparison contains both x-width policies and fits the default viewport" {
 
 test "comparison caches caller-owned TT preparation by device PPEM" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -542,7 +542,7 @@ test "comparison caches caller-owned TT preparation by device PPEM" {
 
 test "disjoint comparison grid coalesces to one batch per text family" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -584,7 +584,7 @@ test "disjoint comparison grid coalesces to one batch per text family" {
 
 test "comparison setup reuses autohint analysis across grid PPEMs" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -626,7 +626,7 @@ test "comparison setup reuses autohint analysis across grid PPEMs" {
 
 test "empty outlines remain shared unhinted no-op shapes" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });

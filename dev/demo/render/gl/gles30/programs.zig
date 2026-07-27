@@ -73,10 +73,9 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };
 
-    // Sampler bindings (units 0..3 → curve/band/layer/image) and
-    // `u_layer_base` never change at runtime, so set them once at link
-    // time to remove a half-dozen `glUniform1i` calls from every draw.
-    // Matches the GL 3.3/4.4 path in `gl/programs.zig`.
+    // Sampler bindings (units 0..3 → curve/band/layer/image) never change
+    // at runtime. Legacy composed programs still expose `u_layer_base`;
+    // native programs carry the logical page base in their parameter block.
     var prev_program: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
     gl.glUseProgram(handle);

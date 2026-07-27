@@ -109,7 +109,7 @@ test "core and external renderers need only the intentional public api" {
     }
 
     var pool = try snail.PagePool.init(std.testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 64,
         .band_words_per_page = 32,
     });

@@ -100,7 +100,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
     defer shaped_sep.deinit();
 
     const pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });

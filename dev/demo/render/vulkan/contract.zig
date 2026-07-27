@@ -51,7 +51,7 @@ pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
 /// cache's `atlasPageTexels()`. `grayscale` selects the non-subpixel path.
 pub fn textPushConstants(
     draw_state: render_state.DrawState,
-    local_layer_base: u32,
+    page_base: u32,
     atlas_page_texels: [2]i32,
     grayscale: bool,
 ) PushConstants {
@@ -60,7 +60,7 @@ pub fn textPushConstants(
         .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
         .subpixel_order = @intFromEnum(if (grayscale) render_state.SubpixelOrder.none else draw_state.raster.subpixel_order),
         .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
-        .page_base = @intCast(local_layer_base),
+        .page_base = @intCast(page_base),
         .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
         .dither_scale = draw_state.surface.format.ditherAmplitude(),
         .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,

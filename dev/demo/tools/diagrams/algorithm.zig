@@ -1306,7 +1306,7 @@ pub fn main() !void {
     defer faces.deinit();
 
     const pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 15,
     });

@@ -20,7 +20,7 @@
 //! writer. Its one frame covers unhinted, autohinted, TT-hinted, and COLR
 //! text plus filled and stroked paths.
 //!
-//! Binding contract (see `snail_shaders`): the 96-byte
+//! Binding contract (see `snail_shaders`): the 104-byte
 //! push-constant block binds as `constant SnailPushConstants_natural*` at
 //! [[buffer(0)]] (natural layout — byte-identical to the extern struct);
 //! textures land on the Vulkan binding numbers as [[texture(0)]] curve,
@@ -426,7 +426,7 @@ const GpuAtlas = struct {
         const pool_config = self.pool.config();
         const curve_height = pool_config.curve_words_per_page / (snail.atlas_upload.CURVE_TEX_WIDTH * 4);
         const band_height = pool_config.band_words_per_page / (snail.atlas_upload.BAND_TEX_WIDTH * 2);
-        const layers: NSUInteger = @intCast(pool_config.max_layers);
+        const layers: NSUInteger = @intCast(pool_config.max_pages);
 
         self.curve_tex = try createTexture(device, mtl.TextureType2DArray, mtl.PixelFormatRGBA16Float, snail.atlas_upload.CURVE_TEX_WIDTH, @intCast(curve_height), layers);
         self.band_tex = try createTexture(device, mtl.TextureType2DArray, mtl.PixelFormatRG16Uint, snail.atlas_upload.BAND_TEX_WIDTH, @intCast(band_height), layers);
@@ -493,7 +493,11 @@ const GpuAtlas = struct {
         msg(void, tex, "replaceRegion:mipmapLevel:slice:withBytes:bytesPerRow:bytesPerImage:", .{
             mtl_region,
             @as(NSUInteger, 0),
-            @as(NSUInteger, region.layer),
+            @as(NSUInteger, switch (region.target) {
+                .curve, .band => region.page,
+                .image => region.layer,
+                .layer_info => 0,
+            }),
             @as(*const anyopaque, region.src.ptr),
             @as(NSUInteger, region.width * bytes_per_texel),
             @as(NSUInteger, 0),
@@ -526,7 +530,7 @@ pub fn main() !void {
     defer emoji.deinit();
 
     var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });
@@ -681,10 +685,11 @@ pub fn main() !void {
         .viewport = .{ width, height },
         .subpixel_order = 0,
         .output_srgb = 0, // hardware-sRGB render target: emit linear
-        .layer_base = 0,
+        .page_base = 0,
         .coverage_exponent = 1.0,
         .dither_scale = 0.0,
         .mask_output = 0,
+        .atlas_page_texels = .{ 0, 0 },
     };
     const pc_buffer = msg(id, device, "newBufferWithBytes:length:options:", .{
         @as(*const anyopaque, &push_constants),

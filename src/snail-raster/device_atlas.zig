@@ -431,7 +431,7 @@ pub const DeviceAtlas = struct {
         const extras = &self.extras[slot_index];
 
         const StagedPage = struct {
-            layer: u32,
+            page_index: u32,
             page: PreparedAtlasPage,
             generation: u64,
             curve_words: u32,
@@ -448,7 +448,7 @@ pub const DeviceAtlas = struct {
         // upload regions. `AtlasPage` storage is opaque even to this package;
         // the software renderer follows the same copy contract as a GPU host.
         const PendingPage = struct {
-            layer: u32,
+            page_index: u32,
             generation: u64,
             curve_words: u32,
             band_words: u32,
@@ -464,19 +464,19 @@ pub const DeviceAtlas = struct {
             }
             pending_pages.deinit(scratch);
         }
-        const pending_by_layer = try scratch.alloc(usize, self.prepared.len);
-        defer scratch.free(pending_by_layer);
-        @memset(pending_by_layer, std.math.maxInt(usize));
+        const pending_by_page = try scratch.alloc(usize, self.prepared.len);
+        defer scratch.free(pending_by_page);
+        @memset(pending_by_page, std.math.maxInt(usize));
 
         for (plan.regions) |region| switch (region.target) {
             .curve, .band => {
-                const layer: usize = region.page;
-                if (layer >= self.prepared.len) return error.PageNotInPool;
-                if (pending_by_layer[layer] != std.math.maxInt(usize)) continue;
+                const page_index: usize = region.page;
+                if (page_index >= self.prepared.len) return error.PageNotInPool;
+                if (pending_by_page[page_index] != std.math.maxInt(usize)) continue;
 
-                const generation = self.planner.generation[layer];
-                const curve_words = self.planner.curve_words[layer];
-                const band_words = self.planner.band_words[layer];
+                const generation = self.planner.generation[page_index];
+                const curve_words = self.planner.curve_words[page_index];
+                const band_words = self.planner.band_words[page_index];
                 const curve_data = try self.allocator.alloc(u16, curve_words);
                 const band_data = self.allocator.alloc(u16, band_words) catch |err| {
                     self.allocator.free(curve_data);
@@ -484,8 +484,8 @@ pub const DeviceAtlas = struct {
                 };
 
                 var extends_previous = false;
-                if (self.prepared[layer]) |*previous| {
-                    extends_previous = self.prepared_generation[layer] == generation and
+                if (self.prepared[page_index]) |*previous| {
+                    extends_previous = self.prepared_generation[page_index] == generation and
                         previous.curve_data.len <= curve_data.len and
                         previous.band_data.len <= band_data.len;
                     if (extends_previous) {
@@ -501,7 +501,7 @@ pub const DeviceAtlas = struct {
                 }
 
                 pending_pages.append(scratch, .{
-                    .layer = region.page,
+                    .page_index = region.page,
                     .generation = generation,
                     .curve_words = curve_words,
                     .band_words = band_words,
@@ -513,15 +513,15 @@ pub const DeviceAtlas = struct {
                     self.allocator.free(band_data);
                     return err;
                 };
-                pending_by_layer[layer] = pending_pages.items.len - 1;
+                pending_by_page[page_index] = pending_pages.items.len - 1;
             },
             .layer_info, .image => {},
         };
 
         for (plan.regions) |region| switch (region.target) {
             .curve, .band => {
-                if (region.page >= pending_by_layer.len) return error.PageNotInPool;
-                const pending_index = pending_by_layer[region.page];
+                if (region.page >= pending_by_page.len) return error.PageNotInPool;
+                const pending_index = pending_by_page[region.page];
                 if (pending_index == std.math.maxInt(usize)) return error.InvalidUploadRegion;
                 const pending = &pending_pages.items[pending_index];
                 switch (region.target) {
@@ -546,14 +546,14 @@ pub const DeviceAtlas = struct {
             pending.curve_data = &.{};
             pending.band_data = &.{};
             var prepared_page = (if (pending.extends_previous)
-                PreparedAtlasPage.initExtendedFromOwnedView(self.allocator, &self.prepared[pending.layer].?, view)
+                PreparedAtlasPage.initExtendedFromOwnedView(self.allocator, &self.prepared[pending.page_index].?, view)
             else
                 PreparedAtlasPage.initFromOwnedView(self.allocator, view)) catch |err| switch (err) {
                 error.InvalidBandData => return error.InvalidUploadRegion,
                 error.OutOfMemory => return error.OutOfMemory,
             };
             staged_pages.append(scratch, .{
-                .layer = pending.layer,
+                .page_index = pending.page_index,
                 .page = prepared_page,
                 .generation = pending.generation,
                 .curve_words = pending.curve_words,
@@ -619,7 +619,7 @@ pub const DeviceAtlas = struct {
 
         if (atlas.layer_info_data != null) {
             // Re-patch image-paint records for this device (direct image
-            // sampling: uv scale 1.0; layer = planner's absolute layer).
+            // sampling: uv scale 1.0; image layer = planner's absolute layer).
             if (atlas.paint_records) |records| {
                 for (records) |rec| {
                     const image = rec.image orelse continue;
@@ -658,11 +658,11 @@ pub const DeviceAtlas = struct {
 
         // Commit only after every allocation and validation succeeded.
         for (staged_pages.items) |*staged| {
-            if (self.prepared[staged.layer]) |*previous| previous.deinit(self.allocator);
-            self.prepared[staged.layer] = staged.page;
-            self.prepared_generation[staged.layer] = staged.generation;
-            self.prepared_curve_words[staged.layer] = staged.curve_words;
-            self.prepared_band_words[staged.layer] = staged.band_words;
+            if (self.prepared[staged.page_index]) |*previous| previous.deinit(self.allocator);
+            self.prepared[staged.page_index] = staged.page;
+            self.prepared_generation[staged.page_index] = staged.generation;
+            self.prepared_curve_words[staged.page_index] = staged.curve_words;
+            self.prepared_band_words[staged.page_index] = staged.band_words;
         }
         pages_committed = true;
 

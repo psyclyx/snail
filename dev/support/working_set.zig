@@ -138,7 +138,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
 
     // A deliberately tiny pool: two content pages plus reserve headroom.
     var pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = 4096,
         .band_words_per_page = 2048,
     });
@@ -178,7 +178,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
     defer allocator.free(hot_shapes);
     try ws.touchShapes(hot_shapes);
 
-    // reserve_layers == max_layers forces the rebuild branch: any recorded
+    // reserve_layers == max_pages forces the rebuild branch: any recorded
     // page drops free_count below the reserve.
     const before = ws.atlas.recordCount();
     try testing.expect(try ws.ensureHeadroom(scratch.allocator()));
@@ -191,7 +191,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
 
 test "working set frame counter saturates instead of reviving stale entries" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 32,
         .band_words_per_page = 2,
     });
@@ -222,7 +222,7 @@ fn exerciseWorkingSetAllocationFailures(allocator: Allocator, pool: *snail.PageP
 
 test "working set compaction is atomic across every allocation failure" {
     var pool = try snail.PagePool.init(testing.allocator, .{
-        .max_layers = 1,
+        .max_pages = 1,
         .curve_words_per_page = 32,
         .band_words_per_page = 2,
     });

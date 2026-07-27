@@ -73,11 +73,9 @@ pub fn loadProgramState(cache_label: []const u8, vs_src: [*c]const u8, fs_src: [
         .layer_base_loc = gl.glGetUniformLocation(handle, "u_layer_base"),
     };
 
-    // Sampler bindings (texture units) and `u_layer_base` never change at
-    // runtime — units 0..3 stay mapped to curve/band/layer/image, and
-    // `u_layer_base` is always 0 in the new ABI (absolute layer is encoded
-    // per-instance). Setting these once at link time removes a half-dozen
-    // glUniform1i calls from every draw.
+    // Sampler bindings (texture units) never change at runtime. Legacy
+    // composed programs still expose `u_layer_base`; native programs carry
+    // the logical page base in their shared parameter block.
     var prev_program: gl.GLint = 0;
     gl.glGetIntegerv(gl.GL_CURRENT_PROGRAM, &prev_program);
     gl.glUseProgram(handle);

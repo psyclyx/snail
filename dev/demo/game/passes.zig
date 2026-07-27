@@ -45,7 +45,7 @@ pub const Fonts = struct {
         errdefer faces.deinit();
 
         const pool = try snail.PagePool.init(allocator, .{
-            .max_layers = 32,
+            .max_pages = 32,
             .curve_words_per_page = 1 << 17,
             .band_words_per_page = 1 << 14,
         });

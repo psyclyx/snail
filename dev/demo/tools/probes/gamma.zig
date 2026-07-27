@@ -48,7 +48,7 @@ const GammaScene = struct {
 
 fn buildScene(allocator: std.mem.Allocator) !GammaScene {
     const pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 8,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 17,
         .band_words_per_page = 1 << 14,
     });

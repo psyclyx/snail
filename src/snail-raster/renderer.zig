@@ -261,7 +261,7 @@ pub const Renderer = struct {
     pub const DrawBatchError = BufferError || error{
         InvalidInstance,
         NonAffineMvp,
-        TextureLayerOverflow,
+        AtlasPageOverflow,
     };
 
     /// Attach a caller-owned pixel buffer with its exact storage format.
@@ -568,15 +568,15 @@ pub const Renderer = struct {
         };
     }
 
-    fn drawPreparedBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, texture_layer_base: u32, thread_pool: ?*ThreadPool) DrawBatchError!void {
+    fn drawPreparedBatch(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, state: render_state.DrawState, page_base: u32, thread_pool: ?*ThreadPool) DrawBatchError!void {
         try self.validateTarget(state.surface);
         for (instances) |*instance| {
             vertex.validateInstance(instance) catch return error.InvalidInstance;
             _ = std.math.add(
                 u32,
-                texture_layer_base,
+                page_base,
                 @as(u32, render_abi.glyphWordAtlasLayer(instance.glyph[1])),
-            ) catch return error.TextureLayerOverflow;
+            ) catch return error.AtlasPageOverflow;
         }
         // Drive the four fields the rendering helpers read off `self` from
         // `state`. There's no save/restore: each `drawBatch` overwrites
@@ -618,14 +618,14 @@ pub const Renderer = struct {
             return error.NonAffineMvp;
         if (thread_pool) |pool| {
             if (pool.threadCount() > 0 and self.row_clip_max > self.row_clip_min + TILE_ROWS) {
-                self.drawBatchInstancesParallel(pool, prepared, instances, scene, texture_layer_base, true);
+                self.drawBatchInstancesParallel(pool, prepared, instances, scene, page_base, true);
                 return;
             }
         }
         // Serial path: enable the profile hook if the caller has wired
         // up `instance_profile`. The threaded path above skips it
         // intentionally — see `instance_profile` docs.
-        self.drawBatchInstances(prepared, instances, scene, texture_layer_base, true, true);
+        self.drawBatchInstances(prepared, instances, scene, page_base, true, true);
     }
 
     const ClipSave = struct {
@@ -673,13 +673,13 @@ pub const Renderer = struct {
         return "CPU";
     }
 
-    fn drawBatchInstances(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
+    fn drawBatchInstances(self: *Renderer, prepared: *const PreparedResources, instances: []const vertex.Instance, scene_to_pixel: Transform2D, page_base: u32, allow_subpixel: bool, profile_enabled: bool) void {
         const profile = if (profile_enabled) self.instance_profile else null;
         var idx: u32 = 0;
         for (instances) |*inst| {
             if (profile) |p| {
                 const start_ns = monotonicNanos();
-                self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
+                self.renderBatchInstance(prepared, inst, scene_to_pixel, page_base, allow_subpixel);
                 const end_ns = monotonicNanos();
                 if (p.count < p.entries.len) {
                     const decoded = decodeBatchInstance(inst, scene_to_pixel);
@@ -694,7 +694,7 @@ pub const Renderer = struct {
                     p.count += 1;
                 }
             } else {
-                self.renderBatchInstance(prepared, inst, scene_to_pixel, texture_layer_base, allow_subpixel);
+                self.renderBatchInstance(prepared, inst, scene_to_pixel, page_base, allow_subpixel);
             }
             idx += 1;
         }
@@ -705,7 +705,7 @@ pub const Renderer = struct {
         prepared: *const PreparedResources,
         instances: []const vertex.Instance,
         scene_to_pixel: Transform2D,
-        texture_layer_base: u32,
+        page_base: u32,
         allow_subpixel: bool,
         strip_rows: u32,
         y0: u32,
@@ -721,7 +721,7 @@ pub const Renderer = struct {
         var worker = ctx.base.*;
         worker.row_clip_min = strip_y0;
         worker.row_clip_max = strip_y1;
-        worker.drawBatchInstances(ctx.prepared, ctx.instances, ctx.scene_to_pixel, ctx.texture_layer_base, ctx.allow_subpixel, false);
+        worker.drawBatchInstances(ctx.prepared, ctx.instances, ctx.scene_to_pixel, ctx.page_base, ctx.allow_subpixel, false);
     }
 
     fn drawBatchInstancesParallel(
@@ -730,7 +730,7 @@ pub const Renderer = struct {
         prepared: *const PreparedResources,
         instances: []const vertex.Instance,
         scene_to_pixel: Transform2D,
-        texture_layer_base: u32,
+        page_base: u32,
         allow_subpixel: bool,
     ) void {
         // Tighten the dispatch range to the union pixel-Y bounds of the
@@ -765,7 +765,7 @@ pub const Renderer = struct {
             .prepared = prepared,
             .instances = instances,
             .scene_to_pixel = scene_to_pixel,
-            .texture_layer_base = texture_layer_base,
+            .page_base = page_base,
             .allow_subpixel = allow_subpixel,
             .strip_rows = strip_rows,
             .y0 = y0,
@@ -812,7 +812,7 @@ pub const Renderer = struct {
         tint: [4]f32,
         policy: [4]u32,
 
-        fn atlasLayerByte(self: BatchInstance) u8 {
+        fn localPageByte(self: BatchInstance) u8 {
             return render_abi.glyphWordAtlasLayer(self.glyph[1]);
         }
 
@@ -851,16 +851,16 @@ pub const Renderer = struct {
         };
     }
 
-    fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: *const vertex.Instance, scene_to_pixel: Transform2D, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderBatchInstance(self: *Renderer, prepared: *const PreparedResources, inst: *const vertex.Instance, scene_to_pixel: Transform2D, page_base: u32, allow_subpixel: bool) void {
         const decoded = decodeBatchInstance(inst, scene_to_pixel);
         if (decoded.isSpecialLayer()) {
-            self.renderSpecialBatchInstance(prepared, decoded, texture_layer_base, allow_subpixel);
+            self.renderSpecialBatchInstance(prepared, decoded, page_base, allow_subpixel);
         } else {
-            self.renderRegularBatchInstance(prepared, decoded, texture_layer_base, allow_subpixel);
+            self.renderRegularBatchInstance(prepared, decoded, page_base, allow_subpixel);
         }
     }
 
-    fn renderRegularBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderRegularBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, page_base: u32, allow_subpixel: bool) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const be = GlyphBandEntry{
@@ -874,27 +874,27 @@ pub const Renderer = struct {
             .band_offset_y = decoded.band[3],
         };
 
-        const atlas_layer = texture_layer_base + @as(u32, decoded.atlasLayerByte());
-        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const atlas_page = page_base + @as(u32, decoded.localPageByte());
+        const page = (if (atlas_page < prepared.atlas_pages.len) prepared.atlas_pages[atlas_page] else null) orelse return;
         self.renderTransformedGlyph(page, decoded.bbox, be, decoded.transform, multiplyLinearColor(decoded.color, decoded.tint), allow_subpixel);
     }
 
-    fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, texture_layer_base: u32, allow_subpixel: bool) void {
+    fn renderSpecialBatchInstance(self: *Renderer, prepared: *const PreparedResources, decoded: BatchInstance, page_base: u32, allow_subpixel: bool) void {
         const gz = decoded.glyph[0];
         const gw = decoded.glyph[1];
         const info_x = render_abi.glyphLocationX(gz);
         const info_y = render_abi.glyphLocationY(gz);
-        const atlas_layer = texture_layer_base + @as(u32, decoded.atlasLayerByte());
+        const atlas_page = page_base + @as(u32, decoded.localPageByte());
 
         const resolved = prepared.resolveLayerInfo(info_y) orelse return;
         const entry = resolved.entry;
         const special_kind = render_abi.specialGlyphWordKind(gw) orelse return;
         if (special_kind == .tt_hinted_text) {
-            self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y, allow_subpixel);
+            self.renderTtHintedTextBatchInstance(prepared, decoded, atlas_page, entry, info_x, resolved.local_y, allow_subpixel);
             return;
         }
         if (special_kind == .autohint) {
-            self.renderAutohintBatchInstance(prepared, decoded, atlas_layer, entry, info_x, resolved.local_y, allow_subpixel);
+            self.renderAutohintBatchInstance(prepared, decoded, atlas_page, entry, info_x, resolved.local_y, allow_subpixel);
             return;
         }
 
@@ -912,7 +912,7 @@ pub const Renderer = struct {
                     multiplyLinearColor(decoded.color, decoded.tint)
                 else
                     decoded.tint,
-                atlas_layer,
+                atlas_page,
                 entry,
                 record,
                 false,
@@ -924,13 +924,13 @@ pub const Renderer = struct {
         self: *Renderer,
         prepared: *const PreparedResources,
         decoded: BatchInstance,
-        atlas_layer: u32,
+        atlas_page: u32,
         entry: *const LayerInfoEntry,
         info_x: u16,
         info_y: u16,
         allow_subpixel: bool,
     ) void {
-        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const page = (if (atlas_page < prepared.atlas_pages.len) prepared.atlas_pages[atlas_page] else null) orelse return;
         const header = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 0) orelse return;
         const band = fetchLayerInfoTexel(entry.data, entry.width, info_x, info_y, 1) orelse return;
         const band_counts = render_abi.unpackBandCounts(@bitCast(header[2])) orelse return;
@@ -965,13 +965,13 @@ pub const Renderer = struct {
         self: *Renderer,
         prepared: *const PreparedResources,
         decoded: BatchInstance,
-        atlas_layer: u32,
+        atlas_page: u32,
         entry: *const LayerInfoEntry,
         info_x: u16,
         info_y: u16,
         allow_subpixel: bool,
     ) void {
-        const page = (if (atlas_layer < prepared.atlas_pages.len) prepared.atlas_pages[atlas_layer] else null) orelse return;
+        const page = (if (atlas_page < prepared.atlas_pages.len) prepared.atlas_pages[atlas_page] else null) orelse return;
         const off = (@as(usize, info_y) * entry.width + @as(usize, info_x)) * 4;
         const record = autohint_record.decode(entry.data, off) catch return;
         const rec = record.band_entry;
@@ -1035,9 +1035,9 @@ pub const Renderer = struct {
         has_gradient: bool,
     };
 
-    fn preparedAtlasPage(prepared: *const PreparedResources, atlas_layer: u32) ?*const PreparedAtlasPage {
-        if (atlas_layer >= prepared.atlas_pages.len) return null;
-        if (prepared.atlas_pages[atlas_layer]) |*page| return page;
+    fn preparedAtlasPage(prepared: *const PreparedResources, atlas_page: u32) ?*const PreparedAtlasPage {
+        if (atlas_page >= prepared.atlas_pages.len) return null;
+        if (prepared.atlas_pages[atlas_page]) |*page| return page;
         return null;
     }
 
@@ -1297,12 +1297,12 @@ pub const Renderer = struct {
         union_bbox: snail.BBox,
         transform: Transform2D,
         tint: [4]f32,
-        atlas_layer: u32,
+        atlas_page: u32,
         entry: *const LayerInfoEntry,
         record: *const PreparedPathRecord,
         allow_subpixel: bool,
     ) void {
-        const page = preparedAtlasPage(prepared, atlas_layer) orelse return;
+        const page = preparedAtlasPage(prepared, atlas_page) orelse return;
 
         if (record.tag == @intFromEnum(render_abi.PaintRecordKind.composite_group)) {
             self.renderCompositePathBatchLayers(page, union_bbox, transform, tint, entry, record, allow_subpixel);
@@ -2251,10 +2251,10 @@ pub fn drawPreparedBatch(
     prepared: *const PreparedResources,
     instances: []const vertex.Instance,
     state: render_state.DrawState,
-    texture_layer_base: u32,
+    page_base: u32,
     thread_pool: ?*ThreadPool,
 ) Renderer.DrawBatchError!void {
-    return renderer.drawPreparedBatch(prepared, instances, state, texture_layer_base, thread_pool);
+    return renderer.drawPreparedBatch(prepared, instances, state, page_base, thread_pool);
 }
 
 const testing = std.testing;
@@ -2370,7 +2370,7 @@ test "drawBatch rejects texture layer addition overflow before mutation" {
         .surface = .{ .pixel_width = 1, .pixel_height = 1, .encoding = .linear },
     };
     try testing.expectError(
-        error.TextureLayerOverflow,
+        error.AtlasPageOverflow,
         renderer.drawPreparedBatch(&prepared, &.{instance}, state, std.math.maxInt(u32), null),
     );
     try testing.expectEqualSlices(u8, &.{ 0, 0, 0, 0 }, &pixels);
