@@ -83,7 +83,7 @@ pub const VkSceneRenderer = struct {
         var cache = try embed_vulkan.VulkanDeviceAtlas.init(
             allocator,
             scene.fonts.pool,
-            embed_vulkan.cachePipelineShape(ctx, &layout, transfer_pool),
+            embed_vulkan.cacheResourceContext(ctx, &layout),
             .{
                 .max_bindings = 16,
                 .layer_info_height = 128,
@@ -93,15 +93,23 @@ pub const VkSceneRenderer = struct {
             },
         );
         errdefer cache.deinit();
-        try cache.upload(allocator, &.{
-            &scene.material.text_atlas,
-            &scene.label.path_atlas,
-            &scene.label.text_atlas,
-            &scene.panel.path_atlas,
-            &scene.panel.text_atlas,
-            &scene.hud.path_atlas,
-            &scene.hud.text_atlas,
-        }, &bindings);
+        try embed_vulkan.uploadAndWait(
+            allocator,
+            ctx,
+            embed_vulkan.cacheResourceContext(ctx, &layout),
+            transfer_pool,
+            &cache,
+            &.{
+                &scene.material.text_atlas,
+                &scene.label.path_atlas,
+                &scene.label.text_atlas,
+                &scene.panel.path_atlas,
+                &scene.panel.text_atlas,
+                &scene.hud.path_atlas,
+                &scene.hud.text_atlas,
+            },
+            &bindings,
+        );
 
         var caller = try embed_vulkan.Renderer.init(ctx, cache.descriptorSetLayout(), SLOT_BYTES, num_slots, .test_only);
         errdefer caller.deinit();
@@ -180,10 +188,18 @@ pub const VkSceneRenderer = struct {
 
         try check(vk.vkDeviceWaitIdle(self.ctx.device));
         var bindings: [2]snail.render.records.Binding = undefined;
-        try self.cache.upload(self.allocator, &.{
-            &scene.hud.path_atlas,
-            &scene.hud.text_atlas,
-        }, &bindings);
+        try embed_vulkan.uploadAndWait(
+            self.allocator,
+            self.ctx,
+            embed_vulkan.cacheResourceContext(self.ctx, &self.layout),
+            self.transfer_pool,
+            &self.cache,
+            &.{
+                &scene.hud.path_atlas,
+                &scene.hud.text_atlas,
+            },
+            &bindings,
+        );
 
         self.cache.release(self.hud_path_b);
         self.cache.release(self.hud_text_b);

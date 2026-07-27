@@ -6,10 +6,8 @@
 //!
 //! Per-cache resident GPU state:
 //!
-//! - `curve_image` / `band_image` — `VK_IMAGE_VIEW_TYPE_2D_ARRAY`
-//!   sized to `pool.config().max_layers`. Curve = `R16G16B16A16_SFLOAT`,
-//!   band = `R16G16_UINT`. Pages stream in via per-layer
-//!   `vkCmdCopyBufferToImage`.
+//! - `curve_buffer` / `band_buffer` — compact read-only uniform texel
+//!   buffers. Curve = `R16G16B16A16_SFLOAT`, band = `R16G16_UINT`.
 //! - `layer_info_image` — `VK_IMAGE_VIEW_TYPE_2D`
 //!   (`R32G32B32A32_SFLOAT`) sized to
 //!   `INFO_WIDTH × options.layer_info_height`. Each binding occupies
@@ -43,11 +41,9 @@ pub const PagePool = page_pool_mod.PagePool;
 pub const Binding = draw_records.Binding;
 pub const Image = image_mod.Image;
 
-const CURVE_TEX_WIDTH: u32 = upload_plan.CURVE_TEX_WIDTH;
-const BAND_TEX_WIDTH: u32 = upload_plan.BAND_TEX_WIDTH;
-const CURVE_WORDS_PER_ROW: u32 = CURVE_TEX_WIDTH * 4;
-const BAND_WORDS_PER_ROW: u32 = BAND_TEX_WIDTH * 2;
 const INFO_WIDTH: u32 = upload_plan.INFO_WIDTH;
+const CURVE_WORDS_PER_ROW: u32 = upload_plan.CURVE_TEX_WIDTH * 4;
+const BAND_WORDS_PER_ROW: u32 = upload_plan.BAND_TEX_WIDTH * 2;
 
 pub const DeviceAtlasOptions = struct {
     max_bindings: u32 = 16,
@@ -57,32 +53,124 @@ pub const DeviceAtlasOptions = struct {
     max_image_height: u32 = 1024,
 };
 
-pub const UploadError = upload_plan.Error || std.mem.Allocator.Error || error{
+pub const UploadError = upload_plan.Error || upload_plan.FlatLayout.Error || std.mem.Allocator.Error || error{
     BindingOutputLengthMismatch,
     ActiveBindingCountOverflow,
     ImageTooLarge,
-    MissingCommandBuffer,
     NoSuitableMemory,
     IncompleteResourceState,
+    RecorderDeviceMismatch,
     UploadSizeOverflow,
     VulkanError,
     VulkanMapMemoryReturnedNull,
 };
-pub const ResizeError = upload_plan.InitError || std.mem.Allocator.Error || error{
+pub const ResizeError = upload_plan.InitError || upload_plan.FlatLayout.Error || std.mem.Allocator.Error || error{
     ActiveBindingsPreventResize,
-    PendingUploadsPreventResize,
     VulkanError,
 };
 
-/// Minimal pipeline-shape adapter the cache talks to. The real
-/// `VulkanPipeline` satisfies this surface; tests can stub it.
-pub const PipelineShape = struct {
+/// Resident-resource creation context. Upload command buffers and staging
+/// retirement are deliberately absent; those belong to `UploadRecorder`.
+pub const ResourceContext = struct {
     ctx: VulkanContext,
-    transfer_cmd_pool: vk.VkCommandPool,
-    scheduled_resource_upload_cmd: vk.VkCommandBuffer,
     sampler_nearest: vk.VkSampler,
     sampler_linear: vk.VkSampler,
     desc_set_layout: vk.VkDescriptorSetLayout,
+};
+
+/// Caller-owned state for one or more atlas uploads recorded into `cmd`.
+/// The command buffer must be recording on a graphics-capable queue family:
+/// the emitted barriers make resources immediately vertex/fragment-readable.
+/// After the caller submits and observes completion, call `releaseCompleted`.
+pub const UploadRecorder = struct {
+    allocator: std.mem.Allocator,
+    resources: ResourceContext,
+    cmd: vk.VkCommandBuffer,
+    staging: std.ArrayListUnmanaged(StagingBuffer) = .empty,
+
+    const StagingBuffer = struct {
+        buffer: vk.VkBuffer,
+        memory: vk.VkDeviceMemory,
+    };
+
+    const StagingWrite = struct {
+        buffer: vk.VkBuffer,
+        memory: vk.VkDeviceMemory,
+        bytes: [*]u8,
+    };
+
+    pub fn init(allocator: std.mem.Allocator, resources: ResourceContext, cmd: vk.VkCommandBuffer) UploadRecorder {
+        std.debug.assert(cmd != null);
+        return .{ .allocator = allocator, .resources = resources, .cmd = cmd };
+    }
+
+    fn beginStaging(self: *UploadRecorder, byte_len: usize) UploadError!StagingWrite {
+        try self.staging.ensureUnusedCapacity(self.allocator, 1);
+        var buffer: vk.VkBuffer = null;
+        var memory: vk.VkDeviceMemory = null;
+        try vk_device.createBuffer(
+            &self.resources,
+            @intCast(byte_len),
+            vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+            vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT,
+            &buffer,
+            &memory,
+        );
+        errdefer vk_device.destroyStagingBuffer(&self.resources, buffer, memory);
+
+        var mapped: ?*anyopaque = null;
+        try vk_device.check(vk.vkMapMemory(
+            self.resources.ctx.device,
+            memory,
+            0,
+            @intCast(byte_len),
+            0,
+            &mapped,
+        ));
+        return .{
+            .buffer = buffer,
+            .memory = memory,
+            .bytes = @ptrCast(mapped orelse {
+                vk.vkUnmapMemory(self.resources.ctx.device, memory);
+                return error.VulkanMapMemoryReturnedNull;
+            }),
+        };
+    }
+
+    fn retainStaging(self: *UploadRecorder, write: *StagingWrite) void {
+        vk.vkUnmapMemory(self.resources.ctx.device, write.memory);
+        self.staging.appendAssumeCapacity(.{
+            .buffer = write.buffer,
+            .memory = write.memory,
+        });
+        write.buffer = null;
+        write.memory = null;
+    }
+
+    fn discardStaging(self: *UploadRecorder, write: *StagingWrite) void {
+        if (write.memory != null) {
+            vk.vkUnmapMemory(self.resources.ctx.device, write.memory);
+            vk_device.destroyStagingBuffer(&self.resources, write.buffer, write.memory);
+        }
+        write.buffer = null;
+        write.memory = null;
+    }
+
+    /// Destroy staging resources after the caller's completion primitive has
+    /// signaled. This function performs no wait and submits nothing.
+    pub fn releaseCompleted(self: *UploadRecorder) void {
+        for (self.staging.items) |s| {
+            vk.vkDestroyBuffer(self.resources.ctx.device, s.buffer, null);
+            vk.vkFreeMemory(self.resources.ctx.device, s.memory, null);
+        }
+        self.staging.clearRetainingCapacity();
+    }
+
+    pub fn deinit(self: *UploadRecorder) void {
+        std.debug.assert(self.staging.items.len == 0);
+        self.staging.deinit(self.allocator);
+        self.* = undefined;
+    }
 };
 
 pub const VulkanDeviceAtlas = struct {
@@ -91,18 +179,17 @@ pub const VulkanDeviceAtlas = struct {
     allocator: std.mem.Allocator,
     pool: *PagePool,
     options: DeviceAtlasOptions,
-    pipeline: PipelineShape,
+    resources: ResourceContext,
 
-    // Pool-wide resident images.
-    curve_image: vk.VkImage = null,
+    // Pool-wide compact formatted buffers.
+    flat: upload_plan.FlatLayout,
+    curve_buffer: vk.VkBuffer = null,
     curve_memory: vk.VkDeviceMemory = null,
-    curve_view: vk.VkImageView = null,
-    curve_layout: vk.VkImageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    curve_view: vk.VkBufferView = null,
 
-    band_image: vk.VkImage = null,
+    band_buffer: vk.VkBuffer = null,
     band_memory: vk.VkDeviceMemory = null,
-    band_view: vk.VkImageView = null,
-    band_layout: vk.VkImageLayout = vk.VK_IMAGE_LAYOUT_UNDEFINED,
+    band_view: vk.VkBufferView = null,
 
     layer_info_image: vk.VkImage = null,
     layer_info_memory: vk.VkDeviceMemory = null,
@@ -118,12 +205,8 @@ pub const VulkanDeviceAtlas = struct {
     desc_pool: vk.VkDescriptorPool = null,
     desc_set: vk.VkDescriptorSet = null,
 
-    curve_height: u32 = 0,
-    band_height: u32 = 0,
-    layer_count: u32 = 0,
-
     // Font-atlas upload planning — caller-owned state (snail.atlas_upload.Planner).
-    // The GPU images + descriptor set stay here; the CPU allocation + region/
+    // The GPU resources + descriptor set stay here; the CPU allocation + region/
     // delta computation is the planner's. Backing slices are cache-owned.
     planner: upload_plan.Planner,
     plan_gen: []u64,
@@ -140,16 +223,6 @@ pub const VulkanDeviceAtlas = struct {
     info_scratch_stride: usize,
     active_bindings: u32 = 0,
 
-    // Staging buffers whose copies were recorded into a caller-provided upload
-    // command buffer (queue-decoupled path) and therefore must outlive the
-    // caller's submit. Freed by `releaseUploads`.
-    pending_staging: std.ArrayListUnmanaged(StagingBuffer) = .empty,
-
-    const StagingBuffer = struct {
-        buffer: vk.VkBuffer,
-        memory: vk.VkDeviceMemory,
-    };
-
     fn plannerOptions(options: DeviceAtlasOptions) upload_plan.Options {
         return .{
             .max_bindings = options.max_bindings,
@@ -160,22 +233,46 @@ pub const VulkanDeviceAtlas = struct {
         };
     }
 
-    fn validateDeviceLimits(pool: *const PagePool, options: DeviceAtlasOptions) upload_plan.InitError!void {
-        const pool_config = pool.config();
-        const curve_height = pool_config.curve_words_per_page / CURVE_WORDS_PER_ROW;
-        const band_height = pool_config.band_words_per_page / BAND_WORDS_PER_ROW;
-        if (curve_height > std.math.maxInt(i32) or
-            band_height > std.math.maxInt(i32) or
-            options.layer_info_height > std.math.maxInt(i32) or
-            options.max_image_width > std.math.maxInt(i32) or
-            options.max_image_height > std.math.maxInt(i32))
+    fn validateDeviceLimits(ctx: VulkanContext, pool: *const PagePool, options: DeviceAtlasOptions) !void {
+        const flat = try upload_plan.FlatLayout.init(pool);
+        var props: vk.VkPhysicalDeviceProperties = undefined;
+        vk.vkGetPhysicalDeviceProperties(ctx.physical_device, &props);
+        if (flat.curve_total_texels > props.limits.maxTexelBufferElements or
+            flat.band_total_texels > props.limits.maxTexelBufferElements or
+            INFO_WIDTH > props.limits.maxImageDimension2D or
+            @max(1, options.layer_info_height) > props.limits.maxImageDimension2D or
+            @max(1, options.max_image_width) > props.limits.maxImageDimension2D or
+            @max(1, options.max_image_height) > props.limits.maxImageDimension2D or
+            @max(1, options.max_images) > props.limits.maxImageArrayLayers)
         {
             return error.InvalidOptions;
         }
+        inline for (.{
+            vk.VK_FORMAT_R16G16B16A16_SFLOAT,
+            vk.VK_FORMAT_R16G16_UINT,
+        }) |format| {
+            var format_props: vk.VkFormatProperties = undefined;
+            vk.vkGetPhysicalDeviceFormatProperties(ctx.physical_device, format, &format_props);
+            if (format_props.bufferFeatures & vk.VK_FORMAT_FEATURE_UNIFORM_TEXEL_BUFFER_BIT == 0) {
+                return error.InvalidOptions;
+            }
+        }
+        inline for (.{
+            vk.VK_FORMAT_R32G32B32A32_SFLOAT,
+            vk.VK_FORMAT_R8G8B8A8_SRGB,
+        }) |format| {
+            var format_props: vk.VkFormatProperties = undefined;
+            vk.vkGetPhysicalDeviceFormatProperties(ctx.physical_device, format, &format_props);
+            const required = vk.VK_FORMAT_FEATURE_SAMPLED_IMAGE_BIT |
+                vk.VK_FORMAT_FEATURE_TRANSFER_DST_BIT;
+            if (format_props.optimalTilingFeatures & required != required) {
+                return error.InvalidOptions;
+            }
+        }
     }
 
-    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, pipeline: PipelineShape, options: DeviceAtlasOptions) !Self {
-        try validateDeviceLimits(pool, options);
+    pub fn init(allocator: std.mem.Allocator, pool: *PagePool, resources: ResourceContext, options: DeviceAtlasOptions) !Self {
+        try validateDeviceLimits(resources.ctx, pool, options);
         const opts = plannerOptions(options);
         const sz = try upload_plan.sizes(pool, opts);
         const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
@@ -201,7 +298,8 @@ pub const VulkanDeviceAtlas = struct {
             .allocator = allocator,
             .pool = pool,
             .options = options,
-            .pipeline = pipeline,
+            .resources = resources,
+            .flat = try upload_plan.FlatLayout.init(pool),
             .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
             .plan_gen = gen,
             .plan_curve = curve_words,
@@ -215,17 +313,7 @@ pub const VulkanDeviceAtlas = struct {
         };
     }
 
-    /// Free staging buffers retained from queue-decoupled uploads. The caller
-    /// invokes this after the command buffer it provided (via
-    /// `embeddable.cachePipelineShapeCallerUpload`) has finished executing.
-    pub fn releaseUploads(self: *Self) void {
-        for (self.pending_staging.items) |s| vk_device.destroyStagingBuffer(&self.pipeline, s.buffer, s.memory);
-        self.pending_staging.clearRetainingCapacity();
-    }
-
     pub fn deinit(self: *Self) void {
-        self.releaseUploads();
-        self.pending_staging.deinit(self.allocator);
         self.destroyGpuResources();
         self.allocator.free(self.plan_gen);
         self.allocator.free(self.plan_curve);
@@ -240,19 +328,24 @@ pub const VulkanDeviceAtlas = struct {
 
     // ── Custom-shader resource handles ──
     //
-    // Vulkan backends expose the `VkImageView`s a custom shader needs
-    // to sample the cache's textures. They become non-null once the
-    // first `upload`/`uploadDelta` populates them, and are left in
-    // `VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL` by that upload — so a
-    // caller sampling them after the upload's transfer completes needs
-    // no further layout transition.
+    // Vulkan backends expose the resource views a custom shader needs. They
+    // become non-null on the first upload. The texel buffers require no image
+    // layout; the sampled images are left shader-readable.
 
-    pub fn curveTexHandle(self: *const Self) vk.VkImageView {
+    pub fn curveBufferView(self: *const Self) vk.VkBufferView {
         return self.curve_view;
     }
 
-    pub fn bandTexHandle(self: *const Self) vk.VkImageView {
+    pub fn bandBufferView(self: *const Self) vk.VkBufferView {
         return self.band_view;
+    }
+
+    /// Fixed page strides consumed by the flat-buffer shader ABI.
+    pub fn atlasPageTexels(self: *const Self) [2]i32 {
+        return .{
+            @intCast(self.flat.curve_page_texels),
+            @intCast(self.flat.band_page_texels),
+        };
     }
 
     pub fn layerInfoTexHandle(self: *const Self) vk.VkImageView {
@@ -279,12 +372,25 @@ pub const VulkanDeviceAtlas = struct {
     }
 
     fn destroyGpuResources(self: *Self) void {
-        const dev = self.pipeline.ctx.device;
+        const dev = self.resources.ctx.device;
         if (dev == null) return;
 
         if (self.desc_pool != null) vk.vkDestroyDescriptorPool(dev, self.desc_pool, null);
         self.desc_pool = null;
         self.desc_set = null;
+
+        if (self.curve_view != null) vk.vkDestroyBufferView(dev, self.curve_view, null);
+        if (self.curve_buffer != null) vk.vkDestroyBuffer(dev, self.curve_buffer, null);
+        if (self.curve_memory != null) vk.vkFreeMemory(dev, self.curve_memory, null);
+        self.curve_view = null;
+        self.curve_buffer = null;
+        self.curve_memory = null;
+        if (self.band_view != null) vk.vkDestroyBufferView(dev, self.band_view, null);
+        if (self.band_buffer != null) vk.vkDestroyBuffer(dev, self.band_buffer, null);
+        if (self.band_memory != null) vk.vkFreeMemory(dev, self.band_memory, null);
+        self.band_view = null;
+        self.band_buffer = null;
+        self.band_memory = null;
 
         const destroy_image = struct {
             fn call(d: vk.VkDevice, view: *vk.VkImageView, img: *vk.VkImage, mem: *vk.VkDeviceMemory) void {
@@ -296,21 +402,16 @@ pub const VulkanDeviceAtlas = struct {
                 mem.* = null;
             }
         }.call;
-        destroy_image(dev, &self.curve_view, &self.curve_image, &self.curve_memory);
-        destroy_image(dev, &self.band_view, &self.band_image, &self.band_memory);
         destroy_image(dev, &self.layer_info_view, &self.layer_info_image, &self.layer_info_memory);
         destroy_image(dev, &self.image_array_view, &self.image_array_image, &self.image_array_memory);
 
-        self.curve_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED;
-        self.band_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED;
         self.layer_info_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED;
         self.image_array_layout = vk.VK_IMAGE_LAYOUT_UNDEFINED;
     }
 
     pub fn resize(self: *Self, options: DeviceAtlasOptions) ResizeError!void {
         if (self.active_bindings > 0) return error.ActiveBindingsPreventResize;
-        if (self.pending_staging.items.len > 0) return error.PendingUploadsPreventResize;
-        try validateDeviceLimits(self.pool, options);
+        try validateDeviceLimits(self.resources.ctx, self.pool, options);
         const opts = plannerOptions(options);
         const sz = try upload_plan.sizes(self.pool, opts);
         const info_scratch_len = std.math.mul(usize, sz.layer_info_scratch, options.max_bindings) catch return error.InvalidOptions;
@@ -373,11 +474,12 @@ pub const VulkanDeviceAtlas = struct {
     /// embeddable caller builds their `VkPipelineLayout` from this so their
     /// pipeline is compatible with the set snail binds.
     pub fn descriptorSetLayout(self: *const Self) vk.VkDescriptorSetLayout {
-        return self.pipeline.desc_set_layout;
+        return self.resources.desc_set_layout;
     }
 
     pub fn upload(
         self: *Self,
+        recorder: *UploadRecorder,
         scratch: std.mem.Allocator,
         atlases: []const *const Atlas,
         out_bindings: []Binding,
@@ -419,7 +521,7 @@ pub const VulkanDeviceAtlas = struct {
         }
 
         try self.ensureGpuResources();
-        try self.flushBatch(scratch, &batch);
+        try self.flushBatch(recorder, &batch);
         self.active_bindings = next_active;
     }
 
@@ -433,6 +535,7 @@ pub const VulkanDeviceAtlas = struct {
     /// it before returning.
     pub fn uploadDelta(
         self: *Self,
+        recorder: *UploadRecorder,
         scratch: std.mem.Allocator,
         prev_binding: Binding,
         atlas: *const Atlas,
@@ -460,7 +563,7 @@ pub const VulkanDeviceAtlas = struct {
         errdefer self.planner.invalidateUploads();
         try appendRegions(scratch, &batch, self.plan_regions[0..len]);
         try self.ensureGpuResources();
-        try self.flushBatch(scratch, &batch);
+        try self.flushBatch(recorder, &batch);
         return binding;
     }
 
@@ -471,69 +574,73 @@ pub const VulkanDeviceAtlas = struct {
         }
     }
 
-    // ── Resident image creation ──
+    // ── Resident resource creation ──
 
     fn ensureGpuResources(self: *Self) UploadError!void {
-        const complete = self.curve_image != null and
-            self.band_image != null and
-            (self.options.layer_info_height == 0 or self.layer_info_image != null) and
-            (self.options.max_images == 0 or self.image_array_image != null) and
+        const complete = self.curve_buffer != null and
+            self.band_buffer != null and
+            self.layer_info_image != null and
+            self.image_array_image != null and
             self.desc_pool != null and self.desc_set != null;
         if (complete) return;
 
-        const empty = self.curve_image == null and self.band_image == null and
+        const empty = self.curve_buffer == null and self.band_buffer == null and
             self.layer_info_image == null and self.image_array_image == null and
             self.desc_pool == null and self.desc_set == null;
         if (!empty) return error.IncompleteResourceState;
         errdefer self.destroyGpuResources();
 
-        try self.createPoolImages();
-        if (self.options.layer_info_height > 0) try self.createLayerInfoImage();
-        if (self.options.max_images > 0) try self.createImageArrayImage();
+        try self.createPoolBuffers();
+        try self.createLayerInfoImage();
+        try self.createImageArrayImage();
         try self.createDescriptorSet();
     }
 
-    fn createPoolImages(self: *Self) UploadError!void {
-        const opts = self.pool.config();
-        self.curve_height = opts.curve_words_per_page / CURVE_WORDS_PER_ROW;
-        self.band_height = opts.band_words_per_page / BAND_WORDS_PER_ROW;
-        self.layer_count = opts.max_layers;
-        std.debug.assert(self.curve_height > 0 and self.band_height > 0);
+    fn createPoolBuffers(self: *Self) UploadError!void {
+        const usage = vk.VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+            vk.VK_BUFFER_USAGE_UNIFORM_TEXEL_BUFFER_BIT;
+        try vk_device.createBuffer(&self.resources, self.flat.curveByteSize(), usage, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self.curve_buffer, &self.curve_memory);
+        try vk_device.createBuffer(&self.resources, self.flat.bandByteSize(), usage, vk.VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT, &self.band_buffer, &self.band_memory);
 
-        self.curve_image = try vk_device.createImage2DArray(&self.pipeline, CURVE_TEX_WIDTH, self.curve_height, self.layer_count, vk.VK_FORMAT_R16G16B16A16_SFLOAT);
-        self.curve_memory = try vk_device.allocateImageMemory(&self.pipeline, self.curve_image);
-        _ = vk.vkBindImageMemory(self.pipeline.ctx.device, self.curve_image, self.curve_memory, 0);
-        self.curve_view = try vk_device.createImageView(&self.pipeline, self.curve_image, vk.VK_FORMAT_R16G16B16A16_SFLOAT, self.layer_count);
-
-        self.band_image = try vk_device.createImage2DArray(&self.pipeline, BAND_TEX_WIDTH, self.band_height, self.layer_count, vk.VK_FORMAT_R16G16_UINT);
-        self.band_memory = try vk_device.allocateImageMemory(&self.pipeline, self.band_image);
-        _ = vk.vkBindImageMemory(self.pipeline.ctx.device, self.band_image, self.band_memory, 0);
-        self.band_view = try vk_device.createImageView(&self.pipeline, self.band_image, vk.VK_FORMAT_R16G16_UINT, self.layer_count);
+        inline for (.{
+            .{ &self.curve_view, self.curve_buffer, vk.VK_FORMAT_R16G16B16A16_SFLOAT, self.flat.curveByteSize() },
+            .{ &self.band_view, self.band_buffer, vk.VK_FORMAT_R16G16_UINT, self.flat.bandByteSize() },
+        }) |item| {
+            const info = std.mem.zeroInit(vk.VkBufferViewCreateInfo, .{
+                .sType = vk.VK_STRUCTURE_TYPE_BUFFER_VIEW_CREATE_INFO,
+                .buffer = item[1],
+                .format = item[2],
+                .offset = 0,
+                .range = item[3],
+            });
+            try vk_device.check(vk.vkCreateBufferView(self.resources.ctx.device, &info, null, item[0]));
+        }
     }
 
     fn createLayerInfoImage(self: *Self) UploadError!void {
-        self.layer_info_image = try vk_device.createImage2D(&self.pipeline, INFO_WIDTH, self.options.layer_info_height, vk.VK_FORMAT_R32G32B32A32_SFLOAT);
-        self.layer_info_memory = try vk_device.allocateImageMemory(&self.pipeline, self.layer_info_image);
-        _ = vk.vkBindImageMemory(self.pipeline.ctx.device, self.layer_info_image, self.layer_info_memory, 0);
-        self.layer_info_view = try vk_device.createImageView2D(&self.pipeline, self.layer_info_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT);
+        self.layer_info_image = try vk_device.createImage2D(&self.resources, INFO_WIDTH, @max(1, self.options.layer_info_height), vk.VK_FORMAT_R32G32B32A32_SFLOAT);
+        self.layer_info_memory = try vk_device.allocateImageMemory(&self.resources, self.layer_info_image);
+        try vk_device.check(vk.vkBindImageMemory(self.resources.ctx.device, self.layer_info_image, self.layer_info_memory, 0));
+        self.layer_info_view = try vk_device.createImageView2D(&self.resources, self.layer_info_image, vk.VK_FORMAT_R32G32B32A32_SFLOAT);
     }
 
     fn createImageArrayImage(self: *Self) UploadError!void {
-        self.image_array_image = try vk_device.createImage2DArray(&self.pipeline, self.options.max_image_width, self.options.max_image_height, self.options.max_images, vk.VK_FORMAT_R8G8B8A8_SRGB);
-        self.image_array_memory = try vk_device.allocateImageMemory(&self.pipeline, self.image_array_image);
-        _ = vk.vkBindImageMemory(self.pipeline.ctx.device, self.image_array_image, self.image_array_memory, 0);
-        self.image_array_view = try vk_device.createImageView(&self.pipeline, self.image_array_image, vk.VK_FORMAT_R8G8B8A8_SRGB, self.options.max_images);
+        self.image_array_image = try vk_device.createImage2DArray(&self.resources, @max(1, self.options.max_image_width), @max(1, self.options.max_image_height), @max(1, self.options.max_images), vk.VK_FORMAT_R8G8B8A8_SRGB);
+        self.image_array_memory = try vk_device.allocateImageMemory(&self.resources, self.image_array_image);
+        try vk_device.check(vk.vkBindImageMemory(self.resources.ctx.device, self.image_array_image, self.image_array_memory, 0));
+        self.image_array_view = try vk_device.createImageView(&self.resources, self.image_array_image, vk.VK_FORMAT_R8G8B8A8_SRGB, @max(1, self.options.max_images));
     }
 
     fn createDescriptorSet(self: *Self) UploadError!void {
-        const dev = self.pipeline.ctx.device;
-        const pool_size = [1]vk.VkDescriptorPoolSize{
-            .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 4 },
+        const dev = self.resources.ctx.device;
+        const pool_size = [2]vk.VkDescriptorPoolSize{
+            .{ .type = vk.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER, .descriptorCount = 2 },
+            .{ .type = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, .descriptorCount = 2 },
         };
         const dp_info = std.mem.zeroInit(vk.VkDescriptorPoolCreateInfo, .{
             .sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO,
             .maxSets = 1,
-            .poolSizeCount = 1,
+            .poolSizeCount = pool_size.len,
             .pPoolSizes = &pool_size,
         });
         try vk_device.check(vk.vkCreateDescriptorPool(dev, &dp_info, null, &self.desc_pool));
@@ -542,33 +649,48 @@ pub const VulkanDeviceAtlas = struct {
         ds_info.sType = vk.VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
         ds_info.descriptorPool = self.desc_pool;
         ds_info.descriptorSetCount = 1;
-        ds_info.pSetLayouts = @ptrCast(&self.pipeline.desc_set_layout);
+        ds_info.pSetLayouts = @ptrCast(&self.resources.desc_set_layout);
         try vk_device.check(vk.vkAllocateDescriptorSets(dev, &ds_info, &self.desc_set));
 
-        // The shader always reads from layer_info/image_array via
-        // bindings 2/3. When the cache has no such resources, point
-        // the descriptor at `curve_view` as a placeholder — the
-        // shader will never actually sample it for that draw.
-        const effective_layer_view = if (self.layer_info_view != null) self.layer_info_view else self.curve_view;
-        const effective_image_view = if (self.image_array_view != null) self.image_array_view else self.curve_view;
-
-        const image_infos = [4]vk.VkDescriptorImageInfo{
-            .{ .sampler = self.pipeline.sampler_nearest, .imageView = self.curve_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-            .{ .sampler = self.pipeline.sampler_nearest, .imageView = self.band_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-            .{ .sampler = self.pipeline.sampler_nearest, .imageView = effective_layer_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
-            .{ .sampler = self.pipeline.sampler_linear, .imageView = effective_image_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+        const image_infos = [2]vk.VkDescriptorImageInfo{
+            .{ .sampler = self.resources.sampler_nearest, .imageView = self.layer_info_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
+            .{ .sampler = self.resources.sampler_linear, .imageView = self.image_array_view, .imageLayout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL },
         };
-        var writes: [4]vk.VkWriteDescriptorSet = undefined;
-        for (&writes, 0..) |*w, i| {
-            w.* = std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+        var texel_views = [2]vk.VkBufferView{ self.curve_view, self.band_view };
+        var writes = [4]vk.VkWriteDescriptorSet{
+            std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
                 .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
                 .dstSet = self.desc_set,
-                .dstBinding = @as(u32, @intCast(i)),
+                .dstBinding = 0,
+                .descriptorCount = 1,
+                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                .pTexelBufferView = &texel_views[0],
+            }),
+            std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = self.desc_set,
+                .dstBinding = 1,
+                .descriptorCount = 1,
+                .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
+                .pTexelBufferView = &texel_views[1],
+            }),
+            std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = self.desc_set,
+                .dstBinding = 2,
                 .descriptorCount = 1,
                 .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
-                .pImageInfo = &image_infos[i],
-            });
-        }
+                .pImageInfo = &image_infos[0],
+            }),
+            std.mem.zeroInit(vk.VkWriteDescriptorSet, .{
+                .sType = vk.VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET,
+                .dstSet = self.desc_set,
+                .dstBinding = 3,
+                .descriptorCount = 1,
+                .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+                .pImageInfo = &image_infos[1],
+            }),
+        };
         vk.vkUpdateDescriptorSets(dev, 4, &writes, 0, null);
     }
 
@@ -581,14 +703,15 @@ pub const VulkanDeviceAtlas = struct {
 
     fn appendRegions(scratch: std.mem.Allocator, batch: *UploadBatch, regions: []const upload_plan.Region) UploadError!void {
         for (regions) |r| switch (r.target) {
-            .curve => try batch.curve_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
-            .band => try batch.band_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
+            .curve => try batch.curve_ops.append(scratch, .{ .src = r.src, .page = r.page, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
+            .band => try batch.band_ops.append(scratch, .{ .src = r.src, .page = r.page, .col_base = r.col_base, .row_base = r.row_base, .width = r.width, .height = r.height }),
             .image => try batch.image_ops.append(scratch, .{ .src = r.src, .layer = r.layer, .width = r.width, .height = r.height }),
             .layer_info => try batch.layer_info_ops.append(scratch, .{ .src = r.src, .row_base = r.row_base, .width = r.width, .height = r.height }),
         };
     }
 
-    fn flushBatch(self: *Self, _: std.mem.Allocator, batch: *UploadBatch) UploadError!void {
+    fn flushBatch(self: *Self, recorder: *UploadRecorder, batch: *UploadBatch) UploadError!void {
+        if (recorder.resources.ctx.device != self.resources.ctx.device) return error.RecorderDeviceMismatch;
         var total: usize = 0;
         for (batch.curve_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
         for (batch.band_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
@@ -596,14 +719,9 @@ pub const VulkanDeviceAtlas = struct {
         for (batch.layer_info_ops.items) |op| total = std.math.add(usize, total, op.src.len) catch return error.UploadSizeOverflow;
         if (total == 0) return;
 
-        var staging_buf: vk.VkBuffer = null;
-        var staging_mem: vk.VkDeviceMemory = null;
-        try vk_device.createBuffer(&self.pipeline, @intCast(total), vk.VK_BUFFER_USAGE_TRANSFER_SRC_BIT, vk.VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | vk.VK_MEMORY_PROPERTY_HOST_COHERENT_BIT, &staging_buf, &staging_mem);
-        errdefer vk_device.destroyStagingBuffer(&self.pipeline, staging_buf, staging_mem);
-
-        var map_ptr: ?*anyopaque = null;
-        try vk_device.check(vk.vkMapMemory(self.pipeline.ctx.device, staging_mem, 0, @intCast(total), 0, &map_ptr));
-        const dst: [*]u8 = @ptrCast(map_ptr orelse return error.VulkanMapMemoryReturnedNull);
+        var staging = try recorder.beginStaging(total);
+        errdefer recorder.discardStaging(&staging);
+        const dst = staging.bytes;
 
         var cursor: usize = 0;
         const assignOffsets = struct {
@@ -619,40 +737,48 @@ pub const VulkanDeviceAtlas = struct {
         assignOffsets(dst, &cursor, batch.band_ops);
         assignOffsets(dst, &cursor, batch.image_ops);
         assignOffsets(dst, &cursor, batch.layer_info_ops);
-        vk.vkUnmapMemory(self.pipeline.ctx.device, staging_mem);
+        const cmd = recorder.cmd;
 
-        const transfer = try vk_device.beginTransferCommand(&self.pipeline);
-        errdefer vk_device.discardTransferCommand(&self.pipeline, transfer);
-        if (!transfer.owned) try self.pending_staging.ensureUnusedCapacity(self.allocator, 1);
-        const cmd = transfer.cmd;
-
-        // Transition every touched image once.
-        if (batch.curve_ops.items.len > 0)
-            vk_device.transitionImageLayout(cmd, self.curve_image, self.layer_count, self.curve_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
-        if (batch.band_ops.items.len > 0)
-            vk_device.transitionImageLayout(cmd, self.band_image, self.layer_count, self.band_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+        // Transition every touched sampled image once. Curve and band data are
+        // buffers, so they only need the transfer→shader memory barrier below.
         if (batch.image_ops.items.len > 0)
-            vk_device.transitionImageLayout(cmd, self.image_array_image, self.options.max_images, self.image_array_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vk_device.transitionImageLayout(cmd, self.image_array_image, @max(1, self.options.max_images), self.image_array_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         if (batch.layer_info_ops.items.len > 0)
-            vk_device.transitionImageLayout(cmd, self.layer_info_image, 1, self.layer_info_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL);
+            vk_device.transitionImageLayout(cmd, self.layer_info_image, 1, self.layer_info_layout, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
 
         for (batch.curve_ops.items) |op| {
-            const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
-                .bufferOffset = @as(vk.VkDeviceSize, @intCast(op.staging_offset)),
-                .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = op.layer, .layerCount = 1 },
-                .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
-                .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
-            });
-            vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.curve_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            const copy = (try self.flat.translate(.{
+                .target = .curve,
+                .src = op.src,
+                .page = op.page,
+                .col_base = op.col_base,
+                .row_base = op.row_base,
+                .width = op.width,
+                .height = op.height,
+            })).?;
+            const region = vk.VkBufferCopy{
+                .srcOffset = @intCast(op.staging_offset),
+                .dstOffset = copy.byte_offset,
+                .size = @intCast(op.src.len),
+            };
+            vk.vkCmdCopyBuffer(cmd, staging.buffer, self.curve_buffer, 1, &region);
         }
         for (batch.band_ops.items) |op| {
-            const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
-                .bufferOffset = @as(vk.VkDeviceSize, @intCast(op.staging_offset)),
-                .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = op.layer, .layerCount = 1 },
-                .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
-                .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
-            });
-            vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.band_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            const copy = (try self.flat.translate(.{
+                .target = .band,
+                .src = op.src,
+                .page = op.page,
+                .col_base = op.col_base,
+                .row_base = op.row_base,
+                .width = op.width,
+                .height = op.height,
+            })).?;
+            const region = vk.VkBufferCopy{
+                .srcOffset = @intCast(op.staging_offset),
+                .dstOffset = copy.byte_offset,
+                .size = @intCast(op.src.len),
+            };
+            vk.vkCmdCopyBuffer(cmd, staging.buffer, self.band_buffer, 1, &region);
         }
         for (batch.image_ops.items) |op| {
             const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
@@ -660,7 +786,7 @@ pub const VulkanDeviceAtlas = struct {
                 .imageSubresource = vk.VkImageSubresourceLayers{ .aspectMask = vk.VK_IMAGE_ASPECT_COLOR_BIT, .mipLevel = 0, .baseArrayLayer = op.layer, .layerCount = 1 },
                 .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
             });
-            vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.image_array_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            vk.vkCmdCopyBufferToImage(cmd, staging.buffer, self.image_array_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         }
         for (batch.layer_info_ops.items) |op| {
             const region = std.mem.zeroInit(vk.VkBufferImageCopy, .{
@@ -669,42 +795,68 @@ pub const VulkanDeviceAtlas = struct {
                 .imageOffset = vk.VkOffset3D{ .x = @intCast(op.col_base), .y = @intCast(op.row_base), .z = 0 },
                 .imageExtent = vk.VkExtent3D{ .width = op.width, .height = op.height, .depth = 1 },
             });
-            vk.vkCmdCopyBufferToImage(cmd, staging_buf, self.layer_info_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
+            vk.vkCmdCopyBufferToImage(cmd, staging.buffer, self.layer_info_image, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
         }
 
+        var buffer_barriers: [2]vk.VkBufferMemoryBarrier = undefined;
+        var buffer_barrier_count: u32 = 0;
         if (batch.curve_ops.items.len > 0) {
-            vk_device.transitionImageLayout(cmd, self.curve_image, self.layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            buffer_barriers[buffer_barrier_count] = std.mem.zeroInit(vk.VkBufferMemoryBarrier, .{
+                .sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT,
+                .srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                .buffer = self.curve_buffer,
+                .offset = 0,
+                .size = vk.VK_WHOLE_SIZE,
+            });
+            buffer_barrier_count += 1;
         }
         if (batch.band_ops.items.len > 0) {
-            vk_device.transitionImageLayout(cmd, self.band_image, self.layer_count, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            buffer_barriers[buffer_barrier_count] = std.mem.zeroInit(vk.VkBufferMemoryBarrier, .{
+                .sType = vk.VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
+                .srcAccessMask = vk.VK_ACCESS_TRANSFER_WRITE_BIT,
+                .dstAccessMask = vk.VK_ACCESS_SHADER_READ_BIT,
+                .srcQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                .dstQueueFamilyIndex = vk.VK_QUEUE_FAMILY_IGNORED,
+                .buffer = self.band_buffer,
+                .offset = 0,
+                .size = vk.VK_WHOLE_SIZE,
+            });
+            buffer_barrier_count += 1;
+        }
+        if (buffer_barrier_count > 0) {
+            vk.vkCmdPipelineBarrier(
+                cmd,
+                vk.VK_PIPELINE_STAGE_TRANSFER_BIT,
+                vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                0,
+                0,
+                null,
+                buffer_barrier_count,
+                &buffer_barriers,
+                0,
+                null,
+            );
         }
         if (batch.image_ops.items.len > 0) {
-            vk_device.transitionImageLayout(cmd, self.image_array_image, self.options.max_images, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            vk_device.transitionImageLayout(cmd, self.image_array_image, @max(1, self.options.max_images), vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         }
         if (batch.layer_info_ops.items.len > 0) {
-            vk_device.transitionImageLayout(cmd, self.layer_info_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
+            vk_device.transitionImageLayout(cmd, self.layer_info_image, 1, vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, vk.VK_PIPELINE_STAGE_VERTEX_SHADER_BIT | vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
         }
 
-        try vk_device.finishTransferCommand(&self.pipeline, transfer);
-        if (batch.curve_ops.items.len > 0) self.curve_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        if (batch.band_ops.items.len > 0) self.band_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         if (batch.image_ops.items.len > 0) self.image_array_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
         if (batch.layer_info_ops.items.len > 0) self.layer_info_layout = vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
-        if (transfer.owned) {
-            // Owned one-shot: finishTransferCommand already submitted + waited,
-            // so the copy is done and the staging buffer is safe to free.
-            vk_device.destroyStagingBuffer(&self.pipeline, staging_buf, staging_mem);
-        } else {
-            // Caller-provided command buffer: the copy hasn't executed yet.
-            // Retain the staging buffer until the caller calls releaseUploads.
-            self.pending_staging.appendAssumeCapacity(.{ .buffer = staging_buf, .memory = staging_mem });
-        }
+        recorder.retainStaging(&staging);
     }
 };
 
 const ArrayCopyOp = struct {
     src: []const u8,
-    layer: u32,
+    page: u32 = 0,
+    layer: u32 = 0,
     row_base: u32 = 0,
     col_base: u32 = 0,
     width: u32,
@@ -739,21 +891,19 @@ const testing = std.testing;
 
 test "VulkanDeviceAtlas init allocates fixed-capacity slots" {
     var pool = try PagePool.init(testing.allocator, .{
-        .max_layers = 4,
+        .max_pages = 4,
         .curve_words_per_page = CURVE_WORDS_PER_ROW * 4,
         .band_words_per_page = BAND_WORDS_PER_ROW * 2,
     });
     defer pool.deinit();
 
-    const zero_pipeline = PipelineShape{
+    const zero_resources = ResourceContext{
         .ctx = std.mem.zeroes(VulkanContext),
-        .transfer_cmd_pool = null,
-        .scheduled_resource_upload_cmd = null,
         .sampler_nearest = null,
         .sampler_linear = null,
         .desc_set_layout = null,
     };
-    var cache = try VulkanDeviceAtlas.init(testing.allocator, pool, zero_pipeline, .{
+    var cache = try VulkanDeviceAtlas.init(testing.allocator, pool, zero_resources, .{
         .max_bindings = 3,
         .layer_info_height = 8,
         .max_images = 2,
@@ -768,6 +918,12 @@ test "VulkanDeviceAtlas init allocates fixed-capacity slots" {
     try testing.expectEqual(@as(usize, 4), cache.plan_gen.len);
 
     var unexpected_binding: [1]Binding = undefined;
-    try testing.expectError(error.BindingOutputLengthMismatch, cache.upload(testing.allocator, &.{}, &unexpected_binding));
+    var recorder = UploadRecorder{
+        .allocator = testing.allocator,
+        .resources = zero_resources,
+        .cmd = null,
+    };
+    defer recorder.deinit();
+    try testing.expectError(error.BindingOutputLengthMismatch, cache.upload(&recorder, testing.allocator, &.{}, &unexpected_binding));
     try testing.expectEqual(@as(u32, 0), cache.active_bindings);
 }

@@ -330,6 +330,48 @@ const VulkanDriver = struct {
     pass_states: [MAX_PASSES]PassState = [_]PassState{.{}} ** MAX_PASSES,
     last_timings: FrameTimings = .{},
 
+    const UploadCache = struct {
+        driver: *VulkanDriver,
+
+        fn upload(
+            self: *UploadCache,
+            allocator: std.mem.Allocator,
+            atlases: []const *const snail.Atlas,
+            bindings: []snail.render.records.Binding,
+        ) !void {
+            try embed_vulkan.uploadAndWait(
+                allocator,
+                self.driver.ctx,
+                embed_vulkan.cacheResourceContext(self.driver.ctx, &self.driver.layout),
+                self.driver.transfer_pool,
+                &self.driver.cache.?,
+                atlases,
+                bindings,
+            );
+        }
+
+        fn uploadDelta(
+            self: *UploadCache,
+            allocator: std.mem.Allocator,
+            previous: snail.render.records.Binding,
+            atlas: *const snail.Atlas,
+        ) !snail.render.records.Binding {
+            return embed_vulkan.uploadDeltaAndWait(
+                allocator,
+                self.driver.ctx,
+                embed_vulkan.cacheResourceContext(self.driver.ctx, &self.driver.layout),
+                self.driver.transfer_pool,
+                &self.driver.cache.?,
+                previous,
+                atlas,
+            );
+        }
+
+        fn release(self: *UploadCache, binding: snail.render.records.Binding) void {
+            self.driver.cache.?.release(binding);
+        }
+    };
+
     fn init(allocator: std.mem.Allocator, window: *wayland.Window) !VulkanDriver {
         const ctx = try vulkan_platform.initForWindow(window, false);
         errdefer vulkan_platform.deinit();
@@ -372,7 +414,7 @@ const VulkanDriver = struct {
         var cache_fresh = false;
         if (self.cache_pool != pool_ptr) {
             if (self.cache) |*c| c.deinit();
-            self.cache = try embed_vulkan.VulkanDeviceAtlas.init(self.allocator, pool, embed_vulkan.cachePipelineShape(self.ctx, &self.layout, self.transfer_pool), .{
+            self.cache = try embed_vulkan.VulkanDeviceAtlas.init(self.allocator, pool, embed_vulkan.cacheResourceContext(self.ctx, &self.layout), .{
                 .max_bindings = 16,
                 .layer_info_height = 64,
                 .max_images = 8,
@@ -385,7 +427,8 @@ const VulkanDriver = struct {
         }
 
         const sync_t0 = wayland.getTime();
-        try syncPassBindings(embed_vulkan.VulkanDeviceAtlas, &self.cache.?, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
+        var upload_cache = UploadCache{ .driver = self };
+        try syncPassBindings(UploadCache, &upload_cache, allocator, passes, self.pass_states[0..passes.len], cache_fresh);
         self.last_timings.sync_us = (wayland.getTime() - sync_t0) * 1_000_000.0;
 
         var records_buf: [MAX_PASSES]PassRecords = undefined;

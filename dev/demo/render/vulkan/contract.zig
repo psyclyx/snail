@@ -47,27 +47,32 @@ pub const PUSH_CONSTANT_STAGE_FLAGS: vk.VkShaderStageFlags =
     vk.VK_SHADER_STAGE_VERTEX_BIT | vk.VK_SHADER_STAGE_FRAGMENT_BIT;
 
 /// Build the per-draw push constants for the text-coverage recipe from a
-/// `DrawState`. This is the single source of truth the reference caller and
-/// an embeddable caller both use, so their pushed constants are identical.
-/// `grayscale` selects the non-subpixel path (the text-coverage recipe today).
-pub fn textPushConstants(draw_state: render_state.DrawState, local_layer_base: u32, grayscale: bool) PushConstants {
+/// `DrawState`. `atlas_page_texels` is the curve/band pair returned by the
+/// cache's `atlasPageTexels()`. `grayscale` selects the non-subpixel path.
+pub fn textPushConstants(
+    draw_state: render_state.DrawState,
+    local_layer_base: u32,
+    atlas_page_texels: [2]i32,
+    grayscale: bool,
+) PushConstants {
     return .{
         .mvp = draw_state.mvp.data,
         .viewport = .{ @floatFromInt(draw_state.surface.pixel_width), @floatFromInt(draw_state.surface.pixel_height) },
         .subpixel_order = @intFromEnum(if (grayscale) render_state.SubpixelOrder.none else draw_state.raster.subpixel_order),
         .output_srgb = if (draw_state.surface.encoding.shaderEncodesSrgb()) 1 else 0,
-        .layer_base = @intCast(local_layer_base),
+        .page_base = @intCast(local_layer_base),
         .coverage_exponent = draw_state.raster.coverage_transfer.shaderExponent(),
         .dither_scale = draw_state.surface.format.ditherAmplitude(),
         .mask_output = if (draw_state.surface.format.hasColor()) 0 else 1,
+        .atlas_page_texels = atlas_page_texels,
     };
 }
 
 // ── Descriptor binding order ──
 
-/// Descriptor-set binding indices (all `VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER`,
-/// stage `FRAGMENT`). See `resource_layout.zig` for the concrete layout snail
-/// builds; a caller building their own must match these exactly.
+/// Descriptor-set binding indices. Curve and band are uniform texel buffers;
+/// layer-info and image are combined image samplers. See `layout.zig` for the
+/// concrete reference layout.
 pub const CURVE_BINDING: u32 = 0;
 pub const BAND_BINDING: u32 = 1;
 pub const LAYER_INFO_BINDING: u32 = 2;
@@ -109,12 +114,10 @@ pub const INDICES_PER_GLYPH: u32 = QUAD_INDICES.len;
 // ── Shader modules ──
 
 /// Compiled SPIR-V (native Slang, from
-/// `src/snail/shader/slang/families/*.slang`). The shaders declare the
-/// atlas textures as sampled images (and, for the image paint, a sampler
-/// aliasing the same binding), which Vulkan permits to be backed by the
-/// existing COMBINED_IMAGE_SAMPLER descriptors. Autohint uses its fitting
-/// vertex stage; the other families pair with `vert_text_native_spv`.
-/// Callers hand these to `vkCreateShaderModule`.
+/// `src/snail/shader/slang/families/*.slang`). Curve and band data use the
+/// flat typed-buffer variants; paint data remains sampled images. Autohint
+/// uses its fitting vertex stage; the other families pair with
+/// `vert_text_native_spv`. Callers hand these to `vkCreateShaderModule`.
 pub const vert_text_native_spv = vk_shaders.vert_text_native_spv;
 pub const frag_text_native_spv = vk_shaders.frag_text_native_spv;
 pub const frag_colr_native_spv = vk_shaders.frag_colr_native_spv;

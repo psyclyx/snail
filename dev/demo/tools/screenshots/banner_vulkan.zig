@@ -24,7 +24,7 @@ pub fn main() !void {
     defer vulkan_platform.deinitOffscreen();
 
     const pool = try snail.PagePool.init(allocator, .{
-        .max_layers = 24,
+        .max_pages = 24,
         .curve_words_per_page = 1 << 18,
         .band_words_per_page = 1 << 16,
     });
@@ -63,7 +63,7 @@ pub fn main() !void {
     const transfer_pool = try embed_vulkan.createTransferPool(vk_ctx);
     defer vk.vkDestroyCommandPool(vk_ctx.device, transfer_pool, null);
 
-    var cache = try embed_vulkan.VulkanDeviceAtlas.init(allocator, scene.pool, embed_vulkan.cachePipelineShape(vk_ctx, &layout, transfer_pool), .{
+    var cache = try embed_vulkan.VulkanDeviceAtlas.init(allocator, scene.pool, embed_vulkan.cacheResourceContext(vk_ctx, &layout), .{
         .max_bindings = 4,
         .layer_info_height = 256,
         .max_images = 8,
@@ -72,7 +72,15 @@ pub fn main() !void {
     });
     defer cache.deinit();
     var bindings: [2]snail.render.records.Binding = undefined;
-    try cache.upload(allocator, &.{ scene.paths_atlas, scene.text_atlas }, &bindings);
+    try embed_vulkan.uploadAndWait(
+        allocator,
+        vk_ctx,
+        embed_vulkan.cacheResourceContext(vk_ctx, &layout),
+        transfer_pool,
+        &cache,
+        &.{ scene.paths_atlas, scene.text_atlas },
+        &bindings,
+    );
 
     const instances = try allocator.alloc(snail.render.records.Instance, harness.shapeBudget(scene));
     defer allocator.free(instances);

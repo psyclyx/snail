@@ -39,12 +39,12 @@ pub fn main() !void {
     // Standalone embeddable setup. This tool demonstrates the §6 queue-
     // decoupled upload: the cache records its atlas upload into a caller-owned
     // command buffer that the caller submits + synchronizes (see
-    // `cacheWithDecoupledUpload`); snail never touches the queue.
+    // `cacheWithCallerUpload`); Snail's core never touches the queue.
     var layout: embed_vulkan.VulkanResourceLayout = undefined;
     try layout.init(vk_ctx);
     defer layout.deinit();
     var bindings: [2]snail.render.records.Binding = undefined;
-    var cache = try embed_vulkan.cacheWithDecoupledUpload(allocator, vk_ctx, scene.pool, &layout, &.{ scene.paths_atlas, scene.text_atlas }, &bindings, .{
+    var cache = try embed_vulkan.cacheWithCallerUpload(allocator, vk_ctx, scene.pool, &layout, &.{ scene.paths_atlas, scene.text_atlas }, &bindings, .{
         .max_bindings = 4,
         .layer_info_height = 64,
         .max_images = 8,

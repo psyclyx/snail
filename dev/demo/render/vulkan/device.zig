@@ -3,11 +3,6 @@ const vulkan_types = @import("vulkan_types");
 
 pub const vk = vulkan_types.vk;
 
-pub const TransferCommand = struct {
-    cmd: vk.VkCommandBuffer,
-    owned: bool,
-};
-
 pub fn createBuffer(self: anytype, size: vk.VkDeviceSize, usage: vk.VkBufferUsageFlags, properties: vk.VkMemoryPropertyFlags, buffer: *vk.VkBuffer, memory: *vk.VkDeviceMemory) !void {
     const ci = std.mem.zeroInit(vk.VkBufferCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
@@ -95,63 +90,9 @@ pub fn createImageView(self: anytype, image: vk.VkImage, format: vk.VkFormat, la
     return view;
 }
 
-pub fn beginTransferCommand(self: anytype) !TransferCommand {
-    if (self.scheduled_resource_upload_cmd != null) {
-        return .{ .cmd = self.scheduled_resource_upload_cmd, .owned = false };
-    }
-
-    var cmd: vk.VkCommandBuffer = null;
-    const alloc_info = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
-        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
-        .commandPool = self.transfer_cmd_pool,
-        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
-        .commandBufferCount = 1,
-    });
-    try check(vk.vkAllocateCommandBuffers(self.ctx.device, &alloc_info, &cmd));
-
-    const begin_info = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
-        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
-        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
-    });
-    try check(vk.vkBeginCommandBuffer(cmd, &begin_info));
-    return .{ .cmd = cmd, .owned = true };
-}
-
-pub fn discardTransferCommand(self: anytype, transfer: TransferCommand) void {
-    if (transfer.owned and transfer.cmd != null) {
-        var cmd = transfer.cmd;
-        vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
-    }
-}
-
-pub fn finishTransferCommand(self: anytype, transfer: TransferCommand) !void {
-    if (!transfer.owned) return;
-    try check(vk.vkEndCommandBuffer(transfer.cmd));
-    try submitTransferAndWait(self, transfer.cmd);
-    var cmd = transfer.cmd;
-    vk.vkFreeCommandBuffers(self.ctx.device, self.transfer_cmd_pool, 1, &cmd);
-}
-
 pub fn destroyStagingBuffer(self: anytype, buffer: vk.VkBuffer, memory: vk.VkDeviceMemory) void {
     vk.vkDestroyBuffer(self.ctx.device, buffer, null);
     vk.vkFreeMemory(self.ctx.device, memory, null);
-}
-
-fn submitTransferAndWait(self: anytype, cmd: vk.VkCommandBuffer) !void {
-    var fence: vk.VkFence = null;
-    const fence_info = std.mem.zeroInit(vk.VkFenceCreateInfo, .{
-        .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
-    });
-    try check(vk.vkCreateFence(self.ctx.device, &fence_info, null, &fence));
-    defer vk.vkDestroyFence(self.ctx.device, fence, null);
-
-    const submit_info = std.mem.zeroInit(vk.VkSubmitInfo, .{
-        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
-        .commandBufferCount = 1,
-        .pCommandBuffers = &cmd,
-    });
-    try check(vk.vkQueueSubmit(self.ctx.graphics_queue, 1, &submit_info, fence));
-    try check(vk.vkWaitForFences(self.ctx.device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64)));
 }
 
 pub fn createImage2D(self: anytype, width: u32, height: u32, format: vk.VkFormat) !vk.VkImage {
@@ -192,7 +133,14 @@ pub fn createImageView2D(self: anytype, image: vk.VkImage, format: vk.VkFormat) 
     return view;
 }
 
-pub fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_count: u32, old_layout: vk.VkImageLayout, new_layout: vk.VkImageLayout) void {
+pub fn transitionImageLayout(
+    cmd: vk.VkCommandBuffer,
+    image: vk.VkImage,
+    layer_count: u32,
+    old_layout: vk.VkImageLayout,
+    new_layout: vk.VkImageLayout,
+    shader_stages: vk.VkPipelineStageFlags,
+) void {
     var src_stage: vk.VkPipelineStageFlags = 0;
     var dst_stage: vk.VkPipelineStageFlags = 0;
     var src_access: vk.VkAccessFlags = 0;
@@ -206,13 +154,13 @@ pub fn transitionImageLayout(cmd: vk.VkCommandBuffer, image: vk.VkImage, layer_c
     } else if (old_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL) {
         src_access = vk.VK_ACCESS_SHADER_READ_BIT;
         dst_access = vk.VK_ACCESS_TRANSFER_WRITE_BIT;
-        src_stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        src_stage = shader_stages;
         dst_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
     } else if (old_layout == vk.VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL and new_layout == vk.VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL) {
         src_access = vk.VK_ACCESS_TRANSFER_WRITE_BIT;
         dst_access = vk.VK_ACCESS_SHADER_READ_BIT;
         src_stage = vk.VK_PIPELINE_STAGE_TRANSFER_BIT;
-        dst_stage = vk.VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
+        dst_stage = shader_stages;
     }
 
     const barrier = std.mem.zeroInit(vk.VkImageMemoryBarrier, .{

@@ -26,8 +26,9 @@ pub const VulkanDeviceAtlas = @import("device_atlas.zig").VulkanDeviceAtlas;
 pub const DeviceAtlasOptions = @import("device_atlas.zig").DeviceAtlasOptions;
 pub const VulkanResourceLayout = @import("layout.zig").VulkanResourceLayout;
 const embeddable = @import("resources.zig");
-pub const cachePipelineShape = embeddable.cachePipelineShape;
-pub const cachePipelineShapeCallerUpload = embeddable.cachePipelineShapeCallerUpload;
+pub const ResourceContext = embeddable.ResourceContext;
+pub const UploadRecorder = embeddable.UploadRecorder;
+pub const cacheResourceContext = embeddable.cacheResourceContext;
 
 const PREMUL_FAMILIES = [_]contract.Family{ .text, .colr, .path_quadratic, .path_conic, .path, .tt_hinted_text, .autohint };
 const SUBPIXEL_FAMILIES = [_]contract.Family{ .subpixel, .tt_hinted_subpixel, .autohint_subpixel };
@@ -212,7 +213,12 @@ pub const Renderer = struct {
                 self.pipelines[index];
             vk.vkCmdBindPipeline(cmd, vk.VK_PIPELINE_BIND_POINT_GRAPHICS, pipeline);
 
-            var pc = contract.textPushConstants(draw_state, 0, mode == .grayscale);
+            var pc = contract.textPushConstants(
+                draw_state,
+                batch.page_base,
+                cache.atlasPageTexels(),
+                mode == .grayscale,
+            );
             vk.vkCmdPushConstants(cmd, self.pipeline_layout, contract.PUSH_CONSTANT_STAGE_FLAGS, 0, contract.PUSH_CONSTANT_SIZE, &pc);
 
             var buf = self.vbo.buffer;
@@ -305,12 +311,10 @@ fn buildPipelines(self: *Renderer, ctx: VulkanContext, depth_mode: DepthMode) !v
 }
 
 /// Create a `VulkanDeviceAtlas` and upload `atlases` via a caller-owned
-/// command buffer submitted on the caller's queue — the §6 queue-decoupled
-/// path. snail only RECORDS the copies (`cachePipelineShapeCallerUpload`); this
-/// helper (the caller) allocates a transient command buffer, ends + submits it
-/// with its own fence, waits, then releases the staging buffers. The worked
-/// example for hosts that can't cede their queue to snail.
-pub fn cacheWithDecoupledUpload(
+/// command buffer submitted on the graphics queue. The cache only records
+/// copies into `UploadRecorder`; this reference caller allocates the command
+/// buffer, submits, waits, and retires staging.
+pub fn cacheWithCallerUpload(
     allocator: std.mem.Allocator,
     ctx: VulkanContext,
     page_pool: *snail.PagePool,
@@ -336,14 +340,18 @@ pub fn cacheWithDecoupledUpload(
     });
     try check(vk.vkBeginCommandBuffer(upload_cmd, &bi));
 
-    var cache = try VulkanDeviceAtlas.init(allocator, page_pool, cachePipelineShapeCallerUpload(ctx, layout, upload_cmd), cache_opts);
+    const resources = cacheResourceContext(ctx, layout);
+    var cache = try VulkanDeviceAtlas.init(allocator, page_pool, resources, cache_opts);
     errdefer cache.deinit();
-    try cache.upload(allocator, atlases, bindings); // records copies into upload_cmd — no submit
+    var recorder = UploadRecorder.init(allocator, resources, upload_cmd);
+    defer recorder.deinit();
+    defer recorder.releaseCompleted();
+    try cache.upload(&recorder, allocator, atlases, bindings);
 
     try check(vk.vkEndCommandBuffer(upload_cmd));
 
-    // The caller owns submission + synchronization. (A real host might use a
-    // dedicated transfer queue; the offscreen platform exposes only the one.)
+    // The caller owns submission + synchronization. This encoder emits
+    // graphics-stage barriers and therefore requires a graphics-capable queue.
     var fence: vk.VkFence = null;
     const fi = std.mem.zeroInit(vk.VkFenceCreateInfo, .{ .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO });
     try check(vk.vkCreateFence(ctx.device, &fi, null, &fence));
@@ -355,12 +363,12 @@ pub fn cacheWithDecoupledUpload(
     });
     try check(vk.vkQueueSubmit(ctx.graphics_queue, 1, &si, fence));
     try check(vk.vkWaitForFences(ctx.device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64)));
-    cache.releaseUploads();
+    recorder.releaseCompleted();
     return cache;
 }
 
-/// Build a transfer command pool on the graphics queue family — what a
-/// standalone `VulkanDeviceAtlas` needs (see `embeddable.cachePipelineShape`).
+/// Build a transient command pool on the graphics queue family for the
+/// blocking reference helpers below.
 pub fn createTransferPool(ctx: VulkanContext) !vk.VkCommandPool {
     const ci = std.mem.zeroInit(vk.VkCommandPoolCreateInfo, .{
         .sType = vk.VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO,
@@ -370,6 +378,86 @@ pub fn createTransferPool(ctx: VulkanContext) !vk.VkCommandPool {
     var pool: vk.VkCommandPool = null;
     try check(vk.vkCreateCommandPool(ctx.device, &ci, null, &pool));
     return pool;
+}
+
+/// Reference-caller convenience for initialization paths that intentionally
+/// block. Production hosts normally record with `UploadRecorder` into their
+/// own frame/upload graph and retire staging from their completion callback.
+pub fn uploadAndWait(
+    allocator: std.mem.Allocator,
+    ctx: VulkanContext,
+    resources: ResourceContext,
+    command_pool: vk.VkCommandPool,
+    cache: *VulkanDeviceAtlas,
+    atlases: []const *const snail.Atlas,
+    bindings: []snail.render.records.Binding,
+) !void {
+    var cmd = try beginUploadCommand(ctx, command_pool);
+    errdefer vk.vkFreeCommandBuffers(ctx.device, command_pool, 1, &cmd);
+    var recorder = UploadRecorder.init(allocator, resources, cmd);
+    defer recorder.deinit();
+    defer recorder.releaseCompleted();
+    try cache.upload(&recorder, allocator, atlases, bindings);
+    try finishUploadAndWait(ctx, command_pool, cmd, &recorder);
+}
+
+pub fn uploadDeltaAndWait(
+    allocator: std.mem.Allocator,
+    ctx: VulkanContext,
+    resources: ResourceContext,
+    command_pool: vk.VkCommandPool,
+    cache: *VulkanDeviceAtlas,
+    previous: snail.render.records.Binding,
+    atlas: *const snail.Atlas,
+) !snail.render.records.Binding {
+    var cmd = try beginUploadCommand(ctx, command_pool);
+    errdefer vk.vkFreeCommandBuffers(ctx.device, command_pool, 1, &cmd);
+    var recorder = UploadRecorder.init(allocator, resources, cmd);
+    defer recorder.deinit();
+    defer recorder.releaseCompleted();
+    const binding = try cache.uploadDelta(&recorder, allocator, previous, atlas);
+    try finishUploadAndWait(ctx, command_pool, cmd, &recorder);
+    return binding;
+}
+
+fn beginUploadCommand(ctx: VulkanContext, command_pool: vk.VkCommandPool) !vk.VkCommandBuffer {
+    var cmd: vk.VkCommandBuffer = null;
+    const ai = std.mem.zeroInit(vk.VkCommandBufferAllocateInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = command_pool,
+        .level = vk.VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = 1,
+    });
+    try check(vk.vkAllocateCommandBuffers(ctx.device, &ai, &cmd));
+    const bi = std.mem.zeroInit(vk.VkCommandBufferBeginInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = vk.VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    });
+    try check(vk.vkBeginCommandBuffer(cmd, &bi));
+    return cmd;
+}
+
+fn finishUploadAndWait(
+    ctx: VulkanContext,
+    command_pool: vk.VkCommandPool,
+    cmd: vk.VkCommandBuffer,
+    recorder: *UploadRecorder,
+) !void {
+    try check(vk.vkEndCommandBuffer(cmd));
+    var fence: vk.VkFence = null;
+    const fi = std.mem.zeroInit(vk.VkFenceCreateInfo, .{ .sType = vk.VK_STRUCTURE_TYPE_FENCE_CREATE_INFO });
+    try check(vk.vkCreateFence(ctx.device, &fi, null, &fence));
+    defer vk.vkDestroyFence(ctx.device, fence, null);
+    const si = std.mem.zeroInit(vk.VkSubmitInfo, .{
+        .sType = vk.VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cmd,
+    });
+    try check(vk.vkQueueSubmit(ctx.graphics_queue, 1, &si, fence));
+    try check(vk.vkWaitForFences(ctx.device, 1, &fence, vk.VK_TRUE, std.math.maxInt(u64)));
+    recorder.releaseCompleted();
+    var free_cmd = cmd;
+    vk.vkFreeCommandBuffers(ctx.device, command_pool, 1, &free_cmd);
 }
 
 fn buildPipeline(ctx: VulkanContext, layout: vk.VkPipelineLayout, r: contract.PipelineRecipe, depth_mode: DepthMode) !vk.VkPipeline {

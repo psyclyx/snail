@@ -4,11 +4,8 @@
 //! it is the stable surface callers build their own pipelines from, and
 //! the device atlas writes its descriptor set against the same layout.
 //!
-//! The layout owns two immutable samplers (nearest for the curve/band/
-//! layer-info textures, linear for the image array) baked into a 4-binding
-//! combined-image-sampler descriptor-set layout (see `contract.zig` for the
-//! binding order). A `VulkanDeviceAtlas` is fed this layout's handles via
-//! `PipelineShape` to allocate + write its descriptor set.
+//! Curve/band bindings are read-only uniform texel buffers. The layout owns
+//! immutable samplers only for layer-info and image textures.
 
 const std = @import("std");
 
@@ -61,18 +58,16 @@ pub const VulkanResourceLayout = struct {
         var bindings: [4]vk.VkDescriptorSetLayoutBinding = undefined;
         bindings[contract.CURVE_BINDING] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = contract.CURVE_BINDING,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
             .descriptorCount = 1,
             .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
         });
-        bindings[contract.CURVE_BINDING].pImmutableSamplers = &self.sampler_nearest;
         bindings[contract.BAND_BINDING] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = contract.BAND_BINDING,
-            .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
+            .descriptorType = vk.VK_DESCRIPTOR_TYPE_UNIFORM_TEXEL_BUFFER,
             .descriptorCount = 1,
             .stageFlags = vk.VK_SHADER_STAGE_FRAGMENT_BIT,
         });
-        bindings[contract.BAND_BINDING].pImmutableSamplers = &self.sampler_nearest;
         bindings[contract.LAYER_INFO_BINDING] = std.mem.zeroInit(vk.VkDescriptorSetLayoutBinding, .{
             .binding = contract.LAYER_INFO_BINDING,
             .descriptorType = vk.VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER,
