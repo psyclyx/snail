@@ -1,5 +1,48 @@
 # Changelog
 
+## 0.15.0 - 2026-07-27
+
+### Changed (breaking)
+
+- `PagePool.Options.max_pages` now describes up to 65,536 logical atlas
+  pages. Packed instances retain an 8-bit bank-local layer while
+  `DrawBatch.page_base` carries the aligned logical-page base; curve/band
+  upload regions expose `page` separately from image-array `layer`.
+- The render ABI is version 3. Shared shader parameters now include the
+  curve and band page strides required by flat storage, and custom sampled
+  text carries one page base per glyph.
+- Generated shader families now include flat typed-buffer variants for every
+  coverage path. Desktop OpenGL uses `samplerBuffer`/`usamplerBuffer`;
+  Vulkan uses formatted uniform texel buffers. GLES 3.0 retains texture
+  arrays.
+
+### Performance
+
+- Page CPU backing is allocated lazily, so large logical capacities no
+  longer reserve every curve/band page up front. Pool statistics distinguish
+  logical capacity from allocated storage.
+- Font line and quadratic records use two `RGBA16F` texels instead of four.
+  A bounded two-dimensional best-fit scan recovers complementary curve/band
+  holes while keeping insertion independent of total atlas size.
+- Desktop GL groups dirty uploads by backing buffer and coalesces adjacent
+  regions. The terminal defaults give curve-heavy CJK outlines more room per
+  page.
+
+### Integration and correctness
+
+- Snail's core remains GPU-API-free. The caller-side Vulkan reference encoder
+  records into a caller-provided graphics command buffer and never submits,
+  waits, or chooses the consumer's synchronization policy; staging is retired
+  only after caller-observed completion.
+- Vulkan resource validation now covers texel-buffer and image limits,
+  required format features, checked memory binding, shader-stage-correct
+  barriers, and transactional buffer creation. Dedicated transfer queues
+  require engine-owned release/acquire barriers and are not claimed by the
+  reference encoder.
+- Flat-layout translation validates page bounds, row geometry, source byte
+  lengths, and signed shader-address limits. Concurrent atlas placement
+  retries observed candidates instead of spuriously exhausting the pool.
+
 ## 0.14.0 - 2026-07-27
 
 ### Changed (breaking)
