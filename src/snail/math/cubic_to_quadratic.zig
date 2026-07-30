@@ -23,7 +23,12 @@ const Vec2 = vec.Vec2;
 /// This is one quarter of an f16 ULP at unit magnitude, matching the prepared
 /// stroke-offset budget.
 pub const default_tolerance: f32 = 1.0 / 8192.0;
-pub const max_depth: u8 = 10;
+/// Cap on the analytic piece count for one critical-root span before the
+/// bisection fallback takes over. Spans are extrema/inflection-free after the
+/// critical split, so a handful is the norm; this only bounds pathological
+/// curvature. The fallback preserves the tolerance guarantee regardless.
+pub const max_pieces: u32 = 32;
+const fallback_depth: u8 = 6;
 
 const CriticalRoots = struct {
     values: [6]f64 = .{ 0, 0, 0, 0, 0, 0 },
@@ -146,6 +151,53 @@ fn appendSpan(
     out: *std.ArrayList(CurveSegment),
     curve: CubicBezier,
     tolerance: f32,
+) !void {
+    const quad = tangentFit(curve);
+    const err = fitErrorBound(curve, quad);
+    if (err <= tolerance) {
+        try out.append(allocator, CurveSegment.fromQuad(quad));
+        return;
+    }
+    // The degree-reduction error scales as 1/n^3 under uniform subdivision (a
+    // sub-cubic on a length-1/n interval has leading coefficient a/n^3), so the
+    // piece count follows directly from the whole-span error — no need to
+    // bisect and re-fit every internal node, and no rounding up to a power of
+    // two. Each piece is verified; the rare one the estimate under-splits falls
+    // back to bounded bisection so the tolerance guarantee is exact.
+    var n: u32 = @intFromFloat(@ceil(std.math.cbrt(err / tolerance)));
+    n = std.math.clamp(n, 2, max_pieces);
+    var remaining = curve;
+    var i: u32 = 0;
+    while (i + 1 < n) : (i += 1) {
+        const local_t: f32 = 1.0 / @as(f32, @floatFromInt(n - i));
+        const halves = remaining.split(local_t);
+        try appendPiece(allocator, out, halves[0], tolerance);
+        remaining = halves[1];
+    }
+    try appendPiece(allocator, out, remaining, tolerance);
+}
+
+/// Fit one uniform sub-piece; bisect (bounded) only if the analytic estimate
+/// left it over tolerance.
+fn appendPiece(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(CurveSegment),
+    curve: CubicBezier,
+    tolerance: f32,
+) !void {
+    const quad = tangentFit(curve);
+    if (fitErrorBound(curve, quad) <= tolerance) {
+        try out.append(allocator, CurveSegment.fromQuad(quad));
+        return;
+    }
+    try appendSpanBisect(allocator, out, curve, tolerance, fallback_depth);
+}
+
+fn appendSpanBisect(
+    allocator: std.mem.Allocator,
+    out: *std.ArrayList(CurveSegment),
+    curve: CubicBezier,
+    tolerance: f32,
     depth: u8,
 ) !void {
     const quad = tangentFit(curve);
@@ -154,8 +206,8 @@ fn appendSpan(
         return;
     }
     const halves = curve.split(0.5);
-    try appendSpan(allocator, out, halves[0], tolerance, depth - 1);
-    try appendSpan(allocator, out, halves[1], tolerance, depth - 1);
+    try appendSpanBisect(allocator, out, halves[0], tolerance, depth - 1);
+    try appendSpanBisect(allocator, out, halves[1], tolerance, depth - 1);
 }
 
 fn appendCubic(
@@ -172,11 +224,11 @@ fn appendCubic(
         const local_t: f32 = @floatCast(local_t64);
         if (!(local_t > 0.0 and local_t < 1.0)) continue;
         const halves = remaining.split(local_t);
-        try appendSpan(allocator, out, halves[0], tolerance, max_depth);
+        try appendSpan(allocator, out, halves[0], tolerance);
         remaining = halves[1];
         previous_t = root;
     }
-    try appendSpan(allocator, out, remaining, tolerance, max_depth);
+    try appendSpan(allocator, out, remaining, tolerance);
 }
 
 pub fn lower(
