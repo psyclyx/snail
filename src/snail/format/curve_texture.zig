@@ -242,8 +242,13 @@ pub fn encodeDirectSingleGlyphCurves(
 pub fn encodeDenseQuadraticSingleGlyphCurves(
     allocator: std.mem.Allocator,
     prepared: []const CurveSegment,
+    /// When the caller has already validated `prepared` in this pipeline,
+    /// skip the redundant finiteness pre-pass. The per-curve
+    /// `curveFitsDirectF16` gate below still rejects non-finite and
+    /// out-of-f16-range control points, so encoding stays safe.
+    trusted: bool,
 ) ![]u16 {
-    try validateCurveData(prepared, .zero);
+    if (!trusted) try validateCurveData(prepared, .zero);
     const words_per_segment: usize = DENSE_QUADRATIC_SEGMENT_TEXELS * 4;
     const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
         return error.ShapeTooComplex;

@@ -110,6 +110,7 @@ pub fn packCurves(
         false,
         prepared,
         prepared_bboxes,
+        false,
     );
     errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 

@@ -546,6 +546,7 @@ pub fn buildGlyphBandData(
         prefer_direct_encoding,
         prepared_curves,
         null,
+        false,
     );
 }
 
@@ -563,6 +564,11 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     /// produced by `prepareGlyphCurvesForDirectEncodingWithBBoxes`. When
     /// non-null, skips the in-loop boundingBox computation.
     precomputed_bboxes: ?[]const BBox,
+    /// When the caller has already validated `curves`/`prepared_curves` in
+    /// this pipeline, skip the redundant per-curve finiteness pre-passes.
+    /// The O(1) geometry/transform finiteness checks below always run, so
+    /// the float-to-band-index math stays trap-free.
+    trusted: bool,
 ) !GlyphBandData {
     if (curves.len == 0) {
         if (prepared_curves.len != 0) return error.InvalidCurveData;
@@ -570,14 +576,16 @@ pub fn buildGlyphBandDataWithPreparedCurves(
     }
     if (prepared_curves.len != curves.len) return error.InvalidCurveData;
     if (curves.len > std.math.maxInt(u16)) return error.ShapeTooComplex;
-    try curve_tex.validateCurveData(curves, origin);
-    try curve_tex.validateCurveData(prepared_curves, .zero);
+    if (!trusted) {
+        try curve_tex.validateCurveData(curves, origin);
+        try curve_tex.validateCurveData(prepared_curves, .zero);
+    }
     const bbox_values = .{ bbox.min.x, bbox.min.y, bbox.max.x, bbox.max.y };
     inline for (bbox_values) |value| {
         if (!std.math.isFinite(value)) return error.InvalidCurveData;
     }
     if (bbox.min.x > bbox.max.x or bbox.min.y > bbox.max.y) return error.InvalidCurveData;
-    if (precomputed_bboxes) |pb| {
+    if (!trusted) if (precomputed_bboxes) |pb| {
         if (pb.len != prepared_curves.len) return error.InvalidOutputBufferSize;
         for (pb) |prepared_bbox| {
             const values = .{ prepared_bbox.min.x, prepared_bbox.min.y, prepared_bbox.max.x, prepared_bbox.max.y };
@@ -585,7 +593,7 @@ pub fn buildGlyphBandDataWithPreparedCurves(
                 if (!std.math.isFinite(value)) return error.InvalidCurveData;
             }
         }
-    }
+    };
 
     const band_curve_count = if (logical_curve_count == 0) curves.len else logical_curve_count;
     const h_bands = bandCount(band_curve_count);
@@ -624,13 +632,13 @@ pub fn buildGlyphBandDataWithPreparedCurves(
         if (!std.math.isFinite(value)) return error.InvalidCurveData;
     }
     if (geometry.width < 0 or geometry.height < 0 or geometry.epsilon < 0) return error.InvalidCurveData;
-    for (curve_bboxes) |curve_bbox| {
+    if (!trusted) for (curve_bboxes) |curve_bbox| {
         const values = .{ curve_bbox.min.x, curve_bbox.min.y, curve_bbox.max.x, curve_bbox.max.y };
         inline for (values) |value| if (!std.math.isFinite(value)) return error.InvalidCurveData;
         if (curve_bbox.min.x > curve_bbox.max.x or curve_bbox.min.y > curve_bbox.max.y) {
             return error.InvalidCurveData;
         }
-    }
+    };
 
     // Validate the transform before membership's float-to-integer band range
     // conversion. Finite inputs can still overflow in width or offset
@@ -810,6 +818,7 @@ test "finite extreme geometry is rejected before band-index conversion" {
         false,
         &curves,
         null,
+        false,
     ));
 }
 

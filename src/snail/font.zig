@@ -41,6 +41,15 @@ test {
 pub const Font = struct {
     inner: ttf.Font,
     variations: []const Variation = &.{},
+    /// Lazily-created HarfBuzz backend (face/font/draw-funcs) for glyph outline
+    /// extraction, cached across all `extractCurves` calls. Building it is
+    /// expensive — it parses the font tables and, for a variable font,
+    /// instantiates the named coordinates — so doing it once per glyph (the old
+    /// behavior) dominated batch prep. Reused across glyphs; `glyphOutline`
+    /// doesn't mutate it. NOTE: single-owner — the Font must not be copied once
+    /// this is set (the copy would share, then double-free the hb handles), and
+    /// concurrent extraction needs one Instance per thread (this caches one).
+    modern_instance: ?modern_font.Instance = null,
 
     /// Parse an OpenType font from raw file data.
     /// The data slice must outlive the Font.
@@ -181,6 +190,23 @@ pub const Font = struct {
     /// pass an `ArenaAllocator.allocator()` as `scratch` and reset it
     /// between glyphs; one-shot callers can pass the same allocator
     /// twice.
+    /// The cached HarfBuzz backend, built on first use. See `modern_instance`.
+    /// Single-threaded: the `@constCast` lazy init is safe only because glyph
+    /// extraction runs on one thread; parallel extraction must hold its own
+    /// Instance per thread.
+    fn ensureInstance(self: *const Font) !*modern_font.Instance {
+        const mut = @constCast(self);
+        if (mut.modern_instance == null) {
+            mut.modern_instance = try modern_font.Instance.init(
+                self.inner.data,
+                self.inner.face_index,
+                self.inner.units_per_em,
+                self.variations,
+            );
+        }
+        return &mut.modern_instance.?;
+    }
+
     pub fn extractCurves(
         self: *const Font,
         allocator: std.mem.Allocator,
@@ -245,13 +271,7 @@ fn extractCurvesInner(
     glyph_id: u16,
 ) !curves_mod.GlyphCurves {
     if (font.requiresModernBackend()) {
-        var instance = try modern_font.Instance.init(
-            font.inner.data,
-            font.inner.face_index,
-            font.inner.units_per_em,
-            font.variations,
-        );
-        defer instance.deinit();
+        const instance = try font.ensureInstance();
         var outline = try instance.glyphOutline(
             scratch,
             glyph_id,
@@ -313,6 +333,13 @@ fn packGlyphCurves(
     const prepared = try curve_tex.prepareGlyphCurvesForDirectEncodingWithBBoxes(scratch, lowered, .zero, prepared_bboxes);
     defer scratch.free(prepared);
 
+    // Validate the GPU-bound curve data once here; the encode and band
+    // passes below are handed `trusted = true` so they skip their
+    // redundant per-curve finiteness re-scans. `lowered` is intermediate
+    // (only reaches the GPU via `prepared`), so validating `prepared`
+    // covers the atlas contract.
+    try curve_tex.validateCurveData(prepared, .zero);
+
     const render_bbox = glyphRenderBBoxFromBBoxes(metrics_bbox, prepared_bboxes);
 
     // Single-glyph direct encoding. Skip `buildCurveTexture`'s TEX_WIDTH
@@ -320,7 +347,7 @@ fn packGlyphCurves(
     // it on the floor) — write the curve bytes directly into a tight
     // buffer the atlas can consume verbatim.
     const curve_count = try checkedCurveCount(prepared.len);
-    const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, prepared);
+    const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, prepared, true);
     errdefer allocator.free(curve_bytes);
 
     const entry = curve_tex.GlyphCurveEntry{
@@ -344,6 +371,7 @@ fn packGlyphCurves(
         true,
         prepared,
         prepared_bboxes,
+        true,
     );
     errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
@@ -561,7 +589,7 @@ test "extractCurves matches dense quadratic packing byte-for-byte" {
     }
     const prepared = try curve_tex.prepareGlyphCurvesForDirectEncoding(std.testing.allocator, segs.items, .zero);
     defer std.testing.allocator.free(prepared);
-    const expected = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(std.testing.allocator, prepared);
+    const expected = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(std.testing.allocator, prepared, false);
     defer std.testing.allocator.free(expected);
     try std.testing.expectEqual(curve_tex.Encoding.dense_quadratic, curves.encoding);
     try std.testing.expectEqualSlices(u16, expected, curves.curve_bytes);

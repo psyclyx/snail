@@ -234,7 +234,7 @@ pub const TtHintVm = struct {
         // `buildCurveTexture` TEX_WIDTH padding.
         const curve_count = std.math.cast(u16, hint_value.prepared_curves.len) orelse
             return error.ShapeTooComplex;
-        const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, hint_value.prepared_curves);
+        const curve_bytes = try curve_tex.encodeDenseQuadraticSingleGlyphCurves(allocator, hint_value.prepared_curves, false);
         errdefer allocator.free(curve_bytes);
 
         const entry = curve_tex.GlyphCurveEntry{
@@ -257,6 +257,7 @@ pub const TtHintVm = struct {
             true,
             hint_value.prepared_curves,
             null,
+            false,
         );
         errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
