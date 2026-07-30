@@ -213,7 +213,45 @@ pub const Font = struct {
         scratch: std.mem.Allocator,
         glyph_id: u16,
     ) !curves_mod.GlyphCurves {
-        return extractCurvesInner(self, allocator, scratch, glyph_id);
+        return extractCurvesInner(self, allocator, scratch, glyph_id, null);
+    }
+
+    /// The HarfBuzz backend for this font. Whether variable-font instancing
+    /// and outline decoding go through HarfBuzz (CFF/CFF2, or any variable
+    /// font) versus the native TrueType parser. Parallel extractors only
+    /// need a per-thread `Instance` for fonts where this is true.
+    pub const Instance = modern_font.Instance;
+
+    pub fn requiresInstance(self: *const Font) bool {
+        return self.requiresModernBackend();
+    }
+
+    /// Build a standalone HarfBuzz backend the caller owns. Parallel
+    /// extraction needs one `Instance` per thread because `hb_font_t` is not
+    /// thread-safe and the cached `modern_instance` is single-owner. Only
+    /// meaningful when `requiresInstance()` — TrueType fonts extract without
+    /// one. Caller must `deinit` it.
+    pub fn createInstance(self: *const Font) !modern_font.Instance {
+        return modern_font.Instance.init(
+            self.inner.data,
+            self.inner.face_index,
+            self.inner.units_per_em,
+            self.variations,
+        );
+    }
+
+    /// Like `extractCurves`, but uses a caller-supplied per-thread
+    /// `Instance` instead of the shared cached one, so extraction is
+    /// thread-safe across glyphs. Pass the instance for
+    /// `requiresInstance()` fonts; `null` is fine for TrueType fonts.
+    pub fn extractCurvesWith(
+        self: *const Font,
+        instance: ?*modern_font.Instance,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        glyph_id: u16,
+    ) !curves_mod.GlyphCurves {
+        return extractCurvesInner(self, allocator, scratch, glyph_id, instance);
     }
 
     pub const ColrLayer = ttf.Font.ColrLayer;
@@ -269,9 +307,12 @@ fn extractCurvesInner(
     allocator: std.mem.Allocator,
     scratch: std.mem.Allocator,
     glyph_id: u16,
+    /// Per-thread HarfBuzz backend for parallel callers. When null, the
+    /// single-threaded cached `modern_instance` is used instead.
+    instance_override: ?*modern_font.Instance,
 ) !curves_mod.GlyphCurves {
     if (font.requiresModernBackend()) {
-        const instance = try font.ensureInstance();
+        const instance = instance_override orelse try font.ensureInstance();
         var outline = try instance.glyphOutline(
             scratch,
             glyph_id,

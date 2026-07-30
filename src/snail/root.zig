@@ -127,6 +127,11 @@ pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
 pub const ColrHandling = atlas_populate.ColrHandling;
 pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
 pub const recordUnhintedRuns = atlas_populate.recordUnhintedRuns;
+// Caller-parallel unhinted extraction (plan → extractOne → apply).
+pub const planUnhintedRuns = atlas_populate.planUnhintedRuns;
+pub const UnhintedExtractPlan = atlas_populate.UnhintedExtractPlan;
+pub const ExtractContext = atlas_populate.ExtractContext;
+pub const ExtractRequest = atlas_populate.ExtractRequest;
 pub const recordAutohintRun = atlas_populate.recordAutohintRun;
 pub const recordAutohintRuns = atlas_populate.recordAutohintRuns;
 pub const recordTtHintRun = atlas_populate.recordTtHintRun;

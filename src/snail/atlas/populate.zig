@@ -243,6 +243,234 @@ pub fn recordUnhintedRuns(
     try batch.apply(atlas);
 }
 
+// ── Caller-parallel unhinted extraction ──────────────────────────────
+//
+// `recordUnhintedRuns` above extracts every glyph inline on one thread.
+// The three-phase API below lets a caller fan the expensive per-glyph
+// extraction across its own worker threads (snail owns no thread pool):
+//
+//   1. `planUnhintedRuns`  — serial, cheap: dedup + COLR resolution,
+//                            produces a flat list of extraction requests.
+//   2. `plan.extractOne`   — parallel: one glyph → GlyphCurves, run across
+//                            threads with a per-thread `ExtractContext`.
+//   3. `plan.apply`        — serial: insert the results into the atlas.
+//
+// The extracted `GlyphCurves` between phases 2 and 3 is also the natural
+// serialization unit for an offline glyph cache.
+//
+// Only regular glyphs and COLR `.layers` fan out (one request per atlas
+// entry). The rarer COLR `.composite` case, whose entry assembly depends on
+// post-extraction emptiness, is extracted serially during planning — text
+// floods carry no COLR, so the hot path is fully parallel.
+
+/// One deferred glyph extraction, produced by `planUnhintedRuns`.
+pub const ExtractRequest = struct {
+    font: *const Font,
+    glyph_id: u16,
+};
+
+/// Per-thread extraction state. Each worker thread owns one: a scratch arena
+/// reused across glyphs and a lazily-built cache of per-font HarfBuzz
+/// `Instance`s (hb_font is not thread-safe, so instances are never shared
+/// across threads). `out_allocator` owns the produced `GlyphCurves` bytes and
+/// MUST be thread-safe — contexts on other threads allocate from it too.
+pub const ExtractContext = struct {
+    out_allocator: Allocator,
+    scratch: std.heap.ArenaAllocator,
+    instances: std.AutoHashMapUnmanaged(*const Font, Font.Instance) = .empty,
+
+    pub fn init(out_allocator: Allocator, scratch_parent: Allocator) ExtractContext {
+        return .{
+            .out_allocator = out_allocator,
+            .scratch = std.heap.ArenaAllocator.init(scratch_parent),
+        };
+    }
+
+    pub fn deinit(self: *ExtractContext) void {
+        var it = self.instances.valueIterator();
+        while (it.next()) |inst| inst.deinit();
+        self.instances.deinit(self.out_allocator);
+        self.scratch.deinit();
+        self.* = undefined;
+    }
+
+    fn instanceFor(self: *ExtractContext, font: *const Font) !?*Font.Instance {
+        if (!font.requiresInstance()) return null;
+        const gop = try self.instances.getOrPut(self.out_allocator, font);
+        if (!gop.found_existing) gop.value_ptr.* = try font.createInstance();
+        return gop.value_ptr;
+    }
+};
+
+pub const UnhintedExtractPlan = struct {
+    allocator: Allocator,
+    requests: []ExtractRequest,
+    request_keys: []RecordKey,
+    /// Filled by `extractOne`; entry `i` corresponds to `requests[i]`.
+    results: []?GlyphCurves,
+    /// Serially-extracted COLR composites + their storage, plus the shared
+    /// dedup set and the entry list `apply` inserts through.
+    composites: Batch,
+
+    pub fn requestCount(self: *const UnhintedExtractPlan) usize {
+        return self.requests.len;
+    }
+
+    /// Extract request `index` into `results[index]` using `ctx`. Distinct
+    /// indices touch distinct slots and distinct per-thread state, so calls
+    /// for different indices run concurrently.
+    pub fn extractOne(self: *UnhintedExtractPlan, index: usize, ctx: *ExtractContext) !void {
+        const req = self.requests[index];
+        const instance = try ctx.instanceFor(req.font);
+        const curves = try req.font.extractCurvesWith(
+            instance,
+            ctx.out_allocator,
+            ctx.scratch.allocator(),
+            req.glyph_id,
+        );
+        _ = ctx.scratch.reset(.retain_capacity);
+        self.results[index] = curves;
+    }
+
+    /// Insert every planned glyph (parallel results + serial composites)
+    /// into the atlas in one transaction. Requires all requests extracted.
+    pub fn apply(self: *UnhintedExtractPlan, atlas: *Atlas) !void {
+        for (self.requests, 0..) |_, i| {
+            const curves = self.results[i] orelse return error.MissingExtraction;
+            try self.composites.entries.append(self.composites.allocator, .{
+                .key = self.request_keys[i],
+                .curves = curves,
+            });
+        }
+        try atlas.extendWithAdvancesInPlace(
+            self.composites.allocator,
+            self.composites.entries.items,
+            self.composites.advances.items,
+        );
+    }
+
+    pub fn deinit(self: *UnhintedExtractPlan) void {
+        for (self.results) |*r| if (r.*) |*c| c.deinit();
+        self.allocator.free(self.results);
+        self.allocator.free(self.requests);
+        self.allocator.free(self.request_keys);
+        self.composites.deinit();
+    }
+};
+
+/// Plan (but don't extract) every missing unhinted glyph referenced by
+/// `shaped_runs`. See the module-level notes above for the phase model.
+pub fn planUnhintedRuns(
+    atlas: *const Atlas,
+    allocator: Allocator,
+    faces: *const faces_mod.Faces,
+    shaped_runs: []const *const text_mod.ShapedText,
+    options: UnhintedRunOptions,
+) !UnhintedExtractPlan {
+    var batch = Batch.init(allocator);
+    errdefer batch.deinit();
+    var requests: std.ArrayList(ExtractRequest) = .empty;
+    errdefer requests.deinit(allocator);
+    var keys: std.ArrayList(RecordKey) = .empty;
+    errdefer keys.deinit(allocator);
+
+    for (shaped_runs) |shaped| {
+        for (shaped.glyphs) |glyph| {
+            const face_index: usize = @intCast(glyph.face_index);
+            if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
+            const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
+            if (font_id != glyph.font_id) return error.MismatchedFontId;
+            try planUnhintedGlyph(
+                &batch,
+                &requests,
+                &keys,
+                atlas,
+                faces.fontForFace(glyph.face_index).?,
+                font_id,
+                glyph.glyph_id,
+                options,
+            );
+        }
+    }
+
+    const results = try allocator.alloc(?GlyphCurves, requests.items.len);
+    @memset(results, null);
+    return .{
+        .allocator = allocator,
+        .requests = try requests.toOwnedSlice(allocator),
+        .request_keys = try keys.toOwnedSlice(allocator),
+        .results = results,
+        .composites = batch,
+    };
+}
+
+/// Mirror of `appendUnhintedGlyph`, but routes regular glyphs and COLR
+/// `.layers` layers to deferred `requests` (parallel extraction) and keeps
+/// the COLR `.composite` assembly serial in `batch`.
+fn planUnhintedGlyph(
+    batch: *Batch,
+    requests: *std.ArrayList(ExtractRequest),
+    keys: *std.ArrayList(RecordKey),
+    atlas: *const Atlas,
+    font: *const Font,
+    font_id: u32,
+    glyph_id: u16,
+    options: UnhintedRunOptions,
+) !void {
+    if (options.colr == .layers) {
+        var layer_iter = font.colrLayers(glyph_id);
+        if (layer_iter.count() > 0) {
+            while (layer_iter.next()) |source| {
+                const layer_key = record_key.unhintedGlyph(font_id, source.glyph_id);
+                if (!try batch.shouldInsert(atlas, layer_key)) continue;
+                try requests.append(batch.allocator, .{ .font = font, .glyph_id = source.glyph_id });
+                try keys.append(batch.allocator, layer_key);
+            }
+            return;
+        }
+    }
+
+    const key = record_key.unhintedGlyph(font_id, glyph_id);
+    if (!try batch.shouldInsert(atlas, key)) return;
+
+    var iter = font.colrLayers(glyph_id);
+    const layer_count: usize = iter.count();
+    if (options.colr != .composite or layer_count == 0) {
+        try requests.append(batch.allocator, .{ .font = font, .glyph_id = glyph_id });
+        try keys.append(batch.allocator, key);
+        return;
+    }
+
+    // COLR composite: extract serially now (matches appendUnhintedGlyph).
+    const layers = try batch.allocator.alloc(Layer, layer_count);
+    errdefer batch.allocator.free(layers);
+    var count: usize = 0;
+    while (iter.next()) |source| {
+        const curves = try batch.extract(font, source.glyph_id);
+        if (curves.isEmpty()) continue;
+        layers[count] = .{
+            .curves = curves,
+            .paint = .{ .solid = paletteColor(source.color, options.colr_foreground) },
+        };
+        count += 1;
+    }
+
+    if (count == 0) {
+        batch.allocator.free(layers);
+        const curves = try batch.extract(font, glyph_id);
+        try batch.entries.append(batch.allocator, .{ .key = key, .curves = curves });
+        return;
+    }
+
+    try batch.entries.append(batch.allocator, .{
+        .key = key,
+        .curves = layers[0].curves,
+        .paint = layers[0].paint,
+        .extra_layers = layers[1..count],
+    });
+    try batch.layer_storage.append(batch.allocator, layers);
+}
+
 /// Record immutable autohint analysis for every matching glyph.
 /// Missing base glyphs are rejected; empty base glyphs get empty records so
 /// callers can place a whole run without patching whitespace afterward.
@@ -494,6 +722,110 @@ test "unhinted run packs COLR and deduplicates repeated glyphs" {
     try testing.expect(info.layer_count > 1);
 
     try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
+}
+
+test "parallel plan/extract/apply matches serial recordUnhintedRuns" {
+    var regular = try Font.init(@import("assets").noto_sans_regular);
+    var emoji = try Font.init(@import("assets").twemoji_mozilla);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
+    });
+    defer faces.deinit();
+    // Mixed: repeated Latin (dedup) + a COLR emoji (serial-composite path).
+    var shaped = try faces_mod.shape(testing.allocator, &faces, "Hello AA\xf0\x9f\x8c\x8d", .{});
+    defer shaped.deinit();
+
+    const cfg = atlas_mod.PagePool.Options{
+        .max_pages = 8,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    };
+
+    // Reference: serial path.
+    var serial_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
+    defer serial_pool.deinit();
+    var serial = try Atlas.init(testing.allocator, serial_pool);
+    defer serial.deinit();
+    try recordUnhintedRuns(&serial, testing.allocator, &faces, &.{&shaped}, .{});
+
+    // Under test: plan → extractOne (single-threaded loop here) → apply.
+    var par_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
+    defer par_pool.deinit();
+    var parallel = try Atlas.init(testing.allocator, par_pool);
+    defer parallel.deinit();
+
+    var plan = try planUnhintedRuns(&parallel, testing.allocator, &faces, &.{&shaped}, .{});
+    defer plan.deinit();
+    var ctx = ExtractContext.init(testing.allocator, testing.allocator);
+    defer ctx.deinit();
+    for (0..plan.requestCount()) |i| try plan.extractOne(i, &ctx);
+    try plan.apply(&parallel);
+
+    // Every referenced glyph lands in both atlases identically.
+    for (shaped.glyphs) |glyph| {
+        const key = record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+        try testing.expectEqual(serial.contains(key), parallel.contains(key));
+        const s_info = serial.lookupPaintRecord(key);
+        const p_info = parallel.lookupPaintRecord(key);
+        try testing.expectEqual(s_info == null, p_info == null);
+        if (s_info) |si| try testing.expectEqual(si.layer_count, p_info.?.layer_count);
+    }
+}
+
+test "concurrent extractOne across threads is safe and matches serial" {
+    var regular = try Font.init(@import("assets").noto_sans_regular);
+    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &regular, .font_id = 0 }});
+    defer faces.deinit();
+    var shaped = try faces_mod.shape(
+        testing.allocator,
+        &faces,
+        "The quick brown fox jumps over the lazy dog 0123456789",
+        .{},
+    );
+    defer shaped.deinit();
+
+    const cfg = atlas_mod.PagePool.Options{
+        .max_pages = 8,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    };
+    var serial_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
+    defer serial_pool.deinit();
+    var serial = try Atlas.init(testing.allocator, serial_pool);
+    defer serial.deinit();
+    try recordUnhintedRuns(&serial, testing.allocator, &faces, &.{&shaped}, .{});
+
+    var par_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
+    defer par_pool.deinit();
+    var parallel = try Atlas.init(testing.allocator, par_pool);
+    defer parallel.deinit();
+
+    var plan = try planUnhintedRuns(&parallel, testing.allocator, &faces, &.{&shaped}, .{});
+    defer plan.deinit();
+
+    // Four threads, each with its own context, striping the requests.
+    const thread_count = 4;
+    const Worker = struct {
+        fn run(p: *UnhintedExtractPlan, base: usize, stride: usize) void {
+            var ctx = ExtractContext.init(std.heap.smp_allocator, std.heap.smp_allocator);
+            defer ctx.deinit();
+            var i = base;
+            while (i < p.requestCount()) : (i += stride) {
+                p.extractOne(i, &ctx) catch unreachable;
+            }
+        }
+    };
+    var threads: [thread_count]std.Thread = undefined;
+    for (0..thread_count) |t| threads[t] = try std.Thread.spawn(.{}, Worker.run, .{ &plan, t, thread_count });
+    for (threads) |th| th.join();
+    try plan.apply(&parallel);
+
+    for (shaped.glyphs) |glyph| {
+        const key = record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
+        try testing.expect(parallel.contains(key));
+        try testing.expectEqual(serial.contains(key), parallel.contains(key));
+    }
 }
 
 test "unhinted runs commit several shaped runs as one snapshot" {
