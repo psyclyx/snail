@@ -27,6 +27,31 @@ const addSnailModule = build_mods.addSnailModule;
 const addGameShaderSpirv = build_mods.addGameShaderSpirv;
 const addGameShaderGl = build_mods.addGameShaderGl;
 
+fn addCiCommandStep(
+    b: *std.Build,
+    name: []const u8,
+    description: []const u8,
+    mode: []const u8,
+) void {
+    const run = b.addSystemCommand(&.{"bash"});
+    run.addFileArg(b.path("dev/ci.sh"));
+    run.addArg(mode);
+    run.has_side_effects = true;
+    b.step(name, description).dependOn(&run.step);
+}
+
+fn addCiSteps(b: *std.Build) void {
+    addCiCommandStep(b, "ci", "Run the complete Linux CI suite locally (enter nix-shell first)", "all");
+    addCiCommandStep(b, "ci-tests", "Run formatting and public-module CI gates", "tests");
+    addCiCommandStep(b, "ci-linux-gl", "Run GL, GLES, and CPU CI gates through llvmpipe", "linux-gl");
+    addCiCommandStep(b, "ci-linux-vulkan", "Run Vulkan and game CI gates through lavapipe", "linux-vulkan");
+    addCiCommandStep(b, "ci-linux-wgpu-wine", "Run WebGPU and Wine D3D11 CI gates", "linux-wgpu-wine");
+    addCiCommandStep(b, "ci-windows-wine-smoke", "Smoke-test the prebuilt Windows CI artifacts under Wine", "windows-wine-smoke");
+    addCiCommandStep(b, "ci-consumer-builds", "Build every release-mode consumer entry point", "consumer-builds");
+    addCiCommandStep(b, "ci-cross", "Run cross-platform compile-only CI gates", "cross");
+    addCiCommandStep(b, "ci-nix", "Build the Nix package CI derivation", "nix");
+}
+
 fn configureValgrindTest(test_exe: *std.Build.Step.Compile) void {
     test_exe.setExecCmd(&.{
         "valgrind",
@@ -1120,6 +1145,7 @@ pub fn build(b: *std.Build) void {
     addMinimalMetalStep(b, modules);
     addPerfSteps(b, config, modules);
     slang_shaders.addGenShadersStep(b, shader_artifacts);
+    addCiSteps(b);
 }
 
 fn addPerfSteps(b: *std.Build, config: BuildConfig, modules: ProjectModules) void {

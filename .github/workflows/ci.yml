@@ -91,8 +91,8 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      - name: Test public modules
-        run: nix-shell --run "zig build test -Dcpu=baseline"
+      - name: Formatting + public modules
+        run: nix-shell --run "zig build ci-tests"
 
   linux-gl:
     name: GL / GLES / CPU gates (llvmpipe)
@@ -118,25 +118,8 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      - name: Backend pixel comparison
-        run: nix-shell --run "zig build run-backend-compare -Dcpu=baseline"
-
-      - name: Coverage regression probes
-        run: |
-          nix-shell --run "zig build run-composite-probe -Dcpu=baseline"
-          nix-shell --run "zig build run-coverage-probe -Dcpu=baseline"
-
-      - name: Coverage parity probe (CPU rasterizer)
-        run: nix-shell --run "zig build run-coverage-parity -Dcpu=baseline"
-
-      # Interior-pixel gamma conformance, CPU vs GL33 vs GLES30, checked
-      # exactly against the analytic encode (the one GLES30 pixel gate that
-      # needs no reference image or tolerance).
-      - name: Gamma conformance probe (CPU/GL33/GLES30)
-        run: nix-shell --run "zig build run-gamma-probe -Dcpu=baseline"
-
-      - name: Minimal GL example
-        run: nix-shell --run "zig build run-minimal-gl -Dcpu=baseline"
+      - name: Run scoped local-CI entry point
+        run: nix-shell --run "zig build ci-linux-gl"
 
   linux-vulkan:
     name: Vulkan + game gates (lavapipe)
@@ -162,59 +145,10 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      # CPU-rasterizer demo + banner renders: the comparison base for the
-      # Vulkan gates below, and the source of the checked-in Windows/macOS
-      # CPU reference — the cmp keeps that reference from rotting when the
-      # scene changes (regenerate it from zig-out/demo-screenshot.tga).
-      - name: CPU rasterizer screenshots
-        run: |
-          nix-shell --run "zig build run-screenshot -Dcpu=baseline"
-          nix-shell --run "zig build run-banner-screenshot -Dcpu=baseline"
-          cmp zig-out/demo-screenshot.tga dev/demo/tools/screenshots/demo_cpu_reference.tga
-
-      # Native Vulkan through the pinned mesa's lavapipe. VK_DRIVER_FILES
-      # (not exported globally by shell.nix so local machines keep their real
-      # GPU) pins the loader to the software ICD.
-      - name: Vulkan screenshots (lavapipe)
-        run: |
-          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-screenshot-vulkan -Dcpu=baseline'
-          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-banner-screenshot-vulkan -Dcpu=baseline'
-
-      # Same rule/threshold family as the Metal/D3D11 gates (>4% max-channel
-      # delta per pixel, differing-pixel count); lavapipe-measured baselines:
-      # demo = 57/96000, banner = 104/921600 (AA-edge class).
-      - name: Gate the Vulkan renders (vs the CPU rasterizer)
-        run: |
-          for pair in "demo-screenshot demo-screenshot-vulkan" "banner-screenshot banner-screenshot-vulkan"; do
-            set -- $pair
-            n=$(nix-shell --run "magick zig-out/$1.tga zig-out/$2.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
-            echo "$2 vs $1: $n pixels over 4% channel delta (threshold 2000; baselines 57 / 104)"
-            case "$n" in
-              ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
-            esac
-            test "$n" -le 2000
-          done
-
-      # GL44/GLES30 (llvmpipe) + Vulkan (lavapipe) game-scene renders,
-      # cross-gated against the gl33 render of the identical scene.
-      - name: Game-scene screenshots (gl33/gl44/gles30/vulkan)
-        run: |
-          nix-shell --run "zig build run-game-screenshot -Dcpu=baseline"
-          nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-game-screenshot-vulkan -Dcpu=baseline'
-
-      # Measured baselines vs gl33 (1280x800): gl44 = 363, gles30 = 824,
-      # vulkan = 3267 — all AA/depth-edge class; real breakage (blank frame,
-      # wrong binding, flipped y) is tens of thousands of pixels.
-      - name: Gate the game renders (vs gl33)
-        run: |
-          for b in gl44 gles30 vulkan; do
-            n=$(nix-shell --run "magick zig-out/game-gl33.tga zig-out/game-$b.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
-            echo "game-$b vs game-gl33: $n pixels over 4% channel delta (threshold 4000; baselines 363/824/3267)"
-            case "$n" in
-              ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
-            esac
-            test "$n" -le 4000
-          done
+      # dev/ci.sh owns render ordering, software-driver pinning, and the
+      # checked-in thresholds used by both this job and `zig build ci`.
+      - name: Run scoped local-CI entry point
+        run: nix-shell --run "zig build ci-linux-vulkan"
 
       - name: Upload renders
         if: always()
@@ -251,73 +185,10 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      # wgpu's GL backend over surfaceless-EGL llvmpipe. The Vulkan backend
-      # is NOT used here: wgpu 27.0.4.0 on lavapipe (mesa 26.0.5, LLVM
-      # 21.1.8) SEGVs after adapter selection — the known llvmpipe JIT crash
-      # on fwidth+loop fragments (see the matrix above).
-      - name: Minimal WebGPU example (wgpu GL backend on llvmpipe)
-        env:
-          SNAIL_WGPU_BACKEND: gl
-        run: nix-shell --run "zig build run-minimal-wgpu -Dcpu=baseline"
-
-      # Measured baseline: 0 (the reference IS a llvmpipe GL render of the
-      # identical scene); 2000 keeps the threshold uniform with the other
-      # minimal-example gates.
-      - name: Gate the WebGPU render
-        run: |
-          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
-          echo "pixels over 4% channel delta: $n (threshold 2000; llvmpipe-GL baseline: 0)"
-          case "$n" in
-            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
-          esac
-          test "$n" -le 2000
-
-      # Wine's D3D11 needs a display connection to enumerate a GPU
-      # adapter, so the headless exe runs under Xvfb; the GL underneath
-      # goes to llvmpipe. WINEPREFIX is hermetic in zig-out (build.zig).
-      # This gate stays even though the `windows` job below runs the same
-      # exe on real Windows: Wine is a real deployment target in its own
-      # right; Windows is the authoritative runtime.
-      - name: Minimal D3D11 example (Wine)
-        run: nix-shell --run "xvfb-run -a zig build run-minimal-d3d11 -Dcpu=baseline"
-
-      # Same gate as the Metal job below (see the comments there for the
-      # threshold rationale); llvmpipe-measured d3d11 baseline: 680.
-      - name: Gate the D3D11 render
-        run: |
-          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/minimal-d3d11.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
-          echo "pixels over 4% channel delta: $n (threshold 2000; wgpu/d3d11 baseline: ~680)"
-          case "$n" in
-            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
-          esac
-          test "$n" -le 2000
-
-      # Cross-build the gate artifacts: the D3D11 and WebGPU demo exes (+
-      # the pinned upstream wgpu_native.dll), the CPU-rasterizer screenshot
-      # exe, the dependency-free pixelgate comparison tool, and the
-      # reference TGAs. The D3D11 and CPU exes run in the `windows` job;
-      # the WebGPU exe runs right here under Wine (see below). The Windows
-      # runner installs no toolchain — the one nix pin builds everything.
-      - name: Build Windows gate artifacts
-        run: nix-shell --run "zig build install-windows-gates -Dcpu=baseline"
-
-      # The wgpu-on-D3D12 leg lives here, NOT in the `windows` job: wgpu
-      # 29's D3D12 backend hangs the readback on the windows-2025 WARP
-      # runtime (43s in submit, >4min unfinished map; FXC and DXC alike —
-      # see the matrix). Under Wine, D3D12 goes through vkd3d onto lavapipe
-      # and renders in seconds. Measured baseline: 683.
-      - name: Minimal WebGPU example (Windows exe under Wine, D3D12 on lavapipe)
-        run: |
-          nix-shell --run 'export WINEPREFIX="$PWD/zig-out/wineprefix" VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD SNAIL_WGPU_BACKEND=d3d12 SNAIL_WGPU_LOG=1; cd zig-out/windows-gates && xvfb-run -a timeout 600 wine snail-minimal-wgpu.exe'
-
-      - name: Gate the Wine WebGPU render
-        run: |
-          n=$(nix-shell --run 'magick dev/demo/app/minimal_reference.png zig-out/windows-gates/zig-out/minimal-wgpu.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format "%[fx:round(mean*w*h)]" info:')
-          echo "pixels over 4% channel delta: $n (threshold 2000; Wine/vkd3d baseline: 683)"
-          case "$n" in
-            ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
-          esac
-          test "$n" -le 2000
+      # This scoped entry point also produces zig-out/windows-gates for the
+      # authoritative Windows job below.
+      - name: Run scoped local-CI entry point
+        run: nix-shell --run "zig build ci-linux-wgpu-wine"
 
       - name: Upload Windows gate artifacts
         uses: actions/upload-artifact@v4
@@ -364,13 +235,8 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      # install-demo/install-game compile the native-Slang families to
-      # SPIR-V at build time, so they need slangc (from shell.nix).
-      - name: Build consumer entry points
-        run: |
-          nix-shell --run "zig build install-demo --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-game --release=fast -Dcpu=baseline"
-          nix-shell --run "zig build install-perf --release=fast -Dcpu=baseline"
+      - name: Run scoped local-CI entry point
+        run: nix-shell --run "zig build ci-consumer-builds"
 
   # The same D3D11 exe the Wine gate ran, on the authoritative runtime: a
   # real Windows kernel, Microsoft's d3dcompiler_47 and D3D11 runtime
@@ -442,11 +308,11 @@ jobs:
       - name: Pin NIX_PATH to the npins nixpkgs
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
-      - name: Test public modules
-        run: nix-shell --run "zig build test -Dcpu=baseline"
+      - name: Formatting + public modules
+        run: nix-shell --run "zig build ci-tests"
 
       - name: Cross-compile check of the Metal demo
-        run: nix-shell --run "zig build check-metal-demo -Dcpu=baseline"
+        run: nix-shell --run "zig build ci-cross"
 
       # CPU rasterizer against the checked-in canonical CPU reference (same
       # >4%-channel rule as pixelgate). The former reference predated the
@@ -475,7 +341,8 @@ jobs:
       # here so the framework search paths are explicit and logged.
       - name: Render through Metal
         run: |
-          export SDKROOT="$(/usr/bin/xcrun --show-sdk-path)"
+          SDKROOT="$(/usr/bin/xcrun --show-sdk-path)"
+          export SDKROOT
           echo "SDKROOT=$SDKROOT"
           nix-shell --keep SDKROOT --run "zig build run-minimal-metal -Dcpu=baseline"
 
@@ -562,4 +429,4 @@ jobs:
         run: echo "NIX_PATH=nixpkgs=$(nix-instantiate --eval --raw --expr '(import ./npins).nixpkgs.outPath')" >> "$GITHUB_ENV"
 
       - name: Build demo derivation
-        run: nix-build default.nix --no-out-link -A demo
+        run: nix-shell --run "zig build ci-nix"

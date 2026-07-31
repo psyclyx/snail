@@ -503,6 +503,7 @@ corresponding window system and graphics API.
 ```sh
 zig build test-core               # core + software renderer; no shader tools
 zig build test                    # complete generated-shader/API suite
+zig build ci                      # complete local Linux CI suite (in nix-shell)
 zig build run-minimal-gl          # public-API GL example → zig-out/minimal-gl.tga
 zig build run-terminal            # incremental terminal cell grid
 zig build run-game                # perspective text in a custom material
@@ -517,7 +518,11 @@ Other useful gates include `run-minimal-wgpu`, `run-minimal-d3d11`,
 list.
 
 With Nix: `nix-build -A demo`, or enter `nix-shell` for the complete
-development toolchain.
+development toolchain. `zig build ci` pins the shell's Mesa software stack
+and runs the same scoped gates used by the parallel Linux CI jobs. The
+individual `ci-tests`, `ci-linux-gl`, `ci-linux-vulkan`,
+`ci-linux-wgpu-wine`, `ci-consumer-builds`, `ci-cross`, and `ci-nix` steps
+are useful when iterating on one job.
 
 To regenerate the README images after rendering their TGA sources:
 

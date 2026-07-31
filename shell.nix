@@ -51,6 +51,11 @@ let
 in
 pkgs.mkShell ({
   packages = with pkgs; [
+    actionlint
+    bash
+    coreutils
+    diffutils
+    shellcheck
     zig_0_16
     pkg-config
     harfbuzz
@@ -125,6 +130,12 @@ pkgs.mkShell ({
   # falls back to llvmpipe (all cores pegged, single-digit fps).
   __EGL_VENDOR_LIBRARY_DIRS = "/run/opengl-driver/share/glvnd/egl_vendor.d:${pkgs.mesa}/share/glvnd/egl_vendor.d";
   LIBGL_DRIVERS_PATH = "/run/opengl-driver/lib/dri:${pkgs.mesa}/lib/dri";
+
+  # `zig build ci` deliberately ignores the host GL vendor and exercises the
+  # same pinned Mesa software stack as GitHub Actions. Keep these separate
+  # from the interactive defaults above so normal demos still use the GPU.
+  SNAIL_MESA_EGL_VENDOR_DIR = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+  SNAIL_MESA_DRI_DIR = "${pkgs.mesa}/lib/dri";
 
   # Same for Vulkan: let the loader discover the host's ICDs. The manifests
   # reference absolute store paths, so no LD_LIBRARY_PATH entry is needed.
