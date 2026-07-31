@@ -97,7 +97,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         .text_atlas = text_atlas,
         .paths_picture = paths_picture,
         .text_picture = text_picture,
-        .curves = curves.view(),
+        .curves = curves,
         .allocator = allocator,
     };
 }

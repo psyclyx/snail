@@ -52,8 +52,8 @@ concurrency:
 #         | cross-gate (baseline 824).          | pin).                            |
 # Vulkan  | GATE (lavapipe): demo + banner      | infeasible: runner ships no      | not attempted: would need
 #         | screenshots gated vs the CPU        | Vulkan ICD (WARP is D3D-only);   | MoltenVK from the pin + loader
-#         | rasterizer (baselines 0 / 280),     | a software ICD would break the   | wiring; recorded as future work.
-#         | game screenshot vs gl33 (1777).     | artifact-only rule.              |
+#         | rasterizer (baselines 57 / 104),    | a software ICD would break the   | wiring; recorded as future work.
+#         | game screenshot vs gl33 (3267).     | artifact-only rule.              |
 # WebGPU  | GATE: wgpu GL backend on llvmpipe   | infeasible: wgpu 29's D3D12   | GATE: nixpkgs wgpu-native
 # (wgpu)  | (baseline 0 vs the GL reference).   | backend hangs the WARP        | 27.0.4.0, Metal backend; magick
 #         | The Vulkan backend on lavapipe      | readback on windows-2025      | <=2000 vs the GL reference.
@@ -182,13 +182,13 @@ jobs:
 
       # Same rule/threshold family as the Metal/D3D11 gates (>4% max-channel
       # delta per pixel, differing-pixel count); lavapipe-measured baselines:
-      # demo = 0/96000, banner = 280/921600 (AA-edge class).
+      # demo = 57/96000, banner = 104/921600 (AA-edge class).
       - name: Gate the Vulkan renders (vs the CPU rasterizer)
         run: |
           for pair in "demo-screenshot demo-screenshot-vulkan" "banner-screenshot banner-screenshot-vulkan"; do
             set -- $pair
             n=$(nix-shell --run "magick zig-out/$1.tga zig-out/$2.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
-            echo "$2 vs $1: $n pixels over 4% channel delta (threshold 2000; baselines 0 / 280)"
+            echo "$2 vs $1: $n pixels over 4% channel delta (threshold 2000; baselines 57 / 104)"
             case "$n" in
               ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
             esac
@@ -203,13 +203,13 @@ jobs:
           nix-shell --run 'VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-game-screenshot-vulkan -Dcpu=baseline'
 
       # Measured baselines vs gl33 (1280x800): gl44 = 363, gles30 = 824,
-      # vulkan = 1777 — all AA/depth-edge class; real breakage (blank frame,
+      # vulkan = 3267 — all AA/depth-edge class; real breakage (blank frame,
       # wrong binding, flipped y) is tens of thousands of pixels.
       - name: Gate the game renders (vs gl33)
         run: |
           for b in gl44 gles30 vulkan; do
             n=$(nix-shell --run "magick zig-out/game-gl33.tga zig-out/game-$b.tga -alpha off -compose difference -composite -separate -evaluate-sequence max -threshold 4% -format '%[fx:round(mean*w*h)]' info:")
-            echo "game-$b vs game-gl33: $n pixels over 4% channel delta (threshold 4000; baselines 363/824/1777)"
+            echo "game-$b vs game-gl33: $n pixels over 4% channel delta (threshold 4000; baselines 363/824/3267)"
             case "$n" in
               ''|*[!0-9]*) echo "unexpected magick output: $n" >&2; exit 1 ;;
             esac
