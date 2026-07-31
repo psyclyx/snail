@@ -101,10 +101,10 @@ const SceneBuild = struct {
 
     fn addCurves(self: *SceneBuild, key: snail.record_key.RecordKey, curves: snail.GlyphCurves) !void {
         try self.owned_curves.append(self.allocator, curves);
-        try self.entries.append(self.allocator, .{
+        try self.entries.append(self.allocator, .{ .geometry = .{
             .key = key,
-            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
-        });
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1].view(),
+        } });
     }
 };
 
@@ -222,13 +222,13 @@ pub fn buildScene(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: Sce
         },
     }
 
-    var atlas = try snail.Atlas.from(allocator, pool, build.entries.items);
+    var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = build.entries.items });
     errdefer atlas.deinit();
     return .{ .build = build, .atlas = atlas };
 }
 
 fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
-    for (entries) |entry| if (entry.key.eql(key)) return true;
+    for (entries) |entry| if (entry.key().eql(key)) return true;
     return false;
 }
 
@@ -302,18 +302,21 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
         if (containsKey(build.entries.items, key)) continue;
         const base_key = snail.record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
         const base = for (build.entries.items) |entry| {
-            if (entry.key.eql(base_key)) break entry.curves;
+            const geometry = switch (entry) {
+                .geometry => |geometry| geometry,
+                .autohint => continue,
+            };
+            if (geometry.key.eql(base_key)) break geometry.curves;
         } else continue;
         if (base.isEmpty()) continue;
         const x = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
         const y = try build.scratch().alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
         const analysis = try analyzer.analyzeGlyph(build.scratch(), glyph.glyph_id, x, y);
-        try build.entries.append(build.allocator, .{
+        try build.entries.append(build.allocator, .{ .autohint = .{
             .key = key,
-            .curves = snail.GlyphCurves.empty(build.scratch()),
-            .autohint = .{ .font = analyzer.fontFeatures(), .glyph = analysis },
-            .autohint_base = base_key,
-        });
+            .base_key = base_key,
+            .analysis = .{ .font = analyzer.fontFeatures(), .glyph = analysis },
+        } });
     }
 
     const policy = snail.autohint.AutohintPolicy{
@@ -359,18 +362,18 @@ fn addColr(build: *SceneBuild) !void {
         build.resetScratch();
         try build.owned_curves.append(build.allocator, curves);
         try build.colr_layers.append(build.allocator, .{
-            .curves = build.owned_curves.items[build.owned_curves.items.len - 1],
+            .curves = build.owned_curves.items[build.owned_curves.items.len - 1].view(),
             .paint = .{ .solid = if (layer.color[0] < 0) fallback else layer.color },
         });
     }
 
     const key = snail.record_key.unhintedGlyph(0, glyph_id);
-    try build.entries.append(build.allocator, .{
+    try build.entries.append(build.allocator, .{ .geometry = .{
         .key = key,
-        .curves = base_curves,
+        .curves = base_curves.view(),
         .paint = .{ .solid = first_color },
         .extra_layers = build.colr_layers.items,
-    });
+    } });
 
     for (0..4) |row| for (0..8) |col| {
         const scale: f32 = 38 + @as(f32, @floatFromInt((row + col) % 3)) * 4;
@@ -417,11 +420,11 @@ fn addPaths(build: *SceneBuild) !void {
         const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = build.next_path_id };
         build.next_path_id += 1;
         try build.owned_curves.append(build.allocator, curves);
-        try build.entries.append(build.allocator, .{
+        try build.entries.append(build.allocator, .{ .geometry = .{
             .key = key,
-            .curves = build.owned_curves.items[build.owned_curves.items.len - 1],
+            .curves = build.owned_curves.items[build.owned_curves.items.len - 1].view(),
             .paint = try prepared.paintForDesign(.{ .solid = colors[(row * 6 + col) % colors.len] }),
-        });
+        } });
         try build.shapes.append(build.allocator, .{
             .key = key,
             .local_transform = prepared.placedBy(.identity),

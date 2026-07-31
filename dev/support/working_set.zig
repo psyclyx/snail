@@ -10,32 +10,37 @@
 //!   var ws = try WorkingSet.init(allocator, pool, .{});
 //!   // each frame:
 //!   ws.beginFrame();
-//!   try snail.recordUnhintedRun(&ws.atlas, allocator, &faces, &shaped, .{});
+//!   try prepare.run(allocator, &ws.atlas, sources, &.{&shaped}, .{
+//!       .unhinted = .{},
+//!   });
 //!   try ws.touchShapes(placed_shapes);
-//!   if (try ws.ensureHeadroom(scratch)) rebuildDeviceBindings();
+//!   if (try ws.ensureHeadroomInto(scratch, alternate_pool)) {
+//!       publishNewDeviceBinding();
+//!       // Retire the old binding/pool after its final GPU fence.
+//!   }
 //!
-//! Eviction runs `Atlas.compact` with a keep-filter over recently touched
-//! keys. Compaction acquires new pages before the old atlas releases its
-//! own, so the policy triggers while `pool.free_count` is still above
-//! `options.reserve_layers` — waiting for hard `OutOfLayers` would leave
-//! no room to rebuild into. After a rebuild every prior `Binding` is
-//! stale; the caller re-uploads to its `DeviceAtlas` backends.
+//! Eviction runs `Atlas.compactInto` with a keep-filter over recently touched
+//! keys and an alternate caller-owned pool. The destination therefore needs
+//! no free pages in the live pool. After publication every old `Binding` is
+//! stale, but its GPU resources and old pool must remain alive until the
+//! host's final fence for that binding signals.
 //!
 //! `ns.tt_advance` records are always kept: they cost no pages and losing
 //! them would re-run the TT VM at shape time for no space gain.
 
 const std = @import("std");
 const snail = @import("snail");
+const prepare = @import("prepare.zig");
 
 const Allocator = std.mem.Allocator;
 const RecordKey = snail.record_key.RecordKey;
 
 pub const WorkingSet = struct {
     pub const Options = struct {
-        /// Evict when the pool's free layers drop below this. Must cover
-        /// the compacted working set's page count — compaction needs its
-        /// destination pages while the source atlas still holds its own.
-        reserve_layers: u32 = 2,
+        /// Rebuild when the active pool's free page count drops below this
+        /// threshold. This is only an admission-policy trigger; destination
+        /// capacity comes entirely from the alternate pool.
+        evict_below_free_pages: u32 = 1,
         /// Records untouched for more than this many `beginFrame` ticks
         /// are eviction candidates.
         max_idle_ticks: u64 = 300,
@@ -83,11 +88,18 @@ pub const WorkingSet = struct {
         for (shapes) |shape| try self.touch(shape.key);
     }
 
-    /// Rebuild the store from the recently touched set when pool headroom
-    /// runs low. Returns true when the atlas was replaced — every
-    /// previously issued `Binding` is then stale and the caller re-uploads.
-    pub fn ensureHeadroom(self: *WorkingSet, scratch: Allocator) !bool {
-        if (self.pool.stats().pages_free >= self.options.reserve_layers) return false;
+    /// Rebuild into a distinct caller-owned pool when active-pool headroom
+    /// runs low. Returns true when the atlas was replaced. The caller then
+    /// publishes a binding for `target_pool` and retires the old binding and
+    /// pool only after their final GPU fence.
+    pub fn ensureHeadroomInto(
+        self: *WorkingSet,
+        scratch: Allocator,
+        target_pool: *snail.PagePool,
+    ) !bool {
+        if (target_pool == self.pool) return error.SamePagePool;
+        if (self.pool.stats().pages_free >= self.options.evict_below_free_pages)
+            return false;
 
         const Filter = struct {
             ws: *WorkingSet,
@@ -100,7 +112,7 @@ pub const WorkingSet = struct {
             }
         };
         var filter = Filter{ .ws = self };
-        var compacted = try self.atlas.compact(self.allocator, scratch, .{
+        var compacted = try self.atlas.compactInto(self.allocator, scratch, target_pool, .{
             .context = @ptrCast(&filter),
             .keep = Filter.keep,
         });
@@ -121,6 +133,7 @@ pub const WorkingSet = struct {
 
         self.atlas.deinit();
         self.atlas = compacted;
+        self.pool = target_pool;
         for (stale.items) |key| _ = self.last_touch.remove(key);
         return true;
     }
@@ -135,16 +148,30 @@ test "working set evicts cold records and keeps the touched set drawable" {
     var font = try snail.Font.init(@import("assets").noto_sans_regular);
     var faces = try snail.Faces.build(allocator, &.{.{ .font = &font, .font_id = 0 }});
     defer faces.deinit();
+    const sources = [_]snail.FontSource{.{
+        .font_id = 0,
+        .font = &font,
+        .cache_key = [_]u8{0x44} ** 16,
+    }};
 
-    // A deliberately tiny pool: two content pages plus reserve headroom.
-    var pool = try snail.PagePool.init(allocator, .{
+    // Deliberately tiny alternating pools.
+    var pool_a = try snail.PagePool.init(allocator, .{
         .max_pages = 4,
         .curve_words_per_page = 4096,
         .band_words_per_page = 2048,
     });
-    defer pool.deinit();
+    defer pool_a.deinit();
+    var pool_b = try snail.PagePool.init(allocator, .{
+        .max_pages = 4,
+        .curve_words_per_page = 4096,
+        .band_words_per_page = 2048,
+    });
+    defer pool_b.deinit();
 
-    var ws = try WorkingSet.init(allocator, pool, .{ .reserve_layers = 4, .max_idle_ticks = 1 });
+    var ws = try WorkingSet.init(allocator, pool_a, .{
+        .evict_below_free_pages = 4,
+        .max_idle_ticks = 1,
+    });
     defer ws.deinit();
 
     var scratch = std.heap.ArenaAllocator.init(allocator);
@@ -154,7 +181,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
     ws.beginFrame();
     var cold = try snail.shape(allocator, &faces, "ABCDEFGH", .{});
     defer cold.deinit();
-    try snail.recordUnhintedRun(&ws.atlas, allocator, &faces, &cold, .{});
+    try prepare.run(allocator, &ws.atlas, &sources, &.{&cold}, .{ .unhinted = .{} });
     const cold_shapes = try snail.placeRunAlloc(allocator, &cold, null, .{
         .baseline = .{ .x = 0, .y = 20 },
         .em = 20,
@@ -169,7 +196,7 @@ test "working set evicts cold records and keeps the touched set drawable" {
     ws.beginFrame();
     var hot = try snail.shape(allocator, &faces, "xyz", .{});
     defer hot.deinit();
-    try snail.recordUnhintedRun(&ws.atlas, allocator, &faces, &hot, .{});
+    try prepare.run(allocator, &ws.atlas, &sources, &.{&hot}, .{ .unhinted = .{} });
     const hot_shapes = try snail.placeRunAlloc(allocator, &hot, null, .{
         .baseline = .{ .x = 0, .y = 40 },
         .em = 20,
@@ -178,10 +205,11 @@ test "working set evicts cold records and keeps the touched set drawable" {
     defer allocator.free(hot_shapes);
     try ws.touchShapes(hot_shapes);
 
-    // reserve_layers == max_pages forces the rebuild branch: any recorded
-    // page drops free_count below the reserve.
+    // Threshold == max_pages forces the rebuild branch: any recorded
+    // page drops free_count below the trigger.
     const before = ws.atlas.recordCount();
-    try testing.expect(try ws.ensureHeadroom(scratch.allocator()));
+    try testing.expect(try ws.ensureHeadroomInto(scratch.allocator(), pool_b));
+    try testing.expect(ws.pool == pool_b);
 
     // Cold records evicted, hot records still resident and complete.
     try testing.expect(ws.atlas.recordCount() < before);
@@ -204,14 +232,21 @@ test "working set frame counter saturates instead of reviving stale entries" {
     try testing.expectEqual(std.math.maxInt(u64), ws.tick);
 }
 
-fn exerciseWorkingSetAllocationFailures(allocator: Allocator, pool: *snail.PagePool) !void {
-    var ws = try WorkingSet.init(allocator, pool, .{ .reserve_layers = 2, .max_idle_ticks = 0 });
+fn exerciseWorkingSetAllocationFailures(
+    allocator: Allocator,
+    pool: *snail.PagePool,
+    target_pool: *snail.PagePool,
+) !void {
+    var ws = try WorkingSet.init(allocator, pool, .{
+        .evict_below_free_pages = 2,
+        .max_idle_ticks = 0,
+    });
     defer ws.deinit();
     const stale_key = snail.record_key.unhintedGlyph(5, 9);
     try ws.touch(stale_key);
     const before = ws.atlas.snapshotIdentity();
 
-    const rebuilt = ws.ensureHeadroom(allocator) catch |err| {
+    const rebuilt = ws.ensureHeadroomInto(allocator, target_pool) catch |err| {
         try testing.expectEqualDeep(before, ws.atlas.snapshotIdentity());
         try testing.expect(ws.last_touch.contains(stale_key));
         return err;
@@ -227,9 +262,15 @@ test "working set compaction is atomic across every allocation failure" {
         .band_words_per_page = 2,
     });
     defer pool.deinit();
+    var target_pool = try snail.PagePool.init(testing.allocator, .{
+        .max_pages = 1,
+        .curve_words_per_page = 32,
+        .band_words_per_page = 2,
+    });
+    defer target_pool.deinit();
     try testing.checkAllAllocationFailures(
         testing.allocator,
         exerciseWorkingSetAllocationFailures,
-        .{pool},
+        .{ pool, target_pool },
     );
 }

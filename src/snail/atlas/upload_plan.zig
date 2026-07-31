@@ -218,6 +218,9 @@ pub const Error = error{
     InvalidImageFormat,
     InvalidAtlasData,
     BindingGenerationExhausted,
+    PendingUploadExists,
+    UnknownPendingUpload,
+    IncompatibleSnapshot,
 };
 
 pub const InitError = PagePool.IdentityError || error{
@@ -233,6 +236,9 @@ pub const Sizes = struct {
     bindings: usize,
     info_free: usize,
     image_free: usize,
+    /// One rollback entry per logical page. Planning records only pages whose
+    /// upload watermarks change, but every page may change in one transaction.
+    page_rollbacks: usize,
     /// A safe upper bound on regions produced by one `plan`/`planDelta`.
     regions: usize,
     /// f32 scratch a caller must provide per `plan`/`planDelta` call for the
@@ -262,6 +268,7 @@ pub fn sizes(pool: *const PagePool, opts: Options) InitError!Sizes {
         // First-fit free-list fragments to at most one span per binding, +1.
         .info_free = info_free,
         .image_free = image_free,
+        .page_rollbacks = layers,
         // Up to 3 regions per plane per page (partial head row, full middle
         // rows, partial tail row).
         .regions = regions,
@@ -275,6 +282,16 @@ pub fn sizes(pool: *const PagePool, opts: Options) InitError!Sizes {
 /// Free-list element; exposed so a caller can allocate the `info_free` /
 /// `image_free` backing (sized via `sizes`).
 pub const Range = struct { base: u32, size: u32 };
+
+/// Previous upload watermarks for one page touched by a pending transaction.
+/// Exposed only so allocation-free callers can provide `sizes().page_rollbacks`
+/// elements to `Planner.init`.
+pub const PageRollback = struct {
+    page: u32,
+    generation: u64,
+    curve_words: u32,
+    band_words: u32,
+};
 
 /// Fixed-capacity first-fit free-list over caller-provided backing — the
 /// allocator-free twin of `snail-raster`'s range allocator (identical
@@ -352,11 +369,14 @@ pub const Slot = struct {
     /// append-only and row-aligned across `Atlas.extend` (each snapshot
     /// pads to whole rows), so deltas upload only rows past this mark.
     uploaded_info_rows: u32 = 0,
+    /// Image layers already populated for this binding. Direct descendants
+    /// append new images after this watermark without rewriting live layers.
+    uploaded_image_count: u32 = 0,
     /// Snapshot whose binding-relative side data currently occupies this
     /// slot. Exact snapshots need no side-data upload; direct children may
     /// append only within the slot's fixed initial row/image reservation.
-    /// Branches, skipped descendants, and unrelated atlases trigger a
-    /// conservative full side-data replacement within that same reservation.
+    /// Branches, skipped descendants, and unrelated atlases require a fresh
+    /// binding so live side data is never overwritten in place.
     snapshot_id: u64 = 0,
     lineage: u64 = 0,
 };
@@ -374,7 +394,21 @@ pub const Planner = struct {
     bindings: []Slot,
     info_free: FreeList,
     image_free: FreeList,
+    page_rollbacks: []PageRollback,
+    pending: ?PendingState = null,
+    next_pending_id: u64 = 1,
     upload_generation: u64 = 0,
+
+    const PendingState = struct {
+        id: u64,
+        slot_index: u32,
+        previous_slot: Slot,
+        previous_upload_generation: u64,
+        info_range: Range = .{ .base = 0, .size = 0 },
+        image_range: Range = .{ .base = 0, .size = 0 },
+        fresh_binding: bool = false,
+        rollback_count: usize = 0,
+    };
 
     /// Initialize allocation-free planner state over caller-owned backing. Each
     /// slice must provide at least its corresponding `sizes(pool, opts)` element
@@ -389,6 +423,7 @@ pub const Planner = struct {
         binding_slots: []Slot,
         info_free_backing: []Range,
         image_free_backing: []Range,
+        page_rollbacks: []PageRollback,
     ) InitError!Planner {
         const pool_config = pool.config();
         const layers: usize = @intCast(pool_config.max_pages);
@@ -399,7 +434,8 @@ pub const Planner = struct {
             band_words.len < layers or
             binding_slots.len < binding_count or
             info_free_backing.len < free_count or
-            image_free_backing.len < free_count)
+            image_free_backing.len < free_count or
+            page_rollbacks.len < layers)
         {
             return error.BackingTooSmall;
         }
@@ -427,17 +463,21 @@ pub const Planner = struct {
             .bindings = bindings_used,
             .info_free = .{ .ranges = info_free_backing[0..free_count] },
             .image_free = .{ .ranges = image_free_backing[0..free_count] },
+            .page_rollbacks = page_rollbacks[0..layers],
         };
         self.info_free.reset(opts.layer_info_height);
         self.image_free.reset(opts.max_images);
         return self;
     }
 
-    /// Plan the upload for a fresh binding of `atlas`. Fills
-    /// `out_regions` (up to `sizes().regions`), sets `out_len`, and returns the
-    /// `Binding` for `emit`.
-    pub fn plan(self: *Planner, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+    /// Plan an upload for a fresh binding. The returned regions and binding
+    /// are provisional until `commit`; call `abort` if the caller cannot copy
+    /// every region into its own staging resources or submit the work.
+    ///
+    /// Only one transaction may be pending on a planner at a time.
+    pub fn plan(self: *Planner, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!PendingUpload {
         out_len.* = 0;
+        if (self.pending != null) return error.PendingUploadExists;
         if (atlas.pool) |p| {
             if (p != self.pool) return error.UnknownPool;
         }
@@ -446,13 +486,25 @@ pub const Planner = struct {
 
         const slot_index = self.findFreeBinding() orelse return error.NoFreeBinding;
         const info_range = self.info_free.take(info_height) orelse return error.NoFreeLayerInfoRows;
-        errdefer self.info_free.release(info_range) catch {};
+        var transaction_started = false;
+        errdefer if (!transaction_started) self.info_free.release(info_range) catch {};
         const image_range = self.image_free.take(image_count) orelse return error.NoFreeImageLayers;
-        errdefer self.image_free.release(image_range) catch {};
+        errdefer if (!transaction_started) self.image_free.release(image_range) catch {};
 
         const next_generation = std.math.add(u64, self.upload_generation, 1) catch return error.BindingGenerationExhausted;
         const slot = &self.bindings[slot_index];
-        errdefer slot.* = .{};
+        const pending_id = self.takePendingId();
+        self.pending = .{
+            .id = pending_id,
+            .slot_index = slot_index,
+            .previous_slot = slot.*,
+            .previous_upload_generation = self.upload_generation,
+            .info_range = info_range,
+            .image_range = image_range,
+            .fresh_binding = true,
+        };
+        transaction_started = true;
+        errdefer self.rollbackPending();
         slot.* = .{
             .active = true,
             .generation = next_generation,
@@ -467,18 +519,25 @@ pub const Planner = struct {
         slot.snapshot_id = identity.snapshot_id;
         slot.lineage = identity.lineage;
         self.upload_generation = next_generation;
-        return .{ .pool = self.pool, .source_id = self.source_id, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
+        return .{
+            .planner = self,
+            .id = pending_id,
+            .provisional_binding = bindingFor(self, slot),
+            .planned_regions = out_regions[0..out_len.*],
+        };
     }
 
     /// Plan an incremental re-upload of `atlas` into the slot `prev_binding`
     /// already owns. Exact/direct-child snapshots suppress unchanged regions;
-    /// branches and unrelated snapshots conservatively replace side data.
+    /// skipped descendants, branches, and unrelated snapshots return
+    /// `IncompatibleSnapshot`; use `plan` to allocate a fresh binding.
     /// The slot's initial layer-info and image reservations never grow, so an
     /// atlas that exceeds either returns `NoLayerInfoRoomToGrow` or
     /// `NoImageRoomToGrow`; release the binding and use `plan` for a larger
     /// fresh reservation.
-    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!Binding {
+    pub fn planDelta(self: *Planner, prev_binding: Binding, atlas: *const Atlas, out_regions: []Region, out_len: *usize, layer_info_scratch: []f32) Error!PendingUpload {
         out_len.* = 0;
+        if (self.pending != null) return error.PendingUploadExists;
         if (prev_binding.pool != self.pool) return error.UnknownPool;
         if (prev_binding.source_id != self.source_id) return error.UnknownBinding;
         if (atlas.pool) |p| {
@@ -495,12 +554,56 @@ pub const Planner = struct {
         const info_height: u32 = if (atlas.layer_info_data != null) atlas.layer_info_height else 0;
         if (info_height > slot.info_height) return error.NoLayerInfoRoomToGrow;
         if (try countUniqueImages(atlas) > slot.image_count) return error.NoImageRoomToGrow;
-
-        try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
         const identity = atlas.snapshotIdentity();
+        const exact_snapshot = slot.snapshot_id != 0 and
+            slot.snapshot_id == identity.snapshot_id;
+        const direct_child = slot.snapshot_id != 0 and
+            slot.lineage == identity.lineage and
+            identity.parent_snapshot_id == slot.snapshot_id;
+        if (!exact_snapshot and !direct_child) return error.IncompatibleSnapshot;
+
+        const pending_id = self.takePendingId();
+        self.pending = .{
+            .id = pending_id,
+            .slot_index = slot_index,
+            .previous_slot = slot.*,
+            .previous_upload_generation = self.upload_generation,
+        };
+        errdefer self.rollbackPending();
+        try self.queue(atlas, slot, out_regions, out_len, layer_info_scratch);
         slot.snapshot_id = identity.snapshot_id;
         slot.lineage = identity.lineage;
-        return .{ .pool = self.pool, .source_id = self.source_id, .generation = slot.generation, .info_row_base = slot.info_row_base, .image_layer_base = slot.image_layer_base };
+        return .{
+            .planner = self,
+            .id = pending_id,
+            .provisional_binding = bindingFor(self, slot),
+            .planned_regions = out_regions[0..out_len.*],
+        };
+    }
+
+    /// Publish a successfully accepted upload transaction. The returned
+    /// binding remains live until `release`, normally after the final GPU draw
+    /// fence which uses it. Snail retains no caller staging resource.
+    pub fn commit(self: *Planner, pending: *PendingUpload) Error!Binding {
+        const state = self.pending orelse return error.UnknownPendingUpload;
+        if (pending.planner != self or pending.id == 0 or pending.id != state.id) {
+            return error.UnknownPendingUpload;
+        }
+        const binding = pending.provisional_binding;
+        self.pending = null;
+        pending.* = undefined;
+        return binding;
+    }
+
+    /// Roll back planner watermarks and reservations for an upload which the
+    /// caller did not accept in full.
+    pub fn abort(self: *Planner, pending: *PendingUpload) Error!void {
+        const state = self.pending orelse return error.UnknownPendingUpload;
+        if (pending.planner != self or pending.id == 0 or pending.id != state.id) {
+            return error.UnknownPendingUpload;
+        }
+        self.rollbackPending();
+        pending.* = undefined;
     }
 
     /// Free the binding's slot + ranges. Returns whether a live slot was freed
@@ -509,6 +612,9 @@ pub const Planner = struct {
         if (binding.pool != self.pool) return false;
         if (binding.source_id != self.source_id) return false;
         const slot_index = self.findSlotByGeneration(binding.generation) orelse return false;
+        if (self.pending) |pending| {
+            if (pending.slot_index == slot_index) return false;
+        }
         const slot = &self.bindings[slot_index];
         if (!slot.active or
             slot.info_row_base != binding.info_row_base or
@@ -522,26 +628,22 @@ pub const Planner = struct {
         return true;
     }
 
-    /// Forget page and binding-relative upload residency after the caller fails
-    /// to apply a previously returned region list. Bindings and their placement
-    /// remain valid, but the next `planDelta` for a live binding conservatively
-    /// re-emits every referenced page, layer-info row, and image. Callers must
-    /// invoke this when GPU upload/recording fails after `plan` or `planDelta`
-    /// succeeds, then retry with `planDelta(binding, atlas)` or release the
-    /// binding before a fresh `plan`; otherwise a retry could skip bytes that
-    /// never reached the GPU.
-    pub fn invalidateUploads(self: *Planner) void {
+    /// Forget page and binding-relative upload residency after committed work
+    /// fails to reach or remain on the device. Bindings and their placement
+    /// remain valid, but the next compatible `planDelta` for a live binding
+    /// re-emits every referenced page, layer-info row, and image.
+    ///
+    /// Before commit, call `abort` instead: it rolls back only that pending
+    /// transaction. Use this broader invalidation after a submission/device
+    /// failure whose committed residency is no longer trustworthy.
+    pub fn invalidateUploads(self: *Planner) Error!void {
+        if (self.pending != null) return error.PendingUploadExists;
         @memset(self.prepared_generation, 0);
         @memset(self.prepared_curve_words, 0);
         @memset(self.prepared_band_words, 0);
         for (self.bindings) |*slot| {
             slot.uploaded_info_rows = 0;
-            // A failed application means none of the binding-relative side
-            // data is known resident. Clear snapshot identity so even an
-            // exact-snapshot retry takes the conservative replacement path
-            // and re-emits image layers as well as layer-info rows.
-            slot.snapshot_id = 0;
-            slot.lineage = 0;
+            slot.uploaded_image_count = 0;
         }
     }
 
@@ -555,6 +657,7 @@ pub const Planner = struct {
         const direct_child = slot.snapshot_id != 0 and
             slot.lineage == identity.lineage and identity.parent_snapshot_id == slot.snapshot_id;
         const replace_side_data = !exact_snapshot and !direct_child;
+        var image_count: u32 = 0;
         var info_from_row: u32 = 0;
         for (atlas.pages) |p| {
             const page_index: u32 = page_mod.pageIndex(p);
@@ -580,8 +683,10 @@ pub const Planner = struct {
                 const pixel_count = std.math.mul(usize, @as(usize, image.width), @as(usize, image.height)) catch return error.InvalidImageFormat;
                 const expected_bytes = std.math.mul(usize, pixel_count, @as(usize, self.opts.image_bytes_per_texel)) catch return error.InvalidImageFormat;
                 if (image.texels.len != expected_bytes) return error.InvalidImageFormat;
-                if (replace_side_data and rec.first_image_use) region_count += 1;
+                if (rec.first_image_use and rec.image_layer >= slot.uploaded_image_count)
+                    region_count += 1;
             }
+            image_count = next_image_layer;
         }
         if (atlas.layer_info_data) |info| {
             const expected_len = std.math.mul(usize, @as(usize, atlas.layer_info_width), @as(usize, atlas.layer_info_height)) catch return error.InvalidAtlasData;
@@ -617,6 +722,15 @@ pub const Planner = struct {
                 cur_curve != self.prepared_curve_words[layer] or
                 cur_band != self.prepared_band_words[layer];
             if (!stale) continue;
+            const pending = &self.pending.?;
+            std.debug.assert(pending.rollback_count < self.page_rollbacks.len);
+            self.page_rollbacks[pending.rollback_count] = .{
+                .page = layer,
+                .generation = self.prepared_generation[layer],
+                .curve_words = self.prepared_curve_words[layer],
+                .band_words = self.prepared_band_words[layer],
+            };
+            pending.rollback_count += 1;
             self.prepared_generation[layer] = cur_gen;
 
             // Pages are append-only, so within a generation only the words
@@ -649,10 +763,9 @@ pub const Planner = struct {
             for (records) |rec| {
                 const image = rec.image orelse continue;
                 const abs_layer = slot.image_layer_base + rec.image_layer;
-                // Initial bindings and conservative side-data replacements
-                // upload each image once. Exact snapshots and direct children
-                // preserve the slot's existing image layers.
-                if (replace_side_data and rec.first_image_use) {
+                // Initial bindings upload every image. Direct descendants and
+                // invalidation retries start at the binding's image watermark.
+                if (rec.first_image_use and rec.image_layer >= slot.uploaded_image_count) {
                     try emitRegion(out, out_len, .{ .target = .image, .layer = abs_layer, .src = image.texels, .width = image.width, .height = image.height });
                 }
                 if (rec.texel_offset / INFO_WIDTH >= info_from_row) {
@@ -683,6 +796,7 @@ pub const Planner = struct {
             }
             slot.uploaded_info_rows = atlas.layer_info_height;
         }
+        slot.uploaded_image_count = image_count;
     }
 
     /// Emit the changed texel span of one append-only page plane — words
@@ -761,14 +875,61 @@ pub const Planner = struct {
         }
         return null;
     }
+
+    fn takePendingId(self: *Planner) u64 {
+        const id = self.next_pending_id;
+        self.next_pending_id +%= 1;
+        if (self.next_pending_id == 0) self.next_pending_id = 1;
+        return id;
+    }
+
+    fn rollbackPending(self: *Planner) void {
+        const pending = self.pending orelse return;
+        for (self.page_rollbacks[0..pending.rollback_count]) |rollback| {
+            self.prepared_generation[rollback.page] = rollback.generation;
+            self.prepared_curve_words[rollback.page] = rollback.curve_words;
+            self.prepared_band_words[rollback.page] = rollback.band_words;
+        }
+        self.bindings[pending.slot_index] = pending.previous_slot;
+        self.upload_generation = pending.previous_upload_generation;
+        if (pending.fresh_binding) {
+            self.info_free.release(pending.info_range) catch
+                @panic("upload planner info free-list rollback failed");
+            self.image_free.release(pending.image_range) catch
+                @panic("upload planner image free-list rollback failed");
+        }
+        self.pending = null;
+    }
 };
 
-/// Result of one owned-planner operation. `regions` remains valid until the
-/// next `plan` or `planDelta` call on the same `OwnedPlanner`.
-pub const PlannedUpload = struct {
-    binding: Binding,
-    regions: []const Region,
+/// Provisional upload transaction. `regions()` aliases the planner's output
+/// and source atlas bytes until this value is committed or aborted.
+pub const PendingUpload = struct {
+    planner: *Planner,
+    id: u64,
+    provisional_binding: Binding,
+    planned_regions: []const Region,
+
+    pub fn regions(self: *const PendingUpload) []const Region {
+        return self.planned_regions;
+    }
+
+    /// Binding to pass to `emit` while recording the same accepted command
+    /// graph. It becomes persistently live only after `commit`.
+    pub fn binding(self: *const PendingUpload) Binding {
+        return self.provisional_binding;
+    }
 };
+
+fn bindingFor(planner: *const Planner, slot: *const Slot) Binding {
+    return .{
+        .pool = planner.pool,
+        .source_id = planner.source_id,
+        .generation = slot.generation,
+        .info_row_base = slot.info_row_base,
+        .image_layer_base = slot.image_layer_base,
+    };
+}
 
 /// Allocator-backed convenience around `Planner`. It owns only the planner's
 /// backend-neutral bookkeeping, region output, and layer-info scratch; GPU
@@ -782,6 +943,7 @@ pub const OwnedPlanner = struct {
     bindings: []Slot,
     info_free: []Range,
     image_free: []Range,
+    page_rollbacks: []PageRollback,
     regions: []Region,
     layer_info_scratch: []f32,
 
@@ -801,6 +963,8 @@ pub const OwnedPlanner = struct {
         errdefer allocator.free(info_free);
         const image_free = try allocator.alloc(Range, required.image_free);
         errdefer allocator.free(image_free);
+        const page_rollbacks = try allocator.alloc(PageRollback, required.page_rollbacks);
+        errdefer allocator.free(page_rollbacks);
         const regions = try allocator.alloc(Region, required.regions);
         errdefer allocator.free(regions);
         const layer_info_scratch = try allocator.alloc(f32, required.layer_info_scratch);
@@ -808,13 +972,14 @@ pub const OwnedPlanner = struct {
 
         return .{
             .allocator = allocator,
-            .planner = try Planner.init(pool, opts, generation, curve_words, band_words, bindings, info_free, image_free),
+            .planner = try Planner.init(pool, opts, generation, curve_words, band_words, bindings, info_free, image_free, page_rollbacks),
             .generation = generation,
             .curve_words = curve_words,
             .band_words = band_words,
             .bindings = bindings,
             .info_free = info_free,
             .image_free = image_free,
+            .page_rollbacks = page_rollbacks,
             .regions = regions,
             .layer_info_scratch = layer_info_scratch,
         };
@@ -828,6 +993,7 @@ pub const OwnedPlanner = struct {
         self.allocator.free(self.bindings);
         self.allocator.free(self.info_free);
         self.allocator.free(self.image_free);
+        self.allocator.free(self.page_rollbacks);
         self.allocator.free(self.regions);
         self.allocator.free(self.layer_info_scratch);
         self.* = undefined;
@@ -835,19 +1001,25 @@ pub const OwnedPlanner = struct {
 
     /// Allocator-backed convenience for `Planner.plan`; the returned region
     /// slice is borrowed until the next plan call on this wrapper.
-    pub fn plan(self: *OwnedPlanner, atlas: *const Atlas) Error!PlannedUpload {
+    pub fn plan(self: *OwnedPlanner, atlas: *const Atlas) Error!PendingUpload {
         var region_count: usize = 0;
-        const binding = try self.planner.plan(atlas, self.regions, &region_count, self.layer_info_scratch);
-        return .{ .binding = binding, .regions = self.regions[0..region_count] };
+        return self.planner.plan(atlas, self.regions, &region_count, self.layer_info_scratch);
     }
 
     /// Allocator-backed convenience for `Planner.planDelta`, including its
     /// fixed initial row/image reservation. The returned region slice is
     /// borrowed until the next plan call on this wrapper.
-    pub fn planDelta(self: *OwnedPlanner, previous: Binding, atlas: *const Atlas) Error!PlannedUpload {
+    pub fn planDelta(self: *OwnedPlanner, previous: Binding, atlas: *const Atlas) Error!PendingUpload {
         var region_count: usize = 0;
-        const binding = try self.planner.planDelta(previous, atlas, self.regions, &region_count, self.layer_info_scratch);
-        return .{ .binding = binding, .regions = self.regions[0..region_count] };
+        return self.planner.planDelta(previous, atlas, self.regions, &region_count, self.layer_info_scratch);
+    }
+
+    pub fn commit(self: *OwnedPlanner, pending: *PendingUpload) Error!Binding {
+        return self.planner.commit(pending);
+    }
+
+    pub fn abort(self: *OwnedPlanner, pending: *PendingUpload) Error!void {
+        return self.planner.abort(pending);
     }
 
     /// Release a live binding and its fixed reservations.
@@ -855,10 +1027,10 @@ pub const OwnedPlanner = struct {
         return self.planner.release(binding);
     }
 
-    /// Forward `Planner.invalidateUploads` after a returned region list could
-    /// not be applied completely.
-    pub fn invalidateUploads(self: *OwnedPlanner) void {
-        self.planner.invalidateUploads();
+    /// Forward `Planner.invalidateUploads` after committed device residency
+    /// becomes untrustworthy. Abort an uncommitted `PendingUpload` instead.
+    pub fn invalidateUploads(self: *OwnedPlanner) Error!void {
+        try self.planner.invalidateUploads();
     }
 };
 
@@ -914,9 +1086,10 @@ test "OwnedPlanner owns only backend-neutral planner storage" {
 
     var atlas = Atlas.empty(allocator);
     defer atlas.deinit();
-    const upload = try planner.plan(&atlas);
-    try std.testing.expectEqual(@as(usize, 0), upload.regions.len);
-    try std.testing.expect(planner.release(upload.binding));
+    var upload = try planner.plan(&atlas);
+    try std.testing.expectEqual(@as(usize, 0), upload.regions().len);
+    const binding = try planner.commit(&upload);
+    try std.testing.expect(planner.release(binding));
 }
 
 fn exerciseOwnedPlannerAllocationFailures(allocator: std.mem.Allocator, pool: *PagePool) !void {
@@ -967,14 +1140,16 @@ test "bindings are scoped to the exact planner even within one pool" {
     var atlas = try Atlas.init(allocator, pool);
     defer atlas.deinit();
 
-    const first = try first_planner.plan(&atlas);
-    const second = try second_planner.plan(&atlas);
-    try std.testing.expect(first.binding.source_id != second.binding.source_id);
-    try std.testing.expectEqual(first.binding.generation, second.binding.generation);
-    try std.testing.expect(!first_planner.release(second.binding));
-    try std.testing.expectError(error.UnknownBinding, first_planner.planDelta(second.binding, &atlas));
-    try std.testing.expect(first_planner.release(first.binding));
-    try std.testing.expect(second_planner.release(second.binding));
+    var first_pending = try first_planner.plan(&atlas);
+    var second_pending = try second_planner.plan(&atlas);
+    const first = try first_planner.commit(&first_pending);
+    const second = try second_planner.commit(&second_pending);
+    try std.testing.expect(first.source_id != second.source_id);
+    try std.testing.expectEqual(first.generation, second.generation);
+    try std.testing.expect(!first_planner.release(second));
+    try std.testing.expectError(error.UnknownBinding, first_planner.planDelta(second, &atlas));
+    try std.testing.expect(first_planner.release(first));
+    try std.testing.expect(second_planner.release(second));
 }
 
 test "Planner preflights atomically and is bound to one page pool" {
@@ -996,10 +1171,10 @@ test "Planner preflights atomically and is bound to one page pool" {
     defer prepared_path.deinit();
     var curves = try prepared_path.fillCurves(allocator, allocator);
     defer curves.deinit();
-    var atlas = try Atlas.from(allocator, pool, &.{.{
+    var atlas = try Atlas.from(allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = @import("record_key.zig").unhintedGlyph(0, 1),
-        .curves = curves,
-    }});
+        .curves = curves.view(),
+    } }} });
     defer atlas.deinit();
 
     const opts = Options{
@@ -1022,16 +1197,30 @@ test "Planner preflights atomically and is bound to one page pool" {
     defer allocator.free(info_free);
     const image_free = try allocator.alloc(Range, sz.image_free);
     defer allocator.free(image_free);
+    const page_rollbacks = try allocator.alloc(PageRollback, sz.page_rollbacks);
+    defer allocator.free(page_rollbacks);
     const regions = try allocator.alloc(Region, sz.regions);
     defer allocator.free(regions);
 
-    var planner = try Planner.init(pool, opts, generation, curve_words, band_words, slots, info_free, image_free);
+    var planner = try Planner.init(pool, opts, generation, curve_words, band_words, slots, info_free, image_free, page_rollbacks);
     var region_len: usize = 0;
     try std.testing.expectError(error.RegionBufferFull, planner.plan(&atlas, regions[0..0], &region_len, &.{}));
     try std.testing.expect(!slots[0].active);
     try std.testing.expectEqual(@as(u64, 0), generation[page_mod.pageIndex(atlas.pages[0])]);
 
-    const binding = try planner.plan(&atlas, regions, &region_len, &.{});
+    var abandoned = try planner.plan(&atlas, regions, &region_len, &.{});
+    try std.testing.expectError(
+        error.PendingUploadExists,
+        planner.plan(&atlas, regions, &region_len, &.{}),
+    );
+    try std.testing.expectError(error.PendingUploadExists, planner.invalidateUploads());
+    try std.testing.expect(!planner.release(abandoned.binding()));
+    try planner.abort(&abandoned);
+    try std.testing.expect(!slots[0].active);
+    try std.testing.expectEqual(@as(u64, 0), generation[page_mod.pageIndex(atlas.pages[0])]);
+
+    var upload = try planner.plan(&atlas, regions, &region_len, &.{});
+    const binding = try planner.commit(&upload);
     try std.testing.expectEqual(@as(usize, 2), region_len);
     var foreign_binding = binding;
     foreign_binding.pool = other_pool;
@@ -1044,7 +1233,7 @@ test "Planner preflights atomically and is bound to one page pool" {
     try std.testing.expect(planner.release(binding));
 }
 
-test "planDelta fully replaces side data for an unrelated same-height atlas" {
+test "planDelta rejects an unrelated atlas instead of overwriting a live binding" {
     const allocator = std.testing.allocator;
     var pool = try PagePool.init(allocator, .{
         .max_pages = 2,
@@ -1065,17 +1254,17 @@ test "planDelta fully replaces side data for an unrelated same-height atlas" {
     defer curves_b.deinit();
 
     const key_mod = @import("record_key.zig");
-    var atlas_a = try Atlas.from(allocator, pool, &.{.{
+    var atlas_a = try Atlas.from(allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = .{ .namespace = key_mod.ns.path_fill, .a = 1 },
-        .curves = curves_a,
+        .curves = curves_a.view(),
         .paint = .{ .solid = .{ 1, 0, 0, 1 } },
-    }});
+    } }} });
     defer atlas_a.deinit();
-    var atlas_b = try Atlas.from(allocator, pool, &.{.{
+    var atlas_b = try Atlas.from(allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = .{ .namespace = key_mod.ns.path_fill, .a = 2 },
-        .curves = curves_b,
+        .curves = curves_b.view(),
         .paint = .{ .solid = .{ 0, 1, 0, 1 } },
-    }});
+    } }} });
     defer atlas_b.deinit();
     try std.testing.expectEqual(atlas_a.layer_info_height, atlas_b.layer_info_height);
     try std.testing.expect(atlas_a.snapshotIdentity().lineage != atlas_b.snapshotIdentity().lineage);
@@ -1089,20 +1278,13 @@ test "planDelta fully replaces side data for an unrelated same-height atlas" {
     });
     defer planner.deinit();
 
-    const first = try planner.plan(&atlas_a);
-    const replacement = try planner.planDelta(first.binding, &atlas_b);
-    var saw_full_info = false;
-    for (replacement.regions) |region| {
-        if (region.target != .layer_info) continue;
-        saw_full_info = true;
-        try std.testing.expectEqual(first.binding.info_row_base, region.row_base);
-        try std.testing.expectEqual(atlas_b.layer_info_height, region.height);
-    }
-    try std.testing.expect(saw_full_info);
-
-    const unchanged = try planner.planDelta(first.binding, &atlas_b);
-    for (unchanged.regions) |region| try std.testing.expect(region.target != .layer_info);
-    try std.testing.expect(planner.release(first.binding));
+    var first_upload = try planner.plan(&atlas_a);
+    const first = try planner.commit(&first_upload);
+    try std.testing.expectError(
+        error.IncompatibleSnapshot,
+        planner.planDelta(first, &atlas_b),
+    );
+    try std.testing.expect(planner.release(first));
 }
 
 test "planner enforces image dimensions and format and retries invalidated uploads" {
@@ -1125,11 +1307,11 @@ test "planner enforces image dimensions and format and retries invalidated uploa
 
     var image = try image_mod.Image.init(allocator, 2, 1, &[_]u8{ 255, 0, 0, 255, 0, 255, 0, 255 });
     defer image.deinit();
-    var atlas = try Atlas.from(allocator, pool, &.{.{
+    var atlas = try Atlas.from(allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = .{ .namespace = @import("record_key.zig").ns.path_fill, .a = 1 },
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .image = .{ .image = &image, .uv_transform = .identity } },
-    }});
+    } }} });
     defer atlas.deinit();
 
     var too_small = try OwnedPlanner.init(allocator, pool, .{
@@ -1164,23 +1346,25 @@ test "planner enforces image dimensions and format and retries invalidated uploa
     });
     defer valid.deinit();
 
-    const first = try valid.plan(&atlas);
+    var first_upload = try valid.plan(&atlas);
     var first_image_regions: usize = 0;
-    for (first.regions) |region| {
+    for (first_upload.regions()) |region| {
         if (region.target == .image) first_image_regions += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), first_image_regions);
+    const first = try valid.commit(&first_upload);
 
     // Simulate a host upload failure after planning. Retrying the exact same
     // snapshot must include the image again; otherwise the binding would refer
     // to a layer whose texels never reached the device.
-    valid.invalidateUploads();
-    const retry = try valid.planDelta(first.binding, &atlas);
+    try valid.invalidateUploads();
+    var retry = try valid.planDelta(first, &atlas);
     var retry_image_regions: usize = 0;
-    for (retry.regions) |region| {
+    for (retry.regions()) |region| {
         if (region.target == .image) retry_image_regions += 1;
     }
     try std.testing.expectEqual(@as(usize, 1), retry_image_regions);
+    _ = try valid.commit(&retry);
 }
 
 test "planDelta uploads only the grown row band of an append-only page" {
@@ -1237,9 +1421,9 @@ test "planDelta uploads only the grown row band of an append-only page" {
     const row_segments: u16 = @intCast(curve_row_words / segment_words);
     var big = try Synthetic.curves(allocator, row_segments + 128);
     defer big.deinit();
-    var atlas = try Atlas.from(allocator, pool, &.{
-        .{ .key = @import("record_key.zig").unhintedGlyph(0, 1), .curves = big },
-    });
+    var atlas = try Atlas.from(allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = @import("record_key.zig").unhintedGlyph(0, 1), .curves = big.view() } },
+    } });
     defer atlas.deinit();
 
     var planner = try OwnedPlanner.init(allocator, pool, .{
@@ -1253,10 +1437,10 @@ test "planDelta uploads only the grown row band of an append-only page" {
 
     // Fresh plan: the big glyph spans a full first row plus a partial
     // second row — one full-width region and one partial tail row.
-    const first = try planner.plan(&atlas);
+    var first_upload = try planner.plan(&atlas);
     var full_rows: usize = 0;
     var tails: usize = 0;
-    for (first.regions) |r| {
+    for (first_upload.regions()) |r| {
         if (r.target != .curve) continue;
         if (r.width == CURVE_TEX_WIDTH) {
             full_rows += 1;
@@ -1272,21 +1456,23 @@ test "planDelta uploads only the grown row band of an append-only page" {
     }
     try std.testing.expectEqual(@as(usize, 1), full_rows);
     try std.testing.expectEqual(@as(usize, 1), tails);
+    const first = try planner.commit(&first_upload);
 
     // Unchanged replan: nothing to upload.
-    const unchanged = try planner.planDelta(first.binding, &atlas);
-    try std.testing.expectEqual(@as(usize, 0), unchanged.regions.len);
+    var unchanged = try planner.planDelta(first, &atlas);
+    try std.testing.expectEqual(@as(usize, 0), unchanged.regions().len);
+    _ = try planner.commit(&unchanged);
 
     // Append a small glyph: only its texel span re-uploads — a sub-row
     // rectangle, not the page and not even a full row.
     var small = try Synthetic.curves(allocator, 8);
     defer small.deinit();
-    try atlas.extendInPlace(allocator, &.{
-        .{ .key = @import("record_key.zig").unhintedGlyph(0, 2), .curves = small },
-    });
-    const delta = try planner.planDelta(first.binding, &atlas);
+    try atlas.extendInPlace(allocator, .{ .entries = &.{
+        .{ .geometry = .{ .key = @import("record_key.zig").unhintedGlyph(0, 2), .curves = small.view() } },
+    } });
+    var delta = try planner.planDelta(first, &atlas);
     var curve_regions: usize = 0;
-    for (delta.regions) |r| {
+    for (delta.regions()) |r| {
         switch (r.target) {
             .curve => {
                 curve_regions += 1;
@@ -1307,7 +1493,8 @@ test "planDelta uploads only the grown row band of an append-only page" {
         }
     }
     try std.testing.expectEqual(@as(usize, 1), curve_regions);
-    try std.testing.expect(planner.release(first.binding));
+    _ = try planner.commit(&delta);
+    try std.testing.expect(planner.release(first));
 }
 
 test "planDelta uploads only appended layer-info rows" {
@@ -1329,11 +1516,11 @@ test "planDelta uploads only appended layer-info rows" {
     defer curves.deinit();
 
     const record_key = @import("record_key.zig");
-    var atlas = try Atlas.from(allocator, pool, &.{.{
+    var atlas = try Atlas.from(allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = .{ .namespace = record_key.ns.path_fill, .a = 1 },
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .solid = .{ 1, 0, 0, 1 } },
-    }});
+    } }} });
     defer atlas.deinit();
 
     var planner = try OwnedPlanner.init(allocator, pool, .{
@@ -1345,15 +1532,16 @@ test "planDelta uploads only appended layer-info rows" {
     });
     defer planner.deinit();
 
-    const first = try planner.plan(&atlas);
+    var first_upload = try planner.plan(&atlas);
     var info_rows_first: u32 = 0;
-    for (first.regions) |r| {
+    for (first_upload.regions()) |r| {
         if (r.target == .layer_info) {
             try std.testing.expectEqual(@as(u32, 0), r.row_base);
             info_rows_first = r.height;
         }
     }
     try std.testing.expectEqual(@as(u32, 1), info_rows_first);
+    const first = try planner.commit(&first_upload);
 
     // Page growth without new side records: the resident layer-info rows
     // are past the binding's watermark, so no info region is emitted at
@@ -1362,18 +1550,19 @@ test "planDelta uploads only appended layer-info rows" {
     // the documented release + replan path.
     var more = try prepared_path.fillCurves(allocator, allocator);
     defer more.deinit();
-    try atlas.extendInPlace(allocator, &.{.{
+    try atlas.extendInPlace(allocator, .{ .entries = &.{.{ .geometry = .{
         .key = record_key.unhintedGlyph(0, 7),
-        .curves = more,
-    }});
-    const delta = try planner.planDelta(first.binding, &atlas);
+        .curves = more.view(),
+    } }} });
+    var delta = try planner.planDelta(first, &atlas);
     var saw_pages = false;
-    for (delta.regions) |r| {
+    for (delta.regions()) |r| {
         try std.testing.expect(r.target != .layer_info);
         if (r.target == .curve or r.target == .band) saw_pages = true;
     }
     try std.testing.expect(saw_pages);
-    try std.testing.expect(planner.release(first.binding));
+    _ = try planner.commit(&delta);
+    try std.testing.expect(planner.release(first));
 }
 
 test "flat layout fixed strides and region offsets address logical pages" {

@@ -172,21 +172,22 @@ pub const Assets = struct {
     /// init returned.
     fonts: []snail.Font,
     paint_image: snail.Image,
-    /// TtHintVm for face 0 (the regular face). Heap-allocated so the
-    /// stable `*TtHintVm` survives the `init` return-by-value. The VM
-    /// produces curves for the render path via `tryEmitHintedRun`; hinted
-    /// shaping advances flow through `advanceProvider()`.
-    tt_hint_vm: ?*snail.TtHintVm,
+    /// Stable producer identities for the heap-backed fonts. These are
+    /// separate from shaping faces and runtime atlas keys.
+    sources: []snail.FontSource,
+    /// Reusable synchronous worker context for face 0. The async API does
+    /// not require callers to retain one; this demo does so to amortize the
+    /// TrueType interpreter setup across its many small runs.
+    tt_hint_context: ?*snail.TtHintContext,
     /// Font id of face 0, the only hinted face.
     hint_font_id: u32,
-    /// One `PreparedPpem` per size the banner has hinted at. Caller-owned
+    /// One prepared size per ppem the banner has hinted at. Caller-owned
     /// per-ppem VM state; ppems come and go with zoom, so entries are
     /// created on demand and live until deinit.
-    tt_prepareds: std.AutoHashMapUnmanaged(u32, snail.TtHintVm.PreparedPpem),
+    tt_sizes: std.AutoHashMapUnmanaged(u32, snail.TtHintSize),
     /// Pool-less record store holding only `ns.tt_advance` values: the
-    /// shaping-time advance memo. `advanceProvider()` reads it and
-    /// `recordShapedAdvances` records into it — measurement records
-    /// without curve pages, exactly the `recordTtAdvanceRun` use case.
+    /// shaping-time advance memo. The cache-only provider reads it and
+    /// `planTtAdvances` fills misses without allocating curve pages.
     advance_store: snail.Atlas,
     /// Scratch slot backing the most recent `advanceProvider()` closure;
     /// valid until the next call (shape calls are sequential here).
@@ -240,70 +241,87 @@ pub const Assets = struct {
             img.deinit();
         }
 
-        // Hint face 0 (regular). Heap-allocate the TtHintVm so
-        // the stable `*TtHintVm` survives the move return.
-        const tt_hint_vm: ?*snail.TtHintVm = blk: {
-            const vm_ptr = allocator.create(snail.TtHintVm) catch break :blk null;
-            vm_ptr.* = snail.TtHintVm.init(allocator, &fonts[0]) catch {
-                allocator.destroy(vm_ptr);
+        const sources = try allocator.alloc(snail.FontSource, font_count);
+        errdefer allocator.free(sources);
+        for (sources, 0..) |*source, i| {
+            var cache_key = [_]u8{0} ** 16;
+            cache_key[0] = @intCast(i);
+            source.* = .{
+                .font_id = @intCast(i),
+                .font = &fonts[i],
+                .cache_key = cache_key,
+            };
+        }
+
+        // Hint face 0 (regular). Heap-allocation keeps both the context and
+        // its FontSource pointer stable across init's return-by-value.
+        const tt_hint_context: ?*snail.TtHintContext = blk: {
+            const context = allocator.create(snail.TtHintContext) catch break :blk null;
+            context.* = snail.TtHintContext.init(
+                allocator,
+                allocator,
+                &sources[0],
+            ) catch {
+                allocator.destroy(context);
                 break :blk null;
             };
-            break :blk vm_ptr;
+            break :blk context;
         };
         return .{
             .allocator = allocator,
             .faces = faces,
             .fonts = fonts,
             .paint_image = paint_image,
-            .tt_hint_vm = tt_hint_vm,
+            .sources = sources,
+            .tt_hint_context = tt_hint_context,
             .hint_font_id = faces.fontIdForFace(0).?,
-            .tt_prepareds = .empty,
+            .tt_sizes = .empty,
             .advance_store = snail.Atlas.empty(allocator),
             .advance_source = undefined,
-            .has_regular_hinter = tt_hint_vm != null,
+            .has_regular_hinter = tt_hint_context != null,
         };
     }
 
     pub fn deinit(self: *Assets) void {
         self.advance_store.deinit();
-        var it = self.tt_prepareds.valueIterator();
-        while (it.next()) |p| p.deinit();
-        self.tt_prepareds.deinit(self.allocator);
-        if (self.tt_hint_vm) |vm| {
-            vm.deinit();
-            self.allocator.destroy(vm);
+        var it = self.tt_sizes.valueIterator();
+        while (it.next()) |size| size.deinit();
+        self.tt_sizes.deinit(self.allocator);
+        if (self.tt_hint_context) |context| {
+            context.deinit();
+            self.allocator.destroy(context);
         }
+        self.allocator.free(self.sources);
         self.paint_image.deinit();
         self.faces.deinit();
         self.allocator.free(self.fonts);
         self.* = undefined;
     }
 
-    /// The caller-owned `PreparedPpem` for `ppem_26_6`, running fpgm/prep
+    /// The caller-owned prepared size for `ppem_26_6`, running fpgm/prep
     /// on first use. Null when the font has no hinting or prep fails.
-    fn preparedFor(self: *Assets, ppem_26_6: u32) ?*const snail.TtHintVm.PreparedPpem {
-        const vm = self.tt_hint_vm orelse return null;
-        const gop = self.tt_prepareds.getOrPut(self.allocator, ppem_26_6) catch return null;
+    fn preparedFor(self: *Assets, ppem_26_6: u32) ?*const snail.TtHintSize {
+        const context = self.tt_hint_context orelse return null;
+        const gop = self.tt_sizes.getOrPut(self.allocator, ppem_26_6) catch return null;
         if (!gop.found_existing) {
-            gop.value_ptr.* = vm.prepare(snail.TtHintPpem.uniform(ppem_26_6)) catch {
-                _ = self.tt_prepareds.remove(ppem_26_6);
+            gop.value_ptr.* = context.prepareSize(
+                snail.TtHintPpem.uniform(ppem_26_6),
+            ) catch {
+                _ = self.tt_sizes.remove(ppem_26_6);
                 return null;
             };
         }
         return gop.value_ptr;
     }
 
-    /// Advance provider for shaping at `ppem_26_6`: reads the assets'
-    /// `ns.tt_advance` store, falling back to the pure VM for glyphs
-    /// not yet recorded.
-    fn advanceProvider(self: *Assets, ppem_26_6: u32) ?snail.AdvanceProvider {
-        const vm = self.tt_hint_vm orelse return null;
-        const prepared = self.preparedFor(ppem_26_6) orelse return null;
+    /// Advance provider for shaping: reads the assets' `ns.tt_advance` store.
+    /// Misses deliberately fall through so the caller
+    /// can plan them and reshape without making HarfBuzz execute producers.
+    fn advanceProvider(self: *Assets) ?snail.AdvanceProvider {
+        if (!self.has_regular_hinter) return null;
         self.advance_source = .{
             .atlas = &self.advance_store,
-            .vm = vm,
-            .prepared = prepared,
-            .font_id = self.hint_font_id,
+            .sources = self.sources[0..1],
         };
         return self.advance_source.advanceProvider();
     }
@@ -330,6 +348,57 @@ pub const Assets = struct {
         return &self.fonts[tbl[@as(usize, face_index)]];
     }
 };
+
+fn prepareOutlinesAndApply(
+    allocator: Allocator,
+    atlas: *snail.Atlas,
+    plan: *const snail.PreparePlan,
+    context: *snail.OutlineContext,
+) !void {
+    const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+    defer allocator.free(owned);
+    @memset(owned, null);
+    defer deinitPreparedRecords(owned);
+
+    const results = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+    defer allocator.free(results);
+    @memset(results, null);
+
+    for (plan.requests(), 0..) |request, i| {
+        owned[i] = try context.prepare(request);
+        results[i] = owned[i].?.view();
+    }
+    try plan.applyInPlace(allocator, atlas, results);
+}
+
+fn prepareTtAndApply(
+    allocator: Allocator,
+    atlas: *snail.Atlas,
+    plan: *const snail.PreparePlan,
+    context: *snail.TtHintContext,
+    size: *const snail.TtHintSize,
+) !void {
+    const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+    defer allocator.free(owned);
+    @memset(owned, null);
+    defer deinitPreparedRecords(owned);
+
+    const results = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+    defer allocator.free(results);
+    @memset(results, null);
+
+    for (plan.requests(), 0..) |request, i| {
+        owned[i] = try context.prepare(size, request);
+        results[i] = owned[i].?.view();
+    }
+    try plan.applyInPlace(allocator, atlas, results);
+}
+
+fn deinitPreparedRecords(records: []?snail.prepared.OwnedRecord) void {
+    for (records) |*record| {
+        if (record.*) |*value| value.deinit();
+    }
+}
 
 fn initPaintImage(allocator: Allocator) !snail.Image {
     var pixels: [16 * 16 * 4]u8 = undefined;
@@ -391,7 +460,10 @@ pub fn build(
     try builder.path_shapes.appendSlice(builder.allocator, builder.painted_text_shapes.items);
 
     // ── Seal atlases ──
-    var paths_atlas = try snail.Atlas.from(allocator, pool, builder.path_entries.items);
+    const tagged_path_entries = try allocator.alloc(snail.AtlasEntry, builder.path_entries.items.len);
+    defer allocator.free(tagged_path_entries);
+    for (builder.path_entries.items, tagged_path_entries) |entry, *out| out.* = .{ .geometry = entry };
+    var paths_atlas = try snail.Atlas.from(allocator, pool, .{ .entries = tagged_path_entries });
     errdefer paths_atlas.deinit();
     // The text store was recorded in place; ownership moves to Content.
     var text_atlas = builder.text_atlas;
@@ -441,7 +513,7 @@ const BannerBuilder = struct {
 
     // Path-namespace entries (cards, decorations, primitives, snail).
     path_curves_owned: std.ArrayList(snail.GlyphCurves),
-    path_entries: std.ArrayList(snail.AtlasEntry),
+    path_entries: std.ArrayList(snail.AtlasGeometryEntry),
     path_shapes: std.ArrayList(snail.Shape),
     extra_layer_storage: std.ArrayList([]snail.AtlasLayer),
     next_path_id: u32,
@@ -449,13 +521,14 @@ const BannerBuilder = struct {
     // Gradient / image-painted text glyph entries. Collected during the text
     // pass but spliced onto the end of `path_entries`/`path_shapes` after the
     // path pass so they render ON TOP of the card backgrounds.
-    painted_text_entries: std.ArrayList(snail.AtlasEntry),
+    painted_text_entries: std.ArrayList(snail.AtlasGeometryEntry),
     painted_text_shapes: std.ArrayList(snail.Shape),
 
     // Text-namespace store (regular + COLR-layer + hinted glyph records),
-    // populated via the record* verbs.
+    // populated by atomic preparation updates.
     text_atlas: snail.Atlas,
     text_shapes: std.ArrayList(snail.Shape),
+    outline_context: snail.OutlineContext,
 
     // Hinted runs are collected as descriptors instead of baked into
     // `text_shapes` so the demo can re-snap their baselines per frame
@@ -494,6 +567,7 @@ const BannerBuilder = struct {
             .next_path_id = 0,
             .text_atlas = try snail.Atlas.init(allocator, pool),
             .text_shapes = .empty,
+            .outline_context = snail.OutlineContext.init(allocator, allocator),
             .hinted_runs = .empty,
             .painted_text_entries = .empty,
             .painted_text_shapes = .empty,
@@ -504,6 +578,7 @@ const BannerBuilder = struct {
     }
 
     fn deinit(self: *BannerBuilder) void {
+        self.outline_context.deinit();
         for (self.path_curves_owned.items) |*c| c.deinit();
         self.path_curves_owned.deinit(self.allocator);
         self.path_entries.deinit(self.allocator);
@@ -1058,7 +1133,7 @@ const BannerBuilder = struct {
             const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch break :blk null;
             break :blk snail.TtHintPpem.uniform(ppem_26_6);
         } else null;
-        const provider = if (target_ppem) |tp| self.assets.advanceProvider(tp.x_26_6) else null;
+        const provider = if (target_ppem != null) self.assets.advanceProvider() else null;
         var shaped = try snail.shape(self.allocator, &self.assets.faces, string, .{
             .style = style,
             .target_ppem = target_ppem,
@@ -1066,13 +1141,22 @@ const BannerBuilder = struct {
         });
         defer shaped.deinit();
 
-        // Record the run's hinted advances into the assets' store so the
-        // next build's shaping reads them instead of re-running the VM.
+        // HarfBuzz stays a pure cache consumer. On a miss, prepare advances
+        // through the same request API as geometry, commit them atomically,
+        // then reshape once against the populated store.
         if (target_ppem) |tp| {
-            if (self.assets.tt_hint_vm) |vm| {
-                if (self.assets.preparedFor(tp.x_26_6)) |prepared| {
-                    snail.recordTtAdvanceRun(&self.assets.advance_store, vm, prepared, self.assets.hint_font_id, &shaped) catch {};
-                }
+            const added = self.prepareTtAdvances(&shaped, tp) catch |err| switch (err) {
+                error.OutOfMemory => return error.OutOfMemory,
+                else => false,
+            };
+            if (added) {
+                const reshaped = try snail.shape(self.allocator, &self.assets.faces, string, .{
+                    .style = style,
+                    .target_ppem = target_ppem,
+                    .advance_provider = self.assets.advanceProvider(),
+                });
+                shaped.deinit();
+                shaped = reshaped;
             }
         }
 
@@ -1212,6 +1296,34 @@ const BannerBuilder = struct {
         return true;
     }
 
+    fn prepareTtAdvances(
+        self: *BannerBuilder,
+        shaped: *const snail.ShapedText,
+        ppem: snail.TtHintPpem,
+    ) !bool {
+        if (!self.allRunGlyphsHintable(shaped)) return false;
+        const context = self.assets.tt_hint_context orelse return false;
+        const size = self.assets.preparedFor(ppem.x_26_6) orelse return false;
+
+        var plan = try snail.planTtAdvances(
+            &self.assets.advance_store,
+            self.allocator,
+            self.assets.sources[0..1],
+            &.{shaped},
+            ppem,
+        );
+        defer plan.deinit();
+        if (plan.requests().len == 0) return false;
+        try prepareTtAndApply(
+            self.allocator,
+            &self.assets.advance_store,
+            &plan,
+            context,
+            size,
+        );
+        return true;
+    }
+
     /// Solid-color shaped run: insert each glyph's curves under
     /// `unhintedGlyph(font_id, glyph_id)` keys (with COLR fanout for color
     /// fonts) and emit one shape per glyph via `placeRun`.
@@ -1267,7 +1379,7 @@ const BannerBuilder = struct {
             self.next_path_id += 1;
             try self.painted_text_entries.append(self.allocator, .{
                 .key = key,
-                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
                 .paint = local_paint,
             });
             try self.painted_text_shapes.append(self.allocator, .{
@@ -1287,19 +1399,33 @@ const BannerBuilder = struct {
         placement: Placement,
         color: [4]f32,
     ) !bool {
-        const vm = self.assets.tt_hint_vm orelse return false;
+        const context = self.assets.tt_hint_context orelse return false;
         const ppem_26_6 = hintPpem26_6(placement.size, self.tt_hint_opts.ppem_scale) catch return false;
-        const prepared = self.assets.preparedFor(ppem_26_6) orelse return false;
+        const size = self.assets.preparedFor(ppem_26_6) orelse return false;
 
         // Hinted records exist only for the primary latin font; runs that
         // pulled in fallback faces render unhinted.
         for (shaped.glyphs) |g| {
             if (g.font_id != self.assets.hint_font_id) return false;
         }
-        // Record hinted curves for the whole run before emitting shapes.
-        // `recordTtHintRun` batches its inserts, so a mid-run hint failure
-        // leaves the store clean and the caller falls back to unhinted.
-        snail.recordTtHintRun(&self.text_atlas, self.allocator, vm, prepared, self.assets.hint_font_id, shaped) catch |err| switch (err) {
+        var plan = snail.planRuns(
+            &self.text_atlas,
+            self.allocator,
+            self.assets.sources[0..1],
+            &.{shaped},
+            .{ .tt_hint = snail.TtHintPpem.uniform(ppem_26_6) },
+        ) catch |err| switch (err) {
+            error.OutOfMemory => return error.OutOfMemory,
+            else => return false,
+        };
+        defer plan.deinit();
+        prepareTtAndApply(
+            self.allocator,
+            &self.text_atlas,
+            &plan,
+            context,
+            size,
+        ) catch |err| switch (err) {
             error.OutOfMemory => return error.OutOfMemory,
             else => return false,
         };
@@ -1322,7 +1448,20 @@ const BannerBuilder = struct {
     fn ensureUnhintedGlyphCurves(self: *BannerBuilder, shaped: *const snail.ShapedText) !void {
         // `.layers` records per-layer COLR glyphs, matching this scene's
         // `colr = true` fanout placement.
-        try snail.recordUnhintedRun(&self.text_atlas, self.allocator, &self.assets.faces, shaped, .{ .colr = .layers });
+        var plan = try snail.planRuns(
+            &self.text_atlas,
+            self.allocator,
+            self.assets.sources,
+            &.{shaped},
+            .{ .unhinted = .{ .colr = .layers } },
+        );
+        defer plan.deinit();
+        try prepareOutlinesAndApply(
+            self.allocator,
+            &self.text_atlas,
+            &plan,
+            &self.outline_context,
+        );
     }
 };
 

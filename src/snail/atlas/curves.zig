@@ -21,6 +21,89 @@ const render_abi = @import("../format/abi.zig");
 pub const BBox = bezier.BBox;
 pub const PathCurveClass = render_abi.PathCurveClass;
 
+/// Borrowed, ownership-free packed geometry accepted by `AtlasUpdate`.
+/// The source storage only needs to remain alive for the update call.
+pub const GeometryView = struct {
+    curve_bytes: []const u16,
+    band_bytes: []const u16,
+    curve_count: u16,
+    encoding: curve_tex.Encoding,
+    path_curve_class: PathCurveClass,
+    h_band_count: u16,
+    v_band_count: u16,
+    band_scale_x: f32,
+    band_scale_y: f32,
+    band_offset_x: f32,
+    band_offset_y: f32,
+    bbox: BBox,
+
+    pub fn fromGlyphCurves(curves: *const GlyphCurves) GeometryView {
+        return .{
+            .curve_bytes = curves.curve_bytes,
+            .band_bytes = curves.band_bytes,
+            .curve_count = curves.curve_count,
+            .encoding = curves.encoding,
+            .path_curve_class = curves.path_curve_class,
+            .h_band_count = curves.h_band_count,
+            .v_band_count = curves.v_band_count,
+            .band_scale_x = curves.band_scale_x,
+            .band_scale_y = curves.band_scale_y,
+            .band_offset_x = curves.band_offset_x,
+            .band_offset_y = curves.band_offset_y,
+            .bbox = curves.bbox,
+        };
+    }
+
+    fn borrowed(self: GeometryView) GlyphCurves {
+        return .{
+            .allocator = undefined,
+            .curve_bytes = self.curve_bytes,
+            .band_bytes = self.band_bytes,
+            .curve_count = self.curve_count,
+            .encoding = self.encoding,
+            .path_curve_class = self.path_curve_class,
+            .h_band_count = self.h_band_count,
+            .v_band_count = self.v_band_count,
+            .band_scale_x = self.band_scale_x,
+            .band_scale_y = self.band_scale_y,
+            .band_offset_x = self.band_offset_x,
+            .band_offset_y = self.band_offset_y,
+            .bbox = self.bbox,
+        };
+    }
+
+    pub fn validate(self: GeometryView) GlyphCurves.ValidationError!void {
+        const value = self.borrowed();
+        try value.validate();
+    }
+
+    pub fn clone(self: GeometryView, allocator: std.mem.Allocator) GlyphCurves.CloneError!GlyphCurves {
+        const value = self.borrowed();
+        return value.clone(allocator);
+    }
+
+    pub fn isEmpty(self: GeometryView) bool {
+        return self.curve_count == 0;
+    }
+
+    pub fn empty() GeometryView {
+        return .{
+            .curve_bytes = &.{},
+            .band_bytes = &.{},
+            .curve_count = 0,
+            .encoding = .dense_quadratic,
+            .path_curve_class = .quadratic,
+            .h_band_count = 0,
+            .v_band_count = 0,
+            .band_scale_x = 0,
+            .band_scale_y = 0,
+            .band_offset_x = 0,
+            .band_offset_y = 0,
+            .bbox = .{ .min = .zero, .max = .zero },
+        };
+    }
+};
+
 /// Classify a segment list by the strongest evaluator it needs. Production
 /// packers lower cubics first; `.cubic` remains a legacy general-path class
 /// for callers inspecting unprepared geometry.
@@ -85,6 +168,10 @@ pub const GlyphCurves = struct {
             self.allocator.free(self.band_bytes);
         }
         self.* = undefined;
+    }
+
+    pub fn view(self: *const GlyphCurves) GeometryView {
+        return .fromGlyphCurves(self);
     }
 
     /// Deep-copy into a fresh allocation owned by `allocator`. The copy

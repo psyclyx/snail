@@ -479,18 +479,17 @@ fn buildAutohintTestAtlas(pool: *PagePool) !atlas_mod.Atlas {
         .blue = -1,
         .flags = .{ .round = false },
     }};
-    return atlas_mod.Atlas.from(testing.allocator, pool, &.{
-        .{ .key = base_key, .curves = curves },
-        .{
+    return atlas_mod.Atlas.from(testing.allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = base_key, .curves = curves.view() } },
+        .{ .autohint = .{
             .key = key,
-            .curves = GlyphCurves.empty(testing.allocator),
-            .autohint = .{
+            .base_key = base_key,
+            .analysis = .{
                 .font = .{ .blues = &.{}, .std_x = 0.1, .std_y = 0 },
                 .glyph = .{ .x = &x, .y = &.{}, .left = 0 },
             },
-            .autohint_base = base_key,
-        },
-    });
+        } },
+    } });
 }
 
 fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
@@ -499,7 +498,7 @@ fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
         for (owned.items) |*c| c.deinit();
         owned.deinit(testing.allocator);
     }
-    var entries: std.ArrayList(atlas_mod.Entry) = .empty;
+    var entries: std.ArrayList(atlas_mod.GeometryEntry) = .empty;
     defer entries.deinit(testing.allocator);
 
     for (keys) |k| {
@@ -507,10 +506,13 @@ fn buildTestAtlas(pool: *PagePool, keys: []const u16) !atlas_mod.Atlas {
         try owned.append(testing.allocator, c);
         try entries.append(testing.allocator, .{
             .key = record_key_mod.unhintedGlyph(0, k),
-            .curves = owned.items[owned.items.len - 1],
+            .curves = owned.items[owned.items.len - 1].view(),
         });
     }
-    return atlas_mod.Atlas.from(testing.allocator, pool, entries.items);
+    const tagged = try testing.allocator.alloc(atlas_mod.AtlasEntry, entries.items.len);
+    defer testing.allocator.free(tagged);
+    for (entries.items, tagged) |entry, *out| out.* = .{ .geometry = entry };
+    return atlas_mod.Atlas.from(testing.allocator, pool, .{ .entries = tagged });
 }
 
 fn instanceWords(instances: []const Instance, index: usize) []const u32 {
@@ -827,18 +829,18 @@ test "emit splits contiguous shapes into exact semantic batches" {
     const painted_glyph_key = record_key_mod.unhintedGlyph(1, 3);
     const path_key = record_key_mod.RecordKey{ .namespace = record_key_mod.ns.path_fill, .a = 1 };
     const hinted_key = record_key_mod.ttHintedGlyph(0, 3, 16 * 64);
-    var atlas = try Atlas.from(testing.allocator, pool, &.{
-        .{ .key = regular_key, .curves = regular_curves },
-        .{ .key = colr_key, .curves = regular_curves, .paint = .{ .solid = .{ 1, 0, 0, 1 } } },
-        .{ .key = painted_glyph_key, .curves = regular_curves, .paint = .{ .linear_gradient = .{
+    var atlas = try Atlas.from(testing.allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = regular_key, .curves = regular_curves.view() } },
+        .{ .geometry = .{ .key = colr_key, .curves = regular_curves.view(), .paint = .{ .solid = .{ 1, 0, 0, 1 } } } },
+        .{ .geometry = .{ .key = painted_glyph_key, .curves = regular_curves.view(), .paint = .{ .linear_gradient = .{
             .start = .{ .x = 0, .y = 0 },
             .end = .{ .x = 1, .y = 1 },
             .start_color = .{ 1, 0, 0, 1 },
             .end_color = .{ 0, 0, 1, 1 },
-        } } },
-        .{ .key = path_key, .curves = path_curves, .paint = .{ .solid = .{ 1, 1, 1, 1 } } },
-        .{ .key = hinted_key, .curves = regular_curves },
-    });
+        } } } },
+        .{ .geometry = .{ .key = path_key, .curves = path_curves.view(), .paint = .{ .solid = .{ 1, 1, 1, 1 } } } },
+        .{ .geometry = .{ .key = hinted_key, .curves = regular_curves.view() } },
+    } });
     defer atlas.deinit();
 
     const shapes = [_]Shape{

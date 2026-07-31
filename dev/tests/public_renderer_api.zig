@@ -22,9 +22,15 @@ test "core and external renderers need only the intentional public api" {
         if (@hasDecl(snail, "ns")) @compileError("record-key names belong under snail.record_key");
         if (@hasDecl(snail, "tt")) @compileError("TrueType implementation internals must not be public");
         if (@hasDecl(snail.font, "tt")) @compileError("TrueType implementation internals must not be public through font");
+        if (@hasField(snail.Font, "modern_instance")) @compileError("Font must not own mutable HarfBuzz extraction state");
         if (@hasDecl(snail, "AtlasPage")) @compileError("raw mutable atlas pages must not be public");
         if (@hasDecl(snail, "AtlasUploadPlanner")) @compileError("upload planner types belong under snail.atlas_upload");
         if (@hasDecl(snail, "OwnedAtlasUploadPlanner")) @compileError("upload planner types belong under snail.atlas_upload");
+        if (@hasDecl(snail, "recordUnhintedRun") or @hasDecl(snail, "recordAutohintRun") or
+            @hasDecl(snail, "recordTtHintRun") or @hasDecl(snail, "recordTtAdvanceRun"))
+        {
+            @compileError("synchronous recording facades must not bypass preparation plans");
+        }
         if (@hasDecl(snail.autohint, "analysis")) @compileError("autohint analysis implementation must not be public");
         if (@hasDecl(snail.autohint, "warp")) @compileError("runtime warp implementation must not be public");
         if (@hasDecl(snail.autohint, "blue")) @compileError("blue-zone implementation must not be public");
@@ -57,8 +63,24 @@ test "core and external renderers need only the intentional public api" {
         _ = snail.FontVariation;
         _ = snail.FontVariationAxis;
         _ = snail.FontOptions;
-        _ = snail.recordAutohintRuns;
-        _ = snail.recordTtHintRuns;
+        _ = snail.prepared.Archive;
+        _ = snail.prepared.ArchiveBuilder;
+        _ = snail.prepared.RecordView;
+        _ = snail.prepared.OwnedRecord;
+        _ = snail.GeometryView;
+        _ = snail.GlyphCurves.view;
+        _ = snail.prepared.GeometryView.atlasView;
+        _ = snail.AtlasUpdate;
+        _ = snail.AtlasGeometryEntry;
+        _ = snail.AtlasAutohintEntry;
+        _ = snail.Atlas.compactInto;
+        _ = snail.PreparePlan;
+        _ = snail.PrepareRequest;
+        _ = snail.planRuns;
+        _ = snail.planTtAdvances;
+        _ = snail.OutlineContext;
+        _ = snail.AutohintContext;
+        _ = snail.TtHintContext;
         _ = snail.autohint.AutohintAnalyzer;
         _ = snail.autohint.AutohintPolicy;
         _ = snail.autohint.FeatureEdge;
@@ -89,6 +111,7 @@ test "core and external renderers need only the intentional public api" {
         }
         _ = snail.atlas_upload.Planner;
         _ = snail.atlas_upload.OwnedPlanner;
+        _ = snail.atlas_upload.PendingUpload;
         _ = snail.atlas_upload.Region;
         if (@hasDecl(snail, "shader")) @compileError("generated shaders live in the separate snail-shaders module");
 

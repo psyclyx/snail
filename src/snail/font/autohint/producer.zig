@@ -40,6 +40,11 @@ pub const FontFeatures = struct {
     std_y: f32,
 };
 
+pub const Options = struct {
+    params: analysis.Params = .default,
+    blue_tolerance_em: f32 = 1.0 / 24.0,
+};
+
 pub const AutohintAnalyzer = struct {
     allocator: Allocator,
     program: ?vm.Program,
@@ -64,6 +69,16 @@ pub const AutohintAnalyzer = struct {
     /// Build analysis for an exact selected face and variable-font instance.
     /// The Font's borrowed bytes and variation slice must outlive this value.
     pub fn initFont(allocator: Allocator, source_font: *const font_mod.Font) !AutohintAnalyzer {
+        return initFontWithOptions(allocator, source_font, .{});
+    }
+
+    /// Build an analyzer whose complete output-affecting policy is fixed at
+    /// construction. Callers include these options in prepared cache keys.
+    pub fn initFontWithOptions(
+        allocator: Allocator,
+        source_font: *const font_mod.Font,
+        options: Options,
+    ) !AutohintAnalyzer {
         const use_modern = source_font.inner.outline_format != .truetype or source_font.variations.len != 0;
         var program: ?vm.Program = null;
         var modern_instance: ?modern_font.Instance = null;
@@ -114,11 +129,76 @@ pub const AutohintAnalyzer = struct {
             .font = source_font.*,
             .blues = blues,
             .normalized_blues = &.{},
+            .params = options.params,
+            .blue_tol_em = options.blue_tolerance_em,
         };
         self.std_x = self.deriveStandardWidth(.x, "Hnmurbdpq");
         self.std_y = self.deriveStandardWidth(.y, "EFHTLZ");
         self.normalized_blues = try self.blues.normalized(allocator);
         return self;
+    }
+
+    /// Build only the per-thread outline machinery and reuse an already
+    /// prepared font model. This is the cache-hit path: deriving blue zones
+    /// and standard widths is skipped.
+    pub fn initFontWithModel(
+        allocator: Allocator,
+        source_font: *const font_mod.Font,
+        options: Options,
+        features: FontFeatures,
+    ) !AutohintAnalyzer {
+        const use_modern = source_font.inner.outline_format != .truetype or
+            source_font.variations.len != 0;
+        var program: ?vm.Program = null;
+        var modern_instance: ?modern_font.Instance = null;
+        if (use_modern) {
+            modern_instance = try modern_font.Instance.init(
+                source_font.inner.data,
+                source_font.inner.face_index,
+                source_font.inner.units_per_em,
+                source_font.variations,
+            );
+        } else {
+            program = try vm.Program.initFace(
+                source_font.inner.data,
+                source_font.inner.face_index,
+            );
+        }
+        errdefer if (modern_instance) |*instance| instance.deinit();
+
+        const normalized_blues = try allocator.dupe(
+            blue_mod.FeatureZone,
+            features.blues,
+        );
+        errdefer allocator.free(normalized_blues);
+        const zones = try allocator.alloc(blue_mod.Zone, features.blues.len);
+        errdefer allocator.free(zones);
+        const upm: f32 = @floatFromInt(source_font.inner.units_per_em);
+        for (features.blues, zones) |feature, *zone| {
+            zone.* = .{
+                .pos = feature.ref * upm,
+                .shoot = feature.shoot * upm,
+                // `assignEdges` uses only positions and stable indices.
+                .kind = .top,
+            };
+        }
+
+        return .{
+            .allocator = allocator,
+            .program = program,
+            .modern_instance = modern_instance,
+            .font = source_font.*,
+            .blues = .{
+                .allocator = allocator,
+                .units_per_em = source_font.inner.units_per_em,
+                .zones = zones,
+            },
+            .normalized_blues = normalized_blues,
+            .params = options.params,
+            .blue_tol_em = options.blue_tolerance_em,
+            .std_x = features.std_x * upm,
+            .std_y = features.std_y * upm,
+        };
     }
 
     fn deriveStandardWidth(self: *AutohintAnalyzer, axis: analysis.Axis, ref: []const u8) f32 {

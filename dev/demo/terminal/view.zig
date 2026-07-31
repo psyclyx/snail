@@ -147,8 +147,6 @@ pub const View = struct {
     allocator: Allocator,
     fonts: *Fonts,
     faces: snail.Faces,
-    analyzer: snail.autohint.AutohintAnalyzer,
-    tt_vm: snail.TtHintVm,
     pool: *snail.PagePool,
     atlas: snail.Atlas,
     metrics: Metrics = .{},
@@ -172,15 +170,6 @@ pub const View = struct {
         });
         errdefer faces.deinit();
 
-        var analyzer = try snail.autohint.AutohintAnalyzer.initFont(
-            allocator,
-            &fonts.regular,
-        );
-        errdefer analyzer.deinit();
-
-        var tt_vm = try snail.TtHintVm.init(allocator, &fonts.regular);
-        errdefer tt_vm.deinit();
-
         const pool = try snail.PagePool.init(allocator, .{
             .max_pages = 16,
             // CJK outlines are curve-heavy. Thirty-two RGBA16F rows per
@@ -198,8 +187,6 @@ pub const View = struct {
             .allocator = allocator,
             .fonts = fonts,
             .faces = faces,
-            .analyzer = analyzer,
-            .tt_vm = tt_vm,
             .pool = pool,
             .atlas = atlas,
         };
@@ -208,8 +195,6 @@ pub const View = struct {
     pub fn deinit(self: *View) void {
         self.atlas.deinit();
         self.pool.deinit();
-        self.tt_vm.deinit();
-        self.analyzer.deinit();
         self.faces.deinit();
         self.allocator.destroy(self.fonts);
         self.* = undefined;
@@ -231,6 +216,18 @@ pub const View = struct {
     pub fn cycleHinting(self: *View) Hinting {
         self.hinting = self.hinting.next();
         return self.hinting;
+    }
+
+    fn fontSources(self: *const View) [7]snail.FontSource {
+        return .{
+            .{ .font_id = font_id.regular, .font = &self.fonts.regular, .cache_key = [_]u8{font_id.regular} ** 16 },
+            .{ .font_id = font_id.bold, .font = &self.fonts.bold, .cache_key = [_]u8{font_id.bold} ** 16 },
+            .{ .font_id = font_id.emoji, .font = &self.fonts.emoji, .cache_key = [_]u8{font_id.emoji} ** 16 },
+            .{ .font_id = font_id.symbols, .font = &self.fonts.symbols, .cache_key = [_]u8{font_id.symbols} ** 16 },
+            .{ .font_id = font_id.devanagari, .font = &self.fonts.devanagari, .cache_key = [_]u8{font_id.devanagari} ** 16 },
+            .{ .font_id = font_id.arabic, .font = &self.fonts.arabic, .cache_key = [_]u8{font_id.arabic} ** 16 },
+            .{ .font_id = font_id.thai, .font = &self.fonts.thai, .cache_key = [_]u8{font_id.thai} ** 16 },
+        };
     }
 
     /// Build the visible picture. `scratch` owns shaping values only for this
@@ -264,36 +261,30 @@ pub const View = struct {
         for (runs.items, run_ptrs) |*run, *out| out.* = &run.shaped;
 
         const before = self.atlas.recordCount();
-        try snail.recordUnhintedRuns(
-            &self.atlas,
+        const sources = self.fontSources();
+        try demo_support.prepare.run(
             self.allocator,
-            &self.faces,
+            &self.atlas,
+            &sources,
             run_ptrs,
-            .{ .colr = .layers },
+            .{ .unhinted = .{ .colr = .layers } },
         );
         switch (self.hinting) {
             .unhinted => {},
-            .auto_y, .auto_df => try snail.recordAutohintRuns(
-                &self.atlas,
+            .auto_y, .auto_df => try demo_support.prepare.run(
                 self.allocator,
-                &self.analyzer,
-                font_id.regular,
+                &self.atlas,
+                sources[0..1],
                 run_ptrs,
+                .{ .autohint = .{} },
             ),
-            .tt => {
-                var prepared = try self.tt_vm.prepare(
-                    snail.TtHintPpem.uniform(ppem_26_6),
-                );
-                defer prepared.deinit();
-                try snail.recordTtHintRuns(
-                    &self.atlas,
-                    self.allocator,
-                    &self.tt_vm,
-                    &prepared,
-                    font_id.regular,
-                    run_ptrs,
-                );
-            },
+            .tt => try demo_support.prepare.run(
+                self.allocator,
+                &self.atlas,
+                sources[0..1],
+                run_ptrs,
+                .{ .tt_hint = snail.TtHintPpem.uniform(ppem_26_6) },
+            ),
         }
         const after = self.atlas.recordCount();
 

@@ -14,10 +14,48 @@ const cells = [_]snail.Cell{
 var shaped = try snail.shape(alloc, &faces, text, .{});
 defer shaped.deinit();
 
-// Batch all dirty runs into one idempotent atlas transaction in real code.
-try snail.recordUnhintedRuns(
-    &atlas, persistent_alloc, &faces, &.{&shaped}, .{ .colr = .layers },
+// The cache identity is independent of font_id. It covers the bytes, face,
+// and variation coordinates; the application chooses how to derive it.
+const sources = [_]snail.FontSource{.{
+    .font_id = terminal_font_id,
+    .font = &font,
+    .cache_key = terminal_font_cache_key,
+}};
+
+// Plan all dirty runs together. Planning does no outline extraction.
+var plan = try snail.planRuns(
+    &atlas,
+    persistent_alloc,
+    &sources,
+    &.{&shaped},
+    .{ .unhinted = .{ .colr = .layers } },
 );
+defer plan.deinit();
+
+const owned = try persistent_alloc.alloc(
+    ?snail.prepared.OwnedRecord,
+    plan.requests().len,
+);
+defer persistent_alloc.free(owned);
+@memset(owned, null);
+defer for (owned) |*record| if (record.*) |*value| value.deinit();
+const results = try persistent_alloc.alloc(
+    ?snail.prepared.RecordView,
+    plan.requests().len,
+);
+defer persistent_alloc.free(results);
+@memset(results, null);
+
+// This example executes locally. A real terminal may satisfy requests from
+// prepared.Archive and dispatch only misses to its worker pool.
+var outlines = snail.OutlineContext.init(persistent_alloc, scratch_alloc);
+defer outlines.deinit();
+for (plan.requests(), 0..) |request, i| {
+    owned[i] = try outlines.prepare(request);
+    results[i] = owned[i].?.view();
+}
+try plan.applyInPlace(persistent_alloc, &atlas, results);
+
 const shapes = try snail.placeCellRunAlloc(alloc, &shaped, &faces, &cells, .{
     .baseline = .{ .x = 24, .y = 40 },
     .cell_width = 10,
@@ -41,16 +79,17 @@ hinting normally use `CellSnap.glyph_origins` so fitted x-stems do not land
 at fractional device positions.
 
 A practical update loop retains `Font` storage, `Faces`, `PagePool`, and
-`Atlas`; shapes only changed row/style runs; records those runs with the
-matching plural verb (`recordUnhintedRuns`, `recordAutohintRuns`, or
-`recordTtHintRuns`); rebuilds the cheap placed picture; and applies
-`planDelta` or `DeviceAtlas.uploadDelta` to the existing binding.
+`Atlas`; shapes only changed row/style runs; builds one `PreparePlan` in the
+matching mode; resolves its requests from archives or worker contexts;
+rebuilds the cheap placed picture; and applies `planDelta` or
+`DeviceAtlas.uploadDelta` to the existing binding.
 
-Recording is idempotent, so repeated characters add no atlas work. Stable
-`font_id` values must identify the same stable `Font` pointers in every
-`Faces` that feeds an atlas. Adding or reordering fallback faces requires a
-new `Faces`, but existing atlas keys remain valid while those identities do
-not change.
+Planning and applying are idempotent, so repeated characters add no atlas
+work. Stable `font_id` values must identify the same stable `Font` pointers in
+every `Faces` and `FontSource` set that feeds an atlas. `FontSource.cache_key`
+is the separate disk-cache identity. Adding or reordering fallback faces
+requires a new `Faces`, but existing atlas keys remain valid while the runtime
+identities do not change.
 
 ## Cell-filling symbols
 

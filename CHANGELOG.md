@@ -1,5 +1,60 @@
 # Changelog
 
+## 0.16.0 - 2026-07-30
+
+### Changed (breaking)
+
+- Font population is now caller-scheduled. `planRuns` and `planTtAdvances`
+  return cacheable requests and explicit dependencies; thread-confined
+  `OutlineContext`, `AutohintContext`, and `TtHintContext` produce owning
+  values; `PreparePlan.apply` / `applyInPlace` validate all results before one
+  logically atomic atlas mutation. Plan-owned `FontSource` descriptors form a
+  selection set, so primary-only hinting can leave fallback faces unhinted.
+  This replaces the synchronous `record*Run` family.
+- Atlas mutation now takes one tagged `AtlasUpdate`, keeping geometry,
+  autohint aliases, and page-free TT advances in a single logically atomic
+  update. Caller-controlled payloads are preflighted before page publication;
+  a late allocator or concurrent-capacity failure can leave unreachable
+  append-only padding, but never a partially visible atlas. The old raw-entry
+  batch extension surface was removed.
+- `atlas_upload.Planner.plan` and `planDelta` now return `PendingUpload`.
+  `regions()` and `binding()` expose the provisional transaction; `commit`
+  publishes it after the host accepts every copy, while `abort` restores
+  reservations and upload watermarks. Persistent bindings remain explicitly
+  released after their final GPU use.
+
+### Added
+
+- `snail.prepared` provides opaque producer keys, owning and borrowed
+  data-oriented values, and a canonical immutable archive. `Archive.fromBytes`
+  validates caller-retained bytes and serves zero-copy views without owning
+  filesystem, stream, codec, cache, or threading policy.
+- `GeometryView` is the ownership-free `AtlasUpdate` input. Owned
+  `GlyphCurves.view()` and archived `prepared.GeometryView.atlasView()` adapt
+  without copying or manufacturing an owning value.
+- `Atlas.compactInto` rebuilds a filtered working set in a distinct
+  caller-owned `PagePool`. Hosts can upload and publish the replacement in
+  the background, then retire the old binding, atlas, and pool after GPU
+  completion without requiring free-page headroom in the source pool.
+
+### Correctness and performance
+
+- Cubic lowering now certifies each emitted `f32` quadratic against the
+  requested source-space tolerance using `f64` subdivision. If a certified
+  representation cannot be produced, preparation returns a typed error
+  instead of accepting an over-tolerance segment at a fixed depth.
+- TT glyph preparation returns geometry and advance from the same VM
+  execution, while independently planned TT advances remain page-free.
+  Prepared geometry, autohint model/glyph facts, TT glyphs, and TT advances
+  can be persisted without serializing atlas placement or runtime VM state.
+
+### Documentation
+
+- The integration guide now covers archive byte ownership, caller-scheduled
+  cache hits and misses, transactional upload publication, and the safe
+  cross-pool compaction lifecycle. Reference demos use the decomposed
+  preparation and upload APIs.
+
 ## 0.15.0 - 2026-07-27
 
 ### Changed (breaking)

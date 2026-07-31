@@ -553,7 +553,7 @@ const AtlasBuildContext = struct {
         var atlas = try snail.Atlas.fromWithPacking(
             self.allocator,
             self.pool,
-            self.entries,
+            .{ .entries = self.entries },
             self.packing,
         );
         defer atlas.deinit();
@@ -645,13 +645,14 @@ const UploadPlanContext = struct {
     checksum: u64 = 14695981039346656037,
 
     pub fn run(self: *UploadPlanContext) !void {
-        self.planner.invalidateUploads();
-        const plan = try self.planner.plan(self.atlas);
-        defer std.debug.assert(self.planner.release(plan.binding));
-        self.region_count = plan.regions.len;
+        try self.planner.invalidateUploads();
+        var plan = try self.planner.plan(self.atlas);
+        self.region_count = plan.regions().len;
         self.upload_bytes = 0;
-        for (plan.regions) |region| self.upload_bytes += region.src.len;
-        common.hashValue(&self.checksum, plan.binding.generation);
+        for (plan.regions()) |region| self.upload_bytes += region.src.len;
+        const binding = try self.planner.commit(&plan);
+        defer std.debug.assert(self.planner.release(binding));
+        common.hashValue(&self.checksum, binding.generation);
         common.hashValue(&self.checksum, self.region_count);
         common.hashValue(&self.checksum, self.upload_bytes);
     }

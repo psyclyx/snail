@@ -263,9 +263,9 @@ test "pathToCurves: round-trip into atlas" {
         .a = 0,
         .b = 1,
     };
-    var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, &.{
-        .{ .key = key, .curves = curves },
-    });
+    var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = key, .curves = curves.view() } },
+    } });
     defer atlas.deinit();
 
     const rec = atlas.lookupRecord(key) orelse return error.MissingRecord;

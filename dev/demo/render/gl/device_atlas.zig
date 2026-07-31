@@ -109,6 +109,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         plan_slots: []upload_plan.Slot,
         plan_info_free: []upload_plan.Range,
         plan_image_free: []upload_plan.Range,
+        plan_page_rollbacks: []upload_plan.PageRollback,
         plan_regions: []upload_plan.Region,
         plan_info_scratch: []f32,
         info_scratch_stride: usize,
@@ -158,6 +159,8 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             errdefer allocator.free(info_free);
             const image_free = try allocator.alloc(upload_plan.Range, sz.image_free);
             errdefer allocator.free(image_free);
+            const page_rollbacks = try allocator.alloc(upload_plan.PageRollback, sz.page_rollbacks);
+            errdefer allocator.free(page_rollbacks);
             const regions = try allocator.alloc(upload_plan.Region, sz.regions);
             errdefer allocator.free(regions);
             const info_scratch = try allocator.alloc(f32, info_scratch_len);
@@ -168,13 +171,14 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
                 .pool = pool,
                 .options = options,
                 .flat = try upload_plan.FlatLayout.init(pool),
-                .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
+                .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free, page_rollbacks),
                 .plan_gen = gen,
                 .plan_curve = curve_words,
                 .plan_band = band_words,
                 .plan_slots = slots,
                 .plan_info_free = info_free,
                 .plan_image_free = image_free,
+                .plan_page_rollbacks = page_rollbacks,
                 .plan_regions = regions,
                 .plan_info_scratch = info_scratch,
                 .info_scratch_stride = sz.layer_info_scratch,
@@ -188,6 +192,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             self.allocator.free(self.plan_band);
             self.allocator.free(self.plan_slots);
             self.allocator.free(self.plan_info_free);
+            self.allocator.free(self.plan_page_rollbacks);
             self.allocator.free(self.plan_image_free);
             self.allocator.free(self.plan_regions);
             self.allocator.free(self.plan_info_scratch);
@@ -272,11 +277,13 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             errdefer self.allocator.free(new_info_free);
             const new_image_free = try self.allocator.alloc(upload_plan.Range, sz.image_free);
             errdefer self.allocator.free(new_image_free);
+            const new_page_rollbacks = try self.allocator.alloc(upload_plan.PageRollback, sz.page_rollbacks);
+            errdefer self.allocator.free(new_page_rollbacks);
             const new_regions = try self.allocator.alloc(upload_plan.Region, sz.regions);
             errdefer self.allocator.free(new_regions);
             const new_info_scratch = try self.allocator.alloc(f32, info_scratch_len);
             errdefer self.allocator.free(new_info_scratch);
-            const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free);
+            const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free, new_page_rollbacks);
 
             const old_gen = self.plan_gen;
             const old_curve = self.plan_curve;
@@ -284,6 +291,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             const old_slots = self.plan_slots;
             const old_info_free = self.plan_info_free;
             const old_image_free = self.plan_image_free;
+            const old_page_rollbacks = self.plan_page_rollbacks;
             const old_regions = self.plan_regions;
             const old_info_scratch = self.plan_info_scratch;
 
@@ -295,6 +303,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             self.plan_slots = new_slots;
             self.plan_info_free = new_info_free;
             self.plan_image_free = new_image_free;
+            self.plan_page_rollbacks = new_page_rollbacks;
             self.plan_regions = new_regions;
             self.plan_info_scratch = new_info_scratch;
             self.info_scratch_stride = sz.layer_info_scratch;
@@ -306,6 +315,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             self.allocator.free(old_slots);
             self.allocator.free(old_info_free);
             self.allocator.free(old_image_free);
+            self.allocator.free(old_page_rollbacks);
             self.allocator.free(old_regions);
             self.allocator.free(old_info_scratch);
         }
@@ -333,7 +343,7 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
 
             var planned: usize = 0;
             errdefer {
-                self.planner.invalidateUploads();
+                self.planner.invalidateUploads() catch {};
                 for (out_bindings[0..planned]) |b| _ = self.planner.release(b);
             }
 
@@ -343,9 +353,11 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             for (atlases, 0..) |atlas, i| {
                 var len: usize = 0;
                 const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
-                out_bindings[i] = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
+                var pending = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
+                errdefer self.planner.abort(&pending) catch {};
+                try staged_regions.appendSlice(scratch, pending.regions());
+                out_bindings[i] = try self.planner.commit(&pending);
                 planned = i + 1;
-                try staged_regions.appendSlice(scratch, self.plan_regions[0..len]);
             }
 
             // `ensureImageArrayTexture` is the only fallible resource setup;
@@ -372,9 +384,8 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
         /// - **Exact same snapshot**. No unchanged page or layer-info data is
         ///   uploaded.
         /// - **A branch, skipped descendant, or unrelated atlas on the same
-        ///   pool**. Permitted. Page generations/watermarks still suppress
-        ///   unchanged geometry, while binding-relative side data is replaced
-        ///   conservatively so stale paint/image records cannot survive.
+        ///   pool**. `error.IncompatibleSnapshot`; call `upload` for a fresh
+        ///   binding.
         /// - **Different pool**. `error.UnknownPool`.
         /// - **Slot already released** (or never minted by this
         ///   cache). `error.UnknownBinding` — caller must call `upload`
@@ -401,14 +412,14 @@ pub fn GlDeviceAtlasFor(comptime variant: Variant) type {
             if (!self.isBindingLive(prev_binding)) return error.UnknownBinding;
             var len: usize = 0;
             const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
-            const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
-            errdefer self.planner.invalidateUploads();
+            var pending = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
+            errdefer self.planner.abort(&pending) catch {};
             try self.ensureImageArrayTexture(&.{atlas});
             try self.ensurePoolTextures();
             self.ensureLayerInfoTexture();
-            try self.applyRegions(self.plan_regions[0..len]);
+            try self.applyRegions(pending.regions());
             _ = scratch;
-            return binding;
+            return self.planner.commit(&pending);
         }
 
         pub fn release(self: *Self, binding: Binding) void {

@@ -67,7 +67,7 @@ pub const CellRunPlacement = struct {
     world_to_pixel: ?Transform2D = null,
     /// Expand COLRv0 glyphs to separately colored layer shapes. Every such
     /// color-glyph cell must use `.unhinted`, matching
-    /// `recordUnhintedRun(.layers)`. Non-COLR cells in the same run may use
+    /// `planRuns(..., .unhinted = .{ .colr = .layers })`. Non-COLR cells in the same run may use
     /// autohint or TrueType records.
     colr: bool = false,
 };

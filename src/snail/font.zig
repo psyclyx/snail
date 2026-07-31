@@ -41,15 +41,6 @@ test {
 pub const Font = struct {
     inner: ttf.Font,
     variations: []const Variation = &.{},
-    /// Lazily-created HarfBuzz backend (face/font/draw-funcs) for glyph outline
-    /// extraction, cached across all `extractCurves` calls. Building it is
-    /// expensive — it parses the font tables and, for a variable font,
-    /// instantiates the named coordinates — so doing it once per glyph (the old
-    /// behavior) dominated batch prep. Reused across glyphs; `glyphOutline`
-    /// doesn't mutate it. NOTE: single-owner — the Font must not be copied once
-    /// this is set (the copy would share, then double-free the hb handles), and
-    /// concurrent extraction needs one Instance per thread (this caches one).
-    modern_instance: ?modern_font.Instance = null,
 
     /// Parse an OpenType font from raw file data.
     /// The data slice must outlive the Font.
@@ -190,30 +181,24 @@ pub const Font = struct {
     /// pass an `ArenaAllocator.allocator()` as `scratch` and reset it
     /// between glyphs; one-shot callers can pass the same allocator
     /// twice.
-    /// The cached HarfBuzz backend, built on first use. See `modern_instance`.
-    /// Single-threaded: the `@constCast` lazy init is safe only because glyph
-    /// extraction runs on one thread; parallel extraction must hold its own
-    /// Instance per thread.
-    fn ensureInstance(self: *const Font) !*modern_font.Instance {
-        const mut = @constCast(self);
-        if (mut.modern_instance == null) {
-            mut.modern_instance = try modern_font.Instance.init(
-                self.inner.data,
-                self.inner.face_index,
-                self.inner.units_per_em,
-                self.variations,
-            );
-        }
-        return &mut.modern_instance.?;
-    }
-
+    /// Convenience one-shot extraction. For CFF/CFF2 and variable fonts this
+    /// constructs a temporary backend; batch callers should use
+    /// `OutlineContext`, which keeps one backend per worker without making
+    /// `Font` own mutable HarfBuzz state.
     pub fn extractCurves(
         self: *const Font,
         allocator: std.mem.Allocator,
         scratch: std.mem.Allocator,
         glyph_id: u16,
     ) !curves_mod.GlyphCurves {
-        return extractCurvesInner(self, allocator, scratch, glyph_id, null);
+        return extractCurvesInner(
+            self,
+            allocator,
+            scratch,
+            glyph_id,
+            null,
+            cubic_to_quadratic.default_tolerance,
+        );
     }
 
     /// The HarfBuzz backend for this font. Whether variable-font instancing
@@ -228,9 +213,8 @@ pub const Font = struct {
 
     /// Build a standalone HarfBuzz backend the caller owns. Parallel
     /// extraction needs one `Instance` per thread because `hb_font_t` is not
-    /// thread-safe and the cached `modern_instance` is single-owner. Only
-    /// meaningful when `requiresInstance()` — TrueType fonts extract without
-    /// one. Caller must `deinit` it.
+    /// thread-safe. Only meaningful when `requiresInstance()` — TrueType
+    /// fonts extract without one. Caller must `deinit` it.
     pub fn createInstance(self: *const Font) !modern_font.Instance {
         return modern_font.Instance.init(
             self.inner.data,
@@ -241,8 +225,8 @@ pub const Font = struct {
     }
 
     /// Like `extractCurves`, but uses a caller-supplied per-thread
-    /// `Instance` instead of the shared cached one, so extraction is
-    /// thread-safe across glyphs. Pass the instance for
+    /// `Instance` instead of constructing a temporary one, so batched
+    /// extraction is efficient and thread-safe. Pass the instance for
     /// `requiresInstance()` fonts; `null` is fine for TrueType fonts.
     pub fn extractCurvesWith(
         self: *const Font,
@@ -251,7 +235,37 @@ pub const Font = struct {
         scratch: std.mem.Allocator,
         glyph_id: u16,
     ) !curves_mod.GlyphCurves {
-        return extractCurvesInner(self, allocator, scratch, glyph_id, instance);
+        return extractCurvesInner(
+            self,
+            allocator,
+            scratch,
+            glyph_id,
+            instance,
+            cubic_to_quadratic.default_tolerance,
+        );
+    }
+
+    /// Thread-safe extraction with an explicit, source-space cubic lowering
+    /// tolerance. The tolerance is part of prepared-data identity.
+    pub fn extractCurvesWithTolerance(
+        self: *const Font,
+        instance: ?*modern_font.Instance,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        glyph_id: u16,
+        cubic_tolerance: f32,
+    ) !curves_mod.GlyphCurves {
+        if (!std.math.isFinite(cubic_tolerance) or cubic_tolerance <= 0) {
+            return error.InvalidTolerance;
+        }
+        return extractCurvesInner(
+            self,
+            allocator,
+            scratch,
+            glyph_id,
+            instance,
+            cubic_tolerance,
+        );
     }
 
     pub const ColrLayer = ttf.Font.ColrLayer;
@@ -308,11 +322,17 @@ fn extractCurvesInner(
     scratch: std.mem.Allocator,
     glyph_id: u16,
     /// Per-thread HarfBuzz backend for parallel callers. When null, the
-    /// single-threaded cached `modern_instance` is used instead.
+    /// temporary per-call instance is used instead.
     instance_override: ?*modern_font.Instance,
+    cubic_tolerance: f32,
 ) !curves_mod.GlyphCurves {
     if (font.requiresModernBackend()) {
-        const instance = instance_override orelse try font.ensureInstance();
+        var temporary_instance: ?modern_font.Instance = null;
+        defer if (temporary_instance) |*instance| instance.deinit();
+        const instance = instance_override orelse blk: {
+            temporary_instance = try font.createInstance();
+            break :blk &temporary_instance.?;
+        };
         var outline = try instance.glyphOutline(
             scratch,
             glyph_id,
@@ -324,6 +344,7 @@ fn extractCurvesInner(
             scratch,
             outline.segments,
             instance.glyphMetrics(font.inner.units_per_em, glyph_id).bbox,
+            cubic_tolerance,
         );
     }
     // `parseGlyph` returns contours, sub-curves, and an internal
@@ -351,7 +372,7 @@ fn extractCurvesInner(
         }
     }
 
-    return packGlyphCurves(allocator, scratch, segs, glyph.metrics.bbox);
+    return packGlyphCurves(allocator, scratch, segs, glyph.metrics.bbox, cubic_tolerance);
 }
 
 fn packGlyphCurves(
@@ -359,12 +380,13 @@ fn packGlyphCurves(
     scratch: std.mem.Allocator,
     segs: []const CurveSegment,
     metrics_bbox: bezier.BBox,
+    cubic_tolerance: f32,
 ) !curves_mod.GlyphCurves {
     if (segs.len == 0) return curves_mod.GlyphCurves.empty(allocator);
 
     // CFF/CFF2 outlines use cubics. Lower them to tangent-preserving
     // quadratics once so every font uses Slug's compact quadratic evaluator.
-    const lowered = try cubic_to_quadratic.lower(scratch, segs, cubic_to_quadratic.default_tolerance);
+    const lowered = try cubic_to_quadratic.lower(scratch, segs, cubic_tolerance);
     defer scratch.free(lowered);
 
     // Cache analytic bboxes during prepare so glyphRenderBBox and the

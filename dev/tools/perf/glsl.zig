@@ -448,9 +448,10 @@ const GpuAtlas = struct {
     }
 
     fn upload(self: *GpuAtlas, atlas: *const snail.Atlas) !void {
-        const planned = try self.uploads.plan(atlas);
-        for (planned.regions) |region| self.apply(region);
-        self.binding = planned.binding;
+        var planned = try self.uploads.plan(atlas);
+        errdefer self.uploads.abort(&planned) catch {};
+        for (planned.regions()) |region| self.apply(region);
+        self.binding = try self.uploads.commit(&planned);
     }
 
     fn apply(self: *GpuAtlas, region: snail.atlas_upload.Region) void {

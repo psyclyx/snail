@@ -6,11 +6,10 @@
 //! the free list; releasing one (refcount → 0) pushes it back.
 //!
 //! `max_pages` bounds the *resident* record set, not the total glyphs an
-//! app may ever touch: `error.OutOfLayers` from a record call is the
-//! signal to evict via `Atlas.compact` with a `RecordFilter` (see the
-//! capacity model notes on `Atlas`). `free_count` is the headroom gauge —
-//! evict while it is still above the expected compacted page count, since
-//! compaction acquires its pages before the old atlas releases any. The
+//! app may ever touch: `error.OutOfLayers` from an update is the signal to
+//! evict via `Atlas.compactInto` with a `RecordFilter` (see the capacity model
+//! notes on `Atlas`). A distinct destination pool needs no free pages in the
+//! source; `free_count` matters only to the same-pool `compact` convenience. The
 //! Draw batches split the logical range into 256-page banks. A backend may
 //! use separate texture arrays per bank, one deeper array where supported,
 //! or the flat-buffer layout exposed by `atlas_upload.FlatLayout`.

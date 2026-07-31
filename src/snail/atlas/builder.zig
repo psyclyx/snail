@@ -25,7 +25,10 @@ const paint_mod = @import("../paint.zig");
 const Image = @import("../image.zig").Image;
 
 const Atlas = atlas_mod.Atlas;
-const Entry = atlas_mod.Entry;
+const AtlasUpdate = atlas_mod.AtlasUpdate;
+const AtlasEntry = atlas_mod.AtlasEntry;
+const GeometryEntry = atlas_mod.GeometryEntry;
+const AutohintEntry = atlas_mod.AutohintEntry;
 const Layer = atlas_mod.Layer;
 const Paint = paint_mod.Paint;
 const InsertError = atlas_mod.InsertError;
@@ -34,7 +37,7 @@ const PagePool = page_pool_mod.PagePool;
 const AtlasRecord = atlas_record_mod.AtlasRecord;
 const GlyphBandEntry = atlas_record_mod.GlyphBandEntry;
 const RecordKey = record_key_mod.RecordKey;
-const GlyphCurves = curves_mod.GlyphCurves;
+const GeometryView = curves_mod.GeometryView;
 const PaintRecordDescriptor = atlas_mod.PaintRecordDescriptor;
 const PaintRecordInfo = atlas_mod.PaintRecordInfo;
 const PaintShaderClass = atlas_mod.PaintShaderClass;
@@ -423,7 +426,7 @@ pub const Builder = struct {
     /// Reserve curve+band space for one set of GlyphCurves on a page,
     /// copying the bytes and rewriting band refs. Returns the placement
     /// metadata the caller stitches into AtlasRecord / paint records.
-    fn placeCurves(self: *Builder, curves: GlyphCurves) InsertError!Placement {
+    fn placeCurves(self: *Builder, curves: GeometryView) InsertError!Placement {
         const curve_words: u32 = @intCast(curves.curve_bytes.len);
         const band_words: u32 = @intCast(curves.band_bytes.len);
         const segment_words = curves.encoding.texelsPerSegment() * 4;
@@ -643,32 +646,172 @@ pub const Builder = struct {
         self.layer_info_texels = new_texels;
     }
 
-    pub fn insert(self: *Builder, entry: Entry) InsertError!void {
-        if (self.lookup.contains(entry.key)) return;
+    /// Validate every caller-controlled part of an update before page
+    /// publication begins. The atlas transaction is logically atomic; this
+    /// preflight also prevents deterministic late-input failures from
+    /// consuming append-only page capacity.
+    pub fn preflightUpdate(self: *const Builder, update: AtlasUpdate) InsertError!void {
+        var seen: std.AutoHashMapUnmanaged(RecordKey, void) = .empty;
+        defer seen.deinit(self.allocator);
+        var update_geometry: std.AutoHashMapUnmanaged(RecordKey, bool) = .empty;
+        defer update_geometry.deinit(self.allocator);
 
-        // Validate every caller-constructible payload and reject combinations
-        // whose fields would otherwise be silently ignored. No builder state
-        // has changed at this point.
+        var layer_texels = self.layer_info_texels;
+        const max_layer_texels =
+            paint_records.info_width * (@as(u32, std.math.maxInt(u16)) + 1);
+        const config = self.pool.config();
+
+        for (update.entries) |entry| {
+            const key = entry.key();
+            if (self.lookup.contains(key) or seen.contains(key)) continue;
+
+            switch (entry) {
+                .geometry => |geometry| {
+                    if (geometry.key.namespace == record_key_mod.ns.autohint_glyph or
+                        geometry.key.namespace == record_key_mod.ns.tt_advance)
+                    {
+                        return error.InvalidRecordKey;
+                    }
+                    try geometry.curves.validate();
+                    if (geometry.paint) |paint| try paint.validate();
+
+                    var visible_count: u32 = if (geometry.curves.isEmpty()) 0 else 1;
+                    try validateCurveCapacity(geometry.curves, config);
+                    for (geometry.extra_layers) |layer| {
+                        try layer.curves.validate();
+                        try layer.paint.validate();
+                        try validateCurveCapacity(layer.curves, config);
+                        if (!layer.curves.isEmpty()) visible_count += 1;
+                    }
+                    if (visible_count > std.math.maxInt(u16)) {
+                        return error.LayerInfoTooLarge;
+                    }
+
+                    if (visible_count != 0) {
+                        if (geometry.key.namespace == record_key_mod.ns.tt_hinted_glyph) {
+                            layer_texels = std.math.add(u32, layer_texels, 2) catch
+                                return error.LayerInfoTooLarge;
+                        }
+                        const base_has_paint = geometry.paint != null or
+                            geometry.curves.isEmpty();
+                        const paint_texels: u32 = if (visible_count > 1)
+                            std.math.add(
+                                u32,
+                                1,
+                                std.math.mul(
+                                    u32,
+                                    visible_count,
+                                    paint_records.texels_per_record,
+                                ) catch return error.LayerInfoTooLarge,
+                            ) catch return error.LayerInfoTooLarge
+                        else if (base_has_paint)
+                            paint_records.texels_per_record
+                        else
+                            0;
+                        layer_texels = std.math.add(u32, layer_texels, paint_texels) catch
+                            return error.LayerInfoTooLarge;
+                    }
+                    if (layer_texels > max_layer_texels) return error.LayerInfoTooLarge;
+                    try update_geometry.put(self.allocator, key, visible_count != 0);
+                },
+                .autohint => |analysis| {
+                    if (analysis.key.namespace != record_key_mod.ns.autohint_glyph or
+                        analysis.key.b > std.math.maxInt(u16) or
+                        analysis.key.c != 0)
+                    {
+                        return error.InvalidRecordKey;
+                    }
+                    const canonical_base = record_key_mod.unhintedGlyph(
+                        analysis.key.a,
+                        @intCast(analysis.key.b),
+                    );
+                    if (!analysis.base_key.eql(canonical_base)) {
+                        return error.InvalidRecordKey;
+                    }
+                    const base_nonempty = if (update_geometry.get(analysis.base_key)) |nonempty|
+                        nonempty
+                    else if (self.lookup.get(analysis.base_key)) |record|
+                        record.curve_count != 0
+                    else
+                        return error.MissingAutohintBase;
+                    autohint_format.validateAnalysis(
+                        analysis.analysis.font,
+                        analysis.analysis.glyph,
+                    ) catch return error.InvalidAutohintAnalysis;
+                    if (base_nonempty) {
+                        const floats = autohint_format.recordFloatCount(
+                            analysis.analysis.font.blues.len,
+                            analysis.analysis.glyph.x.len,
+                            analysis.analysis.glyph.y.len,
+                        ) catch return error.InvalidAutohintAnalysis;
+                        const texels: u32 = @intCast((floats + 3) / 4);
+                        layer_texels = std.math.add(u32, layer_texels, texels) catch
+                            return error.LayerInfoTooLarge;
+                        if (layer_texels > max_layer_texels) return error.LayerInfoTooLarge;
+                    }
+                },
+            }
+            try seen.put(self.allocator, key, {});
+        }
+
+        for (update.tt_advances) |advance| {
+            if (advance.key.namespace != record_key_mod.ns.tt_advance) {
+                return error.InvalidRecordKey;
+            }
+        }
+    }
+
+    fn validateCurveCapacity(
+        curves: GeometryView,
+        config: PagePool.Options,
+    ) error{RecordTooLargeForPage}!void {
+        if (curves.curve_bytes.len > config.curve_words_per_page or
+            curves.band_bytes.len > config.band_words_per_page)
+        {
+            return error.RecordTooLargeForPage;
+        }
+    }
+
+    pub fn insert(self: *Builder, entry: AtlasEntry) InsertError!void {
+        if (self.lookup.contains(entry.key())) return;
+        return switch (entry) {
+            .geometry => |geometry| self.insertGeometry(geometry),
+            .autohint => |analysis| self.insertAutohint(analysis),
+        };
+    }
+
+    fn insertAutohint(self: *Builder, entry: AutohintEntry) InsertError!void {
+        if (entry.key.namespace != record_key_mod.ns.autohint_glyph) return error.InvalidRecordKey;
+        if (entry.key.b > std.math.maxInt(u16) or entry.key.c != 0) {
+            return error.InvalidRecordKey;
+        }
+        const canonical_base = record_key_mod.unhintedGlyph(
+            entry.key.a,
+            @intCast(entry.key.b),
+        );
+        if (!entry.base_key.eql(canonical_base)) return error.InvalidRecordKey;
+        const base_rec = self.lookup.get(entry.base_key) orelse return error.MissingAutohintBase;
+        try self.lookupPut(entry.key, base_rec);
+        // Empty glyphs (spaces, controls) still need an addressable alias so
+        // whole shaped runs remain key-complete. They have no bands to warp
+        // and therefore need no feature record.
+        if (base_rec.curve_count == 0) return;
+        try self.insertAutohintRecord(entry.key, base_rec.bands, entry.analysis);
+    }
+
+    fn insertGeometry(self: *Builder, entry: GeometryEntry) InsertError!void {
+        if (entry.key.namespace == record_key_mod.ns.autohint_glyph or
+            entry.key.namespace == record_key_mod.ns.tt_advance)
+        {
+            return error.InvalidRecordKey;
+        }
+        // Validate every caller-constructible payload before builder state
+        // changes.
         try entry.curves.validate();
         if (entry.paint) |paint| try paint.validate();
         for (entry.extra_layers) |layer| {
             try layer.curves.validate();
             try layer.paint.validate();
-        }
-        if (entry.autohint_base != null and entry.autohint == null) return error.InvalidEntry;
-
-        // Aliased autohint: reuse an already-inserted base glyph's placement
-        // and bands, placing no curves of our own. A target-free analysis
-        // cannot define a static TT-hinted-space expansion, so retain the base
-        // bbox; emit expands device bounds when fitting is applied.
-        if (entry.autohint) |analysis| {
-            if (entry.autohint_base) |base_key| {
-                if (!entry.curves.isEmpty() or entry.paint != null or entry.extra_layers.len != 0) return error.InvalidEntry;
-                const base_rec = self.lookup.get(base_key) orelse return error.MissingAutohintBase;
-                try self.lookupPut(entry.key, base_rec);
-                try self.insertAutohintRecord(entry.key, base_rec.bands, analysis);
-                return;
-            }
         }
 
         var nonempty_extra_count: usize = 0;
@@ -751,8 +894,6 @@ pub const Builder = struct {
             .curve_count = base_placement.curve_count,
             .encoding = base_placement.encoding,
             .bands = base_placement.bands,
-            // Target-free analyses retain the base bbox. Device-space emit
-            // supplies the conservative pixel expansion when fitting is used.
             .bbox = bbox,
         };
 
@@ -760,11 +901,6 @@ pub const Builder = struct {
 
         if (entry.key.namespace == record_key_mod.ns.tt_hinted_glyph) {
             try self.insertTtHintedRecord(entry.key, base_placement.bands);
-        }
-
-        // Autohint: immutable analysis over the shared base glyph.
-        if (entry.autohint) |analysis| {
-            try self.insertAutohintRecord(entry.key, base_placement.bands, analysis);
         }
 
         // Skip layer-info entirely if there's no paint at all.
@@ -895,11 +1031,11 @@ pub const Builder = struct {
         const curve_words: u32 = @as(u32, rec.curve_count) *
             rec.encoding.texelsPerSegment() * 4;
         return self.placeCurves(.{
-            .allocator = scratch,
             .curve_bytes = page_mod.curveWordsUsed(src_page)[rec.curve_texel * 4 ..][0..curve_words],
             .band_bytes = local_band,
             .curve_count = rec.curve_count,
             .encoding = rec.encoding,
+            .path_curve_class = if (rec.encoding.isDenseQuadratic()) .quadratic else .conic,
             .h_band_count = rec.bands.h_band_count,
             .v_band_count = rec.bands.v_band_count,
             .band_scale_x = rec.bands.band_scale_x,
@@ -1022,7 +1158,12 @@ pub const Builder = struct {
     }
 
     /// Carry one `ns.tt_advance` value into the rebuilt store.
-    pub fn putTtAdvance(self: *Builder, key: RecordKey, advance_26_6: i32) (std.mem.Allocator.Error || error{MapTooLarge})!void {
+    pub fn putTtAdvance(
+        self: *Builder,
+        key: RecordKey,
+        advance_26_6: i32,
+    ) (std.mem.Allocator.Error || error{ MapTooLarge, InvalidRecordKey })!void {
+        if (key.namespace != record_key_mod.ns.tt_advance) return error.InvalidRecordKey;
         if (self.tt_advance_lookup.contains(key)) return;
         const next = try self.tt_advance_lookup.put(key, advance_26_6);
         self.tt_advance_lookup.deinit();

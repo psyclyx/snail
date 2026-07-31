@@ -3,7 +3,7 @@
 This document collects the detailed host contracts behind the shorter
 integration overview in the [README](README.md). The core flow is:
 
-**shape → record → upload → emit → draw**
+**shape → plan/prepare → apply → upload → emit → draw**
 
 snail owns the CPU-side font, path, atlas, upload-planning, and draw-record
 logic. A GPU host owns its textures, pipelines, uploads, command buffers, and
@@ -56,23 +56,213 @@ live, although successfully prepared shared-page data may stay cached.
 `snail-raster` supports affine scene-to-pixel transforms. A perspective MVP
 returns `error.NonAffineMvp`.
 
+## Prepared artifacts and disk caches
+
+The `snail.prepared` namespace separates expensive producer output from both
+runtime atlas identity and presentation. Its archives contain only reusable
+geometry, autohint models and glyph facts, TT-hinted geometry, and TT
+advances. Paint, layers, scene shapes, atlas page positions, VM state, and GPU
+objects are deliberately not archived.
+
+`prepared.Archive.fromBytes(bytes)` takes the bytes representing an archive,
+not a filename, stream, or file handle. Snail performs no filesystem I/O. The
+host may read the file, memory-map it, embed it, receive it over a transport,
+or stream it into a retained buffer before calling `fromBytes`. The byte
+address must be 8-byte aligned. An `Archive` and every `RecordView` returned
+from it borrow that buffer, so the bytes must remain alive and unchanged
+until all of those views are finished.
+
+`fromBytes` validates the magic, exact format version, endian tag, alignment,
+sorted index, tags, and every table range without allocating or decoding
+records. `find` is a binary search and returns slices directly into the
+archive. Artifact semantics are checked lazily by `RecordView.validate` and
+again before atlas mutation. Treat `VersionMismatch`, a structurally damaged
+archive, or a record which fails semantic validation as a cache miss;
+compatibility is intentionally exact.
+
+The application supplies a stable `prepared.FontKey` for each precise font
+instance. It must identify font bytes, face index, and variation coordinates.
+This is separate from the runtime `font_id` used by shaping and atlas record
+keys. Applications should not manufacture artifact keys: constructors such
+as `unhintedKey`, `autohintGlyphKey`, and `ttGlyphKey` mix the font key with
+the producer version and every output-affecting option, including the
+bit-exact cubic tolerance.
+
+`ArchiveBuilder` owns copies of added values, sorts by key, and emits
+canonical bytes. Adding the same key and content is idempotent; adding the
+same key with different content returns `ConflictingDuplicate`.
+`finishInto` writes into caller-owned aligned storage, while `finishAlloc`
+returns an `OwnedArchive`. Immutable archives can be sharded: search a small
+new archive before an older base archive, then merge them under
+caller-controlled cache policy instead of rewriting a large file after every
+preparation batch.
+
+Both fresh and archived geometry feed the same borrowed atlas input without a
+codec or copy:
+
+```zig
+const fresh_entry = snail.AtlasEntry{ .geometry = .{
+    .key = runtime_key,
+    .curves = owned_curves.view(),
+} };
+const cached_entry = snail.AtlasEntry{ .geometry = .{
+    .key = runtime_key,
+    .curves = archive.find(artifact_key).?.value.geometry.atlasView(),
+} };
+// Each view only needs to outlive the Atlas.from/extend call.
+```
+
+Preparation is caller-scheduled. `planRuns` only discovers cacheable work and
+atlas assembly dependencies; it does not extract outlines or create threads.
+The `sources` slice is also an explicit selection set: glyphs whose
+`font_id` is absent are skipped rather than rejected. This lets a host prepare
+autohint or TT-hinted records only for a primary face while keeping fallback
+faces on the unhinted path. `planTtAdvances` and `TtAdvanceSource` use the
+same selected-source convention.
+
+Each request operation has one preparation owner:
+
+| `PrepareRequest.operation` | Thread-confined owner | Result |
+|---|---|---|
+| `.outline` | `OutlineContext.prepare` | ppem-independent geometry |
+| `.autohint_model` / `.autohint_glyph` | `AutohintContext.prepare` | reusable font model / glyph facts |
+| `.tt_glyph` | `TtHintContext.prepare` with a matching `TtHintSize` | ppem-specific geometry and advance from one VM execution |
+| `.tt_advance` | `TtHintContext.prepare` with a matching `TtHintSize` | page-free hinted advance |
+
+Construct `AutohintContext` per selected font and options. When an
+`.autohint_model` dependency is a cache hit, `initWithModel` avoids deriving
+that model again. Construct `TtHintContext` per selected TrueType font and
+reuse a `prepareSize` result for requests with the same `TtHintPpem`.
+
+A typical cache-hit/miss flow looks like this:
+
+```zig
+// Font borrows font_bytes and variation storage. The plan copies FontSource
+// descriptors, but those borrowed Font inputs must outlive its jobs.
+var font = try snail.Font.init(font_bytes);
+const sources = [_]snail.FontSource{.{
+    .font_id = 0,
+    .font = &font,
+    .cache_key = app.fontInstanceKey(font_bytes, 0, variations),
+}};
+
+// The caller chose mmap here. Reading into an aligned retained allocation is
+// equally valid.
+var mapped = try app.mapFile("font.snail-prepared");
+defer mapped.unmap();
+const disk_cache = snail.prepared.Archive.fromBytes(mapped.bytes()) catch null;
+
+var plan = try snail.planRuns(
+    &atlas,
+    alloc,
+    &sources,
+    &.{&shaped},
+    .{ .autohint = .{} },
+);
+defer plan.deinit();
+
+const requests = plan.requests();
+const results = try alloc.alloc(?snail.prepared.RecordView, requests.len);
+defer alloc.free(results);
+@memset(results, null);
+
+// Owned misses may be produced on arbitrary jobs. Each worker uses its own
+// thread-confined OutlineContext, AutohintContext, or TtHintContext.
+const owned = try alloc.alloc(?snail.prepared.OwnedRecord, requests.len);
+defer {
+    for (owned) |*record| if (record.*) |*value| value.deinit();
+    alloc.free(owned);
+}
+@memset(owned, null);
+
+for (requests, 0..) |request, request_index| {
+    if (disk_cache) |archive| {
+        if (archive.find(request.key)) |hit| {
+            if (hit.validate()) |_| {
+                results[request_index] = hit;
+                continue;
+            } else |_| {
+                // A semantically damaged cache record is an ordinary miss.
+            }
+        }
+    }
+
+    // `dependencies(request_index)` names earlier result slots which must
+    // complete first. The host maps request.operation to the matching
+    // per-thread context's prepare method.
+    try jobs.submitAfter(plan.dependencies(request_index), .{
+        .request = request,
+        .result_index = request_index,
+        .owned_results = owned,
+        .result_views = results,
+    });
+}
+try jobs.wait();
+
+// Preflights every key, kind, dependency, and value before mutation. The
+// atlas copies accepted data and retains no result views.
+try plan.applyInPlace(alloc, &atlas, results);
+
+// Persist misses if desired. Filesystem replacement and shard merging remain
+// caller policy.
+var builder = snail.prepared.ArchiveBuilder.init(alloc);
+defer builder.deinit();
+for (owned) |*record| if (record.*) |*value| try builder.add(value.view());
+var new_shard = try builder.finishAlloc(alloc);
+defer new_shard.deinit();
+try app.atomicWrite("font.snail-prepared.next", new_shard.bytes());
+```
+
+Plans remain usable while unrelated atlas growth proceeds. They remember
+records and advances which were already present during planning and require
+those prerequisites at apply time. Applying after a filtered compaction or
+replacement which removed one returns `error.IncompatibleAtlas`; replan
+against that replacement rather than silently producing an incomplete run.
+
+The job helpers above are application pseudocode; Snail deliberately does not
+provide a thread pool or generic cache/filesystem vtable. `OutlineContext`,
+`AutohintContext`, and `TtHintContext` are thread-confined. Their returned
+owning records may move between threads, subject to the allocator's own
+threading contract. TT `TtHintSize` and interpreter state are runtime
+acceleration data and are not archive artifacts.
+
+`Font` remains an immutable borrowed description; it does not acquire mutable
+HarfBuzz state for preparation. `Faces` owns shaping state, while each
+`OutlineContext` owns any per-worker CFF/CFF2 or variable-font outline backend
+it needs. A cache hit therefore requires neither shaping nor outline
+extraction.
+
 ## Capacity and eviction
 
-`PagePool` is the resident page budget. Recording is idempotent: an existing
-record key is skipped. When a new record cannot acquire a page, recording
-returns `error.OutOfLayers`; eviction policy belongs to the host.
+`PagePool` is the resident page budget. Atlas updates are idempotent: an
+existing record key is skipped. When a new record cannot acquire a page,
+applying the update returns `error.OutOfLayers`; eviction policy belongs to
+the host.
 
-`Atlas.compact(allocator, scratch, filter)` creates a new, fully repacked
-snapshot. A `RecordFilter` chooses the records that survive; `null` keeps
-everything and performs pure defragmentation. Autohint dependencies are
-closed automatically, paint and analysis records are retained, and TT
-advance-only records pass through the same filter.
+`Atlas.compactInto(allocator, scratch, target_pool, filter)` creates a new,
+fully repacked snapshot in a caller-chosen pool. A `RecordFilter` chooses the
+records that survive; `null` keeps everything and performs pure
+defragmentation. Autohint dependencies are closed automatically, paint and
+analysis records are retained, and TT advance-only records pass through the
+same filter.
 
-Compaction acquires the new pages before the old atlas releases its pages.
-Keep enough `pool.stats().pages_free` headroom for the compacted result
-instead of waiting until the pool is completely full. `PagePool.config()`
-returns the immutable capacity configuration. Atlas page handles are opaque;
-renderer integrations receive immutable `atlas_upload.Region` copies.
+Using a distinct target pool decouples compaction from free space in the
+source pool. The old atlas remains drawable while the caller plans and
+records uploads for the replacement. Once the new upload graph is accepted,
+publish the new atlas and binding together. After the last GPU use of the old
+binding completes, release that binding and deinitialize the old atlas and
+pool. This double-buffered migration is asynchronous: Snail never waits for a
+queue or fence.
+
+`Atlas.compact(allocator, scratch, filter)` is the persistent same-pool
+convenience wrapper. Because source and result coexist, it still requires
+enough free pages for the result. Snail does not offer an in-place destructive
+variant: it cannot prove that the source atlas's CPU views and GPU binding are
+no longer in use.
+
+`PagePool.config()` returns the immutable capacity configuration. Atlas page
+handles are opaque; renderer integrations receive immutable
+`atlas_upload.Region` copies.
 [`dev/support/working_set.zig`](dev/support/working_set.zig) is a demo-only
 working-set example.
 
@@ -91,25 +281,60 @@ size; set the limit to one for tail-only behavior. Use
 is deliberately not a size-class allocator: insertion cost stays bounded
 when glyph sizes vary heavily.
 
-Each non-empty `Atlas.extendInPlace` call commits one persistent snapshot and
-copies the atlas's flat page-pointer and paint-side-data arrays once. Bulk
-callers should pass one entry slice or use `extendBatchesInPlace`; do not put
-`extendInPlace` in a one-entry loop.
+Direct vector producers assemble one tagged `AtlasUpdate`: `.geometry`
+entries place curve data, `.autohint` entries alias an existing or
+same-update base, and `.tt_advances` carries page-free metrics. `extend` and
+`extendInPlace` preflights the whole update and publishes it logically
+atomically. A late allocator or concurrent-capacity failure can consume
+unreachable append-only page padding, but never exposes a partial atlas. Font
+preparation normally uses `PreparePlan.apply` or `applyInPlace`, which builds
+that update only after every external result has validated. Do not put
+one-entry `extendInPlace` calls in a loop.
 
 ## Upload planning and bindings
 
-`atlas_upload.OwnedPlanner.plan` reserves a binding and emits complete upload
-regions. On a direct append-only child snapshot,
-`planDelta(previous_binding, atlas)` emits only changed curve/band regions
-and newly appended side data.
+`atlas_upload.OwnedPlanner.plan` returns a `PendingUpload`: a provisional
+binding plus complete upload regions. On a direct append-only child snapshot,
+`planDelta(previous_binding, atlas)` returns a transaction containing only
+changed curve/band regions and newly appended side data.
+
+```zig
+const binding = upload: {
+    var pending = try planner.plan(&atlas);
+    errdefer planner.abort(&pending) catch {};
+
+    for (pending.regions()) |region| {
+        // Copy into retained staging or record it into a command graph. All
+        // borrowed source bytes must be accepted before commit.
+        try gpu.accept(region);
+    }
+
+    // pending.binding() may be used while recording this same command graph.
+    // commit publishes planner state; it does not submit or wait for GPU work.
+    break :upload try planner.commit(&pending);
+};
+
+// Draw with binding...
+// After the final GPU use completes:
+_ = planner.release(binding);
+```
+
+Only one transaction may be pending on a planner. `abort` restores binding
+reservations and page watermarks, so a later attempt re-emits bytes which
+were not accepted. `commit` consumes the `PendingUpload`; call `regions()` and
+`binding()` first. Host copies or commands already issued before an abort are
+the host's responsibility, but remain unpublished to Snail.
 
 Layer-info rows and image layers are fixed reservations made by the original
 `plan`. If later side data outgrows that reservation, release the binding and
-make a fresh plan. Branches and unrelated snapshots replace side data
-conservatively within the same reservation.
+make a fresh plan. `planDelta` accepts only the exact snapshot or its direct
+append-only child. A skipped descendant, branch, or unrelated snapshot returns
+`error.IncompatibleSnapshot`; allocate a fresh binding with `plan`.
 
-If copying a successful `plan` or `planDelta` result to the device fails,
-call `planner.invalidateUploads()` before retrying
+If accepting any region or recording its command fails before commit, call
+`abort`. If committed work later fails to reach or remain on the device—for
+example, submission failure or device loss—call `planner.invalidateUploads()`
+before retrying
 `planDelta(binding, &atlas)`, or release the binding before a fresh `plan`.
 This clears the planner's page and side-data watermarks so bytes that never
 reached the device are emitted again.
@@ -125,8 +350,11 @@ Upload `Region` payloads borrow one of three owners:
 - live atlas page memory for curve and band data;
 - caller-owned `Image` texels.
 
-Apply the regions before the next `plan` or `planDelta`, and keep the
-referenced atlas and images alive and unchanged until copying finishes.
+Accept all regions before committing the transaction, and keep the referenced
+atlas and images alive and unchanged until their borrowed bytes have been
+copied into host-owned staging. The resulting `Binding` is independent of
+those CPU byte borrows and remains live until `release`, normally after the
+final GPU draw fence which uses it.
 
 ## Color
 
@@ -296,10 +524,11 @@ bytes and, for selected variable instances, its variation slice. `Faces`
 borrows stable `Font` pointers. A `PagePool` must outlive every atlas, upload
 planner, and device cache created from it.
 
-`Atlas` is a persistent value: `extend` and `compact` return new snapshots
-that share retained, reference-counted page storage while preserving the old
-snapshot. Lookups return records by value, avoiding an entry-versus-eviction
-lifetime hazard.
+`Atlas` is a persistent value: `extend` returns a snapshot which shares
+retained, reference-counted page storage with its parent; `compact` or
+`compactInto` returns a freshly packed root while preserving the source.
+Lookups return records by value, avoiding an entry-versus-eviction lifetime
+hazard.
 
 Construction and validation errors are typed. Atlas insertion, draw
 emission, device resize, and renderer buffer replacement preflight or stage
@@ -312,9 +541,11 @@ including children of the same persistent snapshot, may be extended and
 destroyed on different threads. Do not mutate or destroy the same handle
 concurrently, and use distinct allocators or a thread-safe allocator.
 
-`Faces`, `TtHintVm`, planners, and other mutable working values are
-single-threaded unless their documentation says otherwise. Construct one
-`Faces` per shaping thread. `snail-raster` provides an optional,
+`Faces`, `OutlineContext`, `AutohintContext`, `TtHintContext`, planners, and
+other mutable working values are thread-confined unless their documentation
+says otherwise. Construct one `Faces` per shaping thread and one preparation
+context per worker. Prepared owning records may cross threads subject to
+their allocator's threading contract. `snail-raster` provides an optional,
 caller-driven `ThreadPool`.
 
 The same boundary applies to GPU work: `snail` never creates a Vulkan, GL,

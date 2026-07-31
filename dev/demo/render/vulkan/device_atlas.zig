@@ -215,6 +215,7 @@ pub const VulkanDeviceAtlas = struct {
     plan_slots: []upload_plan.Slot,
     plan_info_free: []upload_plan.Range,
     plan_image_free: []upload_plan.Range,
+    plan_page_rollbacks: []upload_plan.PageRollback,
     plan_regions: []upload_plan.Region,
     // Per-atlas layer_info patch scratch: `max_bindings` slabs of
     // `sizes.layer_info_scratch` f32s, so batched atlases don't clobber each
@@ -289,6 +290,8 @@ pub const VulkanDeviceAtlas = struct {
         errdefer allocator.free(info_free);
         const image_free = try allocator.alloc(upload_plan.Range, sz.image_free);
         errdefer allocator.free(image_free);
+        const page_rollbacks = try allocator.alloc(upload_plan.PageRollback, sz.page_rollbacks);
+        errdefer allocator.free(page_rollbacks);
         const regions = try allocator.alloc(upload_plan.Region, sz.regions);
         errdefer allocator.free(regions);
         const info_scratch = try allocator.alloc(f32, info_scratch_len);
@@ -300,13 +303,14 @@ pub const VulkanDeviceAtlas = struct {
             .options = options,
             .resources = resources,
             .flat = try upload_plan.FlatLayout.init(pool),
-            .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free),
+            .planner = try upload_plan.Planner.init(pool, opts, gen, curve_words, band_words, slots, info_free, image_free, page_rollbacks),
             .plan_gen = gen,
             .plan_curve = curve_words,
             .plan_band = band_words,
             .plan_slots = slots,
             .plan_info_free = info_free,
             .plan_image_free = image_free,
+            .plan_page_rollbacks = page_rollbacks,
             .plan_regions = regions,
             .plan_info_scratch = info_scratch,
             .info_scratch_stride = sz.layer_info_scratch,
@@ -320,6 +324,7 @@ pub const VulkanDeviceAtlas = struct {
         self.allocator.free(self.plan_band);
         self.allocator.free(self.plan_slots);
         self.allocator.free(self.plan_info_free);
+        self.allocator.free(self.plan_page_rollbacks);
         self.allocator.free(self.plan_image_free);
         self.allocator.free(self.plan_regions);
         self.allocator.free(self.plan_info_scratch);
@@ -428,11 +433,13 @@ pub const VulkanDeviceAtlas = struct {
         errdefer self.allocator.free(new_info_free);
         const new_image_free = try self.allocator.alloc(upload_plan.Range, sz.image_free);
         errdefer self.allocator.free(new_image_free);
+        const new_page_rollbacks = try self.allocator.alloc(upload_plan.PageRollback, sz.page_rollbacks);
+        errdefer self.allocator.free(new_page_rollbacks);
         const new_regions = try self.allocator.alloc(upload_plan.Region, sz.regions);
         errdefer self.allocator.free(new_regions);
         const new_info_scratch = try self.allocator.alloc(f32, info_scratch_len);
         errdefer self.allocator.free(new_info_scratch);
-        const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free);
+        const new_planner = try upload_plan.Planner.init(self.pool, opts, new_gen, new_curve, new_band, new_slots, new_info_free, new_image_free, new_page_rollbacks);
 
         const old_gen = self.plan_gen;
         const old_curve = self.plan_curve;
@@ -440,6 +447,7 @@ pub const VulkanDeviceAtlas = struct {
         const old_slots = self.plan_slots;
         const old_info_free = self.plan_info_free;
         const old_image_free = self.plan_image_free;
+        const old_page_rollbacks = self.plan_page_rollbacks;
         const old_regions = self.plan_regions;
         const old_info_scratch = self.plan_info_scratch;
 
@@ -451,6 +459,7 @@ pub const VulkanDeviceAtlas = struct {
         self.plan_slots = new_slots;
         self.plan_info_free = new_info_free;
         self.plan_image_free = new_image_free;
+        self.plan_page_rollbacks = new_page_rollbacks;
         self.plan_regions = new_regions;
         self.plan_info_scratch = new_info_scratch;
         self.info_scratch_stride = sz.layer_info_scratch;
@@ -462,6 +471,7 @@ pub const VulkanDeviceAtlas = struct {
         self.allocator.free(old_slots);
         self.allocator.free(old_info_free);
         self.allocator.free(old_image_free);
+        self.allocator.free(old_page_rollbacks);
         self.allocator.free(old_regions);
         self.allocator.free(old_info_scratch);
     }
@@ -508,16 +518,18 @@ pub const VulkanDeviceAtlas = struct {
         // Roll back planner state if any atlas (or the flush) fails.
         var planned: usize = 0;
         errdefer {
-            self.planner.invalidateUploads();
+            self.planner.invalidateUploads() catch {};
             for (out_bindings[0..planned]) |b| _ = self.planner.release(b);
         }
 
         for (atlases, 0..) |atlas, i| {
             var len: usize = 0;
             const info_scratch = self.plan_info_scratch[i * self.info_scratch_stride ..][0..self.info_scratch_stride];
-            out_bindings[i] = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
+            var pending = try self.planner.plan(atlas, self.plan_regions, &len, info_scratch);
+            errdefer self.planner.abort(&pending) catch {};
+            try appendRegions(scratch, &batch, pending.regions());
+            out_bindings[i] = try self.planner.commit(&pending);
             planned = i + 1;
-            try appendRegions(scratch, &batch, self.plan_regions[0..len]);
         }
 
         try self.ensureGpuResources();
@@ -527,10 +539,9 @@ pub const VulkanDeviceAtlas = struct {
 
     /// Incrementally update `prev_binding`'s slot with `atlas`'s current
     /// state. Exact snapshots and direct append-only children reuse unchanged
-    /// data; branches, skipped descendants, and unrelated same-pool atlases
-    /// conservatively replace binding-relative side data. This Vulkan
-    /// implementation requires all resulting side data to fit the binding's
-    /// original row/image reservation, queues the required
+    /// data; other snapshots return `error.IncompatibleSnapshot` and require a
+    /// fresh binding. This Vulkan implementation requires all resulting side
+    /// data to fit the binding's original row/image reservation and queues the required
     /// curve/band/layer-info/image regions into one `UploadBatch`, and flushes
     /// it before returning.
     pub fn uploadDelta(
@@ -559,12 +570,12 @@ pub const VulkanDeviceAtlas = struct {
 
         var len: usize = 0;
         const info_scratch = self.plan_info_scratch[0..self.info_scratch_stride];
-        const binding = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
-        errdefer self.planner.invalidateUploads();
-        try appendRegions(scratch, &batch, self.plan_regions[0..len]);
+        var pending = try self.planner.planDelta(prev_binding, atlas, self.plan_regions, &len, info_scratch);
+        errdefer self.planner.abort(&pending) catch {};
+        try appendRegions(scratch, &batch, pending.regions());
         try self.ensureGpuResources();
         try self.flushBatch(recorder, &batch);
-        return binding;
+        return self.planner.commit(&pending);
     }
 
     pub fn release(self: *Self, binding: Binding) void {

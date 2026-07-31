@@ -221,12 +221,34 @@ pub const TtHintVm = struct {
         prepared: *const PreparedPpem,
         glyph_id: u16,
     ) TtHintError!curves_mod.GlyphCurves {
+        return (try self.hintGlyphWithAdvance(allocator, scratch, prepared, glyph_id)).curves;
+    }
+
+    /// Hint one glyph and return its geometry and horizontal advance from the
+    /// same bytecode execution. Preparation pipelines should prefer this over
+    /// calling `hintedAdvance` and `hintGlyph` separately.
+    pub const HintedGlyph = struct {
+        curves: curves_mod.GlyphCurves,
+        advance_x_26_6: i32,
+    };
+
+    pub fn hintGlyphWithAdvance(
+        self: *TtHintVm,
+        allocator: std.mem.Allocator,
+        scratch: std.mem.Allocator,
+        prepared: *const PreparedPpem,
+        glyph_id: u16,
+    ) TtHintError!HintedGlyph {
         try self.ensureScratch();
         const executed = try self.machine.?.executeCachedGlyph(prepared, self.topology.?, glyph_id);
+        const advance_x_26_6 = try self.machine.?.advanceX26Dot6FromExecuted(glyph_id, executed);
         var hint_value = try self.machine.?.buildGlyphHint(scratch, glyph_id, executed);
         defer hint_value.deinit();
 
-        if (hint_value.curves.len == 0) return curves_mod.GlyphCurves.empty(allocator);
+        if (hint_value.curves.len == 0) return .{
+            .curves = curves_mod.GlyphCurves.empty(allocator),
+            .advance_x_26_6 = advance_x_26_6,
+        };
 
         // The `GlyphHint`'s `prepared_curves` are already direct-encoded
         // (origin-zero, quantized). Pack them into the standard curve
@@ -262,19 +284,22 @@ pub const TtHintVm = struct {
         errdefer band_tex.freeGlyphBandData(allocator, @constCast(&bd));
 
         return .{
-            .allocator = allocator,
-            .curve_bytes = curve_bytes,
-            .band_bytes = bd.data,
-            .curve_count = curve_count,
-            .encoding = .dense_quadratic,
-            .path_curve_class = curves_mod.classifyPathCurves(hint_value.curves),
-            .h_band_count = bd.h_band_count,
-            .v_band_count = bd.v_band_count,
-            .band_scale_x = bd.band_scale_x,
-            .band_scale_y = bd.band_scale_y,
-            .band_offset_x = bd.band_offset_x,
-            .band_offset_y = bd.band_offset_y,
-            .bbox = hint_value.bbox,
+            .curves = .{
+                .allocator = allocator,
+                .curve_bytes = curve_bytes,
+                .band_bytes = bd.data,
+                .curve_count = curve_count,
+                .encoding = .dense_quadratic,
+                .path_curve_class = curves_mod.classifyPathCurves(hint_value.curves),
+                .h_band_count = bd.h_band_count,
+                .v_band_count = bd.v_band_count,
+                .band_scale_x = bd.band_scale_x,
+                .band_scale_y = bd.band_scale_y,
+                .band_offset_x = bd.band_offset_x,
+                .band_offset_y = bd.band_offset_y,
+                .bbox = hint_value.bbox,
+            },
+            .advance_x_26_6 = advance_x_26_6,
         };
     }
 
@@ -429,9 +454,9 @@ test "TtHintVm hint output round-trips through an atlas" {
     defer curves.deinit();
 
     const key = record_key_mod.ttHintedGlyph(0, gid, try ppem.packed26Dot6());
-    var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, &.{
-        .{ .key = key, .curves = curves },
-    });
+    var atlas = try atlas_mod.Atlas.from(testing.allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = key, .curves = curves.view() } },
+    } });
     defer atlas.deinit();
 
     const rec = atlas.lookupRecord(key) orelse return error.MissingRecord;

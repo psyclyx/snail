@@ -417,7 +417,7 @@ pub const Compare = struct {
                 const key = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id);
                 if (self.atlas.contains(key) or hasKey(entries.items, key)) continue;
                 const c = try self.font.extractCurves(scratch, scratch, g.glyph_id);
-                try entries.append(scratch, .{ .key = key, .curves = c });
+                try entries.append(scratch, .{ .geometry = .{ .key = key, .curves = c.view() } });
             }
         }
 
@@ -437,12 +437,11 @@ pub const Compare = struct {
             const x_features = try scratch.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
             const y_features = try scratch.alloc(snail.autohint.FeatureEdge, snail.autohint.max_features_per_axis);
             const glyph = try self.auto.analyzeGlyph(scratch, g.glyph_id, x_features, y_features);
-            try entries.append(scratch, .{
+            try entries.append(scratch, .{ .autohint = .{
                 .key = key_a,
-                .curves = snail.GlyphCurves.empty(scratch),
-                .autohint = .{ .font = self.auto.fontFeatures(), .glyph = glyph },
-                .autohint_base = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id),
-            });
+                .base_key = snail.record_key.unhintedGlyph(g.font_id, g.glyph_id),
+                .analysis = .{ .font = self.auto.fontFeatures(), .glyph = glyph },
+            } });
         }
 
         // Only TT-hint preparation and baked curves remain PPEM-specific.
@@ -480,17 +479,17 @@ pub const Compare = struct {
                 defer tmp.deinit();
                 const curves = vm.hintGlyph(scratch, tmp.allocator(), prepared, g.glyph_id) catch
                     snail.GlyphCurves.empty(scratch);
-                try entries.append(scratch, .{ .key = key_t, .curves = curves });
+                try entries.append(scratch, .{ .geometry = .{ .key = key_t, .curves = curves.view() } });
             }
         }
 
         if (entries.items.len == 0) return;
         if (self.atlas.pool == null) {
-            const fresh = try snail.Atlas.from(self.allocator, self.pool, entries.items);
+            const fresh = try snail.Atlas.from(self.allocator, self.pool, .{ .entries = entries.items });
             self.atlas.deinit();
             self.atlas = fresh;
         } else {
-            const grown = try self.atlas.extend(self.allocator, entries.items);
+            const grown = try self.atlas.extend(self.allocator, .{ .entries = entries.items });
             self.atlas.deinit();
             self.atlas = grown;
         }
@@ -506,7 +505,7 @@ const text_color = snail.color.srgbToLinearColor(.{ 0.06, 0.07, 0.09, 1.0 });
 const tag_color = snail.color.srgbToLinearColor(.{ 0.45, 0.48, 0.55, 1.0 });
 
 fn hasKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
-    for (entries) |e| if (e.key.eql(key)) return true;
+    for (entries) |e| if (e.key().eql(key)) return true;
     return false;
 }
 

@@ -59,7 +59,8 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
     var built: usize = 0;
     errdefer for (curves[0..built]) |*c| c.deinit();
 
-    var entries: [bands.len]snail.AtlasEntry = undefined;
+    var entries: [bands.len]snail.AtlasGeometryEntry = undefined;
+    var tagged: [bands.len]snail.AtlasEntry = undefined;
     var shapes: [bands.len]snail.Shape = undefined;
     const band_w = @as(f32, @floatFromInt(W)) / bands.len;
 
@@ -74,7 +75,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         // Bands are authored in sRGB; snail takes linear, so decode at the
         // boundary. The sRGB attachment re-encodes on store, round-tripping
         // each band back to ~round(v*255).
-        entries[i] = .{ .key = key, .curves = curves[i], .paint = .{ .solid = snail.color.srgbToLinearColor(.{ v, v, v, 1 }) } };
+        entries[i] = .{ .key = key, .curves = curves[i].view(), .paint = .{ .solid = snail.color.srgbToLinearColor(.{ v, v, v, 1 }) } };
         shapes[i] = .{
             .key = key,
             .local_transform = prepared.placedBy(demo_support.placeRect(.{ .x = @as(f32, @floatFromInt(i)) * band_w, .y = 0, .w = band_w, .h = @floatFromInt(H) })),
@@ -82,9 +83,10 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         };
     }
 
-    var paths_atlas = try snail.Atlas.from(allocator, pool, &entries);
+    for (entries, &tagged) |entry, *out| out.* = .{ .geometry = entry };
+    var paths_atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &tagged });
     errdefer paths_atlas.deinit();
-    var text_atlas = try snail.Atlas.from(allocator, pool, &.{});
+    var text_atlas = try snail.Atlas.from(allocator, pool, .{});
     errdefer text_atlas.deinit();
     const paths_picture = try demo_support.Picture.from(allocator, &shapes);
     const text_picture = try demo_support.Picture.from(allocator, &.{});
@@ -95,7 +97,7 @@ fn buildScene(allocator: std.mem.Allocator) !GammaScene {
         .text_atlas = text_atlas,
         .paths_picture = paths_picture,
         .text_picture = text_picture,
-        .curves = curves,
+        .curves = curves.view(),
         .allocator = allocator,
     };
 }

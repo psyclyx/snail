@@ -69,7 +69,7 @@ pub const Zone = struct {
 
 /// Serializable, em-normalized blue-zone facts. Size-specific fitting rounds
 /// these references later.
-pub const FeatureZone = struct {
+pub const FeatureZone = extern struct {
     ref: f32,
     shoot: f32,
 };

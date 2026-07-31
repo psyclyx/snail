@@ -201,7 +201,8 @@ pub const Overlay = struct {
         // HUD strings are short — a single call rarely introduces more
         // than a handful of new glyphs; 64 is more than enough.
         const max_new = 64;
-        var entries_buf: [max_new]snail.AtlasEntry = undefined;
+        var entries_buf: [max_new]snail.AtlasGeometryEntry = undefined;
+        var tagged_buf: [max_new]snail.AtlasEntry = undefined;
         var curves_buf: [max_new]snail.GlyphCurves = undefined;
         var n: usize = 0;
 
@@ -218,23 +219,24 @@ pub const Overlay = struct {
             if (n >= max_new) break;
 
             curves_buf[n] = try self.font.extractCurves(scratch_alloc, scratch_alloc, g.glyph_id);
-            entries_buf[n] = .{ .key = key, .curves = curves_buf[n] };
+            entries_buf[n] = .{ .key = key, .curves = curves_buf[n].view() };
             n += 1;
         }
 
         if (n == 0) return;
+        for (entries_buf[0..n], tagged_buf[0..n]) |entry, *out| out.* = .{ .geometry = entry };
 
         // Atlas.extend wants a non-null pool — empty atlases have no
         // pool. Construct from() on first growth, then extend()
         // afterwards.
         if (self.atlas.pool == null) {
-            const fresh = try snail.Atlas.from(self.allocator, self.pool, entries_buf[0..n]);
+            const fresh = try snail.Atlas.from(self.allocator, self.pool, .{ .entries = tagged_buf[0..n] });
             self.atlas.deinit();
             self.atlas = fresh;
             return;
         }
 
-        const grown = try self.atlas.extend(self.allocator, entries_buf[0..n]);
+        const grown = try self.atlas.extend(self.allocator, .{ .entries = tagged_buf[0..n] });
         self.atlas.deinit();
         self.atlas = grown;
     }
@@ -245,7 +247,7 @@ pub const Overlay = struct {
 // Authored in sRGB; snail's API takes linear light.
 const hud_color = snail.color.srgbToLinearColor(.{ 0.06, 0.07, 0.09, 0.85 });
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasGeometryEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }

@@ -9,6 +9,7 @@
 const std = @import("std");
 const snail = @import("snail");
 const assets = @import("assets");
+const prepare_sync = @import("prepare_sync.zig");
 const slang_gen = @import("snail_shaders");
 
 const c = @cImport({
@@ -152,7 +153,7 @@ const GpuAtlas = struct {
     /// old slot and plans a larger one; already-resident curve pages remain
     /// tracked and are not redundantly prepared.
     fn upload(self: *GpuAtlas, atlas: *const snail.Atlas) !void {
-        const planned = if (self.binding) |old|
+        var planned = if (self.binding) |old|
             self.uploads.planDelta(old, atlas) catch |err| switch (err) {
                 error.NoLayerInfoRoomToGrow, error.NoImageRoomToGrow => blk: {
                     std.debug.assert(self.uploads.release(old));
@@ -163,8 +164,9 @@ const GpuAtlas = struct {
         else
             try self.uploads.plan(atlas);
 
-        for (planned.regions) |region| self.apply(region);
-        self.binding = planned.binding;
+        errdefer self.uploads.abort(&planned) catch {};
+        for (planned.regions()) |region| self.apply(region);
+        self.binding = try self.uploads.commit(&planned);
     }
 
     fn apply(self: *GpuAtlas, region: snail.atlas_upload.Region) void {
@@ -210,7 +212,10 @@ pub fn main() !void {
         .{ .font = &emoji_font, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
-    const font_id = faces.fontIdForFace(0).?;
+    const sources = [_]snail.FontSource{
+        .{ .font_id = 0, .font = &font, .cache_key = [_]u8{0x10} ** 16 },
+        .{ .font_id = 1, .font = &emoji_font, .cache_key = [_]u8{0x20} ** 16 },
+    };
 
     var seed = try snail.shape(allocator, &faces, "Hello, ", .{});
     defer seed.deinit();
@@ -232,33 +237,57 @@ pub fn main() !void {
     // Round 1: seed a new atlas with the first part of the unhinted run.
     var atlas = try snail.Atlas.init(allocator, pool);
     defer atlas.deinit();
-    try snail.recordUnhintedRun(&atlas, allocator, &faces, &seed, .{});
+    try prepare_sync.run(
+        allocator,
+        &atlas,
+        &sources,
+        &.{&seed},
+        .{ .unhinted = .{} },
+    );
     try gpu.upload(&atlas);
 
     // Round 2: extend it with the remaining unhinted glyphs. This is the
     // ordinary hot path: `planDelta` keeps the binding and uploads new pages.
-    try snail.recordUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
+    try prepare_sync.run(
+        allocator,
+        &atlas,
+        &sources,
+        &.{&shaped},
+        .{ .unhinted = .{} },
+    );
     try gpu.upload(&atlas);
 
     // Round 3: extend the same atlas with immutable autohint analysis.
-    var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, assets.dejavu_sans_mono);
-    defer analyzer.deinit();
-    try snail.recordAutohintRun(&atlas, allocator, &analyzer, font_id, &shaped);
+    try prepare_sync.run(
+        allocator,
+        &atlas,
+        sources[0..1],
+        &.{&shaped},
+        .{ .autohint = .{} },
+    );
     try gpu.upload(&atlas);
 
     // Round 4: record per-PPEM TT-hinted curves (advances come along for
     // free), filled and stroked paths, and one composite COLR glyph. The
     // core helpers own all temporary font-atlas packing; only path
     // construction remains local.
-    var tt_hint_vm = try snail.TtHintVm.init(allocator, &font);
-    defer tt_hint_vm.deinit();
-    var prepared = try tt_hint_vm.prepare(snail.TtHintPpem.uniform(ppem));
-    defer prepared.deinit();
-    try snail.recordTtHintRun(&atlas, allocator, &tt_hint_vm, &prepared, font_id, &shaped);
+    try prepare_sync.run(
+        allocator,
+        &atlas,
+        sources[0..1],
+        &.{&shaped},
+        .{ .tt_hint = snail.TtHintPpem.uniform(ppem) },
+    );
     const path_shapes = try extendWithPaths(allocator, &atlas);
-    try snail.recordUnhintedRun(&atlas, allocator, &faces, &emoji, .{
-        .colr_foreground = snail.color.srgbToLinearColor(.{ 0.18, 0.35, 0.70, 1.0 }),
-    });
+    try prepare_sync.run(
+        allocator,
+        &atlas,
+        &sources,
+        &.{&emoji},
+        .{ .unhinted = .{
+            .colr_foreground = snail.color.srgbToLinearColor(.{ 0.18, 0.35, 0.70, 1.0 }),
+        } },
+    );
     const colr = try snail.placeRunAlloc(allocator, &emoji, null, .{
         .baseline = .{ .x = 775, .y = 145 },
         .em = 92,
@@ -398,18 +427,18 @@ fn extendWithPaths(allocator: std.mem.Allocator, atlas: *snail.Atlas) ![2]snail.
     _ = scratch.reset(.retain_capacity);
     const stroke_key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_stroke, .a = 1 };
 
-    try atlas.extendInPlace(allocator, &.{
-        .{
+    try atlas.extendInPlace(allocator, .{ .entries = &.{
+        .{ .geometry = .{
             .key = fill_key,
-            .curves = fill_curves,
+            .curves = fill_curves.view(),
             .paint = try prepared_fill.paintForDesign(.{ .solid = snail.color.srgbToLinearColor(.{ 0.34, 0.25, 0.72, 0.92 }) }),
-        },
-        .{
+        } },
+        .{ .geometry = .{
             .key = stroke_key,
-            .curves = stroke_curves,
+            .curves = stroke_curves.view(),
             .paint = try prepared_stroke.paintForDesign(stroke_style.paint),
-        },
-    });
+        } },
+    } });
     return .{
         .{ .key = fill_key, .local_transform = prepared_fill.placedBy(.identity) },
         .{ .key = stroke_key, .local_transform = prepared_stroke.placedBy(.identity) },

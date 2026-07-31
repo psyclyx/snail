@@ -71,6 +71,13 @@ pub const Fonts = struct {
         defer shaped.deinit();
         return shaped.advanceX() * font_size;
     }
+
+    fn sources(self: *const Fonts) [face_count]snail.FontSource {
+        return .{
+            .{ .font_id = 0, .font = &self.fonts[0], .cache_key = .{0} ** 16 },
+            .{ .font_id = 1, .font = &self.fonts[1], .cache_key = .{1} ** 16 },
+        };
+    }
 };
 
 pub fn initFonts(allocator: std.mem.Allocator) !Fonts {
@@ -84,16 +91,16 @@ pub fn initFonts(allocator: std.mem.Allocator) !Fonts {
 pub const PassBuilder = struct {
     allocator: std.mem.Allocator,
     fonts: *Fonts,
+    outline_context: snail.OutlineContext,
 
     // Path namespace: vector paths + per-glyph painted text glyphs.
     path_curves_owned: std.ArrayList(snail.GlyphCurves),
-    path_entries: std.ArrayList(snail.AtlasEntry),
+    path_entries: std.ArrayList(snail.AtlasGeometryEntry),
     path_shapes: std.ArrayList(snail.Shape),
     extra_layer_storage: std.ArrayList([]snail.AtlasLayer),
     next_path_id: u32,
 
-    // Text namespace: solid-colored shaped runs, recorded straight into
-    // the store (`recordUnhintedRun`).
+    // Text namespace: solid-colored shaped runs prepared into this atlas.
     text_atlas: snail.Atlas,
     text_shapes: std.ArrayList(snail.Shape),
 
@@ -101,6 +108,7 @@ pub const PassBuilder = struct {
         return .{
             .allocator = allocator,
             .fonts = fonts,
+            .outline_context = snail.OutlineContext.init(allocator, allocator),
             .path_curves_owned = .empty,
             .path_entries = .empty,
             .path_shapes = .empty,
@@ -112,6 +120,7 @@ pub const PassBuilder = struct {
     }
 
     pub fn deinit(self: *PassBuilder) void {
+        self.outline_context.deinit();
         for (self.path_curves_owned.items) |*c| c.deinit();
         self.path_curves_owned.deinit(self.allocator);
         self.path_entries.deinit(self.allocator);
@@ -137,7 +146,7 @@ pub const PassBuilder = struct {
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
-            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
             .paint = try prepared.paintForDesign(paint),
         });
         try self.path_shapes.append(self.allocator, .{
@@ -161,7 +170,7 @@ pub const PassBuilder = struct {
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
-            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
             .paint = try prepared.paintForDesign(stroke.paint),
         });
         try self.path_shapes.append(self.allocator, .{
@@ -196,7 +205,7 @@ pub const PassBuilder = struct {
             self.next_path_id += 1;
             try self.path_entries.append(self.allocator, .{
                 .key = key,
-                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
                 .paint = try prepared.paintForDesign(fill),
             });
             try self.path_shapes.append(self.allocator, .{
@@ -214,7 +223,7 @@ pub const PassBuilder = struct {
 
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
-            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
             .paint = try prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
@@ -223,7 +232,7 @@ pub const PassBuilder = struct {
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
-            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 2],
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 2].view(),
             .paint = try prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,
@@ -282,7 +291,7 @@ pub const PassBuilder = struct {
         self.next_path_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
-            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+            .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
             .paint = try prepared.paintForDesign(local_fill),
         });
         try self.path_shapes.append(self.allocator, .{
@@ -366,7 +375,21 @@ pub const PassBuilder = struct {
         em: f32,
         color: [4]f32,
     ) !void {
-        try snail.recordUnhintedRun(&self.text_atlas, self.allocator, &self.fonts.faces, shaped, .{});
+        const sources = self.fonts.sources();
+        var plan = try snail.planRuns(
+            &self.text_atlas,
+            self.allocator,
+            &sources,
+            &.{shaped},
+            .{ .unhinted = .{} },
+        );
+        defer plan.deinit();
+        try prepareOutlinesAndApply(
+            self.allocator,
+            &self.text_atlas,
+            &plan,
+            &self.outline_context,
+        );
         var picture = try demo_support.placeRun(self.allocator, shaped, &self.fonts.faces, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
@@ -412,7 +435,7 @@ pub const PassBuilder = struct {
             self.next_path_id += 1;
             try self.path_entries.append(self.allocator, .{
                 .key = key,
-                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1],
+                .curves = self.path_curves_owned.items[self.path_curves_owned.items.len - 1].view(),
                 .paint = local_paint,
             });
             try self.path_shapes.append(self.allocator, .{
@@ -424,7 +447,10 @@ pub const PassBuilder = struct {
     }
 
     pub fn freeze(self: *PassBuilder, pool: *snail.PagePool) !PreparedPass {
-        var path_atlas = try snail.Atlas.from(self.allocator, pool, self.path_entries.items);
+        const tagged = try self.allocator.alloc(snail.AtlasEntry, self.path_entries.items.len);
+        defer self.allocator.free(tagged);
+        for (self.path_entries.items, tagged) |entry, *out| out.* = .{ .geometry = entry };
+        var path_atlas = try snail.Atlas.from(self.allocator, pool, .{ .entries = tagged });
         errdefer path_atlas.deinit();
         // Ownership of the recorded text store moves to PreparedPass.
         var text_atlas = self.text_atlas;
@@ -450,6 +476,30 @@ pub const PassBuilder = struct {
         };
     }
 };
+
+fn prepareOutlinesAndApply(
+    allocator: std.mem.Allocator,
+    atlas: *snail.Atlas,
+    plan: *const snail.PreparePlan,
+    context: *snail.OutlineContext,
+) !void {
+    const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+    defer allocator.free(owned);
+    @memset(owned, null);
+    defer for (owned) |*record| {
+        if (record.*) |*value| value.deinit();
+    };
+
+    const results = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+    defer allocator.free(results);
+    @memset(results, null);
+
+    for (plan.requests(), 0..) |request, i| {
+        owned[i] = try context.prepare(request);
+        results[i] = owned[i].?.view();
+    }
+    try plan.applyInPlace(allocator, atlas, results);
+}
 
 // ── PreparedPass ──
 

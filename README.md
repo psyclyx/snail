@@ -80,11 +80,11 @@ planned unified COLRv1/CBDT/`sbix`/SVG integration boundary.
 
 ## The pipeline
 
-Everything is **shape → record → upload → emit → draw**.
+Everything is **shape → plan/prepare → apply → upload → emit → draw**.
 
-`Atlas` is a persistent, value-typed CPU store. Recording and residency are
-explicit: there is no hidden application-level glyph cache or eviction
-policy.
+`Atlas` is a persistent, value-typed CPU store. Preparation, caching, and
+residency are explicit: there is no hidden thread pool, filesystem cache, or
+eviction policy.
 
 ```zig
 const snail = @import("snail");
@@ -98,7 +98,7 @@ defer faces.deinit();
 var shaped = try snail.shape(alloc, &faces, "Hello, world", .{});
 defer shaped.deinit();
 
-// Record: prepare missing glyphs and commit them to the persistent store.
+// Plan: discover missing, cacheable work without extracting outlines.
 var pool = try snail.PagePool.init(alloc, .{
     .max_pages = 8, // may exceed 256 with a banked/flat backend
     .curve_words_per_page = 1 << 17,
@@ -109,7 +109,39 @@ var atlas = try snail.Atlas.initWithPacking(
     alloc, pool, .{ .recent_page_limit = 12 },
 );
 defer atlas.deinit();
-try snail.recordUnhintedRun(&atlas, alloc, &faces, &shaped, .{});
+const sources = [_]snail.FontSource{.{
+    .font_id = 0,
+    .font = &font,
+    // Stable identity of these font bytes, face index, and variations.
+    .cache_key = myFontInstanceKey(font_bytes, 0, &.{}),
+}};
+var prepare_plan = try snail.planRuns(
+    &atlas, alloc, &sources, &.{&shaped}, .{ .unhinted = .{} },
+);
+defer prepare_plan.deinit();
+
+// Prepare: the caller may satisfy requests from an Archive or schedule them
+// on workers. This short example executes unhinted misses synchronously.
+const requests = prepare_plan.requests();
+const owned = try alloc.alloc(?snail.prepared.OwnedRecord, requests.len);
+defer {
+    for (owned) |*record| if (record.*) |*value| value.deinit();
+    alloc.free(owned);
+}
+@memset(owned, null);
+const results = try alloc.alloc(?snail.prepared.RecordView, requests.len);
+defer alloc.free(results);
+@memset(results, null);
+
+var outline_context = snail.OutlineContext.init(alloc, alloc);
+defer outline_context.deinit();
+for (requests, 0..) |request, index| {
+    owned[index] = try outline_context.prepare(request);
+    results[index] = owned[index].?.view();
+}
+
+// Apply: validate every result, then publish one logically atomic AtlasUpdate.
+try prepare_plan.applyInPlace(alloc, &atlas, results);
 
 // Upload: copy backend-neutral regions into textures owned by your engine.
 const upload_options: snail.atlas_upload.Options = .{
@@ -123,8 +155,14 @@ var planner = try snail.atlas_upload.OwnedPlanner.init(
     alloc, pool, upload_options,
 );
 defer planner.deinit();
-const upload = try planner.plan(&atlas);
-for (upload.regions) |region| try myEngine.texSubImage(region);
+const binding = upload: {
+    var pending_upload = try planner.plan(&atlas);
+    errdefer planner.abort(&pending_upload) catch {};
+    for (pending_upload.regions()) |region| {
+        try myEngine.acceptTextureCopy(region);
+    }
+    break :upload try planner.commit(&pending_upload);
+};
 
 // Emit: place glyphs, then produce typed instances and coalesced batches.
 const shapes = try snail.placeRunAlloc(alloc, &shaped, null, .{
@@ -134,7 +172,7 @@ const shapes = try snail.placeRunAlloc(alloc, &shaped, null, .{
 defer alloc.free(shapes);
 _ = try snail.emit.emit(
     instances, batches, &instance_count, &batch_count,
-    upload.binding, &atlas, shapes, world_xform, .{ 1, 1, 1, 1 },
+    binding, &atlas, shapes, world_xform, .{ 1, 1, 1, 1 },
 );
 const records: snail.render.records.DrawRecords = .{
     .instances = instances[0..instance_count],
@@ -142,7 +180,8 @@ const records: snail.render.records.DrawRecords = .{
 };
 
 // Draw: bind the generated stages from @import("snail_shaders").
-// Submit one instanced draw per batch and one quad per instance.
+// Submit one instanced draw per batch and one quad per instance. Release
+// `binding` only after the final GPU use of it has completed.
 ```
 
 The complete raw-OpenGL version is
@@ -153,11 +192,28 @@ The complete raw-OpenGL version is
 flow and the detailed upload, lifetime, color, threading, and ABI contracts
 are in [Embedding snail](INTEGRATION.md).
 
-`PagePool` is the resident page budget. Recording is idempotent and returns
-`error.OutOfLayers` when a new record cannot acquire a page. The host chooses
-what to evict; `Atlas.compact(..., filter)` rebuilds a retained working set.
-Compaction needs free-page headroom because it acquires replacement pages
-before the old snapshot releases its pages.
+Expensive producer output can optionally be stored in a
+`snail.prepared.Archive`. `Archive.fromBytes` borrows the archive bytes—it
+does not take a filename or perform I/O—so the host chooses whether to read,
+stream into retained storage, memory-map, embed, or download them. Lookups
+are zero-copy views into those retained bytes. Stable artifact keys are
+constructed by Snail from a caller-supplied font-instance identity, the
+producer version, and every output-affecting option, including cubic
+tolerance. `planRuns` exposes cacheable requests and their dependencies so
+the host can satisfy hits immediately, schedule misses on its own workers,
+then apply the completed views to the atlas atomically. See
+[Prepared artifacts and disk caches](INTEGRATION.md#prepared-artifacts-and-disk-caches)
+for the ownership, validation, async, and cache-versioning contracts.
+
+`PagePool` is the resident page budget. Applying prepared data is idempotent
+and returns `error.OutOfLayers` when a new record cannot acquire a page. The
+host chooses what to evict. `Atlas.compactInto(..., target_pool, filter)`
+rebuilds a retained working set in a distinct pool, so the source can remain
+drawable while the replacement uploads in the background. Publish the new
+atlas and binding together, then release the old binding, atlas, and pool
+after their final GPU use completes. The same-pool `compact` convenience
+retains both persistent snapshots and therefore still needs result-sized
+free-page headroom.
 
 Font outlines containing only lines and quadratics use a two-texel dense
 segment format; general paths retain the four-texel format. Page height is a
@@ -170,10 +226,10 @@ chooses the tightest fit across both curve and band capacity; set
 `Atlas.Packing{ .recent_page_limit = 1 }` selects tail-only placement. The
 bounded window makes insertion cost independent of total atlas size.
 
-On a direct append-only atlas child, `planDelta` emits only changed page
-regions and appended side data. Layer-info and image storage are fixed
-reservations made by the original plan; release and create a fresh binding
-if later side data no longer fits.
+On a direct append-only atlas child, `planDelta` returns a `PendingUpload`
+containing only changed page regions and appended side data. Layer-info and
+image storage are fixed reservations made by the original plan; release and
+create a fresh binding if later side data no longer fits.
 
 ## Algorithm
 
@@ -199,10 +255,11 @@ paints remain raster images.
 quadratic Béziers. CFF/CFF2 outlines and caller-authored paths can contain
 cubics; paths can also contain rational conics. Cubics are split at axis
 extrema and inflections, then adaptively approximated by tangent-preserving
-quadratic chains. Endpoints and joins are preserved, and the approximation
-uses a conservative error bound with a default tolerance of `1/8192` in
-prepared coordinates (one em for normalized font outlines) and a maximum
-subdivision depth of 10.
+quadratic chains. Endpoints and joins are preserved. Every emitted quadratic
+is certified against the requested source-space tolerance (the default is
+`1/8192`, where one em is one unit for normalized font outlines); if finite
+`f32` output cannot represent a certified result, preparation returns a typed
+error instead of silently exceeding the tolerance.
 
 Font lines and quadratics use two `RGBA16F` texels per segment. General paths
 use four so they can carry explicit segment kind and rational-conic metadata.
@@ -354,11 +411,11 @@ selected face and variable coordinates.
 
 Choose a hinting path according to the content:
 
-| Mode | Use it for | Record and placement behavior |
+| Mode | Use it for | Preparation and placement behavior |
 |---|---|---|
-| `.unhinted` | Scalable or transformed content; the default | `recordUnhintedRun`; one ppem-independent curve record reusable at subpixel positions |
-| `.autohint = policy` | Small UI/terminal text without relying on font bytecode | `recordAutohintRun`; one ppem-independent analysis, fitted at draw time by the instance policy |
-| `.tt_hint = .{ .ppem_26_6 }` | TrueType fonts whose native instructions should control small-size fitting | `recordTtHintRun`; ppem-specific curves and advances produced by `TtHintVm` |
+| `.unhinted` | Scalable or transformed content; the default | `planRuns(..., .{ .unhinted = options })`; one ppem-independent curve record reusable at subpixel positions |
+| `.autohint = policy` | Small UI/terminal text without relying on font bytecode | `planRuns(..., .{ .autohint = options })`; cacheable font model and glyph facts, fitted at draw time by the placement policy |
+| `.tt_hint = .{ .ppem_26_6 }` | TrueType fonts whose native instructions should control small-size fitting | `planRuns(..., .{ .tt_hint = TtHintPpem.uniform(ppem_26_6) })`; ppem-specific curves and advances prepared by `TtHintContext` |
 
 TrueType bytecode hinting applies only to TrueType outlines and rejects a
 selected variable-font instance. The autohinter is outline-format agnostic
@@ -370,9 +427,9 @@ device-pixel glyph origins. Use `RunSnap.origins` for proportional text or
 `world_to_pixel = mvpToScenePixel(mvp, fb_width, fb_height)`. Snapped shapes
 are tied to that transform; unsnapped shapes remain content-only.
 
-For measurement with TrueType-hinted advances,
-`recordTtAdvanceRun` stores page-free advance records and
-`TtAdvanceSource` feeds them back into `shape()` as an `AdvanceProvider`.
+For measurement with TrueType-hinted advances, `planTtAdvances` discovers
+page-free preparation requests and `TtAdvanceSource` feeds applied records
+back into `shape()` as an `AdvanceProvider`.
 
 Terminal integrations should use `placeCellRun`, which preserves HarfBuzz
 cluster offsets while the host supplies exact source ranges and columns. See
@@ -399,11 +456,12 @@ most likely to affect a first integration are:
 - **Images:** the core stores opaque tightly packed texels. The backend must
   sample them as linear color with straight alpha.
 - **Lifetimes:** `Font` borrows bytes; `Faces` borrows `Font` pointers;
-  upload regions borrow planner, atlas, or image memory; `PagePool` outlives
-  every related atlas/planner/device cache.
+  prepared archive views borrow archive bytes; upload regions borrow planner,
+  atlas, or image memory; `PagePool` outlives every related
+  atlas/planner/device cache.
 - **Threading:** separate atlas handles may be used on separate threads, but
-  the same mutable handle may not. `Faces`, `TtHintVm`, and planners are
-  single-threaded unless documented otherwise.
+  the same mutable handle may not. Preparation contexts and planners are
+  thread-confined; use one per worker.
 - **CPU transform limit:** `snail-raster` supports affine transforms, not
   perspective.
 

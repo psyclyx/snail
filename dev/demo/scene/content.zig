@@ -114,7 +114,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         for (owned_curves.items) |*c| c.deinit();
         owned_curves.deinit(allocator);
     }
-    var text_entries: std.ArrayList(snail.AtlasEntry) = .empty;
+    var text_entries: std.ArrayList(snail.AtlasGeometryEntry) = .empty;
     defer text_entries.deinit(allocator);
 
     for (shaped_tagline.glyphs) |g| {
@@ -124,7 +124,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         const curves = try fonts[fid].extractCurves(allocator, scratch_arena.allocator(), g.glyph_id);
         _ = scratch_arena.reset(.retain_capacity);
         try owned_curves.append(allocator, curves);
-        try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+        try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1].view() });
     }
     const sample_runs = [_]*const snail.ShapedText{
         &shaped_samples[0], &shaped_samples[1], &shaped_samples[2],
@@ -143,7 +143,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         for (path_curves_owned.items) |*c| c.deinit();
         path_curves_owned.deinit(allocator);
     }
-    var path_entries: std.ArrayList(snail.AtlasEntry) = .empty;
+    var path_entries: std.ArrayList(snail.AtlasGeometryEntry) = .empty;
     defer path_entries.deinit(allocator);
     var path_shapes: std.ArrayList(snail.Shape) = .empty;
     defer path_shapes.deinit(allocator);
@@ -174,7 +174,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
-            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1].view(),
             .paint = .{ .solid = .{ 1.0, 1.0, 1.0, 1.0 } },
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(card_place), .local_color = .{ 1, 1, 1, 1 } });
@@ -194,7 +194,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
-            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1].view(),
             .paint = .{ .solid = srgb(.{ 0.78, 0.82, 0.88, 1.0 }) },
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(card_place), .local_color = .{ 1, 1, 1, 1 } });
@@ -217,7 +217,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         } };
         try path_entries.append(allocator, .{
             .key = key,
-            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1].view(),
             .paint = try prepared.paintForDesign(paint),
         });
         try path_shapes.append(allocator, .{ .key = key, .local_transform = prepared.placedBy(demo_support.placeRect(rect)), .local_color = .{ 1, 1, 1, 1 } });
@@ -278,7 +278,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         next_path_id += 1;
         try path_entries.append(allocator, .{
             .key = key,
-            .curves = path_curves_owned.items[path_curves_owned.items.len - 1],
+            .curves = path_curves_owned.items[path_curves_owned.items.len - 1].view(),
             .paint = local_paint,
         });
         try path_shapes.append(allocator, .{
@@ -288,7 +288,9 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
         });
     }
 
-    var paths_atlas = try snail.Atlas.from(allocator, pool, path_entries.items);
+    const tagged_path_entries = try tagGeometryEntries(allocator, path_entries.items);
+    defer allocator.free(tagged_path_entries);
+    var paths_atlas = try snail.Atlas.from(allocator, pool, .{ .entries = tagged_path_entries });
     errdefer paths_atlas.deinit();
     var paths_picture = try demo_support.Picture.from(allocator, path_shapes.items);
     errdefer paths_picture.deinit();
@@ -314,12 +316,14 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
                 else => return err,
             };
             try owned_curves.append(allocator, curves);
-            try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+            try text_entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1].view() });
         }
         break :blk true;
     } else false;
 
-    var text_atlas = try snail.Atlas.from(allocator, pool, text_entries.items);
+    const tagged_text_entries = try tagGeometryEntries(allocator, text_entries.items);
+    defer allocator.free(tagged_text_entries);
+    var text_atlas = try snail.Atlas.from(allocator, pool, .{ .entries = tagged_text_entries });
     errdefer text_atlas.deinit();
 
     // Tagline + multi-script sample row.
@@ -386,7 +390,7 @@ pub fn buildWithOptions(allocator: Allocator, width: u32, height: u32, tt_hint_o
     };
 }
 
-fn containsKey(entries: []const snail.AtlasEntry, key: snail.record_key.RecordKey) bool {
+fn containsKey(entries: []const snail.AtlasGeometryEntry, key: snail.record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -398,7 +402,7 @@ fn ensureGlyphOrColrLayers(
     fid: u32,
     glyph_id: u16,
     owned_curves: *std.ArrayList(snail.GlyphCurves),
-    entries: *std.ArrayList(snail.AtlasEntry),
+    entries: *std.ArrayList(snail.AtlasGeometryEntry),
 ) !void {
     var iter = font.colrLayers(glyph_id);
     if (iter.count() > 0) {
@@ -408,7 +412,7 @@ fn ensureGlyphOrColrLayers(
             const curves = try font.extractCurves(allocator, scratch_arena.allocator(), layer.glyph_id);
             _ = scratch_arena.reset(.retain_capacity);
             try owned_curves.append(allocator, curves);
-            try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+            try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1].view() });
         }
         return;
     }
@@ -417,5 +421,14 @@ fn ensureGlyphOrColrLayers(
     const curves = try font.extractCurves(allocator, scratch_arena.allocator(), glyph_id);
     _ = scratch_arena.reset(.retain_capacity);
     try owned_curves.append(allocator, curves);
-    try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1] });
+    try entries.append(allocator, .{ .key = key, .curves = owned_curves.items[owned_curves.items.len - 1].view() });
+}
+
+fn tagGeometryEntries(
+    allocator: Allocator,
+    geometry: []const snail.AtlasGeometryEntry,
+) ![]snail.AtlasEntry {
+    const tagged = try allocator.alloc(snail.AtlasEntry, geometry.len);
+    for (geometry, tagged) |entry, *out| out.* = .{ .geometry = entry };
+    return tagged;
 }

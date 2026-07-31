@@ -17,7 +17,7 @@ pub const Builder = struct {
     /// the gpa, so they collapse to bump-pointer allocations.
     scratch_arena: *std.heap.ArenaAllocator,
     owned_curves: *std.ArrayList(snail.GlyphCurves),
-    entries: *std.ArrayList(snail.AtlasEntry),
+    entries: *std.ArrayList(snail.AtlasGeometryEntry),
     shapes: *std.ArrayList(snail.Shape),
     /// Heap-allocated slices backing each entry's `extra_layers`. The
     /// caller is responsible for freeing each slice after the atlas is
@@ -45,7 +45,7 @@ pub const Builder = struct {
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
-            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1].view(),
             .paint = try prepared.paintForDesign(paint),
         });
         try self.shapes.append(self.allocator, .{
@@ -75,7 +75,7 @@ pub const Builder = struct {
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
-            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1].view(),
             .paint = try prepared.paintForDesign(stroke.paint),
         });
         try self.shapes.append(self.allocator, .{
@@ -152,7 +152,7 @@ pub const Builder = struct {
             self.next_id.* += 1;
             try self.entries.append(self.allocator, .{
                 .key = key,
-                .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+                .curves = self.owned_curves.items[self.owned_curves.items.len - 1].view(),
                 .paint = try prepared.paintForDesign(fill),
             });
             try self.shapes.append(self.allocator, .{
@@ -170,7 +170,7 @@ pub const Builder = struct {
 
         const extras = try self.allocator.alloc(snail.AtlasLayer, 1);
         extras[0] = .{
-            .curves = self.owned_curves.items[self.owned_curves.items.len - 1],
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 1].view(),
             .paint = try prepared.paintForDesign(stroke.paint),
         };
         try self.extra_layer_storage.append(self.allocator, extras);
@@ -179,7 +179,7 @@ pub const Builder = struct {
         self.next_id.* += 1;
         try self.entries.append(self.allocator, .{
             .key = key,
-            .curves = self.owned_curves.items[self.owned_curves.items.len - 2],
+            .curves = self.owned_curves.items[self.owned_curves.items.len - 2].view(),
             .paint = try prepared.paintForDesign(fill),
             .extra_layers = extras,
             .composite_mode = .fill_stroke_inside,

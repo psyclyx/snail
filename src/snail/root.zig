@@ -103,7 +103,10 @@ pub const Image = image_mod.Image;
 pub const record_key = record_key_mod;
 
 pub const GlyphCurves = @import("atlas/curves.zig").GlyphCurves;
+pub const GeometryView = @import("atlas/curves.zig").GeometryView;
 pub const PagePool = @import("atlas/page_pool.zig").PagePool;
+/// Immutable, mmap-friendly producer artifacts and their owning counterparts.
+pub const prepared = @import("prepared.zig");
 
 const atlas_mod = @import("atlas.zig");
 pub const Atlas = atlas_mod.Atlas;
@@ -111,7 +114,10 @@ pub const Atlas = atlas_mod.Atlas;
 /// placement planner. The complete contract is public so callers never need
 /// to reach through the internal `files` namespace for its backing types.
 pub const atlas_upload = @import("atlas/upload_plan.zig");
-pub const AtlasEntry = atlas_mod.Entry;
+pub const AtlasEntry = atlas_mod.AtlasEntry;
+pub const AtlasGeometryEntry = atlas_mod.GeometryEntry;
+pub const AtlasAutohintEntry = atlas_mod.AutohintEntry;
+pub const AtlasUpdate = atlas_mod.AtlasUpdate;
 pub const AtlasInsertError = atlas_mod.InsertError;
 pub const AutohintAnalysis = atlas_mod.AutohintAnalysis;
 pub const CompositeMode = atlas_mod.CompositeMode;
@@ -124,19 +130,18 @@ pub const RecordFilter = atlas_mod.RecordFilter;
 
 const atlas_populate = @import("atlas/populate.zig");
 pub const UnhintedRunOptions = atlas_populate.UnhintedRunOptions;
+pub const AutohintRunOptions = atlas_populate.AutohintRunOptions;
 pub const ColrHandling = atlas_populate.ColrHandling;
-pub const recordUnhintedRun = atlas_populate.recordUnhintedRun;
-pub const recordUnhintedRuns = atlas_populate.recordUnhintedRuns;
-// Caller-parallel unhinted extraction (plan → extractOne → apply).
-pub const planUnhintedRuns = atlas_populate.planUnhintedRuns;
-pub const UnhintedExtractPlan = atlas_populate.UnhintedExtractPlan;
-pub const ExtractContext = atlas_populate.ExtractContext;
-pub const ExtractRequest = atlas_populate.ExtractRequest;
-pub const recordAutohintRun = atlas_populate.recordAutohintRun;
-pub const recordAutohintRuns = atlas_populate.recordAutohintRuns;
-pub const recordTtHintRun = atlas_populate.recordTtHintRun;
-pub const recordTtHintRuns = atlas_populate.recordTtHintRuns;
-pub const recordTtAdvanceRun = atlas_populate.recordTtAdvanceRun;
+pub const FontSource = atlas_populate.FontSource;
+pub const PrepareMode = atlas_populate.PrepareMode;
+pub const PrepareRequest = atlas_populate.PrepareRequest;
+pub const PreparePlan = atlas_populate.PreparePlan;
+pub const planRuns = atlas_populate.planRuns;
+pub const planTtAdvances = atlas_populate.planTtAdvances;
+pub const OutlineContext = atlas_populate.OutlineContext;
+pub const AutohintContext = atlas_populate.AutohintContext;
+pub const TtHintContext = atlas_populate.TtHintContext;
+pub const TtHintSize = atlas_populate.TtHintSize;
 pub const TtAdvanceSource = atlas_populate.TtAdvanceSource;
 
 const shape_mod = @import("draw/shape.zig");
@@ -184,6 +189,7 @@ test {
     _ = @import("atlas/upload_plan.zig");
     _ = atlas_populate;
     _ = atlas_mod;
+    _ = prepared;
     _ = @import("path.zig");
     _ = @import("path_pack.zig");
     _ = @import("font/tt_hint_vm.zig");

@@ -187,15 +187,14 @@ test "draw autohint fits per size without mutating atlas resources" {
     defer pool.deinit();
     const base_key = record_key_mod.unhintedGlyph(0, gid);
     const key = record_key_mod.autohintGlyph(0, gid);
-    var atlas = try atlas_mod.Atlas.from(allocator, pool, &.{
-        .{ .key = base_key, .curves = curves },
-        .{
+    var atlas = try atlas_mod.Atlas.from(allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = base_key, .curves = curves.view() } },
+        .{ .autohint = .{
             .key = key,
-            .curves = atlas_mod.GlyphCurves.empty(allocator),
-            .autohint = .{ .font = analyzer.fontFeatures(), .glyph = glyph_features },
-            .autohint_base = base_key,
-        },
-    });
+            .base_key = base_key,
+            .analysis = .{ .font = analyzer.fontFeatures(), .glyph = glyph_features },
+        } },
+    } });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 16, .max_images = 0 });
@@ -285,7 +284,9 @@ test "draw renders a small Picture into non-zero pixels" {
     });
     defer pool.deinit();
     const key = @import("snail").record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = owned[0] }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = key, .curves = owned[0].view() } },
+    } });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -370,11 +371,13 @@ test "draw renders gradient-painted glyph through special-layer path" {
         .start_color = .{ 1, 0, 0, 1 },
         .end_color = .{ 0, 0, 1, 1 },
     };
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
-        .key = key,
-        .curves = curves,
-        .paint = .{ .linear_gradient = gradient },
-    }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = curves.view(),
+            .paint = .{ .linear_gradient = gradient },
+        },
+    }} });
     defer atlas.deinit();
 
     try testing.expect(atlas.lookupPaintRecord(key) != null);
@@ -469,14 +472,16 @@ test "draw applies per-shape local color to image-painted path" {
         .namespace = @import("snail").record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
-        .key = key,
-        .curves = path_curves,
-        .paint = .{ .image = .{
-            .image = &image,
-            .uv_transform = .identity,
-        } },
-    }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = path_curves.view(),
+            .paint = .{ .image = .{
+                .image = &image,
+                .uv_transform = .identity,
+            } },
+        },
+    }} });
     defer atlas.deinit();
 
     try testing.expect(atlas.paint_records != null);
@@ -558,7 +563,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
         for (owned.items) |*c| c.deinit();
         owned.deinit(allocator);
     }
-    var entries: std.ArrayList(@import("snail").AtlasEntry) = .empty;
+    var entries: std.ArrayList(@import("snail").AtlasGeometryEntry) = .empty;
     defer entries.deinit(allocator);
 
     var pool = try @import("snail").PagePool.init(allocator, .{
@@ -579,7 +584,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
         if (!containsEntryKey(entries.items, key)) {
             const curves = try font.extractCurves(allocator, allocator, gid);
             try owned.append(allocator, curves);
-            try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1] });
+            try entries.append(allocator, .{ .key = key, .curves = owned.items[owned.items.len - 1].view() });
         }
         try shapes.append(allocator, .{
             .key = key,
@@ -589,7 +594,10 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
         pen_x += px_size * 0.55;
     }
 
-    var atlas = try @import("snail").Atlas.from(allocator, pool, entries.items);
+    const tagged = try allocator.alloc(@import("snail").AtlasEntry, entries.items.len);
+    defer allocator.free(tagged);
+    for (entries.items, tagged) |entry, *out| out.* = .{ .geometry = entry };
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = tagged });
     defer atlas.deinit();
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
     defer cache.deinit();
@@ -626,7 +634,7 @@ test "draw threaded matches single-threaded pixel-for-pixel" {
     try testing.expectEqualSlices(u8, px_serial, px_threaded);
 }
 
-fn containsEntryKey(entries: []const @import("snail").AtlasEntry, key: @import("snail").record_key.RecordKey) bool {
+fn containsEntryKey(entries: []const @import("snail").AtlasGeometryEntry, key: @import("snail").record_key.RecordKey) bool {
     for (entries) |e| if (e.key.eql(key)) return true;
     return false;
 }
@@ -663,11 +671,13 @@ test "shared-endpoint interior coverage stays solid (no centre seam)" {
         .namespace = @import("snail").record_key.ns.path_fill,
         .a = 0,
     };
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
-        .key = key,
-        .curves = curves,
-        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = curves.view(),
+            .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+        },
+    }} });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -752,11 +762,13 @@ test "cubic stroke has no detached coverage island near its start cap" {
         .namespace = @import("snail").record_key.ns.path_stroke,
         .a = 0,
     };
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{
-        .key = key,
-        .curves = curves,
-        .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = curves.view(),
+            .paint = .{ .solid = .{ 1, 1, 1, 1 } },
+        },
+    }} });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });
@@ -827,19 +839,107 @@ test "compact preserves rendering byte-for-byte across record kinds" {
     });
     defer pool.deinit();
 
-    // Record every kind: unhinted + COLR, autohint analysis, TT-hinted
+    // Prepare every kind: unhinted + COLR, autohint analysis, TT-hinted
     // curves + advances.
     var atlas = try @import("snail").Atlas.init(allocator, pool);
     defer atlas.deinit();
-    try @import("snail").recordUnhintedRun(&atlas, allocator, &faces, &shaped, .{});
-    var analyzer = try snail.autohint.AutohintAnalyzer.init(allocator, @import("assets").dejavu_sans_mono);
-    defer analyzer.deinit();
-    try @import("snail").recordAutohintRun(&atlas, allocator, &analyzer, 0, &shaped_latin);
-    var vm = try snail.TtHintVm.init(allocator, &font);
-    defer vm.deinit();
-    var prepared = try vm.prepare(snail.TtHintPpem.uniform(13 * 64));
-    defer prepared.deinit();
-    try @import("snail").recordTtHintRun(&atlas, allocator, &vm, &prepared, 0, &shaped_latin);
+    const sources = [_]snail.FontSource{
+        .{ .font_id = 0, .font = &font, .cache_key = .{0} ** 16 },
+        .{ .font_id = 1, .font = &emoji_font, .cache_key = .{1} ** 16 },
+    };
+
+    {
+        var plan = try snail.planRuns(
+            &atlas,
+            allocator,
+            &sources,
+            &.{&shaped},
+            .{ .unhinted = .{} },
+        );
+        defer plan.deinit();
+        const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+        defer allocator.free(owned);
+        @memset(owned, null);
+        const views = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+        defer allocator.free(views);
+        @memset(views, null);
+        defer for (owned) |*record| if (record.*) |*value| value.deinit();
+
+        var context = snail.OutlineContext.init(allocator, allocator);
+        defer context.deinit();
+        for (plan.requests(), 0..) |request, i| {
+            owned[i] = try context.prepare(request);
+            views[i] = owned[i].?.view();
+        }
+        try plan.applyInPlace(allocator, &atlas, views);
+    }
+
+    {
+        const options: snail.AutohintRunOptions = .{};
+        var plan = try snail.planRuns(
+            &atlas,
+            allocator,
+            &sources,
+            &.{&shaped_latin},
+            .{ .autohint = options },
+        );
+        defer plan.deinit();
+        const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+        defer allocator.free(owned);
+        @memset(owned, null);
+        const views = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+        defer allocator.free(views);
+        @memset(views, null);
+        defer for (owned) |*record| if (record.*) |*value| value.deinit();
+
+        var outline = snail.OutlineContext.init(allocator, allocator);
+        defer outline.deinit();
+        var autohint = try snail.AutohintContext.init(
+            allocator,
+            allocator,
+            &sources[0],
+            options.autohint,
+        );
+        defer autohint.deinit();
+        for (plan.requests(), 0..) |request, i| {
+            owned[i] = switch (request.operation) {
+                .outline => try outline.prepare(request),
+                .autohint_model, .autohint_glyph => try autohint.prepare(request),
+                else => return error.UnexpectedPrepareRequest,
+            };
+            views[i] = owned[i].?.view();
+        }
+        try plan.applyInPlace(allocator, &atlas, views);
+    }
+
+    {
+        const ppem = snail.TtHintPpem.uniform(13 * 64);
+        var plan = try snail.planRuns(
+            &atlas,
+            allocator,
+            &sources,
+            &.{&shaped_latin},
+            .{ .tt_hint = ppem },
+        );
+        defer plan.deinit();
+        const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+        defer allocator.free(owned);
+        @memset(owned, null);
+        const views = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+        defer allocator.free(views);
+        @memset(views, null);
+        defer for (owned) |*record| if (record.*) |*value| value.deinit();
+
+        var context = try snail.TtHintContext.init(allocator, allocator, &sources[0]);
+        defer context.deinit();
+        var size = try context.prepareSize(ppem);
+        defer size.deinit();
+        for (plan.requests(), 0..) |request, i| {
+            owned[i] = try context.prepare(&size, request);
+            views[i] = owned[i].?.view();
+        }
+        try plan.applyInPlace(allocator, &atlas, views);
+    }
 
     const policy: snail.autohint.AutohintPolicy = .{
         .x = .{ .@"align" = .grid },
@@ -957,7 +1057,9 @@ test "draw scissor_rect clips writes to the rect" {
     });
     defer pool.deinit();
     const key = @import("snail").record_key.unhintedGlyph(0, gid);
-    var atlas = try @import("snail").Atlas.from(allocator, pool, &.{.{ .key = key, .curves = curves }});
+    var atlas = try @import("snail").Atlas.from(allocator, pool, .{ .entries = &.{
+        .{ .geometry = .{ .key = key, .curves = curves.view() } },
+    } });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 0 });

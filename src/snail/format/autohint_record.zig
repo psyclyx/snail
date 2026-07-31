@@ -74,6 +74,28 @@ pub fn recordFloatCount(blue_count: usize, x_count: usize, y_count: usize) SizeE
     return std.math.add(usize, count, y_floats) catch return error.RecordTooLarge;
 }
 
+pub fn validateAnalysis(
+    font: autohint.FontFeatures,
+    glyph: autohint.GlyphFeatures,
+) WriteError!void {
+    if (glyph.x.len > autohint.max_features_per_axis or
+        glyph.y.len > autohint.max_features_per_axis)
+    {
+        return error.TooManyFeatures;
+    }
+    if (font.blues.len > autohint.max_features_per_axis) {
+        return error.TooManyBlueZones;
+    }
+    if (!validFontFeatures(font) or !std.math.isFinite(glyph.left) or
+        !validFeatureRun(glyph.x, font.blues.len) or
+        !validFeatureRun(glyph.y, font.blues.len))
+    {
+        return error.InvalidAnalysis;
+    }
+    _ = recordFloatCount(font.blues.len, glyph.x.len, glyph.y.len) catch
+        return error.RecordTooLarge;
+}
+
 /// Write a complete record only after validating all counts and slab bounds.
 pub fn writeRecord(
     data: []f32,
@@ -82,12 +104,8 @@ pub fn writeRecord(
     font: autohint.FontFeatures,
     glyph: autohint.GlyphFeatures,
 ) WriteError!void {
-    if (glyph.x.len > autohint.max_features_per_axis or glyph.y.len > autohint.max_features_per_axis) return error.TooManyFeatures;
-    if (font.blues.len > autohint.max_features_per_axis) return error.TooManyBlueZones;
+    try validateAnalysis(font, glyph);
     if (!validBandEntry(be)) return error.InvalidBandEntry;
-    if (!validFontFeatures(font) or !std.math.isFinite(glyph.left) or
-        !validFeatureRun(glyph.x, font.blues.len) or
-        !validFeatureRun(glyph.y, font.blues.len)) return error.InvalidAnalysis;
     const count = recordFloatCount(font.blues.len, glyph.x.len, glyph.y.len) catch return error.RecordTooLarge;
     if (off > data.len or count > data.len - off) return error.BufferTooSmall;
 

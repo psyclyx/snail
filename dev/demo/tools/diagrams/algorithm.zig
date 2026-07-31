@@ -169,26 +169,36 @@ const Ctx = struct {
     scratch: std.heap.ArenaAllocator,
     pool: *snail.PagePool,
     faces: *snail.Faces,
+    sources: []const snail.FontSource,
+    outline_context: snail.OutlineContext,
 
     path_curves: std.ArrayList(snail.GlyphCurves) = .empty,
-    path_entries: std.ArrayList(snail.AtlasEntry) = .empty,
+    path_entries: std.ArrayList(snail.AtlasGeometryEntry) = .empty,
     path_shapes: std.ArrayList(snail.Shape) = .empty,
     next_id: u32 = 0,
 
     text_atlas: snail.Atlas,
     text_pics: std.ArrayList(support.Picture) = .empty,
 
-    fn init(allocator: Allocator, pool: *snail.PagePool, faces: *snail.Faces) snail.PagePool.IdentityError!Ctx {
+    fn init(
+        allocator: Allocator,
+        pool: *snail.PagePool,
+        faces: *snail.Faces,
+        sources: []const snail.FontSource,
+    ) snail.PagePool.IdentityError!Ctx {
         return .{
             .allocator = allocator,
             .scratch = std.heap.ArenaAllocator.init(allocator),
             .pool = pool,
             .faces = faces,
+            .sources = sources,
+            .outline_context = snail.OutlineContext.init(allocator, allocator),
             .text_atlas = try snail.Atlas.init(allocator, pool),
         };
     }
 
     fn deinit(self: *Ctx) void {
+        self.outline_context.deinit();
         for (self.text_pics.items) |*p| p.deinit();
         self.text_pics.deinit(self.allocator);
         self.text_atlas.deinit();
@@ -205,7 +215,7 @@ const Ctx = struct {
         self.next_id += 1;
         try self.path_entries.append(self.allocator, .{
             .key = key,
-            .curves = self.path_curves.items[self.path_curves.items.len - 1],
+            .curves = self.path_curves.items[self.path_curves.items.len - 1].view(),
             .paint = paint,
         });
         try self.path_shapes.append(self.allocator, .{ .key = key, .local_transform = transform, .local_color = white });
@@ -362,7 +372,20 @@ const Ctx = struct {
     fn text(self: *Ctx, str: []const u8, x: f32, y: f32, em: f32, color: [4]f32, weight: snail.FontWeight) !f32 {
         var shaped = try snail.shape(self.allocator, self.faces, str, .{ .style = .{ .weight = weight } });
         defer shaped.deinit();
-        try snail.recordUnhintedRun(&self.text_atlas, self.allocator, self.faces, &shaped, .{});
+        var plan = try snail.planRuns(
+            &self.text_atlas,
+            self.allocator,
+            self.sources,
+            &.{&shaped},
+            .{ .unhinted = .{} },
+        );
+        defer plan.deinit();
+        try prepareOutlinesAndApply(
+            self.allocator,
+            &self.text_atlas,
+            &plan,
+            &self.outline_context,
+        );
         const pic = try support.placeRun(self.allocator, &shaped, null, .{
             .baseline = .{ .x = x, .y = y },
             .em = em,
@@ -385,7 +408,10 @@ const Ctx = struct {
     }
 
     fn render(self: *Ctx, out_path: [*:0]const u8, width: u32, height: u32, scale: f32) !void {
-        var paths_atlas = try snail.Atlas.from(self.allocator, self.pool, self.path_entries.items);
+        const tagged = try self.allocator.alloc(snail.AtlasEntry, self.path_entries.items.len);
+        defer self.allocator.free(tagged);
+        for (self.path_entries.items, tagged) |entry, *out| out.* = .{ .geometry = entry };
+        var paths_atlas = try snail.Atlas.from(self.allocator, self.pool, .{ .entries = tagged });
         defer paths_atlas.deinit();
         var paths_picture = try support.Picture.from(self.allocator, self.path_shapes.items);
         defer paths_picture.deinit();
@@ -405,6 +431,30 @@ const Ctx = struct {
         }, out_path, width, height, scale);
     }
 };
+
+fn prepareOutlinesAndApply(
+    allocator: Allocator,
+    atlas: *snail.Atlas,
+    plan: *const snail.PreparePlan,
+    context: *snail.OutlineContext,
+) !void {
+    const owned = try allocator.alloc(?snail.prepared.OwnedRecord, plan.requests().len);
+    defer allocator.free(owned);
+    @memset(owned, null);
+    defer for (owned) |*record| {
+        if (record.*) |*value| value.deinit();
+    };
+
+    const results = try allocator.alloc(?snail.prepared.RecordView, plan.requests().len);
+    defer allocator.free(results);
+    @memset(results, null);
+
+    for (plan.requests(), 0..) |request, i| {
+        owned[i] = try context.prepare(request);
+        results[i] = owned[i].?.view();
+    }
+    try plan.applyInPlace(allocator, atlas, results);
+}
 
 /// `harness.renderCpu` with a supersampling world transform applied at emit time.
 fn renderScaled(allocator: Allocator, scene: harness.Scene, out_path: [*:0]const u8, width: u32, height: u32, scale: f32) !void {
@@ -1304,6 +1354,10 @@ pub fn main() !void {
         .{ .font = &font_bold, .font_id = 1, .weight = .bold },
     });
     defer faces.deinit();
+    const sources = [_]snail.FontSource{
+        .{ .font_id = 0, .font = &font_regular, .cache_key = .{0} ** 16 },
+        .{ .font_id = 1, .font = &font_bold, .cache_key = .{1} ** 16 },
+    };
 
     const pool = try snail.PagePool.init(allocator, .{
         .max_pages = 8,
@@ -1313,7 +1367,7 @@ pub fn main() !void {
     defer pool.deinit();
 
     for (diagrams) |d| {
-        var ctx = try Ctx.init(allocator, pool, &faces);
+        var ctx = try Ctx.init(allocator, pool, &faces, &sources);
         defer ctx.deinit();
         try d.build(&ctx);
         try ctx.render(d.name, d.width, d.height, SCALE);

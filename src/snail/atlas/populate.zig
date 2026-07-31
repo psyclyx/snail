@@ -1,112 +1,712 @@
-//! Record shaped runs into an `Atlas`.
+//! Caller-scheduled preparation of shaped runs.
 //!
-//! The atlas is the store of prepared glyph records; these functions run the
-//! per-mode producers (`Faces`, `AutohintAnalyzer`, `TtHintVm`) for every
-//! glyph the store doesn't already have and commit the results with
-//! `Atlas.extendInPlace`. Recording is idempotent — existing keys are
-//! skipped — so repeat calls over the same run are cheap. They do not shape
-//! or place text.
-//!
-//! Recording fails with `error.OutOfLayers` when the `PagePool` budget is
-//! exhausted — see the capacity model notes on `Atlas` for the eviction
-//! recipe (`compact` + `RecordFilter`).
+//! Planning is cheap and never extracts outlines. A plan is a flat array of
+//! independently cacheable requests plus a private set of atlas assembly
+//! recipes. Callers satisfy requests from `prepared.Archive` or on arbitrary
+//! worker threads, then apply all results in one logically atomic atlas update.
 
 const std = @import("std");
 const atlas_mod = @import("../atlas.zig");
 const font_mod = @import("../font.zig");
 const hint_vm_mod = @import("../font/tt_hint_vm.zig");
 const autohint_mod = @import("../font/autohint/producer.zig");
-const faces_mod = @import("../text/faces.zig");
 const text_mod = @import("../text.zig");
+const prepared = @import("../prepared.zig");
 const record_key = @import("record_key.zig");
+const cubic_to_quadratic = @import("../math/cubic_to_quadratic.zig");
 
 const Allocator = std.mem.Allocator;
 const Atlas = atlas_mod.Atlas;
-const Entry = atlas_mod.Entry;
 const Font = font_mod.Font;
-const GlyphCurves = atlas_mod.GlyphCurves;
-const Layer = atlas_mod.Layer;
 const RecordKey = record_key.RecordKey;
-const TtAdvanceEntry = atlas_mod.TtAdvanceEntry;
 
-/// How `recordUnhintedRun` stores COLRv0 glyphs. Each mode pairs with a
-/// placement style; recording and placement must agree.
+/// Stable preparation identity is deliberately separate from shaping's
+/// `Faces` and the atlas's runtime `font_id`. A plan copies this descriptor,
+/// but the `Font`, its bytes, and its variation slice remain caller-owned and
+/// must outlive every job using the plan.
+pub const FontSource = struct {
+    font_id: u32,
+    font: *const Font,
+    cache_key: prepared.FontKey,
+};
+
 pub const ColrHandling = enum {
-    /// Pack all layers into one immutable composite record under the base
-    /// glyph key. Pairs with `RunPlacement.colr = false`: one shape per
-    /// glyph resolves to the composite paint record.
     composite,
-    /// Record each layer glyph as its own plain unhinted record (non-COLR
-    /// glyphs get their base outline). Pairs with `RunPlacement.colr = true`
-    /// fanout, which emits one shape per layer keyed by layer glyph id and
-    /// resolves layer colors (including the 0xffff foreground) per shape at
-    /// placement time.
     layers,
-    /// Ignore COLR tables; record base outlines only.
     outline_only,
 };
 
 pub const UnhintedRunOptions = struct {
     colr: ColrHandling = .composite,
-    /// COLRv0 palette index 0xffff means "use the foreground." The paint
-    /// record ABI is immutable, so under `.composite` this color is resolved
-    /// at record time and shared by every draw of the resulting record.
-    /// (`.layers` resolves the foreground at placement time instead.)
     colr_foreground: [4]f32 = .{ 1, 1, 1, 1 },
+    geometry: prepared.GeometryOptions = .{
+        .cubic_tolerance = cubic_to_quadratic.default_tolerance,
+    },
 };
 
-const Batch = struct {
-    allocator: Allocator,
-    scratch: std.heap.ArenaAllocator,
-    entries: std.ArrayList(Entry) = .empty,
-    curves: std.ArrayList(GlyphCurves) = .empty,
-    layer_storage: std.ArrayList([]Layer) = .empty,
-    seen: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
-    advances: std.ArrayList(TtAdvanceEntry) = .empty,
-    seen_advances: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+pub const AutohintRunOptions = struct {
+    geometry: prepared.GeometryOptions = .{
+        .cubic_tolerance = cubic_to_quadratic.default_tolerance,
+    },
+    autohint: prepared.AutohintOptions = .{},
+};
 
-    fn init(allocator: Allocator) Batch {
-        return .{
-            .allocator = allocator,
-            .scratch = std.heap.ArenaAllocator.init(allocator),
-        };
+pub const PrepareMode = union(enum) {
+    unhinted: UnhintedRunOptions,
+    autohint: AutohintRunOptions,
+    tt_hint: hint_vm_mod.TtHintPpem,
+};
+
+pub const PrepareRequest = struct {
+    key: prepared.Key,
+    operation: Operation,
+
+    pub const Operation = union(enum) {
+        outline: Outline,
+        autohint_model: AutohintModel,
+        autohint_glyph: AutohintGlyph,
+        tt_glyph: TtGlyph,
+        tt_advance: TtAdvance,
+    };
+
+    pub const Outline = struct {
+        source: *const FontSource,
+        glyph_id: u16,
+        options: prepared.GeometryOptions,
+    };
+
+    pub const AutohintModel = struct {
+        source: *const FontSource,
+        options: prepared.AutohintOptions,
+    };
+
+    pub const AutohintGlyph = struct {
+        source: *const FontSource,
+        glyph_id: u16,
+        options: prepared.AutohintOptions,
+    };
+
+    pub const TtGlyph = struct {
+        source: *const FontSource,
+        glyph_id: u16,
+        ppem: hint_vm_mod.TtHintPpem,
+    };
+
+    pub const TtAdvance = struct {
+        source: *const FontSource,
+        glyph_id: u16,
+        ppem: hint_vm_mod.TtHintPpem,
+    };
+};
+
+const GeometryRecipe = struct {
+    destination: RecordKey,
+    request: u32,
+};
+
+const CompositeLayerRecipe = struct {
+    request: u32,
+    paint: atlas_mod.Paint,
+};
+
+const CompositeRecipe = struct {
+    destination: RecordKey,
+    fallback_request: u32,
+    first_layer: u32,
+    layer_count: u16,
+};
+
+const AutohintRecipe = struct {
+    destination: RecordKey,
+    base: RecordKey,
+    model_request: u32,
+    glyph_request: u32,
+};
+
+const TtGlyphRecipe = struct {
+    destination: RecordKey,
+    advance_destination: RecordKey,
+    request: u32,
+    insert_geometry: bool,
+    insert_advance: bool,
+};
+
+const TtAdvanceRecipe = struct {
+    destination: RecordKey,
+    request: u32,
+};
+
+const Recipe = union(enum) {
+    geometry: GeometryRecipe,
+    composite: CompositeRecipe,
+    autohint: AutohintRecipe,
+    tt_glyph: TtGlyphRecipe,
+    tt_advance: TtAdvanceRecipe,
+};
+
+pub const PreparePlan = struct {
+    allocator: Allocator,
+    request_storage: []PrepareRequest,
+    dependency_offsets: []u32,
+    dependency_storage: []u32,
+    recipes: []Recipe,
+    composite_layers: []CompositeLayerRecipe,
+    source_storage: []FontSource,
+    required_records: []RecordKey,
+    required_advances: []RecordKey,
+
+    pub fn requests(self: *const PreparePlan) []const PrepareRequest {
+        return self.request_storage;
     }
 
-    fn deinit(self: *Batch) void {
-        self.seen.deinit(self.allocator);
-        self.seen_advances.deinit(self.allocator);
-        self.advances.deinit(self.allocator);
-        for (self.layer_storage.items) |layers| self.allocator.free(layers);
-        self.layer_storage.deinit(self.allocator);
-        self.entries.deinit(self.allocator);
-        for (self.curves.items) |*curves| curves.deinit();
-        self.curves.deinit(self.allocator);
-        self.scratch.deinit();
+    /// Request indices which must complete before `request_index` may run.
+    /// Most requests are independent. An autohint glyph depends only on its
+    /// font model; its unhinted base is an atlas assembly dependency.
+    pub fn dependencies(self: *const PreparePlan, request_index: usize) []const u32 {
+        const start = self.dependency_offsets[request_index];
+        const end = self.dependency_offsets[request_index + 1];
+        return self.dependency_storage[start..end];
+    }
+
+    /// Build a persistent atlas snapshot without retaining result views.
+    pub fn apply(
+        self: *const PreparePlan,
+        allocator: Allocator,
+        atlas: *const Atlas,
+        results: []const ?prepared.RecordView,
+    ) !Atlas {
+        var update = try self.buildUpdate(allocator, atlas, results);
+        defer update.deinit();
+        return atlas.extend(allocator, update.view());
+    }
+
+    /// Atomically replace `atlas` with its prepared extension.
+    pub fn applyInPlace(
+        self: *const PreparePlan,
+        allocator: Allocator,
+        atlas: *Atlas,
+        results: []const ?prepared.RecordView,
+    ) !void {
+        var update = try self.buildUpdate(allocator, atlas, results);
+        defer update.deinit();
+        try atlas.extendInPlace(allocator, update.view());
+    }
+
+    pub fn deinit(self: *PreparePlan) void {
+        self.allocator.free(self.request_storage);
+        self.allocator.free(self.dependency_offsets);
+        self.allocator.free(self.dependency_storage);
+        self.allocator.free(self.recipes);
+        self.allocator.free(self.composite_layers);
+        self.allocator.free(self.source_storage);
+        self.allocator.free(self.required_records);
+        self.allocator.free(self.required_advances);
         self.* = undefined;
     }
 
-    fn shouldInsert(self: *Batch, atlas: *const Atlas, key: RecordKey) !bool {
-        if (atlas.contains(key)) return false;
-        const result = try self.seen.getOrPut(self.allocator, key);
-        return !result.found_existing;
+    const BuiltUpdate = struct {
+        arena: std.heap.ArenaAllocator,
+        entries: std.ArrayList(atlas_mod.AtlasEntry) = .empty,
+        advances: std.ArrayList(atlas_mod.TtAdvanceEntry) = .empty,
+
+        fn view(self: *const BuiltUpdate) atlas_mod.AtlasUpdate {
+            return .{
+                .entries = self.entries.items,
+                .tt_advances = self.advances.items,
+            };
+        }
+
+        fn deinit(self: *BuiltUpdate) void {
+            self.arena.deinit();
+        }
+    };
+
+    fn buildUpdate(
+        self: *const PreparePlan,
+        allocator: Allocator,
+        atlas: *const Atlas,
+        results: []const ?prepared.RecordView,
+    ) !BuiltUpdate {
+        if (results.len != self.request_storage.len) return error.ResultCountMismatch;
+        for (self.required_records) |key| {
+            if (!atlas.contains(key)) return error.IncompatibleAtlas;
+        }
+        for (self.required_advances) |key| {
+            if (atlas.lookupTtAdvance(key) == null) return error.IncompatibleAtlas;
+        }
+
+        // Preflight every external result before allocating atlas pages.
+        for (self.request_storage, results) |request, maybe_result| {
+            const result = maybe_result orelse return error.MissingResult;
+            if (!result.key.eql(request.key)) return error.MismatchedResultKey;
+            try result.validate();
+            if (!valueMatchesOperation(result.value, request.operation)) {
+                return error.MismatchedResultKind;
+            }
+        }
+
+        var built = BuiltUpdate{ .arena = std.heap.ArenaAllocator.init(allocator) };
+        errdefer built.deinit();
+        const temp = built.arena.allocator();
+
+        // Geometry first, so autohint aliases can reference bases from the
+        // same atomic AtlasUpdate.
+        for (self.recipes) |recipe| switch (recipe) {
+            .autohint => {},
+            else => try self.appendRecipe(&built, atlas, results, recipe, temp),
+        };
+        for (self.recipes) |recipe| switch (recipe) {
+            .autohint => try self.appendRecipe(&built, atlas, results, recipe, temp),
+            else => {},
+        };
+        return built;
     }
 
-    fn extract(self: *Batch, font: *const Font, glyph_id: u16) !GlyphCurves {
-        var curves = try font.extractCurves(self.allocator, self.scratch.allocator(), glyph_id);
-        errdefer curves.deinit();
-        _ = self.scratch.reset(.retain_capacity);
-        try self.curves.append(self.allocator, curves);
-        return self.curves.items[self.curves.items.len - 1];
+    fn appendRecipe(
+        self: *const PreparePlan,
+        built: *BuiltUpdate,
+        atlas: *const Atlas,
+        results: []const ?prepared.RecordView,
+        recipe: Recipe,
+        allocator: Allocator,
+    ) !void {
+        switch (recipe) {
+            .geometry => |r| {
+                if (atlas.contains(r.destination)) return;
+                const geometry = results[r.request].?.value.geometry;
+                try built.entries.append(allocator, .{ .geometry = .{
+                    .key = r.destination,
+                    .curves = geometry.atlasView(),
+                } });
+            },
+            .composite => |r| {
+                if (atlas.contains(r.destination)) return;
+                const layer_recipes =
+                    self.composite_layers[r.first_layer..][0..r.layer_count];
+                const layers = try allocator.alloc(atlas_mod.Layer, layer_recipes.len);
+                var visible: usize = 0;
+                for (layer_recipes) |layer| {
+                    const geometry = results[layer.request].?.value.geometry;
+                    if (geometry.curve_count == 0) continue;
+                    layers[visible] = .{
+                        .curves = geometry.atlasView(),
+                        .paint = layer.paint,
+                    };
+                    visible += 1;
+                }
+                if (visible == 0) {
+                    const fallback = results[r.fallback_request].?.value.geometry;
+                    try built.entries.append(allocator, .{ .geometry = .{
+                        .key = r.destination,
+                        .curves = fallback.atlasView(),
+                    } });
+                } else {
+                    try built.entries.append(allocator, .{ .geometry = .{
+                        .key = r.destination,
+                        .curves = layers[0].curves,
+                        .paint = layers[0].paint,
+                        .extra_layers = layers[1..visible],
+                    } });
+                }
+            },
+            .autohint => |r| {
+                if (atlas.contains(r.destination)) return;
+                const model = results[r.model_request].?.value.autohint_model;
+                const glyph = results[r.glyph_request].?.value.autohint_glyph;
+                try built.entries.append(allocator, .{ .autohint = .{
+                    .key = r.destination,
+                    .base_key = r.base,
+                    .analysis = .{
+                        .font = .{
+                            .blues = model.blues,
+                            .std_x = model.std_x,
+                            .std_y = model.std_y,
+                        },
+                        .glyph = .{
+                            .x = glyph.x,
+                            .y = glyph.y,
+                            .left = glyph.left,
+                        },
+                    },
+                } });
+            },
+            .tt_glyph => |r| {
+                const value = results[r.request].?.value.tt_glyph;
+                if (r.insert_geometry and !atlas.contains(r.destination)) {
+                    try built.entries.append(allocator, .{ .geometry = .{
+                        .key = r.destination,
+                        .curves = value.geometry.atlasView(),
+                    } });
+                }
+                if (r.insert_advance and atlas.lookupTtAdvance(r.advance_destination) == null) {
+                    try built.advances.append(allocator, .{
+                        .key = r.advance_destination,
+                        .advance_26_6 = value.advance_x_26_6,
+                    });
+                }
+            },
+            .tt_advance => |r| {
+                if (atlas.lookupTtAdvance(r.destination) != null) return;
+                try built.advances.append(allocator, .{
+                    .key = r.destination,
+                    .advance_26_6 = results[r.request].?.value.tt_advance,
+                });
+            },
+        }
+    }
+};
+
+fn valueMatchesOperation(
+    value: prepared.ValueView,
+    operation: PrepareRequest.Operation,
+) bool {
+    return switch (operation) {
+        .outline => switch (value) {
+            .geometry => true,
+            else => false,
+        },
+        .autohint_model => switch (value) {
+            .autohint_model => true,
+            else => false,
+        },
+        .autohint_glyph => switch (value) {
+            .autohint_glyph => true,
+            else => false,
+        },
+        .tt_glyph => switch (value) {
+            .tt_glyph => true,
+            else => false,
+        },
+        .tt_advance => switch (value) {
+            .tt_advance => true,
+            else => false,
+        },
+    };
+}
+
+const KeyContext = struct {
+    pub fn hash(_: KeyContext, key: prepared.Key) u64 {
+        return std.hash.Wyhash.hash(0, key.asBytes());
     }
 
-    fn apply(self: *Batch, atlas: *Atlas) !void {
-        try atlas.extendWithAdvancesInPlace(self.allocator, self.entries.items, self.advances.items);
+    pub fn eql(_: KeyContext, a: prepared.Key, b: prepared.Key) bool {
+        return a.eql(b);
+    }
+};
+
+const PlanBuilder = struct {
+    allocator: Allocator,
+    atlas: *const Atlas,
+    sources: []const FontSource,
+    requests: std.ArrayList(PrepareRequest) = .empty,
+    dependency_offsets: std.ArrayList(u32) = .empty,
+    dependencies: std.ArrayList(u32) = .empty,
+    recipes: std.ArrayList(Recipe) = .empty,
+    composite_layers: std.ArrayList(CompositeLayerRecipe) = .empty,
+    request_by_key: std.HashMapUnmanaged(prepared.Key, u32, KeyContext, 80) = .empty,
+    destinations: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+    advance_destinations: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+    required_records: std.ArrayList(RecordKey) = .empty,
+    required_advances: std.ArrayList(RecordKey) = .empty,
+    required_record_set: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+    required_advance_set: std.AutoHashMapUnmanaged(RecordKey, void) = .empty,
+
+    fn init(allocator: Allocator, atlas: *const Atlas, sources: []const FontSource) !PlanBuilder {
+        var self = PlanBuilder{
+            .allocator = allocator,
+            .atlas = atlas,
+            .sources = sources,
+        };
+        errdefer self.deinit();
+        try self.validateSources();
+        try self.dependency_offsets.append(allocator, 0);
+        return self;
     }
 
-    fn shouldRecordAdvance(self: *Batch, atlas: *const Atlas, key: RecordKey) !bool {
-        if (atlas.lookupTtAdvance(key) != null) return false;
-        const result = try self.seen_advances.getOrPut(self.allocator, key);
-        return !result.found_existing;
+    fn deinit(self: *PlanBuilder) void {
+        self.requests.deinit(self.allocator);
+        self.dependency_offsets.deinit(self.allocator);
+        self.dependencies.deinit(self.allocator);
+        self.recipes.deinit(self.allocator);
+        self.composite_layers.deinit(self.allocator);
+        self.request_by_key.deinit(self.allocator);
+        self.destinations.deinit(self.allocator);
+        self.advance_destinations.deinit(self.allocator);
+        self.required_records.deinit(self.allocator);
+        self.required_advances.deinit(self.allocator);
+        self.required_record_set.deinit(self.allocator);
+        self.required_advance_set.deinit(self.allocator);
+    }
+
+    fn validateSources(self: *const PlanBuilder) !void {
+        for (self.sources, 0..) |source, i| {
+            for (self.sources[0..i]) |previous| {
+                if (source.font_id == previous.font_id) return error.DuplicateFontId;
+            }
+        }
+    }
+
+    fn sourceFor(self: *const PlanBuilder, font_id: u32) ?*const FontSource {
+        for (self.sources) |*source| {
+            if (source.font_id == font_id) return source;
+        }
+        return null;
+    }
+
+    fn addRequest(
+        self: *PlanBuilder,
+        request: PrepareRequest,
+        dependencies: []const u32,
+    ) !u32 {
+        const gop = try self.request_by_key.getOrPut(self.allocator, request.key);
+        if (gop.found_existing) return gop.value_ptr.*;
+        const index = std.math.cast(u32, self.requests.items.len) orelse
+            return error.TooManyRequests;
+        gop.value_ptr.* = index;
+        try self.requests.append(self.allocator, request);
+        try self.dependencies.appendSlice(self.allocator, dependencies);
+        try self.dependency_offsets.append(
+            self.allocator,
+            std.math.cast(u32, self.dependencies.items.len) orelse
+                return error.TooManyRequests,
+        );
+        return index;
+    }
+
+    fn shouldPlanDestination(self: *PlanBuilder, key: RecordKey) !bool {
+        if (self.atlas.contains(key)) {
+            const gop = try self.required_record_set.getOrPut(self.allocator, key);
+            if (!gop.found_existing) {
+                try self.required_records.append(self.allocator, key);
+            }
+            return false;
+        }
+        const gop = try self.destinations.getOrPut(self.allocator, key);
+        return !gop.found_existing;
+    }
+
+    fn shouldPlanAdvance(self: *PlanBuilder, key: RecordKey) !bool {
+        if (self.atlas.lookupTtAdvance(key) != null) {
+            const gop = try self.required_advance_set.getOrPut(self.allocator, key);
+            if (!gop.found_existing) {
+                try self.required_advances.append(self.allocator, key);
+            }
+            return false;
+        }
+        const gop = try self.advance_destinations.getOrPut(self.allocator, key);
+        return !gop.found_existing;
+    }
+
+    fn outlineRequest(
+        self: *PlanBuilder,
+        source: *const FontSource,
+        glyph_id: u16,
+        options: prepared.GeometryOptions,
+    ) !u32 {
+        return self.addRequest(.{
+            .key = try prepared.unhintedKey(source.cache_key, glyph_id, options),
+            .operation = .{ .outline = .{
+                .source = source,
+                .glyph_id = glyph_id,
+                .options = options,
+            } },
+        }, &.{});
+    }
+
+    fn planUnhintedGlyph(
+        self: *PlanBuilder,
+        source: *const FontSource,
+        glyph_id: u16,
+        options: UnhintedRunOptions,
+    ) !void {
+        if (options.colr == .layers) {
+            var layer_iter = source.font.colrLayers(glyph_id);
+            if (layer_iter.count() > 0) {
+                while (layer_iter.next()) |layer| {
+                    const destination =
+                        record_key.unhintedGlyph(source.font_id, layer.glyph_id);
+                    if (!try self.shouldPlanDestination(destination)) continue;
+                    try self.recipes.append(self.allocator, .{ .geometry = .{
+                        .destination = destination,
+                        .request = try self.outlineRequest(
+                            source,
+                            layer.glyph_id,
+                            options.geometry,
+                        ),
+                    } });
+                }
+                return;
+            }
+        }
+
+        const destination = record_key.unhintedGlyph(source.font_id, glyph_id);
+        if (!try self.shouldPlanDestination(destination)) return;
+
+        var layer_iter = source.font.colrLayers(glyph_id);
+        const layer_count = layer_iter.count();
+        if (options.colr != .composite or layer_count == 0) {
+            try self.recipes.append(self.allocator, .{ .geometry = .{
+                .destination = destination,
+                .request = try self.outlineRequest(source, glyph_id, options.geometry),
+            } });
+            return;
+        }
+
+        const first_layer = std.math.cast(u32, self.composite_layers.items.len) orelse
+            return error.TooManyRequests;
+        while (layer_iter.next()) |layer| {
+            try self.composite_layers.append(self.allocator, .{
+                .request = try self.outlineRequest(source, layer.glyph_id, options.geometry),
+                .paint = .{ .solid = paletteColor(layer.color, options.colr_foreground) },
+            });
+        }
+        try self.recipes.append(self.allocator, .{ .composite = .{
+            .destination = destination,
+            .fallback_request = try self.outlineRequest(source, glyph_id, options.geometry),
+            .first_layer = first_layer,
+            .layer_count = layer_count,
+        } });
+    }
+
+    fn planAutohintGlyph(
+        self: *PlanBuilder,
+        source: *const FontSource,
+        glyph_id: u16,
+        options: AutohintRunOptions,
+    ) !void {
+        try self.planUnhintedGlyph(source, glyph_id, .{
+            .colr = .outline_only,
+            .geometry = options.geometry,
+        });
+
+        const destination = record_key.autohintGlyph(source.font_id, glyph_id);
+        if (!try self.shouldPlanDestination(destination)) return;
+
+        const model_request = try self.addRequest(.{
+            .key = try prepared.autohintModelKey(source.cache_key, options.autohint),
+            .operation = .{ .autohint_model = .{
+                .source = source,
+                .options = options.autohint,
+            } },
+        }, &.{});
+        const glyph_request = try self.addRequest(.{
+            .key = try prepared.autohintGlyphKey(
+                source.cache_key,
+                glyph_id,
+                options.autohint,
+            ),
+            .operation = .{ .autohint_glyph = .{
+                .source = source,
+                .glyph_id = glyph_id,
+                .options = options.autohint,
+            } },
+        }, &.{model_request});
+        try self.recipes.append(self.allocator, .{ .autohint = .{
+            .destination = destination,
+            .base = record_key.unhintedGlyph(source.font_id, glyph_id),
+            .model_request = model_request,
+            .glyph_request = glyph_request,
+        } });
+    }
+
+    fn planTtGlyph(
+        self: *PlanBuilder,
+        source: *const FontSource,
+        glyph_id: u16,
+        ppem: hint_vm_mod.TtHintPpem,
+    ) !void {
+        if (ppem.x_26_6 != ppem.y_26_6) return error.AnisotropicPpem;
+        const packed_ppem = try ppem.packed26Dot6();
+        const geometry_destination =
+            record_key.ttHintedGlyph(source.font_id, glyph_id, ppem.x_26_6);
+        const advance_destination =
+            record_key.ttAdvance(source.font_id, glyph_id, packed_ppem);
+        const insert_geometry = try self.shouldPlanDestination(geometry_destination);
+        const insert_advance = try self.shouldPlanAdvance(advance_destination);
+        if (!insert_geometry and !insert_advance) return;
+
+        if (!insert_geometry) {
+            const request = try self.addRequest(.{
+                .key = try prepared.ttAdvanceKey(source.cache_key, glyph_id, ppem),
+                .operation = .{ .tt_advance = .{
+                    .source = source,
+                    .glyph_id = glyph_id,
+                    .ppem = ppem,
+                } },
+            }, &.{});
+            try self.recipes.append(self.allocator, .{ .tt_advance = .{
+                .destination = advance_destination,
+                .request = request,
+            } });
+            return;
+        }
+
+        const request = try self.addRequest(.{
+            .key = try prepared.ttGlyphKey(source.cache_key, glyph_id, ppem),
+            .operation = .{ .tt_glyph = .{
+                .source = source,
+                .glyph_id = glyph_id,
+                .ppem = ppem,
+            } },
+        }, &.{});
+        try self.recipes.append(self.allocator, .{ .tt_glyph = .{
+            .destination = geometry_destination,
+            .advance_destination = advance_destination,
+            .request = request,
+            .insert_geometry = true,
+            .insert_advance = insert_advance,
+        } });
+    }
+
+    fn finish(self: *PlanBuilder) !PreparePlan {
+        const request_storage = try self.requests.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(request_storage);
+        const source_storage = try self.allocator.dupe(FontSource, self.sources);
+        errdefer self.allocator.free(source_storage);
+        for (request_storage) |*request| switch (request.operation) {
+            inline else => |*operation| {
+                for (source_storage) |*source| {
+                    if (source.font_id == operation.source.font_id) {
+                        operation.source = source;
+                        break;
+                    }
+                }
+            },
+        };
+        const dependency_offsets =
+            try self.dependency_offsets.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(dependency_offsets);
+        const dependency_storage =
+            try self.dependencies.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(dependency_storage);
+        const recipes = try self.recipes.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(recipes);
+        const composite_layers =
+            try self.composite_layers.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(composite_layers);
+        const required_records =
+            try self.required_records.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(required_records);
+        const required_advances =
+            try self.required_advances.toOwnedSlice(self.allocator);
+        errdefer self.allocator.free(required_advances);
+        const result = PreparePlan{
+            .allocator = self.allocator,
+            .request_storage = request_storage,
+            .dependency_offsets = dependency_offsets,
+            .dependency_storage = dependency_storage,
+            .recipes = recipes,
+            .composite_layers = composite_layers,
+            .source_storage = source_storage,
+            .required_records = required_records,
+            .required_advances = required_advances,
+        };
+        self.request_by_key.deinit(self.allocator);
+        self.destinations.deinit(self.allocator);
+        self.advance_destinations.deinit(self.allocator);
+        self.required_record_set.deinit(self.allocator);
+        self.required_advance_set.deinit(self.allocator);
+        return result;
     }
 };
 
@@ -114,557 +714,374 @@ fn paletteColor(color: [4]f32, foreground: [4]f32) [4]f32 {
     return if (color[0] < 0) foreground else color;
 }
 
-fn appendRegularGlyph(
-    batch: *Batch,
-    key: RecordKey,
-    font: *const Font,
-    glyph_id: u16,
-) !void {
-    const curves = try batch.extract(font, glyph_id);
-    try batch.entries.append(batch.allocator, .{ .key = key, .curves = curves });
-}
-
-/// Append one glyph to `batch` under the chosen COLR handling.
-fn appendUnhintedGlyph(
-    batch: *Batch,
+/// Plan all missing work for several independently shaped runs. `sources` is
+/// also the selection set: glyphs whose runtime `font_id` is absent are
+/// intentionally skipped. This lets a primary TrueType face be hinted while
+/// fallback emoji or script faces retain their separately prepared unhinted
+/// records.
+pub fn planRuns(
     atlas: *const Atlas,
-    font: *const Font,
-    font_id: u32,
-    glyph_id: u16,
-    options: UnhintedRunOptions,
-) !void {
-    if (options.colr == .layers) {
-        var layer_iter = font.colrLayers(glyph_id);
-        if (layer_iter.count() > 0) {
-            while (layer_iter.next()) |source| {
-                const layer_key = record_key.unhintedGlyph(font_id, source.glyph_id);
-                if (!try batch.shouldInsert(atlas, layer_key)) continue;
-                try appendRegularGlyph(batch, layer_key, font, source.glyph_id);
+    allocator: Allocator,
+    sources: []const FontSource,
+    shaped_runs: []const *const text_mod.ShapedText,
+    mode: PrepareMode,
+) !PreparePlan {
+    var builder = try PlanBuilder.init(allocator, atlas, sources);
+    errdefer builder.deinit();
+    for (shaped_runs) |shaped| {
+        for (shaped.glyphs) |glyph| {
+            const source = builder.sourceFor(glyph.font_id) orelse continue;
+            switch (mode) {
+                .unhinted => |options| try builder.planUnhintedGlyph(source, glyph.glyph_id, options),
+                .autohint => |options| try builder.planAutohintGlyph(source, glyph.glyph_id, options),
+                .tt_hint => |ppem| try builder.planTtGlyph(source, glyph.glyph_id, ppem),
             }
-            return;
         }
     }
-
-    const key = record_key.unhintedGlyph(font_id, glyph_id);
-    if (!try batch.shouldInsert(atlas, key)) return;
-
-    var iter = font.colrLayers(glyph_id);
-    const layer_count: usize = iter.count();
-    if (options.colr != .composite or layer_count == 0) {
-        try appendRegularGlyph(batch, key, font, glyph_id);
-        return;
-    }
-
-    const layers = try batch.allocator.alloc(Layer, layer_count);
-    errdefer batch.allocator.free(layers);
-    var count: usize = 0;
-    while (iter.next()) |source| {
-        const curves = try batch.extract(font, source.glyph_id);
-        if (curves.isEmpty()) continue;
-        layers[count] = .{
-            .curves = curves,
-            .paint = .{ .solid = paletteColor(source.color, options.colr_foreground) },
-        };
-        count += 1;
-    }
-
-    if (count == 0) {
-        batch.allocator.free(layers);
-        try appendRegularGlyph(batch, key, font, glyph_id);
-        return;
-    }
-
-    try batch.entries.append(batch.allocator, .{
-        .key = key,
-        .curves = layers[0].curves,
-        .paint = layers[0].paint,
-        .extra_layers = layers[1..count],
-    });
-    try batch.layer_storage.append(batch.allocator, layers);
+    return builder.finish();
 }
 
-fn appendUnhintedRun(
-    batch: *Batch,
+/// Plan page-free TT advances for an asynchronous shape/prepare/reshape flow.
+/// Like `planRuns`, the source slice selects participating font IDs. Unlike
+/// rendered TT geometry, advances support independent x/y PPEM.
+pub fn planTtAdvances(
     atlas: *const Atlas,
-    faces: *const faces_mod.Faces,
-    shaped: *const text_mod.ShapedText,
-    options: UnhintedRunOptions,
-) !void {
-    for (shaped.glyphs) |glyph| {
-        const face_index: usize = @intCast(glyph.face_index);
-        if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
-        const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
-        if (font_id != glyph.font_id) return error.MismatchedFontId;
-        try appendUnhintedGlyph(
-            batch,
-            atlas,
-            faces.fontForFace(glyph.face_index).?,
-            font_id,
-            glyph.glyph_id,
-            options,
-        );
-    }
-}
-
-/// Record every missing unhinted glyph referenced by `shaped`.
-/// COLRv0 glyphs are packed into composites by default, so ordinary
-/// `placeRun` (`colr = false`) emits one instance per base glyph without
-/// caller-side layer assembly; see `ColrHandling` for the fanout pairing.
-pub fn recordUnhintedRun(
-    atlas: *Atlas,
     allocator: Allocator,
-    faces: *const faces_mod.Faces,
-    shaped: *const text_mod.ShapedText,
-    options: UnhintedRunOptions,
-) !void {
-    return recordUnhintedRuns(atlas, allocator, faces, &.{shaped}, options);
-}
-
-/// Record missing unhinted glyphs from several shaped runs in one atlas
-/// transaction. Existing records and duplicates across runs are skipped.
-///
-/// This is the screen/paragraph ingestion path: callers may shape rows and
-/// style spans independently, then avoid one persistent snapshot commit per
-/// span. Any validation, extraction, allocation, or atlas error leaves the
-/// original atlas unchanged.
-pub fn recordUnhintedRuns(
-    atlas: *Atlas,
-    allocator: Allocator,
-    faces: *const faces_mod.Faces,
+    sources: []const FontSource,
     shaped_runs: []const *const text_mod.ShapedText,
-    options: UnhintedRunOptions,
-) !void {
-    var batch = Batch.init(allocator);
-    defer batch.deinit();
-
+    ppem: hint_vm_mod.TtHintPpem,
+) !PreparePlan {
+    try ppem.validate();
+    var builder = try PlanBuilder.init(allocator, atlas, sources);
+    errdefer builder.deinit();
+    const packed_ppem = try ppem.packed26Dot6();
     for (shaped_runs) |shaped| {
-        try appendUnhintedRun(&batch, atlas, faces, shaped, options);
+        for (shaped.glyphs) |glyph| {
+            const source = builder.sourceFor(glyph.font_id) orelse continue;
+            const destination = record_key.ttAdvance(source.font_id, glyph.glyph_id, packed_ppem);
+            if (!try builder.shouldPlanAdvance(destination)) continue;
+            const request = try builder.addRequest(.{
+                .key = try prepared.ttAdvanceKey(source.cache_key, glyph.glyph_id, ppem),
+                .operation = .{ .tt_advance = .{
+                    .source = source,
+                    .glyph_id = glyph.glyph_id,
+                    .ppem = ppem,
+                } },
+            }, &.{});
+            try builder.recipes.append(allocator, .{ .tt_advance = .{
+                .destination = destination,
+                .request = request,
+            } });
+        }
     }
-    try batch.apply(atlas);
+    return builder.finish();
 }
 
-// ── Caller-parallel unhinted extraction ──────────────────────────────
-//
-// `recordUnhintedRuns` above extracts every glyph inline on one thread.
-// The three-phase API below lets a caller fan the expensive per-glyph
-// extraction across its own worker threads (snail owns no thread pool):
-//
-//   1. `planUnhintedRuns`  — serial, cheap: dedup + COLR resolution,
-//                            produces a flat list of extraction requests.
-//   2. `plan.extractOne`   — parallel: one glyph → GlyphCurves, run across
-//                            threads with a per-thread `ExtractContext`.
-//   3. `plan.apply`        — serial: insert the results into the atlas.
-//
-// The extracted `GlyphCurves` between phases 2 and 3 is also the natural
-// serialization unit for an offline glyph cache.
-//
-// Only regular glyphs and COLR `.layers` fan out (one request per atlas
-// entry). The rarer COLR `.composite` case, whose entry assembly depends on
-// post-extraction emptiness, is extracted serially during planning — text
-// floods carry no COLR, so the hot path is fully parallel.
-
-/// One deferred glyph extraction, produced by `planUnhintedRuns`.
-pub const ExtractRequest = struct {
-    font: *const Font,
-    glyph_id: u16,
-};
-
-/// Per-thread extraction state. Each worker thread owns one: a scratch arena
-/// reused across glyphs and a lazily-built cache of per-font HarfBuzz
-/// `Instance`s (hb_font is not thread-safe, so instances are never shared
-/// across threads). `out_allocator` owns the produced `GlyphCurves` bytes and
-/// MUST be thread-safe — contexts on other threads allocate from it too.
-pub const ExtractContext = struct {
-    out_allocator: Allocator,
+/// Thread-confined outline extraction state. Returned owned records may move
+/// freely between threads after the call completes.
+pub const OutlineContext = struct {
+    allocator: Allocator,
     scratch: std.heap.ArenaAllocator,
     instances: std.AutoHashMapUnmanaged(*const Font, Font.Instance) = .empty,
 
-    pub fn init(out_allocator: Allocator, scratch_parent: Allocator) ExtractContext {
+    pub fn init(allocator: Allocator, scratch_parent: Allocator) OutlineContext {
         return .{
-            .out_allocator = out_allocator,
+            .allocator = allocator,
             .scratch = std.heap.ArenaAllocator.init(scratch_parent),
         };
     }
 
-    pub fn deinit(self: *ExtractContext) void {
-        var it = self.instances.valueIterator();
-        while (it.next()) |inst| inst.deinit();
-        self.instances.deinit(self.out_allocator);
+    pub fn prepare(
+        self: *OutlineContext,
+        request: PrepareRequest,
+    ) !prepared.OwnedRecord {
+        const operation = switch (request.operation) {
+            .outline => |operation| operation,
+            else => return error.WrongContext,
+        };
+        const instance = try self.instanceFor(operation.source.font);
+        defer _ = self.scratch.reset(.retain_capacity);
+        const curves = try operation.source.font.extractCurvesWithTolerance(
+            instance,
+            self.allocator,
+            self.scratch.allocator(),
+            operation.glyph_id,
+            operation.options.cubic_tolerance,
+        );
+        return prepared.OwnedRecord.init(
+            request.key,
+            prepared.OwnedValue.fromGeometry(
+                prepared.Geometry.fromGlyphCurves(curves),
+            ),
+        );
+    }
+
+    pub fn deinit(self: *OutlineContext) void {
+        var iterator = self.instances.valueIterator();
+        while (iterator.next()) |instance| instance.deinit();
+        self.instances.deinit(self.allocator);
         self.scratch.deinit();
         self.* = undefined;
     }
 
-    fn instanceFor(self: *ExtractContext, font: *const Font) !?*Font.Instance {
+    fn instanceFor(self: *OutlineContext, font: *const Font) !?*Font.Instance {
         if (!font.requiresInstance()) return null;
-        const gop = try self.instances.getOrPut(self.out_allocator, font);
+        const gop = try self.instances.getOrPut(self.allocator, font);
         if (!gop.found_existing) gop.value_ptr.* = try font.createInstance();
         return gop.value_ptr;
     }
 };
 
-pub const UnhintedExtractPlan = struct {
+/// Thread-confined, per-font autohint context.
+pub const AutohintContext = struct {
     allocator: Allocator,
-    requests: []ExtractRequest,
-    request_keys: []RecordKey,
-    /// Filled by `extractOne`; entry `i` corresponds to `requests[i]`.
-    results: []?GlyphCurves,
-    /// Serially-extracted COLR composites + their storage, plus the shared
-    /// dedup set and the entry list `apply` inserts through.
-    composites: Batch,
+    source: *const FontSource,
+    options: prepared.AutohintOptions,
+    analyzer: autohint_mod.AutohintAnalyzer,
+    scratch: std.heap.ArenaAllocator,
 
-    pub fn requestCount(self: *const UnhintedExtractPlan) usize {
-        return self.requests.len;
+    pub fn init(
+        allocator: Allocator,
+        scratch_parent: Allocator,
+        source: *const FontSource,
+        options: prepared.AutohintOptions,
+    ) !AutohintContext {
+        try options.validate();
+        return .{
+            .allocator = allocator,
+            .source = source,
+            .options = options,
+            .analyzer = try autohint_mod.AutohintAnalyzer.initFontWithOptions(
+                allocator,
+                source.font,
+                .{
+                    .params = options.params,
+                    .blue_tolerance_em = options.blue_tolerance_em,
+                },
+            ),
+            .scratch = std.heap.ArenaAllocator.init(scratch_parent),
+        };
     }
 
-    /// Extract request `index` into `results[index]` using `ctx`. Distinct
-    /// indices touch distinct slots and distinct per-thread state, so calls
-    /// for different indices run concurrently.
-    pub fn extractOne(self: *UnhintedExtractPlan, index: usize, ctx: *ExtractContext) !void {
-        const req = self.requests[index];
-        const instance = try ctx.instanceFor(req.font);
-        const curves = try req.font.extractCurvesWith(
-            instance,
-            ctx.out_allocator,
-            ctx.scratch.allocator(),
-            req.glyph_id,
-        );
-        _ = ctx.scratch.reset(.retain_capacity);
-        self.results[index] = curves;
+    /// Cache-hit constructor used after the plan's `autohint_model`
+    /// dependency resolves. It skips blue-zone and standard-width derivation.
+    pub fn initWithModel(
+        allocator: Allocator,
+        scratch_parent: Allocator,
+        source: *const FontSource,
+        options: prepared.AutohintOptions,
+        model: prepared.AutohintModelView,
+    ) !AutohintContext {
+        try options.validate();
+        try model.validate();
+        return .{
+            .allocator = allocator,
+            .source = source,
+            .options = options,
+            .analyzer = try autohint_mod.AutohintAnalyzer.initFontWithModel(
+                allocator,
+                source.font,
+                .{
+                    .params = options.params,
+                    .blue_tolerance_em = options.blue_tolerance_em,
+                },
+                .{
+                    .blues = model.blues,
+                    .std_x = model.std_x,
+                    .std_y = model.std_y,
+                },
+            ),
+            .scratch = std.heap.ArenaAllocator.init(scratch_parent),
+        };
     }
 
-    /// Insert every planned glyph (parallel results + serial composites)
-    /// into the atlas in one transaction. Requires all requests extracted.
-    pub fn apply(self: *UnhintedExtractPlan, atlas: *Atlas) !void {
-        for (self.requests, 0..) |_, i| {
-            const curves = self.results[i] orelse return error.MissingExtraction;
-            try self.composites.entries.append(self.composites.allocator, .{
-                .key = self.request_keys[i],
-                .curves = curves,
-            });
+    pub fn prepare(
+        self: *AutohintContext,
+        request: PrepareRequest,
+    ) !prepared.OwnedRecord {
+        return switch (request.operation) {
+            .autohint_model => |operation| blk: {
+                try self.check(operation.source, operation.options);
+                const model = self.analyzer.fontFeatures();
+                break :blk prepared.OwnedRecord.init(
+                    request.key,
+                    try prepared.OwnedValue.cloneAutohintModel(
+                        self.allocator,
+                        .{
+                            .blues = model.blues,
+                            .std_x = model.std_x,
+                            .std_y = model.std_y,
+                        },
+                    ),
+                );
+            },
+            .autohint_glyph => |operation| blk: {
+                try self.check(operation.source, operation.options);
+                defer _ = self.scratch.reset(.retain_capacity);
+                const x = try self.scratch.allocator().alloc(
+                    autohint_mod.FeatureEdge,
+                    autohint_mod.max_features_per_axis,
+                );
+                const y = try self.scratch.allocator().alloc(
+                    autohint_mod.FeatureEdge,
+                    autohint_mod.max_features_per_axis,
+                );
+                const glyph = try self.analyzer.analyzeGlyph(
+                    self.scratch.allocator(),
+                    operation.glyph_id,
+                    x,
+                    y,
+                );
+                const value = try prepared.OwnedValue.cloneAutohintGlyph(
+                    self.allocator,
+                    .{ .x = glyph.x, .y = glyph.y, .left = glyph.left },
+                );
+                break :blk prepared.OwnedRecord.init(request.key, value);
+            },
+            else => error.WrongContext,
+        };
+    }
+
+    pub fn deinit(self: *AutohintContext) void {
+        self.scratch.deinit();
+        self.analyzer.deinit();
+        self.* = undefined;
+    }
+
+    fn check(
+        self: *const AutohintContext,
+        source: *const FontSource,
+        options: prepared.AutohintOptions,
+    ) !void {
+        if (source.font != self.source.font or
+            !std.mem.eql(u8, &source.cache_key, &self.source.cache_key))
+        {
+            return error.WrongFontSource;
         }
-        try atlas.extendWithAdvancesInPlace(
-            self.composites.allocator,
-            self.composites.entries.items,
-            self.composites.advances.items,
-        );
-    }
-
-    pub fn deinit(self: *UnhintedExtractPlan) void {
-        for (self.results) |*r| if (r.*) |*c| c.deinit();
-        self.allocator.free(self.results);
-        self.allocator.free(self.requests);
-        self.allocator.free(self.request_keys);
-        self.composites.deinit();
+        if (!std.meta.eql(options, self.options)) return error.WrongAutohintOptions;
     }
 };
 
-/// Plan (but don't extract) every missing unhinted glyph referenced by
-/// `shaped_runs`. See the module-level notes above for the phase model.
-pub fn planUnhintedRuns(
-    atlas: *const Atlas,
-    allocator: Allocator,
-    faces: *const faces_mod.Faces,
-    shaped_runs: []const *const text_mod.ShapedText,
-    options: UnhintedRunOptions,
-) !UnhintedExtractPlan {
-    var batch = Batch.init(allocator);
-    errdefer batch.deinit();
-    var requests: std.ArrayList(ExtractRequest) = .empty;
-    errdefer requests.deinit(allocator);
-    var keys: std.ArrayList(RecordKey) = .empty;
-    errdefer keys.deinit(allocator);
-
-    for (shaped_runs) |shaped| {
-        for (shaped.glyphs) |glyph| {
-            const face_index: usize = @intCast(glyph.face_index);
-            if (face_index >= faces.faceCount()) return error.UnknownFaceIndex;
-            const font_id = faces.fontIdForFace(glyph.face_index) orelse return error.UnknownFaceIndex;
-            if (font_id != glyph.font_id) return error.MismatchedFontId;
-            try planUnhintedGlyph(
-                &batch,
-                &requests,
-                &keys,
-                atlas,
-                faces.fontForFace(glyph.face_index).?,
-                font_id,
-                glyph.glyph_id,
-                options,
-            );
-        }
-    }
-
-    const results = try allocator.alloc(?GlyphCurves, requests.items.len);
-    @memset(results, null);
-    return .{
-        .allocator = allocator,
-        .requests = try requests.toOwnedSlice(allocator),
-        .request_keys = try keys.toOwnedSlice(allocator),
-        .results = results,
-        .composites = batch,
-    };
-}
-
-/// Mirror of `appendUnhintedGlyph`, but routes regular glyphs and COLR
-/// `.layers` layers to deferred `requests` (parallel extraction) and keeps
-/// the COLR `.composite` assembly serial in `batch`.
-fn planUnhintedGlyph(
-    batch: *Batch,
-    requests: *std.ArrayList(ExtractRequest),
-    keys: *std.ArrayList(RecordKey),
-    atlas: *const Atlas,
+pub const TtHintSize = struct {
+    ppem: hint_vm_mod.TtHintPpem,
+    prepared_ppem: hint_vm_mod.TtHintVm.PreparedPpem,
     font: *const Font,
-    font_id: u32,
-    glyph_id: u16,
-    options: UnhintedRunOptions,
-) !void {
-    if (options.colr == .layers) {
-        var layer_iter = font.colrLayers(glyph_id);
-        if (layer_iter.count() > 0) {
-            while (layer_iter.next()) |source| {
-                const layer_key = record_key.unhintedGlyph(font_id, source.glyph_id);
-                if (!try batch.shouldInsert(atlas, layer_key)) continue;
-                try requests.append(batch.allocator, .{ .font = font, .glyph_id = source.glyph_id });
-                try keys.append(batch.allocator, layer_key);
-            }
-            return;
-        }
+    cache_key: prepared.FontKey,
+
+    pub fn deinit(self: *TtHintSize) void {
+        self.prepared_ppem.deinit();
+        self.* = undefined;
     }
+};
 
-    const key = record_key.unhintedGlyph(font_id, glyph_id);
-    if (!try batch.shouldInsert(atlas, key)) return;
+/// Thread-confined, per-font TrueType hinting context.
+pub const TtHintContext = struct {
+    allocator: Allocator,
+    source: *const FontSource,
+    vm: hint_vm_mod.TtHintVm,
+    scratch: std.heap.ArenaAllocator,
 
-    var iter = font.colrLayers(glyph_id);
-    const layer_count: usize = iter.count();
-    if (options.colr != .composite or layer_count == 0) {
-        try requests.append(batch.allocator, .{ .font = font, .glyph_id = glyph_id });
-        try keys.append(batch.allocator, key);
-        return;
-    }
-
-    // COLR composite: extract serially now (matches appendUnhintedGlyph).
-    const layers = try batch.allocator.alloc(Layer, layer_count);
-    errdefer batch.allocator.free(layers);
-    var count: usize = 0;
-    while (iter.next()) |source| {
-        const curves = try batch.extract(font, source.glyph_id);
-        if (curves.isEmpty()) continue;
-        layers[count] = .{
-            .curves = curves,
-            .paint = .{ .solid = paletteColor(source.color, options.colr_foreground) },
+    pub fn init(
+        allocator: Allocator,
+        scratch_parent: Allocator,
+        source: *const FontSource,
+    ) !TtHintContext {
+        return .{
+            .allocator = allocator,
+            .source = source,
+            .vm = try hint_vm_mod.TtHintVm.init(allocator, source.font),
+            .scratch = std.heap.ArenaAllocator.init(scratch_parent),
         };
-        count += 1;
     }
 
-    if (count == 0) {
-        batch.allocator.free(layers);
-        const curves = try batch.extract(font, glyph_id);
-        try batch.entries.append(batch.allocator, .{ .key = key, .curves = curves });
-        return;
+    pub fn prepareSize(
+        self: *TtHintContext,
+        ppem: hint_vm_mod.TtHintPpem,
+    ) !TtHintSize {
+        return .{
+            .ppem = ppem,
+            .prepared_ppem = try self.vm.prepare(ppem),
+            .font = self.source.font,
+            .cache_key = self.source.cache_key,
+        };
     }
 
-    try batch.entries.append(batch.allocator, .{
-        .key = key,
-        .curves = layers[0].curves,
-        .paint = layers[0].paint,
-        .extra_layers = layers[1..count],
-    });
-    try batch.layer_storage.append(batch.allocator, layers);
-}
-
-/// Record immutable autohint analysis for every matching glyph.
-/// Missing base glyphs are rejected; empty base glyphs get empty records so
-/// callers can place a whole run without patching whitespace afterward.
-pub fn recordAutohintRun(
-    atlas: *Atlas,
-    allocator: Allocator,
-    analyzer: *autohint_mod.AutohintAnalyzer,
-    font_id: u32,
-    shaped: *const text_mod.ShapedText,
-) !void {
-    return recordAutohintRuns(atlas, allocator, analyzer, font_id, &.{shaped});
-}
-
-/// Record immutable autohint analysis for several independently shaped runs
-/// in one atlas transaction.
-pub fn recordAutohintRuns(
-    atlas: *Atlas,
-    allocator: Allocator,
-    analyzer: *autohint_mod.AutohintAnalyzer,
-    font_id: u32,
-    shaped_runs: []const *const text_mod.ShapedText,
-) !void {
-    var batch = Batch.init(allocator);
-    defer batch.deinit();
-
-    for (shaped_runs) |shaped| {
-        try appendAutohintRun(&batch, atlas, analyzer, font_id, shaped);
+    pub fn prepare(
+        self: *TtHintContext,
+        size: *const TtHintSize,
+        request: PrepareRequest,
+    ) !prepared.OwnedRecord {
+        return switch (request.operation) {
+            .tt_glyph => |operation| blk: {
+                try self.check(operation.source, size, operation.ppem);
+                defer _ = self.scratch.reset(.retain_capacity);
+                const hinted = try self.vm.hintGlyphWithAdvance(
+                    self.allocator,
+                    self.scratch.allocator(),
+                    &size.prepared_ppem,
+                    operation.glyph_id,
+                );
+                break :blk prepared.OwnedRecord.init(
+                    request.key,
+                    prepared.OwnedValue.fromTtGlyph(
+                        prepared.Geometry.fromGlyphCurves(hinted.curves),
+                        hinted.advance_x_26_6,
+                    ),
+                );
+            },
+            .tt_advance => |operation| blk: {
+                try self.check(operation.source, size, operation.ppem);
+                break :blk prepared.OwnedRecord.init(
+                    request.key,
+                    prepared.OwnedValue.fromTtAdvance(
+                        try self.vm.hintedAdvance(
+                            &size.prepared_ppem,
+                            operation.glyph_id,
+                        ),
+                    ),
+                );
+            },
+            else => error.WrongContext,
+        };
     }
-    try batch.apply(atlas);
-}
 
-fn appendAutohintRun(
-    batch: *Batch,
-    atlas: *const Atlas,
-    analyzer: *autohint_mod.AutohintAnalyzer,
-    font_id: u32,
-    shaped: *const text_mod.ShapedText,
-) !void {
-    for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != font_id) continue;
-        const key = record_key.autohintGlyph(font_id, glyph.glyph_id);
-        if (!try batch.shouldInsert(atlas, key)) continue;
-        const base_key = record_key.unhintedGlyph(font_id, glyph.glyph_id);
-        const base = atlas.lookupRecord(base_key) orelse return error.MissingBaseGlyph;
-        if (base.curve_count == 0) {
-            try batch.entries.append(batch.allocator, .{
-                .key = key,
-                .curves = GlyphCurves.empty(batch.scratch.allocator()),
-            });
-            continue;
+    pub fn deinit(self: *TtHintContext) void {
+        self.scratch.deinit();
+        self.vm.deinit();
+        self.* = undefined;
+    }
+
+    fn check(
+        self: *const TtHintContext,
+        source: *const FontSource,
+        size: *const TtHintSize,
+        ppem: hint_vm_mod.TtHintPpem,
+    ) !void {
+        if (source.font != self.source.font or
+            !std.mem.eql(u8, &source.cache_key, &self.source.cache_key))
+        {
+            return error.WrongFontSource;
         }
-
-        const x = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
-        const y = try batch.scratch.allocator().alloc(autohint_mod.FeatureEdge, autohint_mod.max_features_per_axis);
-        const analysis = try analyzer.analyzeGlyph(batch.scratch.allocator(), glyph.glyph_id, x, y);
-        try batch.entries.append(batch.allocator, .{
-            .key = key,
-            .curves = GlyphCurves.empty(batch.scratch.allocator()),
-            .autohint = .{ .font = analyzer.fontFeatures(), .glyph = analysis },
-            .autohint_base = base_key,
-        });
-    }
-}
-
-fn ppemOf(prepared: *const hint_vm_mod.TtHintVm.PreparedPpem) hint_vm_mod.TtHintPpem {
-    return .{ .x_26_6 = prepared.size.request.ppem_x_26_6, .y_26_6 = prepared.size.request.ppem_y_26_6 };
-}
-
-/// Record per-PPEM TT-hinted curves *and* horizontal advances for every
-/// glyph in `shaped` matching `font_id`. The ppem comes from `prepared`
-/// (the caller-owned result of `vm.prepare`); the advance is a byproduct
-/// of the same glyph-program execution, so it is recorded for free.
-pub fn recordTtHintRun(
-    atlas: *Atlas,
-    allocator: Allocator,
-    vm: *hint_vm_mod.TtHintVm,
-    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
-    font_id: u32,
-    shaped: *const text_mod.ShapedText,
-) !void {
-    return recordTtHintRuns(atlas, allocator, vm, prepared, font_id, &.{shaped});
-}
-
-/// Record per-PPEM TT-hinted curves and advances for several independently
-/// shaped runs in one atlas transaction.
-pub fn recordTtHintRuns(
-    atlas: *Atlas,
-    allocator: Allocator,
-    vm: *hint_vm_mod.TtHintVm,
-    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
-    font_id: u32,
-    shaped_runs: []const *const text_mod.ShapedText,
-) !void {
-    const ppem = ppemOf(prepared);
-    // Curve record keys use the uniform-ppem convention shared with
-    // `HintMode.tt_hint` and `record_key.ttHintedGlyph`; an anisotropic
-    // `prepared` cannot be keyed.
-    if (ppem.x_26_6 != ppem.y_26_6) return error.AnisotropicPpem;
-    const packed_ppem = try ppem.packed26Dot6();
-
-    var batch = Batch.init(allocator);
-    defer batch.deinit();
-
-    for (shaped_runs) |shaped| {
-        try appendTtHintRun(&batch, atlas, vm, prepared, font_id, ppem.x_26_6, packed_ppem, shaped);
-    }
-    try batch.apply(atlas);
-}
-
-fn appendTtHintRun(
-    batch: *Batch,
-    atlas: *const Atlas,
-    vm: *hint_vm_mod.TtHintVm,
-    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
-    font_id: u32,
-    ppem_26_6: u32,
-    packed_ppem: u32,
-    shaped: *const text_mod.ShapedText,
-) !void {
-    for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != font_id) continue;
-
-        const advance_key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
-        if (try batch.shouldRecordAdvance(atlas, advance_key)) {
-            const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
-            try batch.advances.append(batch.allocator, .{ .key = advance_key, .advance_26_6 = advance });
+        if (size.font != self.source.font or
+            !std.mem.eql(u8, &size.cache_key, &self.source.cache_key))
+        {
+            return error.WrongHintSizeSource;
         }
-
-        const key = record_key.ttHintedGlyph(font_id, glyph.glyph_id, ppem_26_6);
-        if (!try batch.shouldInsert(atlas, key)) continue;
-        var curves = try vm.hintGlyph(batch.allocator, batch.scratch.allocator(), prepared, glyph.glyph_id);
-        errdefer curves.deinit();
-        _ = batch.scratch.reset(.retain_capacity);
-        try batch.curves.append(batch.allocator, curves);
-        try batch.entries.append(batch.allocator, .{
-            .key = key,
-            .curves = batch.curves.items[batch.curves.items.len - 1],
-        });
+        if (size.ppem.x_26_6 != ppem.x_26_6 or
+            size.ppem.y_26_6 != ppem.y_26_6)
+        {
+            return error.WrongPpem;
+        }
     }
-}
+};
 
-/// Record TT-hinted horizontal advances (`ns.tt_advance`) for every glyph
-/// in `shaped` matching `font_id`. Touches no curve pages — this is the
-/// cheap path for measurement-only runs (line breaking, width queries)
-/// whose glyphs may never be drawn.
-pub fn recordTtAdvanceRun(
-    atlas: *Atlas,
-    vm: *hint_vm_mod.TtHintVm,
-    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
-    font_id: u32,
-    shaped: *const text_mod.ShapedText,
-) !void {
-    const packed_ppem = try ppemOf(prepared).packed26Dot6();
-    var advances: std.ArrayList(TtAdvanceEntry) = .empty;
-    defer advances.deinit(atlas.allocator);
-    var seen: std.AutoHashMapUnmanaged(RecordKey, void) = .empty;
-    defer seen.deinit(atlas.allocator);
-    for (shaped.glyphs) |glyph| {
-        if (glyph.font_id != font_id) continue;
-        const key = record_key.ttAdvance(font_id, glyph.glyph_id, packed_ppem);
-        if (atlas.lookupTtAdvance(key) != null) continue;
-        const result = try seen.getOrPut(atlas.allocator, key);
-        if (result.found_existing) continue;
-        const advance = try vm.hintedAdvance(prepared, glyph.glyph_id);
-        try advances.append(atlas.allocator, .{ .key = key, .advance_26_6 = advance });
-    }
-    try atlas.recordTtAdvances(advances.items);
-}
-
-/// Read-side `AdvanceProvider` over recorded `ns.tt_advance` values,
-/// falling back to the pure VM for glyphs not yet recorded. Read-only
-/// over `atlas` — `shape()` never mutates the store; recording happens
-/// in `recordTtHintRun` / `recordTtAdvanceRun`.
-///
-/// The VM fallback requires the shape call's `target_ppem` to match
-/// `prepared`'s ppem — both come from the caller, so a mismatch is a
-/// programmer error (asserted in debug; in release the provider declines
-/// and shaping uses the font's native advance).
-///
-/// When the VM fails on a glyph the provider declines it (native-advance
-/// fallback) and records the failure in `last_error`/`fallback_count`;
-/// check those after shaping to detect degraded runs.
+/// Cache-only advance provider. Misses deliberately fall back to native font
+/// advances; callers use `planTtAdvances` and reshape to fill them.
 pub const TtAdvanceSource = struct {
     atlas: *const Atlas,
-    vm: *hint_vm_mod.TtHintVm,
-    prepared: *const hint_vm_mod.TtHintVm.PreparedPpem,
-    font_id: u32,
-    /// Most recent VM failure that forced a native-advance fallback.
-    last_error: ?hint_vm_mod.TtHintError = null,
-    /// Number of glyph advances that fell back since construction.
-    fallback_count: u32 = 0,
+    sources: []const FontSource,
+    archives: []const prepared.Archive = &.{},
 
-    /// The returned provider borrows `self`; both must outlive any
-    /// `shape` call passed `opts.advance_provider = provider`.
     pub fn advanceProvider(self: *TtAdvanceSource) text_mod.AdvanceProvider {
         return .{
             .context = @ptrCast(self),
@@ -675,169 +1092,154 @@ pub const TtAdvanceSource = struct {
 
     fn covers(context: *anyopaque, font_id: u32) bool {
         const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
-        return font_id == self.font_id;
+        return self.sourceFor(font_id) != null;
     }
 
-    fn getAdvance(context: *anyopaque, font_id: u32, glyph_id: u16, ppem: hint_vm_mod.TtHintPpem) ?i32 {
+    fn sourceFor(self: *const TtAdvanceSource, font_id: u32) ?*const FontSource {
+        for (self.sources) |*source| {
+            if (source.font_id == font_id) return source;
+        }
+        return null;
+    }
+
+    fn getAdvance(
+        context: *anyopaque,
+        font_id: u32,
+        glyph_id: u16,
+        ppem: hint_vm_mod.TtHintPpem,
+    ) ?i32 {
         const self: *TtAdvanceSource = @ptrCast(@alignCast(context));
+        const source = self.sourceFor(font_id) orelse return null;
         const packed_ppem = ppem.packed26Dot6() catch return null;
-        const key = record_key.ttAdvance(font_id, glyph_id, packed_ppem);
-        if (self.atlas.lookupTtAdvance(key)) |advance| return advance;
-        const prepared_ppem = ppemOf(self.prepared);
-        std.debug.assert(ppem.x_26_6 == prepared_ppem.x_26_6 and ppem.y_26_6 == prepared_ppem.y_26_6);
-        if (ppem.x_26_6 != prepared_ppem.x_26_6 or ppem.y_26_6 != prepared_ppem.y_26_6) return null;
-        return self.vm.hintedAdvance(self.prepared, glyph_id) catch |err| {
-            self.last_error = err;
-            self.fallback_count +|= 1;
-            return null;
-        };
+        if (self.atlas.lookupTtAdvance(
+            record_key.ttAdvance(font_id, glyph_id, packed_ppem),
+        )) |advance| return advance;
+
+        const advance_key = prepared.ttAdvanceKey(
+            source.cache_key,
+            glyph_id,
+            ppem,
+        ) catch return null;
+        var i = self.archives.len;
+        while (i > 0) {
+            i -= 1;
+            if (self.archives[i].find(advance_key)) |record| switch (record.value) {
+                .tt_advance => |advance| return advance,
+                else => {},
+            };
+        }
+
+        if (ppem.x_26_6 == ppem.y_26_6) {
+            const glyph_key = prepared.ttGlyphKey(
+                source.cache_key,
+                glyph_id,
+                ppem,
+            ) catch return null;
+            i = self.archives.len;
+            while (i > 0) {
+                i -= 1;
+                if (self.archives[i].find(glyph_key)) |record| switch (record.value) {
+                    .tt_glyph => |glyph| return glyph.advance_x_26_6,
+                    else => {},
+                };
+            }
+        }
+        return null;
     }
 };
 
 const testing = std.testing;
 
-test "unhinted run packs COLR and deduplicates repeated glyphs" {
+test "plan never extracts COLR composites and results may arrive out of order" {
     var regular = try Font.init(@import("assets").noto_sans_regular);
     var emoji = try Font.init(@import("assets").twemoji_mozilla);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{
+    var faces = try @import("../text/faces.zig").Faces.build(testing.allocator, &.{
         .{ .font = &regular, .font_id = 0 },
         .{ .font = &emoji, .font_id = 1, .fallback = true },
     });
     defer faces.deinit();
-    var shaped = try faces_mod.shape(testing.allocator, &faces, "AA\xf0\x9f\x8c\x8d", .{});
+    var shaped = try @import("../text/faces.zig").shape(
+        testing.allocator,
+        &faces,
+        "AA\xf0\x9f\x8c\x8d",
+        .{},
+    );
     defer shaped.deinit();
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_pages = 4,
+        .max_pages = 8,
         .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 13,
+        .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
     var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
-    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
-    const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
-    const info = atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)).?;
-    try testing.expect(info.layer_count > 1);
-
-    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
-}
-
-test "parallel plan/extract/apply matches serial recordUnhintedRuns" {
-    var regular = try Font.init(@import("assets").noto_sans_regular);
-    var emoji = try Font.init(@import("assets").twemoji_mozilla);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular, .font_id = 0 },
-        .{ .font = &emoji, .font_id = 1, .fallback = true },
-    });
-    defer faces.deinit();
-    // Mixed: repeated Latin (dedup) + a COLR emoji (serial-composite path).
-    var shaped = try faces_mod.shape(testing.allocator, &faces, "Hello AA\xf0\x9f\x8c\x8d", .{});
-    defer shaped.deinit();
-
-    const cfg = atlas_mod.PagePool.Options{
-        .max_pages = 8,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 14,
+    const sources = [_]FontSource{
+        .{ .font_id = 0, .font = &regular, .cache_key = .{0} ** 16 },
+        .{ .font_id = 1, .font = &emoji, .cache_key = .{1} ** 16 },
     };
-
-    // Reference: serial path.
-    var serial_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
-    defer serial_pool.deinit();
-    var serial = try Atlas.init(testing.allocator, serial_pool);
-    defer serial.deinit();
-    try recordUnhintedRuns(&serial, testing.allocator, &faces, &.{&shaped}, .{});
-
-    // Under test: plan → extractOne (single-threaded loop here) → apply.
-    var par_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
-    defer par_pool.deinit();
-    var parallel = try Atlas.init(testing.allocator, par_pool);
-    defer parallel.deinit();
-
-    var plan = try planUnhintedRuns(&parallel, testing.allocator, &faces, &.{&shaped}, .{});
+    var plan = try planRuns(
+        &atlas,
+        testing.allocator,
+        &sources,
+        &.{&shaped},
+        .{ .unhinted = .{} },
+    );
     defer plan.deinit();
-    var ctx = ExtractContext.init(testing.allocator, testing.allocator);
-    defer ctx.deinit();
-    for (0..plan.requestCount()) |i| try plan.extractOne(i, &ctx);
-    try plan.apply(&parallel);
+    try testing.expect(plan.requests().len > 1);
 
-    // Every referenced glyph lands in both atlases identically.
+    var owned = try testing.allocator.alloc(?prepared.OwnedRecord, plan.requests().len);
+    defer testing.allocator.free(owned);
+    @memset(owned, null);
+    var views = try testing.allocator.alloc(?prepared.RecordView, plan.requests().len);
+    defer testing.allocator.free(views);
+    @memset(views, null);
+    var context = OutlineContext.init(testing.allocator, testing.allocator);
+    defer context.deinit();
+
+    var i = plan.requests().len;
+    while (i > 0) {
+        i -= 1;
+        owned[i] = try context.prepare(plan.requests()[i]);
+        views[i] = owned[i].?.view();
+    }
+    defer for (owned) |*record| if (record.*) |*value| value.deinit();
+
+    // Applying views from an mmap-shaped archive is identical to applying
+    // fresh owned results.
+    var archive_builder = prepared.ArchiveBuilder.init(testing.allocator);
+    defer archive_builder.deinit();
+    for (views) |record| try archive_builder.add(record.?);
+    var archive_owner = try archive_builder.finishAlloc(testing.allocator);
+    defer archive_owner.deinit();
+    const archive = archive_owner.view();
+    for (plan.requests(), 0..) |request, result_index| {
+        views[result_index] = archive.find(request.key).?;
+    }
+
+    try plan.applyInPlace(testing.allocator, &atlas, views);
     for (shaped.glyphs) |glyph| {
-        const key = record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
-        try testing.expectEqual(serial.contains(key), parallel.contains(key));
-        const s_info = serial.lookupPaintRecord(key);
-        const p_info = parallel.lookupPaintRecord(key);
-        try testing.expectEqual(s_info == null, p_info == null);
-        if (s_info) |si| try testing.expectEqual(si.layer_count, p_info.?.layer_count);
+        try testing.expect(atlas.contains(
+            record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id),
+        ));
     }
 }
 
-test "concurrent extractOne across threads is safe and matches serial" {
-    var regular = try Font.init(@import("assets").noto_sans_regular);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &regular, .font_id = 0 }});
+test "apply rejects swapped cache records before mutating the atlas" {
+    var font = try Font.init(@import("assets").noto_sans_regular);
+    var faces = try @import("../text/faces.zig").Faces.build(
+        testing.allocator,
+        &.{.{ .font = &font, .font_id = 7 }},
+    );
     defer faces.deinit();
-    var shaped = try faces_mod.shape(
+    var shaped = try @import("../text/faces.zig").shape(
         testing.allocator,
         &faces,
-        "The quick brown fox jumps over the lazy dog 0123456789",
+        "ab",
         .{},
     );
     defer shaped.deinit();
-
-    const cfg = atlas_mod.PagePool.Options{
-        .max_pages = 8,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 14,
-    };
-    var serial_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
-    defer serial_pool.deinit();
-    var serial = try Atlas.init(testing.allocator, serial_pool);
-    defer serial.deinit();
-    try recordUnhintedRuns(&serial, testing.allocator, &faces, &.{&shaped}, .{});
-
-    var par_pool = try atlas_mod.PagePool.init(testing.allocator, cfg);
-    defer par_pool.deinit();
-    var parallel = try Atlas.init(testing.allocator, par_pool);
-    defer parallel.deinit();
-
-    var plan = try planUnhintedRuns(&parallel, testing.allocator, &faces, &.{&shaped}, .{});
-    defer plan.deinit();
-
-    // Four threads, each with its own context, striping the requests.
-    const thread_count = 4;
-    const Worker = struct {
-        fn run(p: *UnhintedExtractPlan, base: usize, stride: usize) void {
-            var ctx = ExtractContext.init(std.heap.smp_allocator, std.heap.smp_allocator);
-            defer ctx.deinit();
-            var i = base;
-            while (i < p.requestCount()) : (i += stride) {
-                p.extractOne(i, &ctx) catch unreachable;
-            }
-        }
-    };
-    var threads: [thread_count]std.Thread = undefined;
-    for (0..thread_count) |t| threads[t] = try std.Thread.spawn(.{}, Worker.run, .{ &plan, t, thread_count });
-    for (threads) |th| th.join();
-    try plan.apply(&parallel);
-
-    for (shaped.glyphs) |glyph| {
-        const key = record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id);
-        try testing.expect(parallel.contains(key));
-        try testing.expectEqual(serial.contains(key), parallel.contains(key));
-    }
-}
-
-test "unhinted runs commit several shaped runs as one snapshot" {
-    var font = try Font.init(@import("assets").noto_sans_regular);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 7 }});
-    defer faces.deinit();
-
-    var first = try faces_mod.shape(testing.allocator, &faces, "abc", .{});
-    defer first.deinit();
-    var second = try faces_mod.shape(testing.allocator, &faces, "xyz", .{});
-    defer second.deinit();
-
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
         .max_pages = 4,
         .curve_words_per_page = 1 << 15,
@@ -847,221 +1249,334 @@ test "unhinted runs commit several shaped runs as one snapshot" {
     var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
-    const before = atlas.snapshotIdentity();
-    try recordUnhintedRuns(&atlas, testing.allocator, &faces, &.{ &first, &second }, .{});
-    const after = atlas.snapshotIdentity();
-    try testing.expectEqual(before.revision + 1, after.revision);
-    try testing.expectEqual(before.snapshot_id, after.parent_snapshot_id);
-    for (first.glyphs) |glyph| {
-        try testing.expect(atlas.contains(record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)));
-    }
-    for (second.glyphs) |glyph| {
-        try testing.expect(atlas.contains(record_key.unhintedGlyph(glyph.font_id, glyph.glyph_id)));
-    }
+    const sources = [_]FontSource{.{
+        .font_id = 7,
+        .font = &font,
+        .cache_key = .{7} ** 16,
+    }};
+    var plan = try planRuns(
+        &atlas,
+        testing.allocator,
+        &sources,
+        &.{&shaped},
+        .{ .unhinted = .{} },
+    );
+    defer plan.deinit();
+    try testing.expect(plan.requests().len >= 2);
+
+    var context = OutlineContext.init(testing.allocator, testing.allocator);
+    defer context.deinit();
+    var first = try context.prepare(plan.requests()[0]);
+    defer first.deinit();
+    var second = try context.prepare(plan.requests()[1]);
+    defer second.deinit();
+    var results = [_]?prepared.RecordView{ second.view(), first.view() };
+    try testing.expectError(
+        error.MismatchedResultKey,
+        plan.applyInPlace(testing.allocator, &atlas, &results),
+    );
+    try testing.expectEqual(@as(u32, 0), atlas.recordCount());
 }
 
-test "outline_only COLR handling records base outlines and ignores layers" {
-    var regular = try Font.init(@import("assets").noto_sans_regular);
-    var emoji = try Font.init(@import("assets").twemoji_mozilla);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular, .font_id = 0 },
-        .{ .font = &emoji, .font_id = 1, .fallback = true },
-    });
+test "apply rejects an atlas missing records present during planning" {
+    var font = try Font.init(@import("assets").noto_sans_regular);
+    var faces = try @import("../text/faces.zig").Faces.build(
+        testing.allocator,
+        &.{.{ .font = &font, .font_id = 7 }},
+    );
     defer faces.deinit();
-    var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
+    var shaped = try @import("../text/faces.zig").shape(
+        testing.allocator,
+        &faces,
+        "A",
+        .{},
+    );
     defer shaped.deinit();
-
-    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_pages = 4,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 13,
-    });
-    defer pool.deinit();
-    var atlas = try Atlas.init(testing.allocator, pool);
-    defer atlas.deinit();
-
-    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .outline_only });
-
-    // The COLR glyph is recorded as a plain base outline: present under
-    // its base key, with no composite paint record and no layer records.
-    const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
-    try testing.expect(atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)));
-    try testing.expect(atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)) == null);
-    var iter = emoji.colrLayers(emoji_glyph.glyph_id);
-    while (iter.next()) |layer| {
-        if (layer.glyph_id == emoji_glyph.glyph_id) continue;
-        try testing.expect(!atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, layer.glyph_id)));
-    }
-}
-
-test "layers COLR handling records per-layer glyphs for fanout placement" {
-    var regular = try Font.init(@import("assets").noto_sans_regular);
-    var emoji = try Font.init(@import("assets").twemoji_mozilla);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{
-        .{ .font = &regular, .font_id = 0 },
-        .{ .font = &emoji, .font_id = 1, .fallback = true },
-    });
-    defer faces.deinit();
-    var shaped = try faces_mod.shape(testing.allocator, &faces, "A\xf0\x9f\x8c\x8d", .{});
-    defer shaped.deinit();
-
-    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_pages = 4,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 13,
-    });
-    defer pool.deinit();
-    var atlas = try Atlas.init(testing.allocator, pool);
-    defer atlas.deinit();
-
-    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{ .colr = .layers });
-
-    // Non-COLR glyph: base outline recorded.
-    const a_glyph = shaped.glyphs[0];
-    try testing.expect(atlas.contains(record_key.unhintedGlyph(a_glyph.font_id, a_glyph.glyph_id)));
-
-    // COLR glyph: every layer glyph recorded as a plain record (no
-    // composite under the base key).
-    const emoji_glyph = shaped.glyphs[shaped.glyphs.len - 1];
-    try testing.expect(atlas.lookupPaintRecord(record_key.unhintedGlyph(emoji_glyph.font_id, emoji_glyph.glyph_id)) == null);
-    var iter = emoji.colrLayers(emoji_glyph.glyph_id);
-    try testing.expect(iter.count() > 1);
-    while (iter.next()) |layer| {
-        try testing.expect(atlas.contains(record_key.unhintedGlyph(emoji_glyph.font_id, layer.glyph_id)));
-    }
-}
-
-test "autohint and TT-hint run helpers cover empty and visible glyphs" {
-    const bytes = @import("assets").dejavu_sans_mono;
-    var font = try Font.init(bytes);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
-    defer faces.deinit();
-    var shaped = try faces_mod.shape(testing.allocator, &faces, " A", .{});
-    defer shaped.deinit();
-
-    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_pages = 4,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 13,
-    });
-    defer pool.deinit();
-    var atlas = try Atlas.init(testing.allocator, pool);
-    defer atlas.deinit();
-    try recordUnhintedRun(&atlas, testing.allocator, &faces, &shaped, .{});
-
-    var analyzer = try autohint_mod.AutohintAnalyzer.init(testing.allocator, bytes);
-    defer analyzer.deinit();
-    try recordAutohintRun(&atlas, testing.allocator, &analyzer, 0, &shaped);
-
-    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
-    defer vm.deinit();
-    const ppem_26_6: u32 = 16 * 64;
-    var prepared = try vm.prepare(hint_vm_mod.TtHintPpem.uniform(ppem_26_6));
-    defer prepared.deinit();
-    try recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped);
-
-    const packed_ppem = try hint_vm_mod.TtHintPpem.uniform(ppem_26_6).packed26Dot6();
-    for (shaped.glyphs) |glyph| {
-        try testing.expect(atlas.contains(record_key.autohintGlyph(0, glyph.glyph_id)));
-        try testing.expect(atlas.contains(record_key.ttHintedGlyph(0, glyph.glyph_id, ppem_26_6)));
-        try testing.expect(atlas.lookupTtAdvance(record_key.ttAdvance(0, glyph.glyph_id, packed_ppem)) != null);
-    }
-
-    // Recording is idempotent and survives snapshot extension.
-    const advance_count = atlas.ttAdvanceCount();
-    try recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped);
-    try testing.expectEqual(advance_count, atlas.ttAdvanceCount());
-}
-
-test "TtAdvanceSource reads recorded advances and falls back to the VM" {
-    const bytes = @import("assets").dejavu_sans_mono;
-    var font = try Font.init(bytes);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
-    defer faces.deinit();
-    var shaped = try faces_mod.shape(testing.allocator, &faces, "Ab", .{});
-    defer shaped.deinit();
-
-    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
-        .max_pages = 4,
-        .curve_words_per_page = 1 << 16,
-        .band_words_per_page = 1 << 13,
-    });
-    defer pool.deinit();
-    var atlas = try Atlas.init(testing.allocator, pool);
-    defer atlas.deinit();
-
-    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
-    defer vm.deinit();
-    const ppem = hint_vm_mod.TtHintPpem.uniform(13 * 64);
-    var prepared = try vm.prepare(ppem);
-    defer prepared.deinit();
-
-    var source = TtAdvanceSource{ .atlas = &atlas, .vm = &vm, .prepared = &prepared, .font_id = 0 };
-    const provider = source.advanceProvider();
-    try testing.expect(provider.covers(provider.context, 0));
-    try testing.expect(!provider.covers(provider.context, 1));
-
-    // Store miss: falls back to the pure VM.
-    const gid = shaped.glyphs[0].glyph_id;
-    const from_vm = provider.get_advance(provider.context, 0, gid, ppem).?;
-    try testing.expect(from_vm > 0);
-
-    // Advance-only recording stores the same value without touching pages.
-    try recordTtAdvanceRun(&atlas, &vm, &prepared, 0, &shaped);
-    try testing.expectEqual(@as(usize, 0), atlas.pageCount());
-    const from_store = provider.get_advance(provider.context, 0, gid, ppem).?;
-    try testing.expectEqual(from_vm, from_store);
-    try testing.expectEqual(@as(u32, 0), source.fallback_count);
-}
-
-test "TT run failure is atomic and leaves the VM reusable" {
-    const bytes = @import("assets").dejavu_sans_mono;
-    var font = try Font.init(bytes);
-    var faces = try faces_mod.Faces.build(testing.allocator, &.{.{ .font = &font, .font_id = 0 }});
-    defer faces.deinit();
-    var valid = try faces_mod.shape(testing.allocator, &faces, "A", .{});
-    defer valid.deinit();
-
-    var glyphs = [_]text_mod.ShapedText.Glyph{
-        valid.glyphs[0],
-        .{
-            .face_index = valid.glyphs[0].face_index,
-            .glyph_id = std.math.maxInt(u16),
-            .x_offset = 0,
-            .y_offset = 0,
-            .x_advance = 0,
-            .y_advance = 0,
-            .source_start = 1,
-            .source_end = 2,
-            .font_id = 0,
-        },
-    };
-    const shaped = text_mod.ShapedText{ .allocator = testing.allocator, .glyphs = &glyphs };
 
     var pool = try atlas_mod.PagePool.init(testing.allocator, .{
         .max_pages = 2,
-        .curve_words_per_page = 1 << 16,
+        .curve_words_per_page = 1 << 15,
         .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    const glyph_id = shaped.glyphs[0].glyph_id;
+    var curves = try font.extractCurves(
+        testing.allocator,
+        testing.allocator,
+        glyph_id,
+    );
+    defer curves.deinit();
+    var planning_atlas = try Atlas.from(testing.allocator, pool, .{
+        .entries = &.{.{ .geometry = .{
+            .key = record_key.unhintedGlyph(7, glyph_id),
+            .curves = curves.view(),
+        } }},
+    });
+    defer planning_atlas.deinit();
+
+    const sources = [_]FontSource{.{
+        .font_id = 7,
+        .font = &font,
+        .cache_key = .{7} ** 16,
+    }};
+    var plan = try planRuns(
+        &planning_atlas,
+        testing.allocator,
+        &sources,
+        &.{&shaped},
+        .{ .unhinted = .{} },
+    );
+    defer plan.deinit();
+    try testing.expectEqual(@as(usize, 0), plan.requests().len);
+
+    var replacement = try Atlas.init(testing.allocator, pool);
+    defer replacement.deinit();
+    try testing.expectError(
+        error.IncompatibleAtlas,
+        plan.applyInPlace(testing.allocator, &replacement, &.{}),
+    );
+}
+
+test "source slices select fonts and are copied into asynchronous plans" {
+    var regular = try Font.init(@import("assets").noto_sans_regular);
+    var emoji = try Font.init(@import("assets").twemoji_mozilla);
+    var faces = try @import("../text/faces.zig").Faces.build(testing.allocator, &.{
+        .{ .font = &regular, .font_id = 0 },
+        .{ .font = &emoji, .font_id = 1, .fallback = true },
+    });
+    defer faces.deinit();
+    var shaped = try @import("../text/faces.zig").shape(
+        testing.allocator,
+        &faces,
+        "A\xf0\x9f\x8c\x8d",
+        .{},
+    );
+    defer shaped.deinit();
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_pages = 2,
+        .curve_words_per_page = 1 << 14,
+        .band_words_per_page = 1 << 12,
     });
     defer pool.deinit();
     var atlas = try Atlas.init(testing.allocator, pool);
     defer atlas.deinit();
 
-    var vm = try hint_vm_mod.TtHintVm.init(testing.allocator, &font);
-    defer vm.deinit();
-    var prepared = try vm.prepare(hint_vm_mod.TtHintPpem.uniform(13 * 64));
-    defer prepared.deinit();
+    const selected = [_]FontSource{.{
+        .font_id = 0,
+        .font = &regular,
+        .cache_key = [_]u8{0xaa} ** 16,
+    }};
+    var plan = try planRuns(
+        &atlas,
+        testing.allocator,
+        &selected,
+        &.{&shaped},
+        .{ .unhinted = .{} },
+    );
+    defer plan.deinit();
+    try testing.expectEqual(@as(usize, 1), plan.requests().len);
+    const request_source = plan.requests()[0].operation.outline.source;
+    try testing.expect(request_source != &selected[0]);
+    try testing.expectEqual(@as(u32, 0), request_source.font_id);
+    try testing.expect(request_source.font == &regular);
+}
 
-    if (recordTtHintRun(&atlas, testing.allocator, &vm, &prepared, 0, &shaped)) |_| {
-        return error.TestExpectedError;
-    } else |_| {}
-    try testing.expectEqual(@as(u32, 0), atlas.recordCount());
-    try testing.expectEqual(@as(u32, 0), atlas.ttAdvanceCount());
-    try testing.expectEqual(@as(usize, 0), atlas.pageCount());
+test "TT advance source reads newest archive without VM fallback" {
+    var font = try Font.init(@import("assets").dejavu_sans_mono);
+    const source = FontSource{
+        .font_id = 3,
+        .font = &font,
+        .cache_key = [_]u8{0x33} ** 16,
+    };
+    const ppem = hint_vm_mod.TtHintPpem{
+        .x_26_6 = 13 * 64,
+        .y_26_6 = 14 * 64,
+    };
+    const glyph_id = try font.glyphIndex('A');
+    var record = prepared.OwnedRecord.init(
+        try prepared.ttAdvanceKey(source.cache_key, glyph_id, ppem),
+        prepared.OwnedValue.fromTtAdvance(777),
+    );
+    defer record.deinit();
+    var builder = prepared.ArchiveBuilder.init(testing.allocator);
+    defer builder.deinit();
+    try builder.add(record.view());
+    var archive_owner = try builder.finishAlloc(testing.allocator);
+    defer archive_owner.deinit();
+    const archives = [_]prepared.Archive{archive_owner.view()};
 
-    // The failed topology cache insertion was removed: a valid glyph still
-    // executes, and the VM's deferred destruction must remain safe.
-    try testing.expect((try vm.hintedAdvance(&prepared, valid.glyphs[0].glyph_id)) > 0);
-    var curves = try vm.hintGlyph(testing.allocator, testing.allocator, &prepared, valid.glyphs[0].glyph_id);
-    curves.deinit();
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_pages = 1,
+        .curve_words_per_page = 128,
+        .band_words_per_page = 128,
+    });
+    defer pool.deinit();
+    var atlas = try Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+    var source_list = [_]FontSource{source};
+    var advance_source = TtAdvanceSource{
+        .atlas = &atlas,
+        .sources = &source_list,
+        .archives = &archives,
+    };
+    const provider = advance_source.advanceProvider();
+    try testing.expectEqual(
+        @as(?i32, 777),
+        provider.get_advance(provider.context, 3, glyph_id, ppem),
+    );
+}
+
+test "TT hint size cannot cross font contexts" {
+    var font_a = try Font.init(@import("assets").dejavu_sans_mono);
+    var font_b = try Font.init(@import("assets").dejavu_sans_mono);
+    const source_a = FontSource{
+        .font_id = 1,
+        .font = &font_a,
+        .cache_key = [_]u8{0x11} ** 16,
+    };
+    const source_b = FontSource{
+        .font_id = 2,
+        .font = &font_b,
+        .cache_key = [_]u8{0x22} ** 16,
+    };
+    const ppem = hint_vm_mod.TtHintPpem{
+        .x_26_6 = 13 * 64,
+        .y_26_6 = 13 * 64,
+    };
+    const glyph_id = try font_b.glyphIndex('A');
+
+    var context_a = try TtHintContext.init(
+        testing.allocator,
+        testing.allocator,
+        &source_a,
+    );
+    defer context_a.deinit();
+    var context_b = try TtHintContext.init(
+        testing.allocator,
+        testing.allocator,
+        &source_b,
+    );
+    defer context_b.deinit();
+    var size_a = try context_a.prepareSize(ppem);
+    defer size_a.deinit();
+
+    try testing.expectError(error.WrongHintSizeSource, context_b.prepare(
+        &size_a,
+        .{
+            .key = try prepared.ttAdvanceKey(
+                source_b.cache_key,
+                glyph_id,
+                ppem,
+            ),
+            .operation = .{ .tt_advance = .{
+                .source = &source_b,
+                .glyph_id = glyph_id,
+                .ppem = ppem,
+            } },
+        },
+    ));
+}
+
+test "autohint glyph requests depend on a reusable font model" {
+    var font = try Font.init(@import("assets").dejavu_sans_mono);
+    var faces = try @import("../text/faces.zig").Faces.build(
+        testing.allocator,
+        &.{.{ .font = &font, .font_id = 4 }},
+    );
+    defer faces.deinit();
+    var shaped = try @import("../text/faces.zig").shape(
+        testing.allocator,
+        &faces,
+        " A",
+        .{},
+    );
+    defer shaped.deinit();
+    var pool = try atlas_mod.PagePool.init(testing.allocator, .{
+        .max_pages = 4,
+        .curve_words_per_page = 1 << 15,
+        .band_words_per_page = 1 << 13,
+    });
+    defer pool.deinit();
+    var atlas = try Atlas.init(testing.allocator, pool);
+    defer atlas.deinit();
+    const sources = [_]FontSource{.{
+        .font_id = 4,
+        .font = &font,
+        .cache_key = [_]u8{4} ** 16,
+    }};
+    const options = prepared.AutohintOptions{};
+    var plan = try planRuns(
+        &atlas,
+        testing.allocator,
+        &sources,
+        &.{&shaped},
+        .{ .autohint = .{ .autohint = options } },
+    );
+    defer plan.deinit();
+    var owned = try testing.allocator.alloc(
+        ?prepared.OwnedRecord,
+        plan.requests().len,
+    );
+    defer testing.allocator.free(owned);
+    @memset(owned, null);
+    var views = try testing.allocator.alloc(
+        ?prepared.RecordView,
+        plan.requests().len,
+    );
+    defer testing.allocator.free(views);
+    @memset(views, null);
+    defer for (owned) |*record| if (record.*) |*value| value.deinit();
+
+    var outline = OutlineContext.init(testing.allocator, testing.allocator);
+    defer outline.deinit();
+    var model_context = try AutohintContext.init(
+        testing.allocator,
+        testing.allocator,
+        &sources[0],
+        options,
+    );
+    defer model_context.deinit();
+
+    var model_index: ?usize = null;
+    for (plan.requests(), 0..) |request, request_index| switch (request.operation) {
+        .outline => {
+            owned[request_index] = try outline.prepare(request);
+            views[request_index] = owned[request_index].?.view();
+        },
+        .autohint_model => {
+            model_index = request_index;
+            owned[request_index] = try model_context.prepare(request);
+            views[request_index] = owned[request_index].?.view();
+        },
+        else => {},
+    };
+    const model_request = model_index orelse return error.MissingModelRequest;
+    const model = views[model_request].?.value.autohint_model;
+    var glyph_context = try AutohintContext.initWithModel(
+        testing.allocator,
+        testing.allocator,
+        &sources[0],
+        options,
+        model,
+    );
+    defer glyph_context.deinit();
+    for (plan.requests(), 0..) |request, request_index| switch (request.operation) {
+        .autohint_glyph => {
+            try testing.expectEqualSlices(
+                u32,
+                &.{@as(u32, @intCast(model_request))},
+                plan.dependencies(request_index),
+            );
+            owned[request_index] = try glyph_context.prepare(request);
+            views[request_index] = owned[request_index].?.view();
+        },
+        else => {},
+    };
+
+    try plan.applyInPlace(testing.allocator, &atlas, views);
+    for (shaped.glyphs) |glyph| {
+        try testing.expect(atlas.contains(
+            record_key.autohintGlyph(4, glyph.glyph_id),
+        ));
+    }
 }

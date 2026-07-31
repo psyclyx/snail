@@ -19,9 +19,9 @@
 //!   is exceeded — the caller handles by releasing retired bindings or
 //!   calling `resize`.
 //! - `release(binding)` returns the slot's storage to the free list.
-//! - `uploadDelta(scratch, binding, atlas)` updates a live slot. Append-only direct
-//!   children reuse unchanged prepared data; branches and unrelated snapshots
-//!   conservatively replace their side data within the slot's reserved capacity.
+//! - `uploadDelta(scratch, binding, atlas)` updates a live slot. Exact snapshots
+//!   and append-only direct children reuse unchanged prepared data; other
+//!   snapshots require a fresh `upload`.
 //! - `resize(options)` reshapes the storage. Errors if there are active
 //!   bindings.
 //!
@@ -137,8 +137,7 @@ pub const DeviceAtlas = struct {
     active_bindings: u32 = 0,
 
     pub const BindingExtras = struct {
-        /// Rows populated by the current snapshot (the planner slot may reserve
-        /// more rows after a conservative replacement with a smaller atlas).
+        /// Rows populated by the current snapshot.
         info_height: u32 = 0,
         // Prepared records (offsets ABSOLUTE within layer_info_buf).
         path_records: []path_paint_mod.PreparedPathRecord = &.{},
@@ -297,7 +296,7 @@ pub const DeviceAtlas = struct {
         if (next_active > self.options.max_bindings) return error.NoFreeBinding;
 
         var planned: usize = 0;
-        errdefer self.planner.invalidateUploads();
+        errdefer self.planner.invalidateUploads() catch {};
         errdefer for (out_bindings[0..planned]) |b| {
             self.releaseDeviceState(b);
             _ = self.planner.release(b);
@@ -305,18 +304,19 @@ pub const DeviceAtlas = struct {
 
         for (atlases, 0..) |atlas, i| {
             try validateAtlasImages(atlas);
-            const plan = try self.planner.plan(atlas);
-            out_bindings[i] = plan.binding;
+            var pending = try self.planner.plan(atlas);
+            errdefer self.planner.abort(&pending) catch {};
+            try self.applyPlan(scratch, atlas, &pending);
+            out_bindings[i] = try self.planner.commit(&pending);
             planned = i + 1;
-            try self.applyPlan(scratch, atlas, plan);
         }
         self.active_bindings = next_active;
     }
 
     /// Incrementally update `prev_binding`'s live slot with `atlas`'s current
     /// state. Exact snapshots and direct append-only children reuse unchanged
-    /// prepared pages and side data; branches, skipped descendants, and
-    /// unrelated snapshots conservatively replace side data. Any resulting
+    /// prepared pages and side data. Other snapshots return
+    /// `error.IncompatibleSnapshot` and require a fresh binding. Any resulting
     /// side data must fit the row/image capacity reserved by the original
     /// binding. On error, the previously prepared device state remains usable.
     pub fn uploadDelta(
@@ -328,10 +328,10 @@ pub const DeviceAtlas = struct {
         try validateAtlasImages(atlas);
         if (prev_binding.pool != self.pool) return error.UnknownPool;
         if (!self.isBindingLive(prev_binding)) return error.UnknownBinding;
-        const plan = try self.planner.planDelta(prev_binding, atlas);
-        errdefer self.planner.invalidateUploads();
-        try self.applyPlan(scratch, atlas, plan);
-        return plan.binding;
+        var pending = try self.planner.planDelta(prev_binding, atlas);
+        errdefer self.planner.abort(&pending) catch {};
+        try self.applyPlan(scratch, atlas, &pending);
+        return self.planner.commit(&pending);
     }
 
     /// Release a binding's storage. Idempotent: releasing the same
@@ -425,8 +425,8 @@ pub const DeviceAtlas = struct {
     /// copy layer-info regions, resolve image pointers, re-patch image
     /// records to this device's uv convention, and rebuild the prepared
     /// path records.
-    fn applyPlan(self: *DeviceAtlas, scratch: std.mem.Allocator, atlas: *const Atlas, plan: upload_plan.PlannedUpload) UploadError!void {
-        const slot_index = self.findSlot(plan.binding) orelse return error.UnknownBinding;
+    fn applyPlan(self: *DeviceAtlas, scratch: std.mem.Allocator, atlas: *const Atlas, plan: *const upload_plan.PendingUpload) UploadError!void {
+        const slot_index = self.findSlot(plan.binding()) orelse return error.UnknownBinding;
         const slot = &self.planner.bindings[slot_index];
         const extras = &self.extras[slot_index];
 
@@ -468,7 +468,7 @@ pub const DeviceAtlas = struct {
         defer scratch.free(pending_by_page);
         @memset(pending_by_page, std.math.maxInt(usize));
 
-        for (plan.regions) |region| switch (region.target) {
+        for (plan.regions()) |region| switch (region.target) {
             .curve, .band => {
                 const page_index: usize = region.page;
                 if (page_index >= self.prepared.len) return error.PageNotInPool;
@@ -518,7 +518,7 @@ pub const DeviceAtlas = struct {
             .layer_info, .image => {},
         };
 
-        for (plan.regions) |region| switch (region.target) {
+        for (plan.regions()) |region| switch (region.target) {
             .curve, .band => {
                 if (region.page >= pending_by_page.len) return error.PageNotInPool;
                 const pending_index = pending_by_page[region.page];
@@ -576,7 +576,7 @@ pub const DeviceAtlas = struct {
             @memcpy(staged_info, self.layer_info_buf[current_start..][0..slot_floats]);
         }
         defer if (slot_floats > 0) scratch.free(staged_info);
-        for (plan.regions) |region| switch (region.target) {
+        for (plan.regions()) |region| switch (region.target) {
             .curve, .band => {},
             .layer_info => {
                 const row_end = std.math.add(u32, region.row_base, region.height) catch return error.InvalidUploadRegion;
@@ -772,18 +772,18 @@ test "release returns range to free list and allows reuse" {
 
     // Two atlases with one painted entry each — exhausts layer_info rows.
     const key1 = record_key_mod.unhintedGlyph(0, gid);
-    var atlas1 = try Atlas.from(testing.allocator, pool, &.{.{
+    var atlas1 = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = key1,
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    } }} });
     defer atlas1.deinit();
     const key2 = record_key_mod.unhintedGlyph(1, gid);
-    var atlas2 = try Atlas.from(testing.allocator, pool, &.{.{
+    var atlas2 = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = key2,
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    } }} });
     defer atlas2.deinit();
 
     var b1: [1]Binding = undefined;
@@ -816,11 +816,11 @@ test "release returns range to free list and allows reuse" {
 
     // No more rows — third upload errors.
     const key3 = record_key_mod.unhintedGlyph(2, gid);
-    var atlas3 = try Atlas.from(testing.allocator, pool, &.{.{
+    var atlas3 = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = key3,
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    } }} });
     defer atlas3.deinit();
     var b3: [1]Binding = undefined;
     try testing.expectError(error.NoFreeLayerInfoRows, cache.upload(testing.allocator, &.{&atlas3}, &b3));
@@ -859,9 +859,9 @@ test "uploadDelta errors for unknown pool" {
     defer pool_b.deinit();
 
     const key = record_key_mod.unhintedGlyph(0, gid);
-    var atlas_a = try Atlas.from(testing.allocator, pool_a, &.{.{ .key = key, .curves = curves }});
+    var atlas_a = try Atlas.from(testing.allocator, pool_a, .{ .entries = &.{.{ .geometry = .{ .key = key, .curves = curves.view() } }} });
     defer atlas_a.deinit();
-    var atlas_b = try Atlas.from(testing.allocator, pool_b, &.{.{ .key = key, .curves = curves2 }});
+    var atlas_b = try Atlas.from(testing.allocator, pool_b, .{ .entries = &.{.{ .geometry = .{ .key = key, .curves = curves2.view() } }} });
     defer atlas_b.deinit();
 
     var cache = try DeviceAtlas.init(testing.allocator, pool_a, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
@@ -890,7 +890,7 @@ test "uploadDelta errors for released binding" {
     defer pool.deinit();
 
     const key = record_key_mod.unhintedGlyph(0, gid);
-    var atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = key, .curves = curves }});
+    var atlas = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{ .key = key, .curves = curves.view() } }} });
     defer atlas.deinit();
 
     var cache = try DeviceAtlas.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
@@ -911,13 +911,7 @@ test "uploadDelta errors for released binding" {
     try testing.expectError(error.UnknownBinding, cache.uploadDelta(testing.allocator, binding[0], &atlas));
 }
 
-test "uploadDelta accepts a different atlas on the same pool" {
-    // Per the public uploadDelta contract, a different atlas on the same pool
-    // is permitted — the cache's
-    // per-layer page tracking notices the change and re-uploads
-    // affected pages. This is correct, just less efficient than a
-    // true extension would be. Lock that in so future "tighten the
-    // contract" rewrites don't accidentally make it an error.
+test "uploadDelta rejects a different atlas on the same pool" {
     const record_key_mod = @import("snail").record_key;
     const font_mod = @import("snail").font;
 
@@ -938,10 +932,10 @@ test "uploadDelta accepts a different atlas on the same pool" {
     defer pool.deinit();
 
     const key_a = record_key_mod.unhintedGlyph(0, gid_a);
-    var atlas_a = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_a, .curves = curves_a }});
+    var atlas_a = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{ .key = key_a, .curves = curves_a.view() } }} });
     defer atlas_a.deinit();
     const key_b = record_key_mod.unhintedGlyph(0, gid_b);
-    var atlas_b = try Atlas.from(testing.allocator, pool, &.{.{ .key = key_b, .curves = curves_b }});
+    var atlas_b = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{ .key = key_b, .curves = curves_b.view() } }} });
     defer atlas_b.deinit();
 
     var cache = try DeviceAtlas.init(testing.allocator, pool, .{ .max_bindings = 1, .layer_info_height = 4, .max_images = 0 });
@@ -949,9 +943,10 @@ test "uploadDelta accepts a different atlas on the same pool" {
     var binding: [1]Binding = undefined;
     try cache.upload(testing.allocator, &.{&atlas_a}, &binding);
 
-    const new_binding = try cache.uploadDelta(testing.allocator, binding[0], &atlas_b);
-    try testing.expectEqual(binding[0].generation, new_binding.generation);
-    try testing.expectEqual(binding[0].info_row_base, new_binding.info_row_base);
+    try testing.expectError(
+        error.IncompatibleSnapshot,
+        cache.uploadDelta(testing.allocator, binding[0], &atlas_b),
+    );
 }
 
 test "sibling snapshots prepare every self-described block on their shared page" {
@@ -973,13 +968,13 @@ test "sibling snapshots prepare every self-described block on their shared page"
     const root_key = record_key_mod.unhintedGlyph(0, 1);
     const a_key = record_key_mod.unhintedGlyph(0, 2);
     const b_key = record_key_mod.unhintedGlyph(0, 3);
-    var root_atlas = try Atlas.from(testing.allocator, pool, &.{.{ .key = root_key, .curves = curves }});
+    var root_atlas = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{ .key = root_key, .curves = curves.view() } }} });
     defer root_atlas.deinit();
-    var child_a = try root_atlas.extend(testing.allocator, &.{.{ .key = a_key, .curves = curves }});
+    var child_a = try root_atlas.extend(testing.allocator, .{ .entries = &.{.{ .geometry = .{ .key = a_key, .curves = curves.view() } }} });
     defer child_a.deinit();
     // Branch B publishes after A on the same physical page. Planning A below
     // therefore uploads bytes through B's tail even though A cannot look up B.
-    var child_b = try root_atlas.extend(testing.allocator, &.{.{ .key = b_key, .curves = curves }});
+    var child_b = try root_atlas.extend(testing.allocator, .{ .entries = &.{.{ .geometry = .{ .key = b_key, .curves = curves.view() } }} });
     defer child_b.deinit();
 
     var cache = try DeviceAtlas.init(testing.allocator, pool, .{
@@ -1040,11 +1035,11 @@ test "upload rejects malformed layer-info transactionally" {
         .band_words_per_page = 1 << 14,
     });
     defer pool.deinit();
-    var atlas = try Atlas.from(testing.allocator, pool, &.{.{
+    var atlas = try Atlas.from(testing.allocator, pool, .{ .entries = &.{.{ .geometry = .{
         .key = record_key_mod.unhintedGlyph(0, gid),
-        .curves = curves,
+        .curves = curves.view(),
         .paint = .{ .solid = .{ 1, 1, 1, 1 } },
-    }});
+    } }} });
     defer atlas.deinit();
     atlas.layer_info_data.?[0] = std.math.nan(f32);
 
