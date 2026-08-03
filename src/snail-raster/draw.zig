@@ -541,6 +541,139 @@ test "draw applies per-shape local color to image-painted path" {
     try testing.expect(@as(u16, quarter_red) + 32 < @as(u16, full_red));
 }
 
+test "color-bitmap glyph renders as a placed image with upright orientation" {
+    const allocator = testing.allocator;
+
+    // A bitmap glyph is a placed image: extract the strike from the font,
+    // decode it (a host service — stubbed here with a four-color 2x2 probe),
+    // record it as an image-painted em-bbox rect keyed by ppem, and draw it
+    // exactly like an outline glyph. The four quadrants let us verify both
+    // sampling and orientation land the right corner in the right place.
+    var font = try snail.Font.init(@import("assets").chromacheck_cbdt);
+    const glyph_id = try font.glyphIndex(0xE903);
+    const ppem: u16 = 32;
+    var strike = (try font.colorBitmap(allocator, glyph_id, ppem)).?;
+    defer strike.deinit();
+
+    // Host decoder: turns the encoded strike into straight-alpha sRGBA texels.
+    // TL red, TR green, BL blue, BR white (row-major, top row first).
+    const Decoder = struct {
+        fn decode(
+            _: *anyopaque,
+            _: snail.font.BitmapFormat,
+            _: []const u8,
+            gpa: std.mem.Allocator,
+        ) snail.font.color_bitmap.DecodeError!snail.Image {
+            const texels = [_]u8{
+                255, 0,   0,   255, 0,   255, 0,   255,
+                0,   0,   255, 255, 255, 255, 255, 255,
+            };
+            return snail.Image.init(gpa, 2, 2, &texels) catch return error.DecodeFailed;
+        }
+    };
+    var stub_context: u8 = 0;
+    const decoder = snail.font.ImageDecoder{ .context = &stub_context, .decode = Decoder.decode };
+    var image = try decoder.decodeImage(strike.format, strike.data, allocator);
+    defer image.deinit();
+
+    var pool = try snail.PagePool.init(allocator, .{
+        .max_pages = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    // Geometry: a rect covering the strike's em-space placement box.
+    const bb = strike.bbox;
+    const w = bb.max.x - bb.min.x;
+    const h = bb.max.y - bb.min.y;
+    var path = snail.Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = bb.min.x, .y = bb.min.y, .w = w, .h = h });
+    var prepared_path = try path.prepare(allocator);
+    defer prepared_path.deinit();
+    var rect_curves = try prepared_path.fillCurves(allocator, allocator);
+    defer rect_curves.deinit();
+
+    // Image UV maps the em-space rect (y-up) onto the image (rows top-down):
+    // u = (x - min.x)/w, v = (max.y - y)/h — the flip keeps the strike upright
+    // under the same y-flipping placement transform an outline glyph uses.
+    const uv_transform = snail.Transform2D{
+        .xx = 1.0 / w,
+        .xy = 0,
+        .tx = -bb.min.x / w,
+        .yx = 0,
+        .yy = -1.0 / h,
+        .ty = bb.max.y / h,
+    };
+    const key = snail.record_key.colorBitmapGlyph(0, glyph_id, ppem);
+    var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = rect_curves.view(),
+            .paint = .{ .image = .{
+                .image = &image,
+                .uv_transform = uv_transform,
+                .filter = .nearest,
+            } },
+        },
+    }} });
+    defer atlas.deinit();
+
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 1 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+
+    const W: u32 = 40;
+    const H: u32 = 40;
+    const STRIDE: u32 = W * 4;
+    const px = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px);
+    @memset(px, 0);
+
+    // Place em(0..1) into the pixel box [8,8]..[8+S,8+S] with the y-flip an
+    // outline run-placement transform carries: em-top -> screen-top.
+    const x0: f32 = 8;
+    const y0: f32 = 8;
+    const S: f32 = 24;
+    const shapes = [_]snail.Shape{.{
+        .key = key,
+        .local_transform = .{ .xx = S, .xy = 0, .tx = x0, .yx = 0, .yy = -S, .ty = y0 + S },
+        .local_color = .{ 1, 1, 1, 1 },
+    }};
+
+    const instances = try allocator.alloc(vertex.Instance, shapes.len);
+    defer allocator.free(instances);
+    var batches: [1]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try @import("snail").emit.emit(instances, batches[0..], &ilen, &blen, bindings[0], &atlas, &shapes, .identity, .{ 1, 1, 1, 1 });
+
+    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE, .rgba8_unorm);
+    const state = makeIdentityState(W, H);
+    try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
+
+    // Dominant channel at each quadrant center (box spans pixels 8..32).
+    const dominant = struct {
+        fn at(pixels: []const u8, stride: u32, cx: u32, cy: u32) u2 {
+            const off = cy * stride + cx * 4;
+            const r = pixels[off + 0];
+            const g = pixels[off + 1];
+            const b = pixels[off + 2];
+            if (r >= g and r >= b) return 0;
+            if (g >= r and g >= b) return 1;
+            return 2;
+        }
+    };
+    try testing.expectEqual(@as(u2, 0), dominant.at(px, STRIDE, 14, 14)); // TL red
+    try testing.expectEqual(@as(u2, 1), dominant.at(px, STRIDE, 26, 14)); // TR green
+    try testing.expectEqual(@as(u2, 2), dominant.at(px, STRIDE, 14, 26)); // BL blue
+    // BR white: all channels high.
+    const br = 26 * STRIDE + 26 * 4;
+    try testing.expect(px[br + 0] > 200 and px[br + 1] > 200 and px[br + 2] > 200);
+}
+
 test "draw threaded matches single-threaded pixel-for-pixel" {
     // Worker threads are Linux-only (see thread_pool.zig); elsewhere the
     // explicit 3-thread request below fails with UnsupportedPlatform.

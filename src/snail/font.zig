@@ -18,10 +18,12 @@ pub const Variation = font_types.Variation;
 pub const VariationAxis = font_types.VariationAxis;
 pub const Options = font_types.Options;
 
-const color_bitmap_mod = @import("font/color_bitmap.zig");
-pub const ColorBitmap = color_bitmap_mod.ColorBitmap;
-pub const BitmapFormat = color_bitmap_mod.BitmapFormat;
-pub const ImageDecoder = color_bitmap_mod.ImageDecoder;
+/// Backend-neutral color-bitmap presentation: `ColorBitmap`, `BitmapFormat`,
+/// and the host-supplied `ImageDecoder` boundary.
+pub const color_bitmap = @import("font/color_bitmap.zig");
+pub const ColorBitmap = color_bitmap.ColorBitmap;
+pub const BitmapFormat = color_bitmap.BitmapFormat;
+pub const ImageDecoder = color_bitmap.ImageDecoder;
 const tt = struct {
     pub const exec = @import("font/truetype/exec.zig");
     pub const graphics = @import("font/truetype/graphics.zig");
@@ -661,7 +663,7 @@ test "colorBitmap extracts an embedded CBDT strike with full-em placement" {
     var bitmap = (try font.colorBitmap(std.testing.allocator, glyph_id, 109)).?;
     defer bitmap.deinit();
 
-    try std.testing.expectEqual(color_bitmap_mod.BitmapFormat.png, bitmap.format);
+    try std.testing.expectEqual(color_bitmap.BitmapFormat.png, bitmap.format);
     // PNG signature — snail never decodes, but the bytes are a real document.
     try std.testing.expect(bitmap.data.len > 8);
     try std.testing.expectEqualSlices(u8, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a }, bitmap.data[0..8]);
