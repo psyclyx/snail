@@ -565,8 +565,8 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
             gpa: std.mem.Allocator,
         ) snail.font.color_bitmap.DecodeError!snail.Image {
             const texels = [_]u8{
-                255, 0,   0,   255, 0,   255, 0,   255,
-                0,   0,   255, 255, 255, 255, 255, 255,
+                255, 0, 0,   255, 0,   255, 0,   255,
+                0,   0, 255, 255, 255, 255, 255, 255,
             };
             return snail.Image.init(gpa, 2, 2, &texels) catch return error.DecodeFailed;
         }
@@ -705,8 +705,8 @@ test "shaped run of color-bitmap glyphs places and renders through the public AP
             gpa: std.mem.Allocator,
         ) snail.font.color_bitmap.DecodeError!snail.Image {
             const texels = [_]u8{
-                255, 0,   0,   255, 0,   255, 0,   255,
-                0,   0,   255, 255, 255, 255, 255, 255,
+                255, 0, 0,   255, 0,   255, 0,   255,
+                0,   0, 255, 255, 255, 255, 255, 255,
             };
             return snail.Image.init(gpa, 2, 2, &texels) catch return error.DecodeFailed;
         }
