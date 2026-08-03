@@ -13,7 +13,7 @@ paints, atlas records, and draw records.
 | Variable instances | Explicit `fvar` coordinates, with outlines and metrics resolved by HarfBuzz |
 | Layout | HarfBuzz GSUB/GPOS shaping, features, direction, script, language, and fallback |
 | Color | COLRv0 solid palette layers, including foreground-color layers |
-| Embedded bitmap glyphs | Not supported: CBDT/CBLC, `sbix`, EBDT/EBLC |
+| Embedded bitmap glyphs | PNG CBDT/CBLC and `sbix`, via `Font.colorBitmap` + a host image decoder; monochrome EBDT/EBLC not surfaced |
 | Other color glyphs | Not supported: COLRv1 and OpenType SVG |
 | Palette selection | CPAL palette zero only; no named/custom palette API |
 
@@ -22,13 +22,20 @@ one exists. Snail does not decode PNG, JPEG, TIFF, or SVG documents.
 
 ## Direction
 
-CBDT is worth supporting, particularly for emoji and deliberately
-pixel-designed small strikes. It should not be added as a CBDT-specific parser
-inside atlas recording, though. The same integration needs to cover `sbix`,
-COLRv1, SVG, palette selection, and whatever representation a font makes
-available for one glyph.
+PNG bitmap strikes (CBDT/CBLC and `sbix`) are now extracted through HarfBuzz's
+OT color API rather than a snail-owned table parser: `Font.colorBitmap` returns
+the encoded bytes plus an em-space placement box, a host `ImageDecoder` turns
+those bytes into a `snail.Image`, and the glyph is recorded as an image-painted
+rect keyed by `(font, glyph, ppem)`. This deliberately reuses the existing
+image-paint path — a bitmap glyph is a placed image, not a new coverage
+primitive — so no renderer or shader changes were needed. Points 2–4 below are
+the shape that landed; the remaining work is the vector color formats.
 
-The intended front end is HarfBuzz's paint API. A single
+The broader integration still needs to cover COLRv1, SVG, palette selection,
+and whatever representation a font makes available for one glyph, ideally
+through one traversal rather than per-format branches.
+
+The intended front end for that is HarfBuzz's paint API. A single
 `hb_font_paint_glyph_or_fail` traversal normalizes:
 
 - COLRv0 and COLRv1 into transforms, clips, solid/gradient paints, nested

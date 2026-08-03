@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Embedded color-bitmap glyphs (CBDT/CBLC and PNG `sbix`). A bitmap glyph is
+  treated as a placed image, not a new coverage primitive, so it rides the
+  existing image-paint path with no renderer or shader changes:
+  - `Font.colorBitmap` / `Font.Instance.colorBitmap` reference a glyph's strike
+    at a given ppem through HarfBuzz's OT color API, returning the encoded bytes
+    plus an em-space placement box (`font.color_bitmap.ColorBitmap`).
+  - snail links no image codec: decoding is a host service behind the
+    `font.color_bitmap.ImageDecoder` boundary, which returns straight-alpha
+    sRGBA texels as a `snail.Image`.
+  - `record_key.colorBitmapGlyph` keys records by `(font, glyph, ppem)` since
+    strikes are size-specific. Callers record the decoded image as an
+    image-painted em-bbox rect and draw it like any other glyph.
+  - Bundles the MIT-licensed ChromaCheck CBDT probe font for tests.
+
 ## 0.16.0 - 2026-07-30
 
 ### Changed (breaking)

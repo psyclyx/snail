@@ -70,13 +70,15 @@ better fit for static, fixed-size UI text.
   TrueType bytecode hinting.
 - General paths containing lines, quadratics, cubics, and rational conics;
   fills, strokes, solid colors, linear/radial/conic gradients, and images.
-- COLRv0 color fonts. Other color-font formats are not currently supported.
+- COLRv0 color fonts, and PNG embedded-bitmap strikes (CBDT/CBLC, `sbix`)
+  via `Font.colorBitmap` plus a host image decoder. COLRv1 and OpenType SVG
+  are not currently supported.
 - Grayscale analytic AA and optional LCD subpixel AA.
 
 snail does not perform paragraph bidi, line breaking, wrapping, Unicode
 grapheme or terminal-width policy, cursor movement, or image-file decoding.
 See [Font format support](FONT_SUPPORT.md) for the detailed matrix and the
-planned unified COLRv1/CBDT/`sbix`/SVG integration boundary.
+planned unified COLRv1/SVG integration boundary.
 
 ## The pipeline
 
