@@ -1,6 +1,15 @@
+//! Autohint policy: the draw-time knobs that decide how the resolution-
+//! independent warp fits a glyph to the pixel grid. An `AutohintPolicy` is a
+//! per-axis choice of stem snapping, grid/blue alignment, and a large-size
+//! `Fade`; it packs into the draw-instance ABI (`pack`) and back (`unpack`).
+//! These are pure geometry choices — the fitting happens in the shader/CPU
+//! warp, not here.
+
 const std = @import("std");
 const testing = std.testing;
 
+/// A policy was structurally inconsistent (e.g. positioning without alignment)
+/// or carried a threshold outside the packable f16 range.
 pub const PolicyError = error{
     InvalidEncoding,
     InvalidThreshold,
@@ -8,38 +17,51 @@ pub const PolicyError = error{
     OvershootRequiresBlueZones,
 };
 
+/// How stem thickness is fitted: keep it natural, snap lightly toward the
+/// standard width up to `max_px`, or snap fully to whole pixels.
 pub const StemWidth = union(enum) {
     natural,
     light: struct { std_snap_ratio: f32, max_px: f32 },
     full: struct { std_snap_ratio: f32 },
 };
 
+/// Whether each stem snaps to the grid on its own (`independent`) or keeps its
+/// spacing to the previous stem (`relative`).
 pub const StemPositioning = enum {
     independent,
     relative,
 };
 
+/// Whether round overshoots are kept, or flattened below a pixel threshold.
 pub const Overshoot = union(enum) {
     preserve,
     suppress_below_px: f32,
 };
 
+/// Optional whole-outline registration: none, or round the left edge onto the
+/// pixel grid so the glyph's left side bearing lands cleanly.
 pub const OutlineRegistration = enum {
     none,
     left_round_outline,
 };
 
+/// X-axis feature alignment: leave features where they are, or snap them to the
+/// pixel grid.
 pub const XAlignment = enum {
     none,
     grid,
 };
 
+/// Y-axis feature alignment: none, snap to the pixel grid, or snap to the
+/// font's blue zones.
 pub const YAlignment = enum {
     none,
     grid,
     blue_zones,
 };
 
+/// The horizontal half of an `AutohintPolicy`: x-axis alignment, stem width,
+/// stem positioning, and outline registration.
 pub const XPolicy = struct {
     @"align": XAlignment = .none,
     stem_width: StemWidth = .natural,
@@ -47,6 +69,8 @@ pub const XPolicy = struct {
     registration: OutlineRegistration = .none,
 };
 
+/// The vertical half of an `AutohintPolicy`: y-axis alignment, stem width, and
+/// overshoot handling.
 pub const YPolicy = struct {
     @"align": YAlignment = .none,
     stem_width: StemWidth = .natural,
@@ -64,6 +88,9 @@ pub const Fade = union(enum) {
     ppem_range: struct { start_px: f32, full_px: f32 },
 };
 
+/// A complete autohint fitting policy: an `XPolicy`, a `YPolicy`, and a
+/// large-size `Fade`. `.{}` is the do-nothing policy (natural everything);
+/// `pack`/`unpack` move it across the draw-instance ABI.
 pub const AutohintPolicy = struct {
     x: XPolicy = .{},
     y: YPolicy = .{},

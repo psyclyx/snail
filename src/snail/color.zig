@@ -16,11 +16,13 @@
 
 const std = @import("std");
 
+/// One channel, sRGB-encoded → linear light (the IEC 61966-2-1 transfer).
 pub fn srgbToLinear(v: f32) f32 {
     if (v <= 0.04045) return v / 12.92;
     return std.math.pow(f32, (v + 0.055) / 1.055, 2.4);
 }
 
+/// One channel, linear light → sRGB-encoded (the inverse transfer).
 pub fn linearToSrgb(v: f32) f32 {
     if (v <= 0.0031308) return v * 12.92;
     return 1.055 * std.math.pow(f32, v, 1.0 / 2.4) - 0.055;

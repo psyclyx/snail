@@ -10,22 +10,29 @@ const Image = image_mod.Image;
 const Transform2D = vec.Transform2D;
 const Vec2 = vec.Vec2;
 
+/// Winding rule that turns signed ray crossings into inside/outside. Applied
+/// once per fill to the resolved coverage; oppositely wound holes cancel.
 pub const FillRule = enum(c_int) {
     non_zero = 0,
     even_odd = 1,
 };
 
+/// How a gradient or image paint samples coordinates outside its defined
+/// range: hold the edge color, tile, or tile with alternating mirrors.
 pub const Extend = enum(u8) {
     clamp = 0,
     repeat = 1,
     reflect = 2,
 };
 
+/// Texel reconstruction filter for image paints: bilinear or nearest.
 pub const ImageFilter = enum(u8) {
     linear = 0,
     nearest = 1,
 };
 
+/// A two-color gradient interpolated in linear light along the segment from
+/// `start` to `end`, authored in the paint's own coordinate space.
 pub const LinearGradient = struct {
     start: Vec2,
     end: Vec2,
@@ -34,6 +41,9 @@ pub const LinearGradient = struct {
     extend: Extend = .clamp,
 };
 
+/// A two-color gradient from `inner_color` at `center` to `outer_color` at
+/// `radius`, interpolated in linear light. `mapToLocal` requires a similarity
+/// transform, since an ellipse cannot be represented.
 pub const RadialGradient = struct {
     center: Vec2,
     radius: f32,
@@ -57,6 +67,9 @@ pub const ConicGradient = struct {
     extend: Extend = .repeat,
 };
 
+/// A caller-owned raster image sampled as a paint. `uv_transform` maps the
+/// paint's coordinate space into the image's `[0, 1]` UV space; the backend
+/// samples it as linear color with straight alpha (see `image.zig`).
 pub const ImagePaint = struct {
     image: *const Image,
     uv_transform: Transform2D = .identity,
@@ -65,6 +78,8 @@ pub const ImagePaint = struct {
     filter: ImageFilter = .linear,
 };
 
+/// A fill or stroke color source: a solid color, one of the three gradients,
+/// or an image. All colors are linear light with straight alpha.
 pub const Paint = union(enum) {
     solid: [4]f32,
     linear_gradient: LinearGradient,
@@ -104,7 +119,13 @@ pub const Paint = union(enum) {
     }
 };
 
+/// A paint payload carried a non-finite scalar or an out-of-domain value
+/// (see `Paint.validate`).
 pub const PaintValidationError = error{InvalidPaint};
+
+/// `mapToLocal` failure: the paint was invalid, the transform was singular or
+/// non-finite (`InvalidTransform`), or the paint kind cannot represent the
+/// transform — e.g. an ellipse or reversed conic sweep (`UnsupportedTransform`).
 pub const PaintMapError = PaintValidationError || error{
     InvalidTransform,
     UnsupportedTransform,
@@ -219,6 +240,7 @@ pub fn mapToLocal(paint: Paint, local_to_paint: Transform2D) PaintMapError!Paint
     return mapped;
 }
 
+/// A filled region: a `Paint` plus the winding rule used to resolve it.
 pub const FillStyle = struct {
     paint: Paint,
     /// Winding rule for this fill. Property of the geometry author's
@@ -232,23 +254,31 @@ pub const FillStyle = struct {
     }
 };
 
+/// How an open stroke's endpoints are terminated.
 pub const StrokeCap = enum {
     butt,
     square,
     round,
 };
 
+/// How consecutive stroke segments are connected at a corner. `miter` falls
+/// back to a bevel past `StrokeStyle.miter_limit`.
 pub const StrokeJoin = enum {
     miter,
     bevel,
     round,
 };
 
+/// Where the stroke sits relative to the path: straddling it (`center`) or
+/// entirely within the fill (`inside`, realized by clipping — see
+/// `CompositeMode.fill_stroke_inside`).
 pub const StrokePlacement = enum {
     center,
     inside,
 };
 
+/// A stroked path: a `Paint`, a width in path units, and the cap/join/miter
+/// and placement policy used to expand the centerline into fillable geometry.
 pub const StrokeStyle = struct {
     paint: Paint,
     width: f32,
@@ -264,6 +294,8 @@ pub const StrokeStyle = struct {
     }
 };
 
+/// A stroke's paint was invalid, or its width/miter limit was non-finite or
+/// out of range (`InvalidStroke`; see `StrokeStyle.validate`).
 pub const StrokeValidationError = PaintValidationError || error{InvalidStroke};
 
 /// How the layers of a multi-layer path atlas entry combine. This is a

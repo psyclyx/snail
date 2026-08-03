@@ -6,6 +6,8 @@ pub const Variation = struct {
     value: f32,
 };
 
+/// A variable font's `fvar` axis: its OpenType tag and the min/default/max of
+/// its design range. `hidden` axes are not meant for direct UI exposure.
 pub const VariationAxis = struct {
     tag: [4]u8,
     min_value: f32,
@@ -34,6 +36,9 @@ pub const CurveRange = struct {
     end: u32,
 };
 
+/// Options for `Font.init`: which face of a collection to open and the
+/// variable-font coordinates to select. Both default to a standalone,
+/// default-instance font.
 pub const Options = struct {
     /// Zero-based face in a TTC/OTC. Standalone fonts only accept zero.
     face_index: u32 = 0,

@@ -40,6 +40,10 @@ pub const DrawBatch = draw_records.DrawBatch;
 pub const Instance = draw_records.Instance;
 pub const Shape = shape_mod.Shape;
 
+/// Why `emit` rejected the batch: a binding/atlas or record mismatch, an
+/// invalid transform or color, an autohint-policy inconsistency, or an output
+/// that overflows the caller's buffers or the draw ABI's index range. Each
+/// variant is documented below.
 pub const EmitError = error{
     /// A cursor was past the end of its corresponding output buffer.
     InvalidCursor,
@@ -75,6 +79,7 @@ fn addRowBase(info_y: u16, row_base: u32) EmitError!u16 {
     return @intCast(sum);
 }
 
+/// How many instances and batches `emit` wrote into the caller's buffers.
 pub const EmitResult = struct {
     instance_count: u32,
     batch_count: u32,

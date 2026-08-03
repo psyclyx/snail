@@ -46,6 +46,9 @@ const Kind = enum(u32) {
     tt_advance = 5,
 };
 
+/// `Archive.fromBytes` rejected the buffer: wrong endian, misaligned, a
+/// structurally invalid archive, or an incompatible format version. Every one
+/// of these is an ordinary cache miss — compatibility is intentionally exact.
 pub const OpenError = error{
     UnsupportedEndian,
     Misaligned,
@@ -53,6 +56,9 @@ pub const OpenError = error{
     VersionMismatch,
 };
 
+/// `ArchiveBuilder`/`finish*` failure: allocation, an invalid or oversized
+/// record, or `ConflictingDuplicate` when the same key is added with different
+/// content (adding identical content is idempotent).
 pub const BuildError = std.mem.Allocator.Error || error{
     InvalidValue,
     InvalidCurves,
@@ -330,6 +336,10 @@ pub const Archive = struct {
     }
 };
 
+/// Accumulates prepared records and emits a canonical `Archive`. Owns a copy of
+/// every added value, sorts by key, and is idempotent on duplicate keys with
+/// matching content. `finishInto` writes into caller-owned aligned storage;
+/// `finishAlloc` returns an `OwnedArchive`.
 pub const ArchiveBuilder = struct {
     allocator: std.mem.Allocator,
     records: std.ArrayList(OwnedRecord) = .empty,
@@ -455,6 +465,10 @@ pub const ArchiveBuilder = struct {
     }
 };
 
+/// An `Archive` plus the aligned byte storage it borrows, allocated together by
+/// `ArchiveBuilder.finishAlloc`. `view()` yields the `Archive`; `bytes()` the
+/// persistable buffer. `deinit` frees the storage, so keep it alive as long as
+/// any view derived from it is in use.
 pub const OwnedArchive = struct {
     allocator: std.mem.Allocator,
     storage: []align(8) u8,

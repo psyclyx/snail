@@ -25,6 +25,9 @@ pub const Vec2 = math.Vec2;
 pub const Transform2D = math.Transform2D;
 pub const Faces = faces_mod.Faces;
 
+/// Why `placeRun` rejected a run: an invalid input (em, color, hint mode, or
+/// snapping transform), a monospace/column mismatch, or a too-small caller
+/// buffer. Each variant is documented below.
 pub const PlaceRunError = error{
     /// A glyph references a `face_index` outside the `Faces` value.
     /// Only the COLR-fanout path can raise this — the non-COLR and
@@ -58,6 +61,8 @@ pub const PlaceRunError = error{
     ShapeCountOverflow,
 };
 
+/// `placeRunAlloc` errors: `PlaceRunError` plus allocation failure (the
+/// allocating variant sizes the shape buffer itself instead of requiring one).
 pub const PlaceRunAllocError = PlaceRunError || std.mem.Allocator.Error;
 
 // ── Unified placement (placeRun) ───────────────────────────────────────────
@@ -124,6 +129,9 @@ pub const RunSnap = enum {
 /// so both directions produce identical fills.
 pub const YAxis = enum { down, up };
 
+/// Where and how a shaped run is placed into the scene: world-space baseline
+/// and em size, color, hint mode, device snapping, y-axis direction, and
+/// whether to fan out COLR layers. Everything but `baseline`/`em` defaults.
 pub const RunPlacement = struct {
     /// Pen baseline in WORLD coordinates.
     baseline: Vec2,

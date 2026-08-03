@@ -33,6 +33,9 @@ const curve_tex = @import("../format/curve_texture.zig");
 const band_tex = @import("../format/band_texture.zig");
 
 pub const Font = font_mod.Font;
+/// A hinting target size in 26.6 fixed-point pixels, per axis. `uniform`
+/// builds the common square case; the value packs exactly into a record key,
+/// so out-of-range sizes are rejected rather than clamped onto another key.
 pub const TtHintPpem = struct {
     /// Largest 26.6 value that can be represented exactly in an atlas
     /// record key (1023.984375 px).
@@ -62,6 +65,8 @@ pub const TtHintPpem = struct {
     }
 };
 
+/// Introspection counters for one `TtHintVm`: how much reusable scratch it
+/// holds and how many glyph topologies it has cached. For diagnostics only.
 pub const TtHintVmStats = struct {
     /// Bytes held by the reusable per-font scratch (0 until first use).
     scratch_bytes: usize,
@@ -143,6 +148,10 @@ fn isInErrorSet(comptime S: type, comptime name: []const u8) bool {
     return false;
 }
 
+/// A reusable TrueType bytecode interpreter for one font. `prepare` runs the
+/// `fpgm`/`prep` programs once per ppem into a cacheable `PreparedPpem`; given
+/// that, `hintGlyph` is a pure function of `(prepared, glyph_id)` whose grid-
+/// fitted output is safe to memoize. Thread-confined (see the module header).
 pub const TtHintVm = struct {
     allocator: std.mem.Allocator,
     program: tt_vm.Program,

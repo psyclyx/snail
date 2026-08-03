@@ -30,12 +30,18 @@ pub const FontSource = struct {
     cache_key: prepared.FontKey,
 };
 
+/// How COLRv0 glyphs are prepared: keep the composite (layer-info side data),
+/// expand solid palette layers into ordinary glyph shapes (`layers`), or ignore
+/// color and use the monochrome outline.
 pub const ColrHandling = enum {
     composite,
     layers,
     outline_only,
 };
 
+/// Options for the `.unhinted` prepare mode: COLR handling, the foreground
+/// color used by foreground-referencing COLR layers, and the geometry
+/// (cubic-lowering) options.
 pub const UnhintedRunOptions = struct {
     colr: ColrHandling = .composite,
     colr_foreground: [4]f32 = .{ 1, 1, 1, 1 },
@@ -44,6 +50,8 @@ pub const UnhintedRunOptions = struct {
     },
 };
 
+/// Options for the `.autohint` prepare mode: the geometry (cubic-lowering)
+/// options plus the autohint analysis options.
 pub const AutohintRunOptions = struct {
     geometry: prepared.GeometryOptions = .{
         .cubic_tolerance = cubic_to_quadratic.default_tolerance,
@@ -51,12 +59,19 @@ pub const AutohintRunOptions = struct {
     autohint: prepared.AutohintOptions = .{},
 };
 
+/// The hinting path a `planRuns` call prepares along, with that path's options:
+/// ppem-independent `unhinted` or `autohint` curves, or ppem-specific
+/// `tt_hint` grid-fitted curves at a given size.
 pub const PrepareMode = union(enum) {
     unhinted: UnhintedRunOptions,
     autohint: AutohintRunOptions,
     tt_hint: hint_vm_mod.TtHintPpem,
 };
 
+/// One cacheable unit of preparation work discovered by `planRuns` /
+/// `planTtAdvances`: an artifact `key` and the `operation` that produces it.
+/// The host routes each `operation` to the matching thread-confined context
+/// (`OutlineContext`, `AutohintContext`, or `TtHintContext`).
 pub const PrepareRequest = struct {
     key: prepared.Key,
     operation: Operation,
@@ -144,6 +159,11 @@ const Recipe = union(enum) {
     tt_advance: TtAdvanceRecipe,
 };
 
+/// The output of `planRuns` / `planTtAdvances`: the set of cacheable
+/// `requests()` and their inter-request `dependencies()`, plus the atlas
+/// assembly recipe. Planning extracts no outlines and creates no threads; the
+/// host produces or looks up each request's result, then `apply`/`applyInPlace`
+/// validates them all and publishes one atomic atlas extension.
 pub const PreparePlan = struct {
     allocator: Allocator,
     request_storage: []PrepareRequest,
@@ -962,6 +982,10 @@ pub const AutohintContext = struct {
     }
 };
 
+/// The reusable result of running a font's `fpgm`/`prep` at one ppem, produced
+/// by `TtHintContext.prepareSize`. Reuse it for every `.tt_glyph`/`.tt_advance`
+/// request at the same `TtHintPpem`. Runtime acceleration data, not an archive
+/// artifact; caller-owned, so `deinit` when done.
 pub const TtHintSize = struct {
     ppem: hint_vm_mod.TtHintPpem,
     prepared_ppem: hint_vm_mod.TtHintVm.PreparedPpem,

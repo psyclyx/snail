@@ -20,7 +20,7 @@ paints, atlas records, and draw records.
 The unsupported color formats fall back to the font's ordinary outline when
 one exists. Snail does not decode PNG, JPEG, TIFF, or SVG documents.
 
-## Direction
+## Planned color-font integration
 
 PNG bitmap strikes (CBDT/CBLC and `sbix`) are now extracted through HarfBuzz's
 OT color API rather than a snail-owned table parser: `Font.colorBitmap` returns

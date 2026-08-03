@@ -98,6 +98,9 @@ pub const PaintShaderClass = enum {
     path_cubic,
 };
 
+/// Lookup result for a key whose entry carries a paint: the `(info_x, info_y)`
+/// texel coordinate of its layer-info record, its layer count, and the shader
+/// class emit uses to pick the fragment family.
 pub const PaintRecordInfo = struct {
     info_x: u16,
     info_y: u16,
@@ -139,6 +142,8 @@ pub const GeometryEntry = struct {
     composite_mode: CompositeMode = .source_over,
 };
 
+/// One layer of a multi-layer composite geometry entry: its own curves, paint,
+/// and winding rule. Ordered back to front within `GeometryEntry.extra_layers`.
 pub const Layer = struct {
     curves: GeometryView,
     paint: Paint,
@@ -186,6 +191,11 @@ pub const AtlasUpdate = struct {
     }
 };
 
+/// Failure from `extend`/`extendInPlace` (and the `from*` builders). Includes
+/// allocator and page-pool errors; `OutOfLayers` means the pool cannot grant a
+/// page for a new record, and the host owns the resulting eviction policy. The
+/// remaining tags flag malformed or oversized caller payloads, all rejected
+/// during preflight so no partial atlas is published.
 pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || PagePool.IdentityError || error{
     MapTooLarge,
     ReferenceCountExhausted,
@@ -203,6 +213,11 @@ pub const InsertError = std.mem.Allocator.Error || PagePool.AcquireError || Page
     InvalidPacking,
 };
 
+/// A persistent, value-typed CPU store of prepared records over a `PagePool`.
+/// `extend`/`extendInPlace` publish one logically atomic `AtlasUpdate` and
+/// return a new snapshot that shares unchanged page storage with its parent;
+/// `compact`/`compactInto` repack a filtered working set into a fresh root.
+/// Lookups return records by value. See the module header for the full model.
 pub const Atlas = struct {
     pub const Packing = struct {
         /// Maximum recent pages considered by the bounded best-fit packer.

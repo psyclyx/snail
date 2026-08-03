@@ -1,3 +1,7 @@
+//! `Image`: the caller-owned, format-opaque texel payload behind an image
+//! paint. Snail copies and stores the bytes; the sampling backend defines the
+//! format and must yield linear color with straight alpha.
+
 const std = @import("std");
 
 /// An image paint's texel payload. The bytes are OPAQUE to snail's core:

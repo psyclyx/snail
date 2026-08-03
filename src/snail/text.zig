@@ -17,6 +17,7 @@ const Allocator = std.mem.Allocator;
 
 // ── Public types ──
 
+/// Index of a face within the `Faces` chain passed to `shape()`.
 pub const FaceIndex = u16;
 
 /// Half-open source-byte range, in the coordinate system of the text
@@ -47,6 +48,10 @@ pub const TextDirection = enum {
     btt,
 };
 
+/// Everything `shape()` needs beyond the face chain and the text: OpenType
+/// features, style selection, an optional explicit direction/script/language,
+/// and the optional hinted-advance provider. Every field defaults, so `.{}`
+/// shapes with HarfBuzz's inferred direction/script and the regular style.
 pub const ShapeOptions = struct {
     features: []const OpenTypeFeature = &.{},
     /// Style selector for the face chain (regular/bold/italic).
@@ -113,6 +118,8 @@ pub const AdvanceProvider = struct {
     get_advance: *const fn (context: *anyopaque, font_id: u32, glyph_id: u16, ppem: TtHintPpem) ?i32,
 };
 
+/// OpenType weight class, from `thin` (100) to `black` (900), used to select
+/// a face from the chain. The tag values are the usual weight/100.
 pub const FontWeight = enum(u4) {
     thin = 1,
     extra_light = 2,
@@ -125,17 +132,25 @@ pub const FontWeight = enum(u4) {
     black = 9,
 };
 
+/// The style selector matched against the face chain: weight plus italic.
 pub const FontStyle = struct {
     weight: FontWeight = .regular,
     italic: bool = false,
 };
 
+/// The glyph `Faces` chose to stand in for codepoints no face covers (the
+/// ".notdef"/replacement shape). `shape()` discovers it once from a fixed set
+/// of candidate codepoints so unmapped input renders a visible box rather than
+/// nothing.
 pub const MissingGlyphReplacement = struct {
     face_index: FaceIndex,
     glyph_id: u16,
     codepoint: u21,
 };
 
+/// The output of `shape()`: an allocator-owned array of positioned `Glyph`
+/// values in logical order. Call `deinit` to free it. `advanceX`/`advanceY`
+/// sum the run's advances.
 pub const ShapedText = struct {
     allocator: Allocator,
     glyphs: []Glyph,

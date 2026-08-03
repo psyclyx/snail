@@ -18,9 +18,9 @@ const modern_font = @import("../harfbuzz_font.zig");
 const Allocator = std.mem.Allocator;
 const Vec2 = @import("../../math/vec.zig").Vec2;
 
-/// Owns the ppem-independent analysis inputs for one font: the parsed
-/// program (outlines) and the derived blue zones. Cheap to keep alongside a
-/// font; not thread-safe (mirrors `TtHintVm`).
+/// One em-normalized stem/edge fact on a single axis: a position and extent
+/// the runtime fitter can snap to the pixel grid. Ppem-independent; carries no
+/// fitted target. `analyzeGlyph` fills caller scratch slices of these.
 pub const FeatureEdge = analysis.FeatureEdge;
 
 /// Maximum feature records accepted per axis. Allocate this many
@@ -28,12 +28,17 @@ pub const FeatureEdge = analysis.FeatureEdge;
 /// preserve every feature the runtime fitter can consume.
 pub const max_features_per_axis: usize = 32;
 
+/// The per-glyph feature facts `analyzeGlyph` produces: em-normalized x and y
+/// `FeatureEdge` slices (borrowing the caller's scratch) plus the glyph's left
+/// side bearing in em units. Everything is ppem-independent.
 pub const GlyphFeatures = struct {
     x: []const FeatureEdge,
     y: []const FeatureEdge,
     left: f32,
 };
 
+/// The per-font, ppem-independent facts shared by every glyph: the normalized
+/// blue zones and the standard x/y stem widths in em units.
 pub const FontFeatures = struct {
     blues: []const blue_mod.FeatureZone,
     std_x: f32,
@@ -45,6 +50,9 @@ pub const Options = struct {
     blue_tolerance_em: f32 = 1.0 / 24.0,
 };
 
+/// Owns the ppem-independent analysis inputs for one font: the parsed
+/// program (outlines) and the derived blue zones. Cheap to keep alongside a
+/// font; not thread-safe (mirrors `TtHintVm`).
 pub const AutohintAnalyzer = struct {
     allocator: Allocator,
     program: ?vm.Program,

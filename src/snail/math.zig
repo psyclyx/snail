@@ -1,3 +1,7 @@
+//! Public math and geometry surface: the vector/matrix/transform types
+//! (defined in `math/vec.zig` and `math/bezier.zig`) plus `mvpToScenePixel`,
+//! the affine MVP → framebuffer-pixel projection used by snapping.
+
 const bezier = @import("math/bezier.zig");
 const vec = @import("math/vec.zig");
 const std = @import("std");
@@ -7,6 +11,7 @@ pub const Vec2 = vec.Vec2;
 pub const BBox = bezier.BBox;
 pub const Transform2D = vec.Transform2D;
 
+/// An axis-aligned rectangle given as origin `(x, y)` and size `(w, h)`.
 pub const Rect = struct {
     x: f32,
     y: f32,

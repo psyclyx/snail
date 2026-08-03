@@ -53,6 +53,10 @@ pub const CellSnap = enum {
     glyph_origins,
 };
 
+/// Placement for a terminal-style cell grid: column-zero baseline, column
+/// width and em size in world units, snapping policy, y-axis direction, and
+/// COLR fanout. `placeCellRun` anchors each HarfBuzz cluster to its `Cell`'s
+/// column while preserving intra-cluster offsets.
 pub const CellRunPlacement = struct {
     /// Baseline of column zero in world coordinates.
     baseline: Vec2,
@@ -72,6 +76,9 @@ pub const CellRunPlacement = struct {
     colr: bool = false,
 };
 
+/// Why `placeCellRun` rejected a run: a glyph with no covering `Cell` or a
+/// malformed cell list, a font-id/face mismatch, an invalid input or snapping
+/// transform, or a too-small caller buffer.
 pub const PlaceCellRunError = error{
     NoCellForGlyph,
     InvalidCells,
@@ -88,6 +95,7 @@ pub const PlaceCellRunError = error{
     ShapeCountOverflow,
 };
 
+/// `placeCellRunAlloc` errors: `PlaceCellRunError` plus allocation failure.
 pub const PlaceCellRunAllocError = PlaceCellRunError || std.mem.Allocator.Error;
 
 const Grid = struct {

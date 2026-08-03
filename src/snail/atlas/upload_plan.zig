@@ -32,6 +32,8 @@ pub const CURVE_TEX_WIDTH: u32 = page_mod.CURVE_TEX_WIDTH;
 pub const BAND_TEX_WIDTH: u32 = page_mod.BAND_TEX_WIDTH;
 pub const INFO_WIDTH: u32 = paint_records.info_width;
 
+/// Which atlas resource a `Region` copy targets: the curve texture, band
+/// texture, layer-info texture, or the image array.
 pub const Target = enum { curve, band, layer_info, image };
 
 /// One texel copy the caller must apply to its own texture. `src` are the
@@ -190,6 +192,10 @@ pub const FlatLayout = struct {
     }
 };
 
+/// Fixed capacity reservations for an `OwnedPlanner`: how many bindings,
+/// layer-info rows, and images it can hold, the image dimension limits, and the
+/// host's image texel size. These bound the planner's state buffers up front;
+/// side data that outgrows them requires a fresh binding.
 pub const Options = struct {
     max_bindings: u32,
     layer_info_height: u32,
@@ -202,6 +208,10 @@ pub const Options = struct {
     image_bytes_per_texel: u32 = 4,
 };
 
+/// Upload-planning failure: an exhausted fixed reservation (no free binding,
+/// layer-info row, or image layer; no room to grow append-only side data), a
+/// too-small caller buffer, invalid image/atlas data, or a transaction/snapshot
+/// mismatch (`PendingUploadExists`, `IncompatibleSnapshot`, …).
 pub const Error = error{
     UnknownPool,
     PageNotInPool,
@@ -223,6 +233,9 @@ pub const Error = error{
     IncompatibleSnapshot,
 };
 
+/// Planner construction failure: the caller-supplied state backing was too
+/// small for the requested `Options`, the options were invalid, or the pool's
+/// issuer identity was exhausted.
 pub const InitError = PagePool.IdentityError || error{
     BackingTooSmall,
     InvalidOptions,
