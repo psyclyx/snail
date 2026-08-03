@@ -14,8 +14,13 @@
     `font.color_bitmap.ImageDecoder` boundary, which returns straight-alpha
     sRGBA texels as a `snail.Image`.
   - `record_key.colorBitmapGlyph` keys records by `(font, glyph, ppem)` since
-    strikes are size-specific. Callers record the decoded image as an
-    image-painted em-bbox rect and draw it like any other glyph.
+    strikes are size-specific.
+  - `font.color_bitmap.imageUvTransform(bbox)` gives the y-flipped UV that keeps
+    a strike upright under an outline glyph's placement. Callers record the
+    decoded image as an image-painted em-bbox rect and place it with the same
+    `PreparedPath.placedBy` / `paintForDesign` used for any prepared path, so a
+    bitmap glyph places exactly like an outline one — including across a shaped
+    run.
   - Bundles the MIT-licensed ChromaCheck CBDT probe font for tests.
 
 ## 0.16.0 - 2026-07-30
