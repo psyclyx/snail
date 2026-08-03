@@ -595,17 +595,13 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
     var rect_curves = try prepared_path.fillCurves(allocator, allocator);
     defer rect_curves.deinit();
 
-    // Image UV maps the em-space rect (y-up) onto the image (rows top-down):
-    // u = (x - min.x)/w, v = (max.y - y)/h — the flip keeps the strike upright
-    // under the same y-flipping placement transform an outline glyph uses.
-    const uv_transform = snail.Transform2D{
-        .xx = 1.0 / w,
-        .xy = 0,
-        .tx = -bb.min.x / w,
-        .yx = 0,
-        .yy = -1.0 / h,
-        .ty = bb.max.y / h,
-    };
+    // `prepare` normalizes the rect into a [-1,1] design space; `design_to_source`
+    // maps that back to the authored em rect. Composing it into both the uv and
+    // the placement keeps everything in the strike's own em frame.
+    const d2s = prepared_path.design_to_source;
+    // Image UV maps the em-space rect (y-up) onto the image (rows top-down);
+    // the flip keeps the strike upright under an outline glyph's placement.
+    const uv_transform = snail.font.color_bitmap.imageUvTransform(strike.bbox).multiply(d2s);
     const key = snail.record_key.colorBitmapGlyph(0, glyph_id, ppem);
     var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &.{.{
         .geometry = .{
@@ -637,9 +633,12 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
     const x0: f32 = 8;
     const y0: f32 = 8;
     const S: f32 = 24;
+    // Placement maps the source em rect (y-up) into the pixel box, composed
+    // with design_to_source since the geometry lives in design space.
+    const place = snail.Transform2D{ .xx = S, .xy = 0, .tx = x0, .yx = 0, .yy = -S, .ty = y0 + S };
     const shapes = [_]snail.Shape{.{
         .key = key,
-        .local_transform = .{ .xx = S, .xy = 0, .tx = x0, .yx = 0, .yy = -S, .ty = y0 + S },
+        .local_transform = place.multiply(d2s),
         .local_color = .{ 1, 1, 1, 1 },
     }};
 
@@ -672,6 +671,161 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
     // BR white: all channels high.
     const br = 26 * STRIDE + 26 * 4;
     try testing.expect(px[br + 0] > 200 and px[br + 1] > 200 and px[br + 2] > 200);
+}
+
+test "shaped run of color-bitmap glyphs places and renders through the public API" {
+    const allocator = testing.allocator;
+
+    // The caller pattern, using only `snail` + `snail-raster`: shape a run,
+    // place it like any text, then for each glyph that has a strike, decode it
+    // (host service, stubbed), record it as an image-painted em-bbox rect, and
+    // swap the placed shape onto that record. Outline and bitmap glyphs share
+    // one placement path — a bitmap glyph is just a placed image.
+    var font = try snail.Font.init(@import("assets").chromacheck_cbdt);
+    var faces = try snail.Faces.build(allocator, &.{.{ .font = &font, .font_id = 0 }});
+    defer faces.deinit();
+
+    // Two emoji: a run with two distinct pen positions.
+    var shaped = try snail.shape(allocator, &faces, "\u{E903}\u{E903}", .{});
+    defer shaped.deinit();
+    try testing.expect(shaped.glyphs.len == 2);
+
+    const em: f32 = 16;
+    const ppem: u16 = 16;
+    const shapes = try snail.placeRunAlloc(allocator, &shaped, &faces, .{
+        .baseline = .{ .x = 4, .y = 26 },
+        .em = em,
+    });
+    defer allocator.free(shapes);
+
+    // Host decoder: four-color 2x2 probe (TL red, TR green, BL blue, BR white).
+    const Decoder = struct {
+        fn decode(
+            _: *anyopaque,
+            _: snail.font.BitmapFormat,
+            _: []const u8,
+            gpa: std.mem.Allocator,
+        ) snail.font.color_bitmap.DecodeError!snail.Image {
+            const texels = [_]u8{
+                255, 0,   0,   255, 0,   255, 0,   255,
+                0,   0,   255, 255, 255, 255, 255, 255,
+            };
+            return snail.Image.init(gpa, 2, 2, &texels) catch return error.DecodeFailed;
+        }
+    };
+    var ctx: u8 = 0;
+    const decoder = snail.font.ImageDecoder{ .context = &ctx, .decode = Decoder.decode };
+
+    // Both glyphs are the same emoji, so one decoded image + one atlas record
+    // serve the whole run.
+    const glyph_id = shaped.glyphs[0].glyph_id;
+    const font_id = shaped.glyphs[0].font_id;
+    var strike = (try faces.fontForFace(shaped.glyphs[0].face_index).?.colorBitmap(allocator, glyph_id, ppem)).?;
+    defer strike.deinit();
+    var image = try decoder.decodeImage(strike.format, strike.data, allocator);
+    defer image.deinit();
+
+    var pool = try snail.PagePool.init(allocator, .{
+        .max_pages = 2,
+        .curve_words_per_page = 1 << 16,
+        .band_words_per_page = 1 << 14,
+    });
+    defer pool.deinit();
+
+    const bb = strike.bbox;
+    var path = snail.Path.init(allocator);
+    defer path.deinit();
+    try path.addRect(.{ .x = bb.min.x, .y = bb.min.y, .w = bb.max.x - bb.min.x, .h = bb.max.y - bb.min.y });
+    var prepared_path = try path.prepare(allocator);
+    defer prepared_path.deinit();
+    var rect_curves = try prepared_path.fillCurves(allocator, allocator);
+    defer rect_curves.deinit();
+
+    // `prepare` normalizes into a [-1,1] design space; `design_to_source` maps
+    // back to the authored em rect. Composing it into both the uv and each
+    // glyph's placement keeps a bitmap glyph in the exact em frame an outline
+    // glyph uses — so it lands em-sized and abuts its neighbor instead of
+    // spilling over it.
+    const d2s = prepared_path.design_to_source;
+    const key = snail.record_key.colorBitmapGlyph(font_id, glyph_id, ppem);
+    var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &.{.{
+        .geometry = .{
+            .key = key,
+            .curves = rect_curves.view(),
+            .paint = .{ .image = .{
+                .image = &image,
+                .uv_transform = snail.font.color_bitmap.imageUvTransform(bb).multiply(d2s),
+                .filter = .nearest,
+            } },
+        },
+    }} });
+    defer atlas.deinit();
+
+    // Swap every strike-backed glyph onto its bitmap record (untinted), keeping
+    // its placeRun origin for the assertions before composing design_to_source.
+    const origins = try allocator.alloc(?[2]f32, shapes.len);
+    defer allocator.free(origins);
+    @memset(origins, null);
+    for (shapes, shaped.glyphs, origins) |*shp, g, *origin| {
+        if (try faces.fontForFace(g.face_index).?.colorBitmap(allocator, g.glyph_id, ppem)) |*present| {
+            @constCast(present).deinit();
+            origin.* = .{ shp.local_transform.tx, shp.local_transform.ty };
+            shp.key = snail.record_key.colorBitmapGlyph(g.font_id, g.glyph_id, ppem);
+            shp.local_color = .{ 1, 1, 1, 1 };
+            shp.local_transform = shp.local_transform.multiply(d2s);
+        }
+    }
+
+    // Size the framebuffer to the placed run (advances are the font's to pick).
+    var max_x: f32 = 0;
+    for (origins) |o| if (o) |v| {
+        max_x = @max(max_x, v[0] + em);
+    };
+    const W: u32 = @intFromFloat(@ceil(max_x) + 4);
+    const H: u32 = 32;
+    const STRIDE: u32 = W * 4;
+    const px = try allocator.alloc(u8, H * STRIDE);
+    defer allocator.free(px);
+    @memset(px, 0);
+
+    var cache = try DeviceAtlas.init(allocator, pool, .{ .max_bindings = 1, .layer_info_height = 8, .max_images = 1 });
+    defer cache.deinit();
+    var bindings: [1]Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+
+    const instances = try allocator.alloc(vertex.Instance, shapes.len);
+    defer allocator.free(instances);
+    var batches: [2]draw_records.DrawBatch = undefined;
+    var ilen: usize = 0;
+    var blen: usize = 0;
+    _ = try @import("snail").emit.emit(instances, batches[0..], &ilen, &blen, bindings[0], &atlas, shapes, .identity, .{ 1, 1, 1, 1 });
+
+    var renderer = try @import("renderer.zig").Renderer.init(px, W, H, STRIDE, .rgba8_unorm);
+    const state = makeIdentityState(W, H);
+    try draw(&renderer, state, .{ .instances = instances[0..ilen], .batches = batches[0..blen] }, &.{&cache}, null);
+
+    const dominant = struct {
+        fn at(pixels: []const u8, stride: u32, cx: f32, cy: f32) u2 {
+            const off = (@as(u32, @intFromFloat(cy)) * stride) + @as(u32, @intFromFloat(cx)) * 4;
+            const r = pixels[off + 0];
+            const g = pixels[off + 1];
+            const b = pixels[off + 2];
+            if (r >= g and r >= b) return 0;
+            if (g >= r and g >= b) return 1;
+            return 2;
+        }
+    };
+    // Each placed emoji occupies x in [ox, ox+em], y in [oy-em, oy] (above the
+    // baseline). Verify the three chromatic quadrants for BOTH instances —
+    // proving run placement and per-strike sampling/orientation together.
+    for (origins) |o| {
+        const v = o orelse continue;
+        const ox = v[0];
+        const oy = v[1];
+        try testing.expectEqual(@as(u2, 0), dominant.at(px, STRIDE, ox + em * 0.25, oy - em * 0.75)); // TL red
+        try testing.expectEqual(@as(u2, 1), dominant.at(px, STRIDE, ox + em * 0.75, oy - em * 0.75)); // TR green
+        try testing.expectEqual(@as(u2, 2), dominant.at(px, STRIDE, ox + em * 0.25, oy - em * 0.25)); // BL blue
+    }
 }
 
 test "draw threaded matches single-threaded pixel-for-pixel" {
