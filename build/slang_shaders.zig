@@ -502,11 +502,27 @@ pub const Entry = struct {
 pub const Artifacts = struct {
     library: []const Entry,
     game: []const Entry,
-    /// The generated parameter-ABI module (see
-    /// build/gen_shader_reflection_zig.zig), copied next to the accessor
-    /// root in every scope as `reflection.zig`.
+    /// The parameter-ABI module copied next to the accessor root in every
+    /// scope as `reflection.zig`. This is the COMMITTED
+    /// src/snail/shader/reflection.zig, so shader modules — including the
+    /// artifact-free `snail-shaders-reflection` scope — need no shader
+    /// toolchain to expose the binding contract. `reflection_generated`
+    /// re-derives it from slangc; `check-reflection` diffs the two.
     reflection_zig: std.Build.LazyPath,
+    /// The freshly generated parameter-ABI module (see
+    /// build/gen_shader_reflection_zig.zig). Consumed only by
+    /// `gen-shaders` (inspection) and the `check-reflection` drift gate,
+    /// never by a published module — so ordinary builds run no slangc for
+    /// the reflection.
+    reflection_generated: std.Build.LazyPath,
 };
+
+/// The committed, toolchain-free copy of the parameter-ABI module. It is the
+/// source every shader scope embeds; the generator only re-derives it for the
+/// `check-reflection` gate.
+pub fn committedReflectionZig(b: *std.Build) std.Build.LazyPath {
+    return b.path("src/snail/shader/reflection.zig");
+}
 
 fn appendEntry(b: *std.Build, list: *std.ArrayList(Entry), target: Target, sub_path: []const u8, file: std.Build.LazyPath) void {
     appendEntryValidated(b, list, target, sub_path, file, null);
@@ -578,7 +594,7 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
         }),
     });
     const reflection_gen = b.addRunArtifact(reflection_gen_tool);
-    const reflection_zig = reflection_gen.addOutputFileArg("reflection.zig");
+    const reflection_generated = reflection_gen.addOutputFileArg("reflection.zig");
     reflection_gen.addFileArg(stageReflectionJson(b, comptime findFamily("text"), fragment_stage, "SNAIL_TARGET_WGSL", &.{ "-target", "wgsl" }, "wgsl"));
     inline for (families) |family| {
         if (comptime familyHasReflectionContract(family)) {
@@ -672,7 +688,8 @@ pub fn collectArtifacts(b: *std.Build) Artifacts {
     return .{
         .library = library.toOwnedSlice(b.allocator) catch @panic("OOM"),
         .game = game.toOwnedSlice(b.allocator) catch @panic("OOM"),
-        .reflection_zig = reflection_zig,
+        .reflection_zig = committedReflectionZig(b),
+        .reflection_generated = reflection_generated,
     };
 }
 
@@ -708,8 +725,10 @@ pub fn createGeneratedModule(b: *std.Build, name: []const u8, artifacts: Artifac
 pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Artifacts, targets: []const Target, run_validations: bool) GeneratedModule {
     const wf = b.addWriteFiles();
     const root = wf.addCopyFile(b.path("src/snail/shader/generated_root.zig"), "root.zig");
-    // The parameter-ABI module rides along in every scope (tiny, and the
-    // reflection compiles are cheap slangc runs).
+    // The parameter-ABI module rides along in every scope. It is the
+    // committed, toolchain-free copy, so even the artifact-free
+    // `snail-shaders-reflection` scope pulls no slangc; `check-reflection`
+    // keeps it honest against a fresh generation.
     _ = wf.addCopyFile(artifacts.reflection_zig, "reflection.zig");
     for (artifacts.library) |e| {
         if (std.mem.indexOfScalar(Target, targets, e.target) == null) continue;
@@ -728,7 +747,10 @@ pub fn createGeneratedModuleOpts(b: *std.Build, name: []const u8, artifacts: Art
 /// consumers embed straight from the build cache via `snail-shaders`.
 pub fn addGenShadersStep(b: *std.Build, artifacts: Artifacts) void {
     const step = b.step("gen-shaders", "Materialize the generated shader artifacts into zig-out/shaders for inspection (needs slangc + naga)");
-    step.dependOn(&b.addInstallFile(artifacts.reflection_zig, "shaders/reflection.zig").step);
+    // Install the freshly generated reflection so `gen-shaders` shows current
+    // slangc output; copy it over src/snail/shader/reflection.zig to update the
+    // committed contract (check-reflection verifies the two agree).
+    step.dependOn(&b.addInstallFile(artifacts.reflection_generated, "shaders/reflection.zig").step);
     for (artifacts.library) |e| {
         step.dependOn(&b.addInstallFile(e.file, b.pathJoin(&.{ "shaders", e.sub_path })).step);
         if (e.validate) |v| step.dependOn(v);

@@ -567,37 +567,28 @@ Other shader scopes are `snail-shaders-vk` (Vulkan SPIR-V only),
 target and runs the generated-artifact validations. Omit shader imports when
 using only `snail` or `snail-raster`.
 
+An engine that compiles its own shaders needs none of those. The push-constant
+and binding contract is committed at `src/snail/shader/reflection.zig` and
+exposed by `snail-shaders-reflection`, which embeds no artifacts and needs no
+shader toolchain: pair it with the `snail_slang` source (below) and compile to
+your target with your own pipeline. `zig build check-reflection` keeps the
+committed contract in lockstep with the shaders.
+
 ### Custom shader families
 
 To draw your own effects through snail's pipeline, author a Slang family that
 `import`s snail's caller-facing modules — the pattern the game demo uses in
 [`dev/demo/game/slang/game_material.slang`](dev/demo/game/slang/game_material.slang).
 snail publishes its Slang module catalog as the `snail_slang` named lazy path;
-hand it to `slangc` via `-I` and compile for your target:
+hand it to `slangc` via `-I` and compile for your target.
 
-```zig
-const snail_dep = b.dependency("snail", .{ .target = target, .optimize = optimize });
-
-const compile = b.addSystemCommand(&.{
-    "slangc",
-    "-DSNAIL_TARGET_VULKAN", "-target", "spirv", "-profile", "spirv_1_3", "-O2",
-    "-default-image-format-unknown",
-    "-entry", "fragmentMain", "-stage", "fragment",
-    "-I",
-});
-compile.addDirectoryArg(snail_dep.namedLazyPath("snail_slang"));
-compile.addFileArg(b.path("shaders/my_material.slang"));
-const spv = compile.addPrefixedOutputFileArg("-o", "my_material.frag.spv");
-// embed `spv` in your app.
-```
-
-The reflected `snail-shaders*` binding contract still describes the vertex
-format and push constants, so a family that reuses snail's inputs stays
-layout-compatible with the built-in ones. The complete per-target flag matrix
-(defines, profiles, and GL/WGSL/Metal quirks) lives in
-[`build/slang_shaders.zig`](build/slang_shaders.zig), and the
-[`src/snail/shader/slang/README.md`](src/snail/shader/slang/README.md)
-lists the public modules you can `import`.
+A family that reuses snail's inputs stays layout-compatible with the built-in
+stages: the reflected `snail-shaders*` binding contract still describes the
+vertex format and push constants. The full `slangc` recipe, the public modules
+you can `import`, and the complete per-target flag matrix (defines, profiles,
+and GL/WGSL/Metal quirks) live in
+[`src/snail/shader/slang/README.md`](src/snail/shader/slang/README.md) and
+[`build/slang_shaders.zig`](build/slang_shaders.zig).
 
 ## Status
 

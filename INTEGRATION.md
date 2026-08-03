@@ -496,6 +496,15 @@ are `snail-shaders-gl`, `snail-shaders-glsl330`,
 `snail-shaders` is the aggregate scope. Consumer scopes run `slangc` but not
 the repository's additional `naga` validation step.
 
+An engine that compiles snail's shaders itself does not need any generated
+stage module. The push-constant layout and descriptor slots are committed at
+`src/snail/shader/reflection.zig` and exposed by the `snail-shaders-reflection`
+scope, which embeds no artifacts and therefore requires no shader toolchain.
+Take the `snail_slang` source, compile it to your target with your own
+pipeline, and read the binding contract from that reflection. `zig build
+check-reflection` re-derives the reflection from `slangc` and diffs it against
+the committed copy, so it cannot drift from the shaders.
+
 For custom materials, caller-authored Slang can `import text_sample` and
 sample glyph coverage inside its own fragment shader. The worked example is
 [`dev/demo/game/slang/game_material.slang`](dev/demo/game/slang/game_material.slang).
@@ -512,8 +521,10 @@ origin, glyph words, four payload words, and linear-f16 color/tint. Its layer
 byte is local to a 256-page bank; `DrawBatch.page_base` supplies the high
 logical-page bits. Backends validate packed records before consuming them.
 
-The public byte-layout and decoding contracts live in `snail.render`; shader
-binding contracts live in `snail-shaders`; the canonical shader-side layout
+The public byte-layout and decoding contracts live in `snail.render` (pure
+Zig, no toolchain). The shader binding contract — push constants and
+descriptor slots — is committed at `src/snail/shader/reflection.zig` and
+surfaced by every `snail-shaders*` scope; the canonical shader-side layout
 lives under `src/snail/shader/slang`.
 
 ## Ownership, failure, and threading

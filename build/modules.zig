@@ -263,11 +263,16 @@ pub const ProjectModules = struct {
     shaders_wgsl: *std.Build.Module,
     shaders_hlsl: *std.Build.Module,
     shaders_msl: *std.Build.Module,
-    /// Empty-target scope: root.zig + the generated parameter-ABI module
+    /// Empty-target scope: root.zig + the committed parameter-ABI module
     /// (reflection.zig) only. For consumers that need the reflected
-    /// PushConstants/bindings but embed no artifacts (the Vulkan
-    /// reference renderer — its SPIR-V arrives via `vulkan_shaders`).
+    /// PushConstants/bindings but embed no artifacts — e.g. a Vulkan renderer
+    /// that compiles its own SPIR-V from the `snail_slang` source. Because the
+    /// reflection is committed, this scope needs NO shader toolchain.
     shaders_reflection: *std.Build.Module,
+    /// The freshly generated parameter-ABI module, used only by the
+    /// `check-reflection` drift gate to verify the committed
+    /// src/snail/shader/reflection.zig still matches slangc's reflection.
+    reflection_generated: std.Build.LazyPath,
     /// The game material family's build-time GL dialects (anonymous-import
     /// wiring via addGameShaderGl).
     game_material_gl: []const slang_shaders.Entry,

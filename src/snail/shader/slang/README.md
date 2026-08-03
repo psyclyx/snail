@@ -30,16 +30,29 @@ run the tools needed by their backend:
 - `snail-shaders-wgsl`: WGSL
 - `snail-shaders-hlsl`: D3D11 HLSL
 - `snail-shaders-msl`: Metal
-- `snail-shaders-reflection`: generated parameter ABI without shader artifacts
+- `snail-shaders-reflection`: the parameter ABI only, no shader artifacts —
+  and **no shader toolchain**, because it is backed by the committed
+  reflection (see below)
 
 A consumer that imports only `snail` or `snail-raster` does not run shader
 generation and does not need the shader toolchain.
 
-Each shader module includes a generated `reflection.zig`. Its
-`PushConstants` extern struct and binding constants are derived from
-`slangc -reflection-json`; consumers should use those definitions rather than
-copying offsets or binding numbers. Snail separately owns the data ABI:
-instance records, atlas texel layouts, and blend semantics.
+Each shader module includes a `reflection.zig`. Its `PushConstants` extern
+struct and binding constants are derived from `slangc -reflection-json`;
+consumers should use those definitions rather than copying offsets or binding
+numbers. Snail separately owns the data ABI: instance records, atlas texel
+layouts, and blend semantics.
+
+That reflection is **committed** at
+[`src/snail/shader/reflection.zig`](reflection.zig), not regenerated per
+build, so the binding contract — and the `snail-shaders-reflection` scope that
+exposes it — is consumable with no shader toolchain. This is the intended path
+for an engine that compiles snail's shaders itself: take the `snail_slang`
+source, compile to your target with your own pipeline, and read the push
+constants and binding slots from the committed reflection. `zig build
+check-reflection` re-derives it from `slangc` and diffs, so the committed copy
+cannot silently drift from the shaders; regenerate it with `zig build
+gen-shaders` and commit the result.
 
 ## Custom families
 

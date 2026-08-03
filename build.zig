@@ -75,6 +75,18 @@ fn addTestSteps(
     const test_step = b.step("test", "Run the complete unit and shader-contract test suite");
     const core_test_step = b.step("test-core", "Run library and CPU-renderer tests without shader-generation tools");
     test_step.dependOn(core_test_step);
+
+    // The committed src/snail/shader/reflection.zig is the toolchain-free
+    // binding contract; this gate re-derives it from slangc and diffs, so it
+    // cannot silently drift from the shaders. It needs slangc (already required
+    // by `test`), so it hangs off `test`, never `test-core`. On drift, run
+    // `zig build gen-shaders` and commit the updated reflection.zig.
+    const check_reflection = b.addSystemCommand(&.{ "diff", "-u" });
+    check_reflection.addFileArg(b.path("src/snail/shader/reflection.zig"));
+    check_reflection.addFileArg(modules.reflection_generated);
+    const check_reflection_step = b.step("check-reflection", "Verify the committed shader binding contract (src/snail/shader/reflection.zig) still matches slangc's reflection");
+    check_reflection_step.dependOn(&check_reflection.step);
+    test_step.dependOn(&check_reflection.step);
     const snail_tests = createSnailModuleFull(b, config.target, config.optimize, null, modules.assets, null);
     core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = snail_tests })).step);
     const raster_tests = createRasterModule(b, config.target, config.optimize, snail_tests, modules.assets, null, null);
@@ -90,6 +102,18 @@ fn addTestSteps(
         },
     });
     core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = public_api_tests })).step);
+
+    // The committed binding contract (`snail-shaders-reflection`) must compile
+    // with NO shader toolchain, so this guard rides `test-core`, which runs
+    // without slangc/naga. It regresses loudly if the reflection path ever
+    // reacquires a shader-tool dependency.
+    const reflection_contract_tests = b.createModule(.{
+        .root_source_file = b.path("dev/tests/reflection_contract.zig"),
+        .target = config.target,
+        .optimize = config.optimize,
+        .imports = &.{.{ .name = "snail_shaders", .module = modules.shaders_reflection }},
+    });
+    core_test_step.dependOn(&b.addRunArtifact(b.addTest(.{ .root_module = reflection_contract_tests })).step);
 
     const public_shader_api_tests = b.createModule(.{
         .root_source_file = b.path("dev/tests/public_shader_api.zig"),
@@ -1131,6 +1155,7 @@ pub fn build(b: *std.Build) void {
         .shaders_hlsl = slang_shaders.createGeneratedModule(b, "snail-shaders-hlsl", shader_artifacts, &.{.hlsl}).module,
         .shaders_msl = slang_shaders.createGeneratedModule(b, "snail-shaders-msl", shader_artifacts, &.{.msl}).module,
         .shaders_reflection = slang_shaders.createGeneratedModule(b, "snail-shaders-reflection", shader_artifacts, &.{}).module,
+        .reflection_generated = shader_artifacts.reflection_generated,
         .game_material_gl = shader_artifacts.game,
     };
 

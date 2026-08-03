@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- The shader binding contract (`PushConstants` layout and descriptor slots) is
+  now committed at `src/snail/shader/reflection.zig` instead of being
+  regenerated on every build. The `snail-shaders-reflection` scope is backed by
+  that committed file, so an engine that compiles snail's shaders itself can
+  read the binding contract with **no shader toolchain** — pair it with the
+  `snail_slang` source. A `test-core` guard compiles the scope without
+  slangc/naga to keep that property honest.
+- `zig build check-reflection` re-derives the reflection from `slangc` and diffs
+  it against the committed copy, failing on drift; it also runs as part of `zig
+  build test`. Regenerate the committed file with `zig build gen-shaders`.
+
+### Changed
+
+- Filled in public-API doc comments across the Zig surface (the Paint family,
+  `ShapedText`/`ShapeOptions`, `Atlas`, `TtHintVm`, `AutohintPolicy`, and the
+  option/error clusters in placement, atlas population, upload planning, and
+  prepared archives) and fixed a doc-comment that had drifted off
+  `AutohintAnalyzer` onto a neighbouring re-export.
+- Docs: de-duplicated the custom-shader-family `slangc` recipe (README now
+  points at the shader-source README) and renamed `FONT_SUPPORT.md`'s ambiguous
+  "Direction" heading to "Planned color-font integration".
+
 ## 0.17.0 - 2026-08-03
 
 ### Added
