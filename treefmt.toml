@@ -1,0 +1,13 @@
+# One formatter entry point for the repo (`treefmt`). Plain nixpkgs tools, no
+# Nix module — non-Nix contributors can run it too. Markdown is deliberately
+# left out: the docs are hand-wrapped and a reflow would churn them.
+excludes = ["npins/*"]
+
+[formatter.nix]
+command = "nixfmt"
+includes = ["*.nix"]
+
+[formatter.zig]
+command = "zig"
+options = ["fmt"]
+includes = ["*.zig"]

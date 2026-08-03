@@ -1,4 +1,6 @@
-{ pkgs ? import (import ./npins).nixpkgs { } }:
+{
+  pkgs ? import (import ./npins).nixpkgs { },
+}:
 
 let
   inherit (pkgs) lib stdenv;
@@ -49,102 +51,125 @@ let
     stripRoot = false;
   };
 in
-pkgs.mkShell ({
-  packages = with pkgs; [
-    actionlint
-    bash
-    coreutils
-    diffutils
-    shellcheck
-    zig_0_16
-    pkg-config
-    harfbuzz
-    # Pixel gates (CI + local): explicit differing-pixel counts via `magick`.
-    imagemagick
-    # Headless WebGPU reference example (`zig build run-minimal-wgpu`):
-    # Vulkan/GL backends on Linux, Metal on macOS.
-    wgpu-native
-    # Build-time shader generation (the `snail-shaders*` modules): slangc
-    # for every target. Needed on every
-    # platform since generation moved out of git — the aggregate contract
-    # tests (zig build test) and the Metal demo's MSL both generate.
-    shader-slang
-    # naga CLI: static-validation tripwire for the subpixel WGSL artifact
-    # (prelude-injected dual-source entry) — run by `zig build test` and
-    # `gen-shaders` on every platform, never by consumer scopes.
-    wgpu-utils
-  ] ++ lib.optionals stdenv.isLinux [
-    libGL
-    # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
-    # see the env vars below.
-    mesa
-    wayland
-    wayland-protocols
-    wayland-scanner
-    vulkan-loader
-    vulkan-headers
-    vulkan-validation-layers
-    # Headless D3D11 reference example (`zig build run-minimal-d3d11`):
-    # runs the cross-compiled Windows exe; Wine's built-in d3dcompiler_47
-    # is the FXC-class compiler for the generated HLSL artifacts. Needs
-    # the development branch: stable wine 11.0's bundled vkd3d-shader
-    # crashes compiling autohint.vert.hlsl (11.6 compiles all nine).
-    wine64Packages.unstable
-    # Wine's D3D11 needs a display connection to enumerate a GPU adapter;
-    # on displayless machines (CI) run the gate as
-    # `xvfb-run -a zig build run-minimal-d3d11` (GL goes to llvmpipe).
-    xvfb-run
-  ];
+pkgs.mkShell (
+  {
+    packages =
+      with pkgs;
+      [
+        actionlint
+        bash
+        coreutils
+        diffutils
+        shellcheck
+        zig_0_16
+        pkg-config
+        harfbuzz
+        # Pixel gates (CI + local): explicit differing-pixel counts via `magick`.
+        imagemagick
+        # Headless WebGPU reference example (`zig build run-minimal-wgpu`):
+        # Vulkan/GL backends on Linux, Metal on macOS.
+        wgpu-native
+        # Build-time shader generation (the `snail-shaders*` modules): slangc
+        # for every target. Needed on every
+        # platform since generation moved out of git — the aggregate contract
+        # tests (zig build test) and the Metal demo's MSL both generate.
+        shader-slang
+        # naga CLI: static-validation tripwire for the subpixel WGSL artifact
+        # (prelude-injected dual-source entry) — run by `zig build test` and
+        # `gen-shaders` on every platform, never by consumer scopes.
+        wgpu-utils
 
-  # HarfBuzz amalgam source for the cross-compiled demos (see above).
-  HARFBUZZ_SRC = "${harfbuzzSrc}";
+        # Developer ergonomics (formatting, linting, editor LSP). Not build or CI
+        # inputs — the build needs none of these. `treefmt` (config: treefmt.toml)
+        # drives nixfmt + `zig fmt`; the pre-commit hook (hooks/pre-commit, wired
+        # by .envrc) runs it plus `zig build check-reflection`.
+        treefmt
+        nixfmt
+        deadnix # dead Nix bindings
+        statix # Nix anti-pattern lints
+        nixd # LSP: Nix
+        zls # LSP: Zig (0.16, matches zig_0_16)
+        marksman # LSP: Markdown
+        taplo # LSP + formatter: TOML
+        bash-language-server # LSP: shell (dev/ci.sh, hooks/)
+      ]
+      ++ lib.optionals stdenv.isLinux [
+        libGL
+        # DRI drivers + EGL vendor file for the headless GL gates (llvmpipe);
+        # see the env vars below.
+        mesa
+        wayland
+        wayland-protocols
+        wayland-scanner
+        vulkan-loader
+        vulkan-headers
+        vulkan-validation-layers
+        # Headless D3D11 reference example (`zig build run-minimal-d3d11`):
+        # runs the cross-compiled Windows exe; Wine's built-in d3dcompiler_47
+        # is the FXC-class compiler for the generated HLSL artifacts. Needs
+        # the development branch: stable wine 11.0's bundled vkd3d-shader
+        # crashes compiling autohint.vert.hlsl (11.6 compiles all nine).
+        wine64Packages.unstable
+        # Wine's D3D11 needs a display connection to enumerate a GPU adapter;
+        # on displayless machines (CI) run the gate as
+        # `xvfb-run -a zig build run-minimal-d3d11` (GL goes to llvmpipe).
+        xvfb-run
+      ];
 
-  # wgpu-native ships no pkg-config file; build.zig picks these up for the
-  # minimal WebGPU example. macOS keeps the nixpkgs build (27.0.4; the
-  # subpixel dual-source WGSL needs >= 29 and the Metal leg is best-effort
-  # — bump when nixpkgs catches up); Linux overrides both vars below.
-  WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
-  WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
-} // lib.optionalAttrs stdenv.isLinux {
-  WGPU_NATIVE_INCLUDE = "${wgpuNativeLinux}/include";
-  WGPU_NATIVE_LIB = "${wgpuNativeLinux}/lib";
-  LD_LIBRARY_PATH = lib.makeLibraryPath ((with pkgs; [
-    libGL
-    wayland
-    harfbuzz
-    vulkan-loader
-  ]) ++ [ wgpuNativeLinux ]);
+    # HarfBuzz amalgam source for the cross-compiled demos (see above).
+    HARFBUZZ_SRC = "${harfbuzzSrc}";
 
-  # The wgpu-native Windows release tree (include/ + lib/ with the mingw
-  # import lib and wgpu_native.dll) for the cross-built Windows WebGPU gate.
-  SNAIL_WGPU_WINDOWS = "${wgpuNativeWindows}";
+    # wgpu-native ships no pkg-config file; build.zig picks these up for the
+    # minimal WebGPU example. macOS keeps the nixpkgs build (27.0.4; the
+    # subpixel dual-source WGSL needs >= 29 and the Metal leg is best-effort
+    # — bump when nixpkgs catches up); Linux overrides both vars below.
+    WGPU_NATIVE_INCLUDE = "${pkgs.wgpu-native.dev}/include";
+    WGPU_NATIVE_LIB = "${pkgs.wgpu-native}/lib";
+  }
+  // lib.optionalAttrs stdenv.isLinux {
+    WGPU_NATIVE_INCLUDE = "${wgpuNativeLinux}/include";
+    WGPU_NATIVE_LIB = "${wgpuNativeLinux}/lib";
+    LD_LIBRARY_PATH = lib.makeLibraryPath (
+      (with pkgs; [
+        libGL
+        wayland
+        harfbuzz
+        vulkan-loader
+      ])
+      ++ [ wgpuNativeLinux ]
+    );
 
-  # DXC release tree (bin/x64/{dxcompiler,dxil}.dll) for the same gate.
-  SNAIL_DXC_WINDOWS = "${dxcWindows}";
+    # The wgpu-native Windows release tree (include/ + lib/ with the mingw
+    # import lib and wgpu_native.dll) for the cross-built Windows WebGPU gate.
+    SNAIL_WGPU_WINDOWS = "${wgpuNativeWindows}";
 
-  # GL prefers the host driver stack: on NixOS /run/opengl-driver carries
-  # the vendor manifests (10_nvidia.json sorts ahead of mesa's, so the real
-  # GPU wins); the pinned mesa stays as fallback so CI runners, which ship
-  # nothing, still get llvmpipe under LIBGL_ALWAYS_SOFTWARE. Without the
-  # host dirs a proprietary-NVIDIA host gets no DRI2 screen and silently
-  # falls back to llvmpipe (all cores pegged, single-digit fps).
-  __EGL_VENDOR_LIBRARY_DIRS = "/run/opengl-driver/share/glvnd/egl_vendor.d:${pkgs.mesa}/share/glvnd/egl_vendor.d";
-  LIBGL_DRIVERS_PATH = "/run/opengl-driver/lib/dri:${pkgs.mesa}/lib/dri";
+    # DXC release tree (bin/x64/{dxcompiler,dxil}.dll) for the same gate.
+    SNAIL_DXC_WINDOWS = "${dxcWindows}";
 
-  # `zig build ci` deliberately ignores the host GL vendor and exercises the
-  # same pinned Mesa software stack as GitHub Actions. Keep these separate
-  # from the interactive defaults above so normal demos still use the GPU.
-  SNAIL_MESA_EGL_VENDOR_DIR = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
-  SNAIL_MESA_DRI_DIR = "${pkgs.mesa}/lib/dri";
+    # GL prefers the host driver stack: on NixOS /run/opengl-driver carries
+    # the vendor manifests (10_nvidia.json sorts ahead of mesa's, so the real
+    # GPU wins); the pinned mesa stays as fallback so CI runners, which ship
+    # nothing, still get llvmpipe under LIBGL_ALWAYS_SOFTWARE. Without the
+    # host dirs a proprietary-NVIDIA host gets no DRI2 screen and silently
+    # falls back to llvmpipe (all cores pegged, single-digit fps).
+    __EGL_VENDOR_LIBRARY_DIRS = "/run/opengl-driver/share/glvnd/egl_vendor.d:${pkgs.mesa}/share/glvnd/egl_vendor.d";
+    LIBGL_DRIVERS_PATH = "/run/opengl-driver/lib/dri:${pkgs.mesa}/lib/dri";
 
-  # Same for Vulkan: let the loader discover the host's ICDs. The manifests
-  # reference absolute store paths, so no LD_LIBRARY_PATH entry is needed.
-  # Missing dirs are skipped, so non-NixOS hosts and CI are unaffected.
-  XDG_DATA_DIRS = "/run/opengl-driver/share";
+    # `zig build ci` deliberately ignores the host GL vendor and exercises the
+    # same pinned Mesa software stack as GitHub Actions. Keep these separate
+    # from the interactive defaults above so normal demos still use the GPU.
+    SNAIL_MESA_EGL_VENDOR_DIR = "${pkgs.mesa}/share/glvnd/egl_vendor.d";
+    SNAIL_MESA_DRI_DIR = "${pkgs.mesa}/lib/dri";
 
-  # The pinned mesa's lavapipe (software Vulkan) ICD manifest. Not exported
-  # as VK_DRIVER_FILES directly so local machines keep their real GPU by
-  # default; the headless Vulkan gates opt in with
-  #   VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-screenshot-vulkan
-  SNAIL_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
-})
+    # Same for Vulkan: let the loader discover the host's ICDs. The manifests
+    # reference absolute store paths, so no LD_LIBRARY_PATH entry is needed.
+    # Missing dirs are skipped, so non-NixOS hosts and CI are unaffected.
+    XDG_DATA_DIRS = "/run/opengl-driver/share";
+
+    # The pinned mesa's lavapipe (software Vulkan) ICD manifest. Not exported
+    # as VK_DRIVER_FILES directly so local machines keep their real GPU by
+    # default; the headless Vulkan gates opt in with
+    #   VK_DRIVER_FILES=$SNAIL_LAVAPIPE_ICD zig build run-screenshot-vulkan
+    SNAIL_LAVAPIPE_ICD = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
+  }
+)

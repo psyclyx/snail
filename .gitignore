@@ -8,6 +8,7 @@ zig-out/
 /src/snail/shader/generated/
 /dev/demo/game/generated/
 result
+result-*
 vgcore.*
 perf.data
 perf.data.old

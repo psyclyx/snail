@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Committed pre-commit hook, activated by `git config core.hooksPath hooks`
+# (run from .envrc on every direnv load). It runs inside the nix dev shell,
+# where treefmt/zig/slangc are on PATH. If a tool is missing — e.g. committing
+# from an editor without the shell loaded — the relevant check is skipped with
+# a note rather than blocking the commit; CI enforces the same gates.
+#
+# It verifies rather than mutating your working tree: on failure it tells you
+# the one command to run. Both checks are cache hits when nothing relevant
+# changed.
+set -euo pipefail
+
+if command -v treefmt >/dev/null 2>&1; then
+    if ! treefmt --fail-on-change; then
+        echo "pre-commit: formatting drift — run 'treefmt' and re-stage." >&2
+        exit 1
+    fi
+else
+    echo "pre-commit: treefmt not found (enter nix-shell); skipping format check." >&2
+fi
+
+# Keep the committed shader binding contract in lockstep with the shaders.
+if command -v zig >/dev/null 2>&1 && command -v slangc >/dev/null 2>&1; then
+    if ! zig build check-reflection; then
+        echo "pre-commit: src/snail/shader/reflection.zig drifted — run" >&2
+        echo "            'zig build gen-shaders' and commit the updated file." >&2
+        exit 1
+    fi
+else
+    echo "pre-commit: zig/slangc not found (enter nix-shell); skipping reflection check." >&2
+fi

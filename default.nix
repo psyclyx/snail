@@ -1,15 +1,22 @@
-{ pkgs ? import (import ./npins).nixpkgs { }
-, src ? ./.
+{
+  pkgs ? import (import ./npins).nixpkgs { },
+  src ? ./.,
 }:
 
 let
   cleanSrc = pkgs.lib.cleanSourceWith {
     inherit src;
-    filter = path: type:
+    filter =
+      path: type:
       let
         name = builtins.baseNameOf path;
       in
-      !(builtins.elem name [ ".direnv" ".worktrees" ".zig-cache" "zig-out" ])
+      !(builtins.elem name [
+        ".direnv"
+        ".worktrees"
+        ".zig-cache"
+        "zig-out"
+      ])
       && pkgs.lib.cleanSourceFilter path type;
   };
 

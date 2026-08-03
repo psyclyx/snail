@@ -1,19 +1,20 @@
-{ lib
-, stdenv
-, zig_0_16
-, pkg-config
-, libGL
-, harfbuzz
-, vulkan-loader
-, vulkan-headers
-, shader-slang
-, wayland
-, wayland-protocols
-, src ? ../.
-, pname ? "snail-demo"
-, version ? "0.17.0"
-, optimize ? "fast"
-, cpu ? "baseline"
+{
+  lib,
+  stdenv,
+  zig_0_16,
+  pkg-config,
+  libGL,
+  harfbuzz,
+  vulkan-loader,
+  vulkan-headers,
+  shader-slang,
+  wayland,
+  wayland-protocols,
+  src ? ../.,
+  pname ? "snail-demo",
+  version ? "0.17.0",
+  optimize ? "fast",
+  cpu ? "baseline",
 }:
 
 let
