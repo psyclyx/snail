@@ -1,6 +1,6 @@
 .{
     .name = .snail,
-    .version = "0.16.0",
+    .version = "0.17.0",
     .fingerprint = 0x1a87b1b848f90ebf,
     // Publish only the consumable project. Repository administration, CI,
     // Nix pins, local plans, and generated outputs are not package inputs.
