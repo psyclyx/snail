@@ -14,4 +14,5 @@ pub const source_serif_cff = @embedFile("test-fonts/SourceSerif4-Regular.otf");
 pub const source_serif_cff2_variable = @embedFile("test-fonts/SourceSerif4Variable-Roman.otf");
 pub const test_opentype_collection = @embedFile("test-fonts/SnailTestCollection.otc");
 pub const test_truetype_collection = @embedFile("test-fonts/SnailTestTrueTypeCollection.ttc");
+pub const chromacheck_cbdt = @embedFile("test-fonts/chromacheck-cbdt.ttf");
 pub const dots_rgba = @embedFile("dots_16x16.rgba");

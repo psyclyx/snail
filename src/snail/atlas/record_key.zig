@@ -58,6 +58,10 @@ pub const ns = struct {
     /// c=`TtHintPpem.packed26Dot6()`. A CPU-only value record (26.6 px, no
     /// geometry) — never uploaded; read at shape time by advance providers.
     pub const tt_advance: u32 = 7;
+    /// Color-bitmap glyph (CBDT/`sbix`) at a specific ppem: a=font_id,
+    /// b=glyph_id, c=ppem. Records are strike-specific, so ppem is part of
+    /// identity — a different requested size may select a different strike.
+    pub const color_bitmap_glyph: u32 = 8;
 
     /// First namespace reserved for caller use.
     pub const user_base: u32 = 1024;
@@ -82,6 +86,13 @@ pub fn autohintGlyph(font_id: u32, glyph_id: u16) RecordKey {
 /// distinct records.
 pub fn ttAdvance(font_id: u32, glyph_id: u16, ppem_packed_26_6: u32) RecordKey {
     return .{ .namespace = ns.tt_advance, .a = font_id, .b = @intCast(glyph_id), .c = ppem_packed_26_6 };
+}
+
+/// Key for a color-bitmap glyph strike. `ppem` selects the strike, so it is
+/// part of identity: the same glyph at a different size may resolve to a
+/// different embedded bitmap.
+pub fn colorBitmapGlyph(font_id: u32, glyph_id: u16, ppem: u16) RecordKey {
+    return .{ .namespace = ns.color_bitmap_glyph, .a = font_id, .b = @intCast(glyph_id), .c = @intCast(ppem) };
 }
 
 test "record key equality and hash" {

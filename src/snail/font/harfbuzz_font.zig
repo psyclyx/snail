@@ -8,6 +8,7 @@ const std = @import("std");
 const bezier = @import("../math/bezier.zig");
 const vec = @import("../math/vec.zig");
 const types = @import("types.zig");
+const color_bitmap = @import("color_bitmap.zig");
 
 const hb = @cImport({
     @cInclude("hb.h");
@@ -16,6 +17,7 @@ const hb = @cImport({
 
 const CurveSegment = bezier.CurveSegment;
 const Vec2 = vec.Vec2;
+const ColorBitmap = color_bitmap.ColorBitmap;
 
 pub const GlyphMetrics = struct {
     advance_width: i32,
@@ -88,7 +90,67 @@ pub const Instance = struct {
     pub fn glyphMetrics(self: *Instance, units_per_em: u16, glyph_id: u16) GlyphMetrics {
         return readGlyphMetrics(self.font, units_per_em, glyph_id);
     }
+
+    /// True when the face carries any PNG-encoded embedded bitmap strike
+    /// (CBDT/CBLC or PNG `sbix`). A cheap presence probe to gate policy
+    /// before per-glyph extraction.
+    pub fn hasColorBitmaps(self: *Instance) bool {
+        return hb.hb_ot_color_has_png(self.face) != 0;
+    }
+
+    /// Reference this glyph's embedded bitmap at `ppem`, or null when the
+    /// glyph has none. The strike is selected by ppem; the returned bytes are
+    /// an owned copy and the placement box comes from the strike's extents.
+    pub fn colorBitmap(
+        self: *Instance,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        ppem: u16,
+    ) !?ColorBitmap {
+        return referenceColorBitmap(allocator, self.font, self.face, glyph_id, ppem);
+    }
 };
+
+fn referenceColorBitmap(
+    allocator: std.mem.Allocator,
+    font: *hb.hb_font_t,
+    face: *hb.hb_face_t,
+    glyph_id: u16,
+    ppem: u16,
+) !?ColorBitmap {
+    // Strike selection is by ppem; leave the outline scale untouched.
+    hb.hb_font_set_ppem(font, ppem, ppem);
+    const blob = hb.hb_ot_color_glyph_reference_png(font, glyph_id) orelse return null;
+    defer hb.hb_blob_destroy(blob);
+    var length: c_uint = 0;
+    const bytes = hb.hb_blob_get_data(blob, &length);
+    if (bytes == null or length == 0) return null;
+
+    const owned = try allocator.dupe(u8, bytes[0..length]);
+    errdefer allocator.free(owned);
+
+    var extents: hb.hb_glyph_extents_t = std.mem.zeroes(hb.hb_glyph_extents_t);
+    _ = hb.hb_font_get_glyph_extents(font, glyph_id, &extents);
+    const upem = hb.hb_face_get_upem(face);
+    return .{
+        .allocator = allocator,
+        .data = owned,
+        .format = .png,
+        .bbox = bboxFromExtents(extents, upem),
+    };
+}
+
+fn bboxFromExtents(extents: hb.hb_glyph_extents_t, units_per_em: c_uint) bezier.BBox {
+    const scale = 1.0 / @as(f32, @floatFromInt(units_per_em));
+    const x_min: f32 = @floatFromInt(extents.x_bearing);
+    const x_max = x_min + @as(f32, @floatFromInt(extents.width));
+    const y_max: f32 = @floatFromInt(extents.y_bearing);
+    const y_min = y_max + @as(f32, @floatFromInt(extents.height));
+    return .{
+        .min = Vec2.new(@min(x_min, x_max) * scale, @min(y_min, y_max) * scale),
+        .max = Vec2.new(@max(x_min, x_max) * scale, @max(y_min, y_max) * scale),
+    };
+}
 
 pub const Outline = struct {
     allocator: std.mem.Allocator,
@@ -119,19 +181,10 @@ fn readGlyphMetrics(font: *hb.hb_font_t, units_per_em: u16, glyph_id: u16) Glyph
     const advance = hb.hb_font_get_glyph_h_advance(font, glyph_id);
     var extents: hb.hb_glyph_extents_t = std.mem.zeroes(hb.hb_glyph_extents_t);
     _ = hb.hb_font_get_glyph_extents(font, glyph_id, &extents);
-
-    const scale = 1.0 / @as(f32, @floatFromInt(units_per_em));
-    const x_min: f32 = @floatFromInt(extents.x_bearing);
-    const x_max = x_min + @as(f32, @floatFromInt(extents.width));
-    const y_max: f32 = @floatFromInt(extents.y_bearing);
-    const y_min = y_max + @as(f32, @floatFromInt(extents.height));
     return .{
         .advance_width = advance,
         .lsb = extents.x_bearing,
-        .bbox = .{
-            .min = Vec2.new(@min(x_min, x_max) * scale, @min(y_min, y_max) * scale),
-            .max = Vec2.new(@max(x_min, x_max) * scale, @max(y_min, y_max) * scale),
-        },
+        .bbox = bboxFromExtents(extents, units_per_em),
     };
 }
 

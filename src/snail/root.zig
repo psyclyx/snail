@@ -182,6 +182,7 @@ test {
     _ = image_mod;
     _ = paint_mod;
     _ = record_key_mod;
+    _ = @import("font/color_bitmap.zig");
     _ = @import("atlas/curves.zig");
     _ = @import("atlas/record.zig");
     _ = @import("atlas/page.zig");

@@ -62,6 +62,21 @@ Font Name; and the renamed faces were packaged as an OpenType collection.
 Source Serif is licensed under the SIL Open Font License, Version 1.1,
 reproduced below.
 
+## ChromaCheck Test Font
+
+File:
+
+- `test-fonts/chromacheck-cbdt.ttf`
+
+An unmodified copy of the ChromaCheck CBDT probe font, used to exercise
+embedded color-bitmap (CBDT/CBLC) extraction. It is bundled with the HarfBuzz
+test suite (`test/api/fonts/`) that snail already builds against.
+
+- Copyright Roel Nieskens and Google, licensed under the MIT License.
+- Source: https://github.com/RoelN/ChromaCheck/tree/master/fonts
+- `chromacheck-cbdt.ttf` SHA-256:
+  `b4ce9336e9d208d2b1e68155611bdf4684139af90950feff18bdd657b2db2a94`
+
 ## SIL Open Font License 1.1
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

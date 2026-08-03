@@ -17,6 +17,11 @@ pub const OutlineFormat = ttf.OutlineFormat;
 pub const Variation = font_types.Variation;
 pub const VariationAxis = font_types.VariationAxis;
 pub const Options = font_types.Options;
+
+const color_bitmap_mod = @import("font/color_bitmap.zig");
+pub const ColorBitmap = color_bitmap_mod.ColorBitmap;
+pub const BitmapFormat = color_bitmap_mod.BitmapFormat;
+pub const ImageDecoder = color_bitmap_mod.ImageDecoder;
 const tt = struct {
     pub const exec = @import("font/truetype/exec.zig");
     pub const graphics = @import("font/truetype/graphics.zig");
@@ -266,6 +271,24 @@ pub const Font = struct {
             instance,
             cubic_tolerance,
         );
+    }
+
+    /// Reference this glyph's embedded color bitmap at `ppem` (CBDT/CBLC or
+    /// PNG `sbix`), or null when the glyph has none. The returned bytes are
+    /// still encoded — a host `ImageDecoder` turns them into a `snail.Image`.
+    ///
+    /// Convenience one-shot extraction that constructs a temporary HarfBuzz
+    /// backend. Batch callers should reuse a `createInstance()` instance and
+    /// call `Instance.colorBitmap` directly.
+    pub fn colorBitmap(
+        self: *const Font,
+        allocator: std.mem.Allocator,
+        glyph_id: u16,
+        ppem: u16,
+    ) !?ColorBitmap {
+        var instance = try self.createInstance();
+        defer instance.deinit();
+        return instance.colorBitmap(allocator, glyph_id, ppem);
     }
 
     pub const ColrLayer = ttf.Font.ColrLayer;
@@ -628,6 +651,38 @@ test "TrueType collections use the selected native face" {
     );
     defer curves.deinit();
     try std.testing.expect(curves.curve_count > 0);
+}
+
+test "colorBitmap extracts an embedded CBDT strike with full-em placement" {
+    const font_data = @import("assets").chromacheck_cbdt;
+    var font = try Font.init(font_data);
+
+    const glyph_id = try font.glyphIndex(0xE903);
+    var bitmap = (try font.colorBitmap(std.testing.allocator, glyph_id, 109)).?;
+    defer bitmap.deinit();
+
+    try std.testing.expectEqual(color_bitmap_mod.BitmapFormat.png, bitmap.format);
+    // PNG signature — snail never decodes, but the bytes are a real document.
+    try std.testing.expect(bitmap.data.len > 8);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a }, bitmap.data[0..8]);
+    // The strike covers the whole em square (upem=1024, extents 0..1024).
+    try std.testing.expectApproxEqAbs(@as(f32, 0), bitmap.bbox.min.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 0), bitmap.bbox.min.y, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), bitmap.bbox.max.x, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f32, 1), bitmap.bbox.max.y, 1e-6);
+}
+
+test "colorBitmap returns null for a glyph and font without bitmaps" {
+    // notdef in a bitmap font has no strike.
+    const cbdt = @import("assets").chromacheck_cbdt;
+    var bitmap_font = try Font.init(cbdt);
+    try std.testing.expect((try bitmap_font.colorBitmap(std.testing.allocator, 0, 109)) == null);
+
+    // A plain outline font never yields a bitmap.
+    const outline = @import("assets").noto_sans_regular;
+    var outline_font = try Font.init(outline);
+    const a = try outline_font.glyphIndex('A');
+    try std.testing.expect((try outline_font.colorBitmap(std.testing.allocator, a, 16)) == null);
 }
 
 test "extractCurves matches dense quadratic packing byte-for-byte" {
