@@ -595,23 +595,22 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
     var rect_curves = try prepared_path.fillCurves(allocator, allocator);
     defer rect_curves.deinit();
 
-    // `prepare` normalizes the rect into a [-1,1] design space; `design_to_source`
-    // maps that back to the authored em rect. Composing it into both the uv and
-    // the placement keeps everything in the strike's own em frame.
-    const d2s = prepared_path.design_to_source;
-    // Image UV maps the em-space rect (y-up) onto the image (rows top-down);
-    // the flip keeps the strike upright under an outline glyph's placement.
-    const uv_transform = snail.font.color_bitmap.imageUvTransform(strike.bbox).multiply(d2s);
+    // Author the image paint in the strike's own em frame — UV maps the em
+    // rect (y-up) onto the image (rows top-down); the flip keeps the strike
+    // upright under an outline glyph's placement. `paintForDesign` re-expresses
+    // it into the [-1,1] design space `prepare` normalized the geometry into,
+    // so the caller never touches that internal frame.
+    const source_paint = snail.Paint{ .image = .{
+        .image = &image,
+        .uv_transform = snail.font.color_bitmap.imageUvTransform(strike.bbox),
+        .filter = .nearest,
+    } };
     const key = snail.record_key.colorBitmapGlyph(0, glyph_id, ppem);
     var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &.{.{
         .geometry = .{
             .key = key,
             .curves = rect_curves.view(),
-            .paint = .{ .image = .{
-                .image = &image,
-                .uv_transform = uv_transform,
-                .filter = .nearest,
-            } },
+            .paint = try prepared_path.paintForDesign(source_paint),
         },
     }} });
     defer atlas.deinit();
@@ -630,15 +629,14 @@ test "color-bitmap glyph renders as a placed image with upright orientation" {
 
     // Place em(0..1) into the pixel box [8,8]..[8+S,8+S] with the y-flip an
     // outline run-placement transform carries: em-top -> screen-top.
+    // `placedBy` folds in the design-space normalization for us.
     const x0: f32 = 8;
     const y0: f32 = 8;
     const S: f32 = 24;
-    // Placement maps the source em rect (y-up) into the pixel box, composed
-    // with design_to_source since the geometry lives in design space.
     const place = snail.Transform2D{ .xx = S, .xy = 0, .tx = x0, .yx = 0, .yy = -S, .ty = y0 + S };
     const shapes = [_]snail.Shape{.{
         .key = key,
-        .local_transform = place.multiply(d2s),
+        .local_transform = prepared_path.placedBy(place),
         .local_color = .{ 1, 1, 1, 1 },
     }};
 
@@ -741,28 +739,28 @@ test "shaped run of color-bitmap glyphs places and renders through the public AP
     var rect_curves = try prepared_path.fillCurves(allocator, allocator);
     defer rect_curves.deinit();
 
-    // `prepare` normalizes into a [-1,1] design space; `design_to_source` maps
-    // back to the authored em rect. Composing it into both the uv and each
-    // glyph's placement keeps a bitmap glyph in the exact em frame an outline
-    // glyph uses — so it lands em-sized and abuts its neighbor instead of
-    // spilling over it.
-    const d2s = prepared_path.design_to_source;
+    // Author the image paint in the strike's em frame; `paintForDesign` and
+    // `placedBy` (below) fold in the [-1,1] design-space normalization that
+    // `prepare` applied, so a bitmap glyph lands in the exact em frame an
+    // outline glyph uses — em-sized, abutting its neighbor, not spilling over.
+    const source_paint = snail.Paint{ .image = .{
+        .image = &image,
+        .uv_transform = snail.font.color_bitmap.imageUvTransform(bb),
+        .filter = .nearest,
+    } };
     const key = snail.record_key.colorBitmapGlyph(font_id, glyph_id, ppem);
     var atlas = try snail.Atlas.from(allocator, pool, .{ .entries = &.{.{
         .geometry = .{
             .key = key,
             .curves = rect_curves.view(),
-            .paint = .{ .image = .{
-                .image = &image,
-                .uv_transform = snail.font.color_bitmap.imageUvTransform(bb).multiply(d2s),
-                .filter = .nearest,
-            } },
+            .paint = try prepared_path.paintForDesign(source_paint),
         },
     }} });
     defer atlas.deinit();
 
     // Swap every strike-backed glyph onto its bitmap record (untinted), keeping
-    // its placeRun origin for the assertions before composing design_to_source.
+    // its placeRun origin for the assertions before it is re-placed via
+    // `placedBy` (which maps the design-space geometry back to the em frame).
     const origins = try allocator.alloc(?[2]f32, shapes.len);
     defer allocator.free(origins);
     @memset(origins, null);
@@ -772,7 +770,7 @@ test "shaped run of color-bitmap glyphs places and renders through the public AP
             origin.* = .{ shp.local_transform.tx, shp.local_transform.ty };
             shp.key = snail.record_key.colorBitmapGlyph(g.font_id, g.glyph_id, ppem);
             shp.local_color = .{ 1, 1, 1, 1 };
-            shp.local_transform = shp.local_transform.multiply(d2s);
+            shp.local_transform = prepared_path.placedBy(shp.local_transform);
         }
     }
 
