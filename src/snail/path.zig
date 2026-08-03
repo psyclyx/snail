@@ -941,9 +941,18 @@ fn transformCurve(curve: CurveSegment, transform: Transform2D) CurveSegment {
 /// ratio. `design_to_source` restores authored coordinates when the shape is
 /// drawn. Empty paths use identity transforms and an empty prepared fill.
 /// Strokes are outlined in source space before normalization.
+///
+/// To place the prepared geometry, stay in your authored (source) coordinates
+/// and use `placedBy` for the `Shape` transform and `paintForDesign` for any
+/// paint — both fold in the design-space normalization for you. Reach for the
+/// raw `design_to_source` / `source_to_design` only for something those two
+/// don't cover; composing them by hand at draw time is exactly what those
+/// helpers exist to prevent.
 pub const PreparedPath = struct {
     source: Path,
     design: Path,
+    /// Design → authored source placement. Prefer `placedBy` / `paintForDesign`
+    /// over composing this directly (see the type doc).
     design_to_source: Transform2D,
     source_to_design: Transform2D,
 
