@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.18.0 - 2026-08-03
 
 ### Added
 
@@ -25,6 +25,18 @@
 - Docs: de-duplicated the custom-shader-family `slangc` recipe (README now
   points at the shader-source README) and renamed `FONT_SUPPORT.md`'s ambiguous
   "Direction" heading to "Planned color-font integration".
+
+### Tooling
+
+- `zig build update-goldens` re-renders the deterministic CPU reference and
+  overwrites the committed golden — the one command to re-sync it after an
+  intended render change. CI image gates now emit a diff + side-by-side image
+  into `zig-out/ci-diffs` on failure (uploaded as an artifact), so a red gate
+  is adjudicated from the artifact rather than a local re-render.
+- Dev-shell ergonomics: `treefmt` (config `treefmt.toml`, driving nixfmt +
+  `zig fmt`), `deadnix`/`statix`, and `nixd`/`zls`/`marksman`/`taplo`/
+  `bash-language-server`, plus a committed `hooks/pre-commit` (wired via
+  `.envrc`) running `treefmt --fail-on-change` and `zig build check-reflection`.
 
 ## 0.17.0 - 2026-08-03
 

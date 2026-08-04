@@ -2,7 +2,7 @@ const std = @import("std");
 const vulkan_shaders = @import("build/vulkan_shaders.zig");
 const slang_shaders = @import("build/slang_shaders.zig");
 
-const version = "0.17.0";
+const version = "0.18.0";
 
 // The module-creation layer lives in build/modules.zig; alias its public
 // declarations so the step functions below read unqualified. build.zig stays
