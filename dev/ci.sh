@@ -5,6 +5,10 @@ set -euo pipefail
 repo_root="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
 cd -- "$repo_root"
 
+# Failure diff images land here and are uploaded as a CI artifact, so a red
+# image gate is adjudicated from the artifact instead of a local re-render.
+ci_diff_dir="${CI_DIFF_DIR:-zig-out/ci-diffs}"
+
 group() {
     printf '\n==> %s\n' "$1"
 }
@@ -46,6 +50,39 @@ configure_linux_software_rendering() {
     export LIBGL_DRIVERS_PATH="$SNAIL_MESA_DRI_DIR"
 }
 
+# On a failed image gate, write a visual diff + side-by-side into ci_diff_dir
+# so the failure is legible from the uploaded artifact. Best-effort: no magick,
+# missing inputs, or a convert error never masks the underlying gate failure.
+emit_diff() {
+    local reference=$1
+    local actual=$2
+    local label
+    command -v magick >/dev/null 2>&1 || return 0
+    [[ -f "$reference" && -f "$actual" ]] || return 0
+    label="$(basename "${actual%.*}")"
+    mkdir -p "$ci_diff_dir"
+    magick "$reference" "$actual" -alpha off -compose difference -composite \
+        -auto-level "$ci_diff_dir/${label}.diff.png" 2>/dev/null || true
+    magick "$reference" "$actual" +append \
+        "$ci_diff_dir/${label}.side-by-side.png" 2>/dev/null || true
+    printf 'ci: wrote %s/%s.{diff,side-by-side}.png\n' "$ci_diff_dir" "$label" >&2
+}
+
+# Byte-exact gate for the deterministic CPU rasterizer. On mismatch, point at
+# the bless command and emit a diff image.
+gate_exact() {
+    local reference=$1
+    local actual=$2
+    if cmp -s "$reference" "$actual"; then
+        printf '%s matches %s (exact)\n' "$actual" "$reference"
+        return 0
+    fi
+    printf 'FAIL: %s differs from %s (exact gate).\n' "$actual" "$reference" >&2
+    printf "      If the render change is intended, run 'zig build update-goldens' and commit.\n" >&2
+    emit_diff "$reference" "$actual"
+    return 1
+}
+
 pixel_count() {
     local reference=$1
     local actual=$2
@@ -79,6 +116,7 @@ gate_pixels() {
     printf '%s vs %s: %s pixels over %s%% channel delta (limit %s)\n' \
         "$actual" "$reference" "$measured" "$threshold" "$limit"
     if (( measured > limit )); then
+        emit_diff "$reference" "$actual"
         return 1
     fi
 }
@@ -110,7 +148,7 @@ ci_linux_vulkan() {
     group 'CPU rasterizer screenshots'
     run zig build run-screenshot -Dcpu=baseline
     run zig build run-banner-screenshot -Dcpu=baseline
-    run cmp zig-out/demo-screenshot.tga dev/demo/tools/screenshots/demo_cpu_reference.tga
+    gate_exact zig-out/demo-screenshot.tga dev/demo/tools/screenshots/demo_cpu_reference.tga
 
     group 'Vulkan screenshots (lavapipe)'
     run env VK_DRIVER_FILES="$SNAIL_LAVAPIPE_ICD" zig build run-screenshot-vulkan -Dcpu=baseline

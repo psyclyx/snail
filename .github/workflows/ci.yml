@@ -159,6 +159,7 @@ jobs:
             zig-out/demo-screenshot-vulkan.tga
             zig-out/banner-screenshot-vulkan.tga
             zig-out/game-*.tga
+            zig-out/ci-diffs/**
           if-no-files-found: ignore
 
   linux-wgpu-wine:
@@ -212,6 +213,7 @@ jobs:
             zig-out/minimal-d3d11-diff.png
             zig-out/minimal-wgpu.tga
             zig-out/windows-gates/zig-out/minimal-wgpu.tga
+            zig-out/ci-diffs/**
           if-no-files-found: ignore
 
   consumer-builds:

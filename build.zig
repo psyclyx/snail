@@ -219,6 +219,20 @@ fn addScreenshotSteps(
     const screenshot_cpu_step = b.step("run-screenshot", "Render the demo through the CPU backend and write zig-out/demo-screenshot.tga");
     screenshot_cpu_step.dependOn(&run_screenshot_cpu.step);
 
+    // Bless step: re-render the deterministic CPU reference and copy it over
+    // the committed golden. CI gates zig-out/demo-screenshot.tga byte-exact
+    // against demo_cpu_reference.tga (dev/ci.sh `gate_exact`), so after an
+    // intended render change this one command re-syncs it. The GPU gates diff
+    // against this live CPU render, so they need no separate golden.
+    const update_goldens_step = b.step("update-goldens", "Re-render and overwrite the committed CPU reference image (bless the golden)");
+    const bless_cpu_reference = b.addSystemCommand(&.{
+        "cp",                          "--",
+        "zig-out/demo-screenshot.tga", "dev/demo/tools/screenshots/demo_cpu_reference.tga",
+    });
+    bless_cpu_reference.has_side_effects = true;
+    bless_cpu_reference.step.dependOn(&run_screenshot_cpu.step);
+    update_goldens_step.dependOn(&bless_cpu_reference.step);
+
     // CPU coverage-parity probe (affine twin of the composite probe).
     const coverage_parity_mod = b.createModule(.{
         .root_source_file = b.path("dev/demo/root.zig"),
