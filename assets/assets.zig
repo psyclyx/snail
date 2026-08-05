@@ -15,4 +15,7 @@ pub const source_serif_cff2_variable = @embedFile("test-fonts/SourceSerif4Variab
 pub const test_opentype_collection = @embedFile("test-fonts/SnailTestCollection.otc");
 pub const test_truetype_collection = @embedFile("test-fonts/SnailTestTrueTypeCollection.ttc");
 pub const chromacheck_cbdt = @embedFile("test-fonts/chromacheck-cbdt.ttf");
+/// A bitmap-only (CBDT/CBLC, no `glyf`/CFF) font: NotoColorEmoji subset to a
+/// single emoji (U+1F600). Exercises the color-bitmap-only load path.
+pub const noto_emoji_cbdt = @embedFile("test-fonts/noto-emoji-cbdt-subset.ttf");
 pub const dots_rgba = @embedFile("dots_16x16.rgba");

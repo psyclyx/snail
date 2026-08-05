@@ -10,6 +10,7 @@ paints, atlas records, and draw records.
 |---|---|
 | Containers | OpenType fonts and TTC/OTC collections |
 | Monochrome outlines | TrueType `glyf`, CFF, and CFF2 |
+| Bitmap-only fonts | Loads fonts with no outline table when they carry CBDT/CBLC or `sbix` strikes (e.g. NotoColorEmoji); outline extraction yields empty curves |
 | Variable instances | Explicit `fvar` coordinates, with outlines and metrics resolved by HarfBuzz |
 | Layout | HarfBuzz GSUB/GPOS shaping, features, direction, script, language, and fallback |
 | Color | COLRv0 solid palette layers, including foreground-color layers |
@@ -19,6 +20,11 @@ paints, atlas records, and draw records.
 
 The unsupported color formats fall back to the font's ordinary outline when
 one exists. Snail does not decode PNG, JPEG, TIFF, or SVG documents.
+
+A font with no scalable outline table (`glyf`/CFF/CFF2) loads when it carries a
+color-bitmap table (CBDT/CBLC or `sbix`); `outlineFormat()` reports `.none` and
+outline extraction returns empty curves, so a host renders such glyphs from
+their strikes. Fonts with neither outlines nor bitmaps are still rejected.
 
 ## Planned color-font integration
 

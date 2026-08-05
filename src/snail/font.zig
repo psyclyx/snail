@@ -358,11 +358,19 @@ fn extractCurvesInner(
             temporary_instance = try font.createInstance();
             break :blk &temporary_instance.?;
         };
-        var outline = try instance.glyphOutline(
+        var outline = instance.glyphOutline(
             scratch,
             glyph_id,
             1.0 / @as(f32, @floatFromInt(font.inner.units_per_em)),
-        );
+        ) catch |err| {
+            // Color-bitmap-only fonts have no drawable outlines; HarfBuzz reports
+            // `UnsupportedOutlineFormat`. Such glyphs are painted from their
+            // strike (`colorBitmap`), not an outline, so an empty record is the
+            // correct geometry — mirroring an empty glyph like ASCII space.
+            if (font.inner.outline_format == .none and err == error.UnsupportedOutlineFormat)
+                return curves_mod.GlyphCurves.empty(allocator);
+            return err;
+        };
         defer outline.deinit();
         return packGlyphCurves(
             allocator,
@@ -685,6 +693,39 @@ test "colorBitmap returns null for a glyph and font without bitmaps" {
     var outline_font = try Font.init(outline);
     const a = try outline_font.glyphIndex('A');
     try std.testing.expect((try outline_font.colorBitmap(std.testing.allocator, a, 16)) == null);
+}
+
+test "a color-bitmap-only font (no glyf/CFF) loads as outline_format .none" {
+    // NotoColorEmoji subset: CBDT/CBLC with no outline table. Previously
+    // rejected with MissingRequiredTable; now accepted so its strikes render.
+    const font_data = @import("assets").noto_emoji_cbdt;
+    var font = try Font.init(font_data);
+    try std.testing.expectEqual(OutlineFormat.none, font.outlineFormat());
+
+    // The strike is reachable and is a real PNG document.
+    const glyph_id = try font.glyphIndex(0x1F600);
+    try std.testing.expect(glyph_id != 0);
+    var bitmap = (try font.colorBitmap(std.testing.allocator, glyph_id, 128)).?;
+    defer bitmap.deinit();
+    try std.testing.expectEqual(color_bitmap.BitmapFormat.png, bitmap.format);
+    try std.testing.expectEqualSlices(u8, &[_]u8{ 0x89, 'P', 'N', 'G', 0x0d, 0x0a, 0x1a, 0x0a }, bitmap.data[0..8]);
+}
+
+test "outline extraction on a bitmap-only font yields empty curves, not an error" {
+    // The glyph is painted from its strike, so its outline is legitimately
+    // empty — extraction must degrade gracefully rather than fail the batch.
+    const font_data = @import("assets").noto_emoji_cbdt;
+    var font = try Font.init(font_data);
+    const glyph_id = try font.glyphIndex(0x1F600);
+
+    var curves = try font.extractCurves(std.testing.allocator, std.testing.allocator, glyph_id);
+    defer curves.deinit();
+    try std.testing.expect(curves.view().isEmpty());
+
+    // .notdef too — no outline, no crash.
+    var notdef = try font.extractCurves(std.testing.allocator, std.testing.allocator, 0);
+    defer notdef.deinit();
+    try std.testing.expect(notdef.view().isEmpty());
 }
 
 test "extractCurves matches dense quadratic packing byte-for-byte" {

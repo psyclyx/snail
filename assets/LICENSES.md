@@ -77,6 +77,22 @@ test suite (`test/api/fonts/`) that snail already builds against.
 - `chromacheck-cbdt.ttf` SHA-256:
   `b4ce9336e9d208d2b1e68155611bdf4684139af90950feff18bdd657b2db2a94`
 
+## Noto Color Emoji Test Subset
+
+File:
+
+- `test-fonts/noto-emoji-cbdt-subset.ttf`
+
+A subset of Google's Noto Color Emoji reduced to a single emoji (U+1F600),
+used to exercise the color-bitmap-*only* load path (a CBDT/CBLC font with no
+`glyf`/CFF outline table). Produced with `pyftsubset --unicodes=1F600`.
+
+- Copyright the Noto Project Authors, licensed under the SIL Open Font License,
+  Version 1.1.
+- Source: https://github.com/googlefonts/noto-emoji
+- `noto-emoji-cbdt-subset.ttf` SHA-256:
+  `004a89c04c23a42647797c368172022f8d584ec0110dbd304d26a7e632f28347`
+
 ## SIL Open Font License 1.1
 
 This Font Software is licensed under the SIL Open Font License, Version 1.1.

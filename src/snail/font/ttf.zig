@@ -55,6 +55,10 @@ pub const OutlineFormat = enum {
     truetype,
     cff,
     cff2,
+    /// No scalable outlines: a color-bitmap-only font (embedded CBDT/CBLC or
+    /// `sbix` PNG strikes, e.g. NotoColorEmoji). Shaping, advances, metrics, and
+    /// `colorBitmap` come from HarfBuzz; outline extraction yields empty curves.
+    none,
 };
 
 fn freeContourCurves(allocator: std.mem.Allocator, contours: []const Contour) void {
@@ -87,6 +91,9 @@ pub const Font = struct {
     cpal_offset: u32 = 0,
     cff_offset: u32 = 0,
     cff2_offset: u32 = 0,
+    cbdt_offset: u32 = 0,
+    cblc_offset: u32 = 0,
+    sbix_offset: u32 = 0,
     os2_offset: u32 = 0,
     post_offset: u32 = 0,
     index_to_loc_format: i16 = 0,
@@ -128,7 +135,7 @@ pub const Font = struct {
         return std.mem.readInt(u32, data[offset..][0..4], .big);
     }
 
-    fn tableFields(self: *Font) [16]struct { tag: *const [4]u8, dest: *u32 } {
+    fn tableFields(self: *Font) [19]struct { tag: *const [4]u8, dest: *u32 } {
         return .{
             .{ .tag = "head", .dest = &self.head_offset },
             .{ .tag = "maxp", .dest = &self.maxp_offset },
@@ -144,6 +151,9 @@ pub const Font = struct {
             .{ .tag = "CPAL", .dest = &self.cpal_offset },
             .{ .tag = "CFF ", .dest = &self.cff_offset },
             .{ .tag = "CFF2", .dest = &self.cff2_offset },
+            .{ .tag = "CBDT", .dest = &self.cbdt_offset },
+            .{ .tag = "CBLC", .dest = &self.cblc_offset },
+            .{ .tag = "sbix", .dest = &self.sbix_offset },
             .{ .tag = "OS/2", .dest = &self.os2_offset },
             .{ .tag = "post", .dest = &self.post_offset },
         };
@@ -184,6 +194,11 @@ pub const Font = struct {
             self.outline_format = .cff2;
         } else if (self.cff_offset != 0) {
             self.outline_format = .cff;
+        } else if ((self.cbdt_offset != 0 and self.cblc_offset != 0) or self.sbix_offset != 0) {
+            // No scalable outlines, but embedded color-bitmap strikes: a bitmap
+            // emoji font (e.g. NotoColorEmoji). HarfBuzz drives shaping,
+            // metrics, and strike extraction; outline extraction returns empty.
+            self.outline_format = .none;
         } else {
             return error.MissingRequiredTable;
         }

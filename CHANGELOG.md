@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.19.0 - 2026-08-05
+
+### Added
+
+- Load color-bitmap-*only* fonts: a font with no scalable outline table
+  (`glyf`/CFF/CFF2) but embedded CBDT/CBLC or `sbix` strikes (e.g.
+  NotoColorEmoji) now parses instead of failing with `MissingRequiredTable`.
+  `outlineFormat()` reports the new `OutlineFormat.none`; shaping, advances,
+  metrics, and `colorBitmap` come from HarfBuzz, and outline extraction returns
+  empty curves so a host paints such glyphs from their strikes. Covered by a
+  small CBDT-only test asset (`assets.noto_emoji_cbdt`).
+
 ## 0.18.0 - 2026-08-03
 
 ### Added
