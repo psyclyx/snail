@@ -1,39 +1,27 @@
-{
-  pkgs ? import (import ./npins).nixpkgs { },
-  src ? ./.,
-}:
-
 let
-  cleanSrc = pkgs.lib.cleanSourceWith {
-    inherit src;
-    filter =
-      path: type:
-      let
-        name = builtins.baseNameOf path;
-      in
-      !(builtins.elem name [
-        ".direnv"
-        ".worktrees"
-        ".zig-cache"
-        "zig-out"
-      ])
-      && pkgs.lib.cleanSourceFilter path type;
+  npins = import ./npins;
+
+  mkPackages = pkgs: {
+    # Pass src explicitly: snail-demo.nix has a `src` formal arg, and without
+    # this callPackage would fill it from pkgs.src (a throwing alias).
+    snail-demo = pkgs.callPackage ./nix/snail-demo.nix { src = ./.; };
   };
 
-  demo = pkgs.callPackage ./nix/snail-demo.nix {
-    src = cleanSrc;
-  };
-
-  shell = import ./shell.nix {
-    inherit pkgs;
-  };
+  # Scoped against `final` so packages can reference each other; lazy, so no
+  # infinite recursion. Consumers apply this overlay to their own pkgs to get
+  # snail's packages by name.
+  overlay = final: _prev: mkPackages final;
 in
 {
-  inherit demo shell;
-
-  default = demo;
-
-  packages = {
-    inherit demo;
-  };
+  nixpkgs ? npins.nixpkgs,
+  pkgs ? import nixpkgs { },
+}:
+let
+  finalPkgs = pkgs.extend overlay;
+in
+{
+  packages = mkPackages finalPkgs;
+  inherit overlay;
+  shell = import ./shell.nix { pkgs = finalPkgs; };
+  default = finalPkgs.snail-demo;
 }

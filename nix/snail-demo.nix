@@ -19,9 +19,26 @@
 
 let
   zig = zig_0_16;
+
+  cleanSrc = lib.cleanSourceWith {
+    inherit src;
+    filter =
+      path: type:
+      let
+        name = builtins.baseNameOf path;
+      in
+      !(builtins.elem name [
+        ".direnv"
+        ".worktrees"
+        ".zig-cache"
+        "zig-out"
+      ])
+      && lib.cleanSourceFilter path type;
+  };
 in
 stdenv.mkDerivation {
-  inherit pname version src;
+  inherit pname version;
+  src = cleanSrc;
 
   nativeBuildInputs = [
     zig.hook
