@@ -10,7 +10,6 @@
   shader-slang,
   wayland,
   wayland-protocols,
-  src ? ../.,
   pname ? "snail-demo",
   version ? "0.18.0",
   optimize ? "fast",
@@ -19,26 +18,27 @@
 
 let
   zig = zig_0_16;
-
-  cleanSrc = lib.cleanSourceWith {
-    inherit src;
-    filter =
-      path: type:
-      let
-        name = builtins.baseNameOf path;
-      in
-      !(builtins.elem name [
-        ".direnv"
-        ".worktrees"
-        ".zig-cache"
-        "zig-out"
-      ])
-      && lib.cleanSourceFilter path type;
-  };
 in
 stdenv.mkDerivation {
   inherit pname version;
-  src = cleanSrc;
+  # Only the files the `install-demo` build actually consumes: the build
+  # graph (build.zig + build/), the library sources and shader families
+  # (src/), the shared font/image assets (assets/), and the demo + support
+  # sources the demo links (dev/demo, dev/support). Entry points
+  # (default.nix, shell.nix), npins/, docs, and test/CI scaffolding are not
+  # package inputs, so editing them must not churn the source hash.
+  src = lib.fileset.toSource {
+    root = ../.;
+    fileset = lib.fileset.unions [
+      ../build.zig
+      ../build.zig.zon
+      ../build
+      ../src
+      ../assets
+      ../dev/demo
+      ../dev/support
+    ];
+  };
 
   nativeBuildInputs = [
     zig.hook

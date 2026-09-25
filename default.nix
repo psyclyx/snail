@@ -2,9 +2,9 @@ let
   npins = import ./npins;
 
   mkPackages = pkgs: {
-    # Pass src explicitly: snail-demo.nix has a `src` formal arg, and without
-    # this callPackage would fill it from pkgs.src (a throwing alias).
-    snail-demo = pkgs.callPackage ./nix/snail-demo.nix { src = ./.; };
+    # The derivation fileset-scopes its own src (see nix/snail-demo.nix), so
+    # no src plumbing is needed here.
+    snail-demo = pkgs.callPackage ./nix/snail-demo.nix { };
   };
 
   # Scoped against `final` so packages can reference each other; lazy, so no
