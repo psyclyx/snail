@@ -233,7 +233,7 @@ ci_cross() {
 ci_nix() {
     require_command nix-build
     group 'Nix package'
-    run nix-build default.nix --no-out-link -A demo
+    run nix-build default.nix --no-out-link -A default
 }
 
 ci_all() {
