@@ -248,112 +248,89 @@ licensed under MIT.
 
 ### How it works
 
-Rendering splits into a **preparation** phase on the CPU, once per record,
-and a **draw** phase for every covered fragment. Outlines are not rasterized
-ahead of time: the atlas stores curves and indexes. Caller-provided image
-paints remain raster images.
+The CPU prepares each record once. The GPU then evaluates those curves for
+every covered pixel. Nothing is rasterized ahead of time; only image paints
+are images.
 
-**1. Prepare: outlines remain curves.** TrueType outlines use lines and
-quadratic Béziers. CFF/CFF2 outlines and caller-authored paths can contain
-cubics; paths can also contain rational conics. Cubics are split at axis
-extrema and inflections, then adaptively approximated by tangent-preserving
-quadratic chains. Endpoints and joins are preserved. Every emitted quadratic
-is certified against the requested source-space tolerance (the default is
-`1/8192`, where one em is one unit for normalized font outlines); if finite
-`f32` output cannot represent a certified result, preparation returns a typed
-error instead of silently exceeding the tolerance.
+**1. Prepare: outlines stay curves.** A font outline is a list of line and
+quadratic segments. A quadratic has a start point `p0`, a control point `p1`,
+and an end point `p2`. Each segment is two `RGBA16F` texels (16 bytes) with
+one em-unit coordinate per 16-bit channel: `p0` and `p1` in the first, `p2`
+in the second. A glyph's segments are stored back to back. TrueType outlines
+are already quadratic. Cubics from CFF/CFF2 or paths are split at extrema and
+inflections, then approximated by quadratics certified against a tolerance
+(default `1/8192` em); if `f32` cannot represent a certified result,
+preparation returns a typed error. General paths use four texels per segment
+so they can also record each segment's kind and rational-conic weights.
 
-Font lines and quadratics use two `RGBA16F` texels per segment. General paths
-use four so they can carry explicit segment kind and rational-conic metadata.
-Unhinted and autohint records are ppem-independent. TrueType grid-fitted
-curve records are ppem-specific.
+Unhinted and autohint records do not depend on size. TrueType-hinted records
+are prepared per ppem.
 
-<img src="assets/algorithm-curves.png?raw=true" alt="a glyph outline with one highlighted quadratic segment, and its two texels in the dense font curve texture" width="640">
+<img src="assets/algorithm-curves.png?raw=true" alt="an 'o' outline with its 16 segment boundaries marked and one segment's p0, p1, p2 labeled; beside it, a stretch of the curve texture where the glyph is one run of texel pairs, with the labeled segment's two RGBA16F texels expanded: one coordinate per 16-bit channel, p0 and p1 in the first texel, p2 in the second" width="640">
 
-**2. Prepare: bands index the curves.** The record's box is divided into
-equal horizontal and vertical bands. Each band lists the segments whose
-bounds overlap it, sorted by decreasing maximum coordinate so the evaluator
-can stop once the remaining curves lie more than half a pixel behind the
-sample.
+**2. Prepare: bands index the curves.** The outline's bounds are cut into
+equal horizontal and vertical bands, 1 to 12 per axis depending on the
+segment count. Each band lists the segments that overlap it, in the order
+the evaluator reads them: farthest along the ray first, so it can stop once
+the rest lie more than half a pixel behind the sample.
 
-The current packer chooses 1–12 bands per axis from the logical curve count;
-the packed record format accepts up to 16. A curve that crosses several bands
-appears in each of their lists and records its first member band for
-draw-time deduplication.
+<img src="assets/algorithm-bands.png?raw=true" alt="the 'o' with six horizontal and six vertical bands over its bounds; one band per axis is highlighted with its overlapping segments numbered and listed" width="640">
 
-<img src="assets/algorithm-bands.png?raw=true" alt="horizontal and vertical bands over the glyph, one band highlighted with the curves it references" width="640">
+The atlas textures are curves (`RGBA16F`), bands (`RG16UI`), and layer info
+(`RGBA32F`), plus an optional image array. Instances, parameters, samplers,
+and pipelines belong to the host.
 
-The atlas textures are curves (`RGBA16F`), bands (`RG16UI`), and layer-info
-rows (`RGBA32F`), plus an optional host-formatted image array. Instance data,
-the shared parameter block, samplers, pipelines, and command state are
-separate host resources.
-
-**3. Draw: emit one quad per non-empty instance.** A placed shape with curves
-becomes one instance of a bounding quad; empty records produce no instance.
-The vertex shader dynamically dilates the quad far enough in device space to
-cover the grayscale-AA or LCD-filter footprint, including under perspective.
-
-The fragment receives the corresponding record-local position and
-derivatives. GPU pipelines support affine and projective transforms; the CPU
-rasterizer supports affine transforms only and reports `NonAffineMvp` for a
+**3. Draw: one quad per glyph.** Each placed shape with curves becomes one
+instance of a quad over its bounds. The vertex shader grows the quad just
+enough to cover the antialiasing or LCD-filter footprint under any
+transform, including perspective. Each fragment receives its position in
+glyph space and the derivatives that size its pixel there. The CPU
+rasterizer handles affine transforms only and reports `NonAffineMvp` for a
 perspective MVP.
 
-<img src="assets/algorithm-quad.png?raw=true" alt="a transformed glyph in its bounding quad on screen, and a fragment mapped back to glyph space" width="640">
+<img src="assets/algorithm-quad.png?raw=true" alt="a rotated 'o' inside its bounding quad on a pixel grid, with one pixel mapped back to the upright glyph" width="640">
 
-**4. Draw: the pixel footprint selects band spans.** This is a deliberate
-departure from the public Slug shader. That shader selects one horizontal
-band and one vertical band. snail instead maps both edges of the fragment's
-record-local pixel footprint to band indexes and visits every band between
-them.
+**4. Draw: the pixel footprint picks band spans.** The rows the pixel's
+footprint spans supply candidates for the horizontal ray; the columns it
+spans supply candidates for the vertical ray. A curve listed in several of
+those bands is evaluated once. The public Slug shader reads one row and one
+column at the pixel center instead, which can miss curves when a pixel
+covers more than one band.
 
-This is not limited to two band lists: an extremely minified footprint can
-span every band on either axis. Curves duplicated across touched bands are
-evaluated once, at `max(first_member_band, first_touched_band)`.
+<img src="assets/algorithm-sample-bands.png?raw=true" alt="an enlarged pixel footprint on the 'o'; the rows and columns it spans are shaded and their curves highlighted as candidates" width="640">
 
-<img src="assets/algorithm-sample-bands.png?raw=true" alt="a sample footprint with its horizontal and vertical band spans highlighted and their candidate curves emphasized" width="640">
+**5. Draw: solve candidates along two rays.** One ray runs from the pixel
+center toward +x, another toward +y. Each candidate's roots give where it
+crosses a ray, and its direction there gives the crossing's sign. Before any
+root is used, the signs of the three control points relative to the sample
+index Slug's `0x2E74` table, which says whether zero, one, or two roots
+count. snail snaps values within `1/65536` of the ray to zero, so adjacent
+segments agree on their shared endpoint after f16 storage, and solves with a
+cancellation-resistant Vieta form. Lines follow the same rule; rational
+conics apply it to their weighted control points.
 
-**5. Draw: classify and solve ray crossings.** The evaluator casts
-axis-aligned rays through the sample. For a quadratic, the signs of its three
-sample-relative control coordinates index Slug's `0x2E74` eligibility table.
-That exact classification says whether zero, one, or two roots contribute
-before the polynomial roots are used for their crossing positions.
+<img src="assets/algorithm-roots.png?raw=true" alt="a sample in the ring of the 'o' with a ray to the right crossing three edges and a ray upward crossing one, each crossing marked +1 or -1" width="640">
 
-snail normalizes sample-relative coordinates within `1/65536` of zero to
-positive zero so adjacent segments retain one half-open shared-endpoint
-decision after f16 storage and transform/subtraction drift. The quadratic
-solver uses a cancellation-resistant Vieta form. Lines use the same
-half-open sign convention; rational conics use the quadratic eligibility
-code on their weighted control values before solving their rational
-crossings.
+**6. Draw: signed crossings sum to winding.** In the ring, the crossings sum
+to a nonzero winding; in the hole, the inner and outer contours cancel, so
+holes need no special handling. Paths apply their `non_zero` or `even_odd`
+rule to the result.
 
-<img src="assets/algorithm-roots.png?raw=true" alt="horizontal and vertical rays through the sample with signed root crossings marked" width="640">
+<img src="assets/algorithm-winding.png?raw=true" alt="two samples with rays to the right: one in the ring whose crossings sum to +1, one in the hole whose -1 and +1 cancel" width="640">
 
-**6. Draw: signed crossings produce winding coverage.** A crossing adds or
-subtracts according to its direction. Horizontal and vertical results are
-combined using edge-proximity weights, with a conservative fallback near
-tangencies. General paths then apply their `non_zero` or `even_odd` fill rule
-once to the resolved winding coverage. Oppositely wound hole contours cancel
-without special hole handling.
+**7. Draw: nearby crossings give partial coverage.** A crossing more than
+half a pixel ahead of the center counts fully; one more than half a pixel
+behind counts not at all; in between it counts linearly. That ramp is the
+antialiasing. The two rays' results are blended, weighted toward the ray
+whose crossing lies nearer the center. Coverage scales the paint into
+premultiplied linear color, encoded to sRGB when the target needs it. LCD
+modes take seven samples at third-pixel offsets along the stripe axis and
+filter them to RGB.
 
-<img src="assets/algorithm-winding.png?raw=true" alt="two samples with their rays: crossings sum to w=1 in the ring and cancel to w=0 in the hole" width="640">
+<img src="assets/algorithm-alpha.png?raw=true" alt="a zoomed edge over device pixels shaded by snail's coverage: full inside, empty outside, partial only where the edge passes within half a pixel of a center" width="640">
 
-**7. Draw: nearby crossings become fractional coverage.** A crossing within
-half a device pixel of the sample contributes a fraction rather than a
-binary inside/outside value. This is analytic antialiasing without a
-prefiltered glyph image.
-
-Coverage multiplies the resolved solid, gradient, or image paint, producing
-premultiplied linear color. The stage can leave that value linear for a
-linear or hardware-sRGB attachment, or encode it when sRGB pixels must be
-written through a linear attachment. Grayscale AA evaluates one analytic
-sample per pixel. LCD modes evaluate seven samples at one-third-pixel phases
-along the display stripe axis, then use a five-tap filter to form RGB
-coverage.
-
-<img src="assets/algorithm-alpha.png?raw=true" alt="device pixels along a zoomed edge shaded by fractional analytic coverage" width="640">
-
-The diagrams are rendered by snail itself. `zig build
-run-algorithm-diagrams` writes their TGA sources to `zig-out/`.
+The diagrams are rendered by snail itself; `zig build
+run-algorithm-diagrams` writes them to `zig-out/`.
 
 ### Differences from the public Slug reference
 

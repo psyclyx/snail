@@ -5,9 +5,10 @@
 //! typographic 'o' authored as 16 explicit quadratic segments (8 per
 //! contour, hole contour reversed) — so every panel shows the same shape
 //! and every annotation is computed, not drawn by eye: band membership
-//! comes from real curve bounds, ray crossings from the actual quadratic
-//! roots, winding sums from the crossing signs, and edge-coverage cells
-//! from supersampled inside tests.
+//! follows the packer's rule over tight curve bounds, ray crossings come
+//! from the actual quadratic roots, winding sums from the crossing signs,
+//! and edge-coverage cells from snail-raster drawing the glyph at one
+//! device pixel per cell.
 //!
 //! Diagrams are authored in logical 320×200 coordinates and emitted under
 //! a uniform 6× world transform (the renderer is resolution-independent,
@@ -84,13 +85,89 @@ fn ellipseArcs(comptime rx: f32, comptime ry: f32, comptime reversed: bool) [8]Q
 
 const outer_arcs = ellipseArcs(40, 46, false);
 const inner_arcs = ellipseArcs(18, 32, true);
-const glyph_segments = outer_arcs ++ inner_arcs; // 16 segments
+/// Storage order: the hole contour first, so the highlighted outer arc in
+/// diagram 1 is the record's last segment (index 15).
+const glyph_segments = inner_arcs ++ outer_arcs;
 
-fn segBoundsY(q: Quad) [2]f32 {
-    return .{ @min(q.p0.y, @min(q.c.y, q.p1.y)), @max(q.p0.y, @max(q.c.y, q.p1.y)) };
+const Box = struct { min: Vec2, max: Vec2 };
+
+/// Tight bounds of a quadratic, as `QuadBezier.boundingBox` computes them.
+fn segBounds(q: Quad) Box {
+    var b = Box{
+        .min = .{ .x = @min(q.p0.x, q.p1.x), .y = @min(q.p0.y, q.p1.y) },
+        .max = .{ .x = @max(q.p0.x, q.p1.x), .y = @max(q.p0.y, q.p1.y) },
+    };
+    inline for (.{ "x", "y" }) |axis| {
+        const a = @field(q.p0, axis);
+        const c = @field(q.c, axis);
+        const e = @field(q.p1, axis);
+        const denom = a - 2 * c + e;
+        if (@abs(denom) > 1e-10) {
+            const t = (a - c) / denom;
+            if (t > 0 and t < 1) {
+                const v = @field(quadAt(q, t), axis);
+                @field(b.min, axis) = @min(@field(b.min, axis), v);
+                @field(b.max, axis) = @max(@field(b.max, axis), v);
+            }
+        }
+    }
+    return b;
 }
-fn segBoundsX(q: Quad) [2]f32 {
-    return .{ @min(q.p0.x, @min(q.c.x, q.p1.x)), @max(q.p0.x, @max(q.c.x, q.p1.x)) };
+
+/// The outline's bounds: bands tile this box, and the draw quad covers it.
+fn glyphBounds() Box {
+    var b = segBounds(glyph_segments[0]);
+    for (glyph_segments[1..]) |q| {
+        const s = segBounds(q);
+        b.min = .{ .x = @min(b.min.x, s.min.x), .y = @min(b.min.y, s.min.y) };
+        b.max = .{ .x = @max(b.max.x, s.max.x), .y = @max(b.max.y, s.max.y) };
+    }
+    return b;
+}
+
+/// Bands per axis the packer picks for 16 curves (band_texture.bandCount).
+const band_count: u32 = 6;
+
+const Axis = enum { rows, columns };
+
+/// Band span of one segment, mirroring band_texture.recordMembership: the
+/// tight bounds, widened by the packer's epsilon (1/1024 em), floored into
+/// uniform bands over the outline's bounds.
+fn segBands(q: Quad, axis: Axis) [2]u32 {
+    const gb = glyphBounds();
+    const sb = segBounds(q);
+    const eps = glyph_h / 1024.0;
+    const lo, const hi, const origin, const size = switch (axis) {
+        .rows => .{ sb.min.y, sb.max.y, gb.min.y, gb.max.y - gb.min.y },
+        .columns => .{ sb.min.x, sb.max.x, gb.min.x, gb.max.x - gb.min.x },
+    };
+    const n: f32 = @floatFromInt(band_count);
+    const top: f32 = n - 1;
+    return .{
+        @intFromFloat(@floor(std.math.clamp((lo - eps - origin) * n / size, 0, top))),
+        @intFromFloat(@floor(std.math.clamp((hi + eps - origin) * n / size, 0, top))),
+    };
+}
+
+/// Which segments a band span [first, last] lists.
+fn bandMembers(axis: Axis, first: u32, last: u32) [16]bool {
+    var out: [16]bool = undefined;
+    for (glyph_segments, &out) |q, *m| {
+        const span = segBands(q, axis);
+        m.* = span[0] <= last and span[1] >= first;
+    }
+    return out;
+}
+
+/// Band `i`'s extent along its axis, in the local frame.
+fn bandExtent(axis: Axis, i: u32) [2]f32 {
+    const gb = glyphBounds();
+    const origin, const size = switch (axis) {
+        .rows => .{ gb.min.y, gb.max.y - gb.min.y },
+        .columns => .{ gb.min.x, gb.max.x - gb.min.x },
+    };
+    const step = size / @as(f32, @floatFromInt(band_count));
+    return .{ origin + step * @as(f32, @floatFromInt(i)), origin + step * @as(f32, @floatFromInt(i + 1)) };
 }
 
 fn quadAt(q: Quad, t: f32) Vec2 {
@@ -533,114 +610,191 @@ fn emBox(ctx: *Ctx, place: Transform2D, cells: u32) !void {
 
 // ── Diagram 1: curve records ────────────────────────────────────────
 
+fn outlineRect(ctx: *Ctx, r: Rect, w: f32, color: [4]f32) !void {
+    const tl = Vec2{ .x = r.x, .y = r.y };
+    const tr = Vec2{ .x = r.x + r.w, .y = r.y };
+    const bl = Vec2{ .x = r.x, .y = r.y + r.h };
+    const br = Vec2{ .x = r.x + r.w, .y = r.y + r.h };
+    try ctx.line(tl, tr, w, color);
+    try ctx.line(tr, br, w, color);
+    try ctx.line(br, bl, w, color);
+    try ctx.line(bl, tl, w, color);
+}
+
 fn diagramCurves(ctx: *Ctx) !void {
     try title(ctx, "1. Prepare: outlines stay curves");
 
+    // The outline: every dot is a segment boundary.
     try ctx.panel(.{ .x = 13, .y = 30, .w = 150, .h = 158 });
-    const place = glyphPlace(38, 44, 1.0);
+    const place = glyphPlace(38, 38, 1.0);
     try emBox(ctx, place, 4);
     try ctx.glyphStroke(place, 1.4, ink);
-
-    // Highlight one segment with its control points.
-    const hi = outer_arcs[7]; // upper-right arc (y-down: angles 315°..360°)
+    for (glyph_segments) |q| {
+        const p = mapPt(place, q.p0);
+        try ctx.fillCircle(p.x, p.y, 1.4, ink);
+    }
+    const hi_index = 15;
+    const hi = glyph_segments[hi_index];
     try ctx.segStroke(hi, place, 2.4, blue);
     const p0 = mapPt(place, hi.p0);
-    const p1 = mapPt(place, hi.p1);
-    const c = mapPt(place, hi.c);
-    try ctx.line(p0, c, 0.7, rose);
-    try ctx.line(c, p1, 0.7, rose);
+    const p1 = mapPt(place, hi.c);
+    const p2 = mapPt(place, hi.p1);
+    try ctx.line(p0, p1, 0.7, rose);
+    try ctx.line(p1, p2, 0.7, rose);
     try ctx.fillCircle(p0.x, p0.y, 2.0, ink);
-    try ctx.fillCircle(p1.x, p1.y, 2.0, ink);
-    try ctx.ringCircle(c.x, c.y, 2.2, 1.2, rose);
-    _ = try ctx.text("control", c.x + 5, c.y + 1, small_em, rose, .regular);
-    _ = try ctx.text("on-curve", p1.x + 6, p1.y + 8, small_em, muted, .regular);
+    try ctx.fillCircle(p2.x, p2.y, 2.0, ink);
+    try ctx.ringCircle(p1.x, p1.y, 2.2, 1.2, rose);
+    _ = try ctx.text("p0", p0.x + 3, p0.y - 3, small_em, ink, .regular);
+    _ = try ctx.text("p1", p1.x + 5, p1.y + 3, small_em, rose, .regular);
+    _ = try ctx.text("p2", p2.x + 5, p2.y + 6, small_em, ink, .regular);
+    _ = try ctx.text("16 quadratic segments", 38, 180, label_em, muted, .regular);
 
-    // Dense font curve strip: 16 segments × 2 texels, highlighted segment lit.
+    // A stretch of the shared curve texture: this glyph is one contiguous
+    // run of texel pairs between other glyphs' runs.
     try ctx.panel(.{ .x = 175, .y = 30, .w = 132, .h = 158 });
     _ = try ctx.text("curve texture", 184, 46, label_em, muted, .regular);
-    const strip_x: f32 = 184;
-    const strip_y: f32 = 56;
-    const cell: f32 = 5.4;
-    const gapx: f32 = 1.2;
-    const group_w = 2 * cell + gapx;
-    for (0..16) |seg| {
-        const row: f32 = @floatFromInt(seg / 4);
-        const col: f32 = @floatFromInt(seg % 4);
-        const gx = strip_x + col * (group_w + 4);
-        const gy = strip_y + row * (cell + 6);
-        const lit = seg == 7;
-        for (0..2) |t| {
-            const tx = gx + @as(f32, @floatFromInt(t)) * (cell + gapx);
-            try ctx.fillRect(.{ .x = tx, .y = gy, .w = cell, .h = cell }, if (lit) blue else blue_soft);
-        }
+    const other = srgb(.{ 0.90, 0.91, 0.94, 1.0 });
+    const texel: f32 = 7;
+    const pair_step: f32 = 2 * texel + 0.8 + 2.6;
+    const row_step: f32 = 10;
+    const strip = Vec2{ .x = 184, .y = 54 };
+    const pairs_per_row = 6;
+    const run_start_pair = 4; // other glyphs precede this one in the row
+    var hi_pair: Vec2 = undefined;
+    for (0..pairs_per_row * 4) |pair| {
+        const px = strip.x + @as(f32, @floatFromInt(pair % pairs_per_row)) * pair_step;
+        const py = strip.y + @as(f32, @floatFromInt(pair / pairs_per_row)) * row_step;
+        const seg: isize = @as(isize, @intCast(pair)) - run_start_pair;
+        const color = if (seg == hi_index) blue else if (seg >= 0 and seg < glyph_segments.len) blue_soft else other;
+        if (seg == hi_index) hi_pair = .{ .x = px, .y = py };
+        try ctx.fillRect(.{ .x = px, .y = py, .w = texel, .h = texel }, color);
+        try ctx.fillRect(.{ .x = px + texel + 0.8, .y = py, .w = texel, .h = texel }, color);
     }
-    _ = try ctx.text("2 texels per segment,", 184, 118, label_em, muted, .regular);
-    _ = try ctx.text("em coordinates, f16", 184, 129, label_em, muted, .regular);
-    _ = try ctx.text("16 segments = one", 184, 147, label_em, ink, .regular);
-    _ = try ctx.text("unhinted glyph record", 184, 158, label_em, ink, .regular);
+
+    // The highlighted segment's two RGBA16F texels, channel by channel.
+    const call_y: f32 = 106;
+    const call_h: f32 = 14;
+    const chan: f32 = 13;
+    const texel_x = [2]f32{ 184, 184 + 4 * chan + 4 };
+    const call_r = texel_x[1] + 4 * chan;
+    try ctx.line(.{ .x = hi_pair.x, .y = hi_pair.y + texel }, .{ .x = texel_x[0], .y = call_y - 10 }, 0.4, blue);
+    try ctx.line(.{ .x = hi_pair.x + 2 * texel + 0.8, .y = hi_pair.y + texel }, .{ .x = call_r, .y = call_y - 10 }, 0.4, blue);
+    const slots = [2][2]?struct { name: []const u8, color: [4]f32 }{
+        .{ .{ .name = "p0", .color = ink }, .{ .name = "p1", .color = rose } },
+        .{ .{ .name = "p2", .color = ink }, null },
+    };
+    const channel_names = [4][]const u8{ "R", "G", "B", "A" };
+    for (texel_x, slots) |tx, texel_slots| {
+        try ctx.fillRect(.{ .x = tx, .y = call_y, .w = 4 * chan, .h = call_h }, white);
+        for (channel_names, 0..) |name, ch| {
+            const cx = tx + (@as(f32, @floatFromInt(ch)) + 0.5) * chan;
+            try ctx.textCentered(name, cx, call_y - 2.5, small_em, muted, .regular);
+            if (ch > 0) try ctx.line(.{ .x = tx + @as(f32, @floatFromInt(ch)) * chan, .y = call_y }, .{ .x = tx + @as(f32, @floatFromInt(ch)) * chan, .y = call_y + call_h }, 0.4, faint);
+        }
+        // Each point fills two channels: x, then y.
+        for (texel_slots, 0..) |slot, s| {
+            const sx = tx + @as(f32, @floatFromInt(s)) * 2 * chan;
+            if (slot) |named| {
+                try ctx.textCentered("x", sx + 0.5 * chan, call_y + call_h / 2 + 2.6, small_em, named.color, .regular);
+                try ctx.textCentered("y", sx + 1.5 * chan, call_y + call_h / 2 + 2.6, small_em, named.color, .regular);
+                const bracket_y = call_y + call_h + 3;
+                try ctx.line(.{ .x = sx + 2, .y = bracket_y }, .{ .x = sx + 2 * chan - 2, .y = bracket_y }, 0.6, named.color);
+                try ctx.textCentered(named.name, sx + chan, bracket_y + 8, small_em, named.color, .regular);
+            } else {
+                try ctx.fillRect(.{ .x = sx, .y = call_y, .w = 2 * chan, .h = call_h }, other);
+            }
+        }
+        try outlineRect(ctx, .{ .x = tx, .y = call_y, .w = 4 * chan, .h = call_h }, 0.8, blue);
+    }
+    _ = try ctx.text("channel: one 16-bit float", 184, call_y + call_h + 23, small_em, ink, .regular);
+    _ = try ctx.text("texel: 4 channels = 64 bits", 184, call_y + call_h + 32, small_em, muted, .regular);
+    _ = try ctx.text("segment: 2 texels = 16 bytes", 184, call_y + call_h + 41, small_em, muted, .regular);
+
+    const legend_y: f32 = 176;
+    try ctx.fillRect(.{ .x = 184, .y = legend_y - 5, .w = 5, .h = 5 }, blue_soft);
+    _ = try ctx.text("this glyph", 192, legend_y, small_em, muted, .regular);
+    try ctx.fillRect(.{ .x = 238, .y = legend_y - 5, .w = 5, .h = 5 }, other);
+    _ = try ctx.text("other glyphs", 246, legend_y, small_em, muted, .regular);
 }
 
 // ── Diagram 2: bands ────────────────────────────────────────────────
 
-fn bandRange(comptime horizontal: bool, lo: f32, hi: f32) [16]bool {
-    var out: [16]bool = undefined;
-    for (glyph_segments, 0..) |q, i| {
-        const b = if (horizontal) segBoundsY(q) else segBoundsX(q);
-        out[i] = b[0] < hi and b[1] > lo;
+/// Draw a glyph in a panel with its bands along `axis`, one highlighted,
+/// and list the highlighted band's segments as numbered chips — ordered as
+/// the packer stores them (descending max x for rows, topmost first for
+/// columns).
+fn bandPanel(ctx: *Ctx, panel_x: f32, axis: Axis, highlight: u32, caption: []const u8) !void {
+    try ctx.panel(.{ .x = panel_x, .y = 30, .w = 145, .h = 158 });
+    const gb = glyphBounds();
+    const scale: f32 = 0.95;
+    const left = panel_x + (145 - (gb.max.x - gb.min.x) * scale) / 2;
+    const place = glyphPlace(left - gb.min.x * scale, 42 - gb.min.y * scale, scale);
+    const tl = mapPt(place, gb.min);
+    const br = mapPt(place, gb.max);
+    const stripe = srgb(.{ 0.95, 0.96, 0.98, 1.0 });
+    for (0..band_count) |i_usize| {
+        const i: u32 = @intCast(i_usize);
+        const color = if (i == highlight) amber_soft else if (i % 2 == 0) stripe else white;
+        const ext = bandExtent(axis, i);
+        const r: Rect = switch (axis) {
+            .rows => .{ .x = tl.x, .y = mapPt(place, .{ .x = 0, .y = ext[0] }).y, .w = br.x - tl.x, .h = (ext[1] - ext[0]) * scale },
+            .columns => .{ .x = mapPt(place, .{ .x = ext[0], .y = 0 }).x, .y = tl.y, .w = (ext[1] - ext[0]) * scale, .h = br.y - tl.y },
+        };
+        try ctx.fillRect(r, color);
     }
-    return out;
+    try outlineRect(ctx, .{ .x = tl.x, .y = tl.y, .w = br.x - tl.x, .h = br.y - tl.y }, 0.6, faint);
+    try ctx.glyphStroke(place, 1.2, faint);
+
+    const members = bandMembers(axis, highlight, highlight);
+    var order: [16]u8 = undefined;
+    var count: usize = 0;
+    const center = Vec2{ .x = glyph_cx, .y = glyph_cy };
+    for (glyph_segments, members, 0..) |q, m, i| {
+        if (!m) continue;
+        order[count] = @intCast(i);
+        count += 1;
+        try ctx.segStroke(q, place, 2.0, amber);
+        // Number the segment just outside its midpoint.
+        const mid = quadAt(q, 0.5);
+        const dx = mid.x - center.x;
+        const dy = mid.y - center.y;
+        const len = @sqrt(dx * dx + dy * dy);
+        const out_dir: f32 = if (i < inner_arcs.len) -1 else 1; // hole labels point inward
+        const lp = mapPt(place, .{ .x = mid.x + out_dir * 7 * dx / len, .y = mid.y + out_dir * 7 * dy / len });
+        var buf: [4]u8 = undefined;
+        try ctx.textCentered(try std.fmt.bufPrint(&buf, "{d}", .{i}), lp.x, lp.y + 2.5, small_em, amber, .regular);
+    }
+    const Sort = struct {
+        axis: Axis,
+        fn key(self: @This(), i: u8) f32 {
+            const q = glyph_segments[i];
+            return switch (self.axis) {
+                .rows => @max(q.p0.x, @max(q.c.x, q.p1.x)),
+                .columns => -@min(q.p0.y, @min(q.c.y, q.p1.y)),
+            };
+        }
+        fn lessThan(self: @This(), a: u8, b: u8) bool {
+            return self.key(a) > self.key(b);
+        }
+    };
+    std.mem.sort(u8, order[0..count], Sort{ .axis = axis }, Sort.lessThan);
+
+    const chip_y = br.y + 16;
+    _ = try ctx.text("list", tl.x, chip_y + 6.5, small_em, muted, .regular);
+    var cx = tl.x + 15;
+    for (order[0..count]) |i| {
+        try ctx.fillRect(.{ .x = cx, .y = chip_y, .w = 9.4, .h = 9 }, amber_soft);
+        var buf: [4]u8 = undefined;
+        try ctx.textCentered(try std.fmt.bufPrint(&buf, "{d}", .{i}), cx + 4.7, chip_y + 6.8, small_em, amber, .regular);
+        cx += 10.4;
+    }
+    _ = try ctx.text(caption, tl.x, 182, label_em, muted, .regular);
 }
 
 fn diagramBands(ctx: *Ctx) !void {
     try title(ctx, "2. Prepare: bands index the curves");
-
-    const band_count: u32 = 6;
-
-    // Horizontal bands (left), highlight band 2.
-    try ctx.panel(.{ .x = 13, .y = 30, .w = 145, .h = 158 });
-    const lp = glyphPlace(36, 44, 0.95);
-    {
-        const tl = mapPt(lp, .{ .x = 0, .y = 0 });
-        const br = mapPt(lp, .{ .x = glyph_w, .y = glyph_h });
-        const bh = (br.y - tl.y) / @as(f32, @floatFromInt(band_count));
-        for (0..band_count) |i| {
-            const fy = tl.y + bh * @as(f32, @floatFromInt(i));
-            const color = if (i == 2) amber_soft else if (i % 2 == 0) blue_soft else white;
-            try ctx.fillRect(.{ .x = tl.x, .y = fy, .w = br.x - tl.x, .h = bh }, color);
-        }
-        try emBox(ctx, lp, 1);
-        try ctx.glyphStroke(lp, 1.2, faint);
-        const lo = glyph_h * 2.0 / @as(f32, @floatFromInt(band_count));
-        const hi = glyph_h * 3.0 / @as(f32, @floatFromInt(band_count));
-        const members = bandRange(true, lo, hi);
-        for (glyph_segments, members) |q, m| {
-            if (m) try ctx.segStroke(q, lp, 2.0, amber);
-        }
-        _ = try ctx.text("horizontal bands", 36, 182, label_em, muted, .regular);
-    }
-
-    // Vertical bands (right), highlight band 4.
-    try ctx.panel(.{ .x = 162, .y = 30, .w = 145, .h = 158 });
-    const rp = glyphPlace(186, 44, 0.95);
-    {
-        const tl = mapPt(rp, .{ .x = 0, .y = 0 });
-        const br = mapPt(rp, .{ .x = glyph_w, .y = glyph_h });
-        const bw = (br.x - tl.x) / @as(f32, @floatFromInt(band_count));
-        for (0..band_count) |i| {
-            const fx = tl.x + bw * @as(f32, @floatFromInt(i));
-            const color = if (i == 4) amber_soft else if (i % 2 == 0) teal_soft else white;
-            try ctx.fillRect(.{ .x = fx, .y = tl.y, .w = bw, .h = br.y - tl.y }, color);
-        }
-        try emBox(ctx, rp, 1);
-        try ctx.glyphStroke(rp, 1.2, faint);
-        const lo = glyph_w * 4.0 / @as(f32, @floatFromInt(band_count));
-        const hi = glyph_w * 5.0 / @as(f32, @floatFromInt(band_count));
-        const members = bandRange(false, lo, hi);
-        for (glyph_segments, members) |q, m| {
-            if (m) try ctx.segStroke(q, rp, 2.0, amber);
-        }
-        _ = try ctx.text("vertical bands", 186, 182, label_em, muted, .regular);
-    }
+    try bandPanel(ctx, 13, .rows, 2, "horizontal bands");
+    try bandPanel(ctx, 162, .columns, 4, "vertical bands");
 }
 
 // ── Diagram 3: instanced quads ──────────────────────────────────────
@@ -648,189 +802,175 @@ fn diagramBands(ctx: *Ctx) !void {
 fn diagramQuad(ctx: *Ctx) !void {
     try title(ctx, "3. Draw: one instanced quad per glyph");
 
-    // Screen panel: rotated glyph + bounding quad + fragment.
+    // The quad covers the outline's bounds, dilated a little on screen so
+    // edge pixels still get a fragment.
+    const gb = glyphBounds();
+    const dilate: f32 = 4;
+    const corners = [4]Vec2{
+        .{ .x = gb.min.x - dilate, .y = gb.min.y - dilate },
+        .{ .x = gb.max.x + dilate, .y = gb.min.y - dilate },
+        .{ .x = gb.max.x + dilate, .y = gb.max.y + dilate },
+        .{ .x = gb.min.x - dilate, .y = gb.max.y + dilate },
+    };
+
     try ctx.panel(.{ .x = 13, .y = 30, .w = 150, .h = 158 });
     {
-        // Device grid.
         var gx: f32 = 25;
         while (gx < 155) : (gx += 16) try ctx.line(.{ .x = gx, .y = 38 }, .{ .x = gx, .y = 180 }, 0.4, grid_line);
         var gy: f32 = 44;
         while (gy < 182) : (gy += 16) try ctx.line(.{ .x = 21, .y = gy }, .{ .x = 155, .y = gy }, 0.4, grid_line);
     }
     const ang: f32 = -0.32;
-    const s: f32 = 0.78;
+    const s: f32 = 0.9;
     const rot = Transform2D{
         .xx = s * @cos(ang),
         .xy = -s * @sin(ang),
         .yx = s * @sin(ang),
         .yy = s * @cos(ang),
-        .tx = 58,
-        .ty = 74,
+        .tx = 44,
+        .ty = 68,
     };
     try ctx.glyphFill(rot, glyph_fill);
     try ctx.glyphStroke(rot, 1.2, blue);
-    // Bounding quad = transformed em box corners.
-    const q0 = mapPt(rot, .{ .x = 0, .y = 0 });
-    const q1 = mapPt(rot, .{ .x = glyph_w, .y = 0 });
-    const q2 = mapPt(rot, .{ .x = glyph_w, .y = glyph_h });
-    const q3 = mapPt(rot, .{ .x = 0, .y = glyph_h });
-    try ctx.line(q0, q1, 0.9, blue);
-    try ctx.line(q1, q2, 0.9, blue);
-    try ctx.line(q2, q3, 0.9, blue);
-    try ctx.line(q3, q0, 0.9, blue);
-    for ([_]Vec2{ q0, q1, q2, q3 }) |q| try ctx.fillCircle(q.x, q.y, 1.8, blue);
+    for (0..4) |i| {
+        const a = mapPt(rot, corners[i]);
+        const b = mapPt(rot, corners[(i + 1) % 4]);
+        try ctx.line(a, b, 0.9, blue);
+        try ctx.fillCircle(a.x, a.y, 1.8, blue);
+    }
     const frag_local = Vec2{ .x = 78, .y = 84 };
     const frag = mapPt(rot, frag_local);
     try ctx.fillCircle(frag.x, frag.y, 2.6, amber);
     _ = try ctx.text("screen", 24, 182, label_em, muted, .regular);
 
-    // Glyph-space panel: upright glyph, mapped fragment.
     try ctx.panel(.{ .x = 175, .y = 30, .w = 132, .h = 158 });
     const up = glyphPlace(196, 44, 0.9);
-    try emBox(ctx, up, 4);
+    try outlineRect(ctx, .{
+        .x = mapPt(up, corners[0]).x,
+        .y = mapPt(up, corners[0]).y,
+        .w = (gb.max.x - gb.min.x + 2 * dilate) * 0.9,
+        .h = (gb.max.y - gb.min.y + 2 * dilate) * 0.9,
+    }, 0.6, faint);
     try ctx.glyphStroke(up, 1.3, ink);
     const frag_up = mapPt(up, frag_local);
     try ctx.fillCircle(frag_up.x, frag_up.y, 2.6, amber);
     try ctx.dashedLine(frag, .{ .x = frag_up.x - 4, .y = frag_up.y }, 0.8, 3.0, 2.6, amber);
     _ = try ctx.text("glyph space", 196, 182, label_em, muted, .regular);
-    _ = try ctx.text("inverse", 152, 96, small_em, amber, .regular);
-    _ = try ctx.text("transform", 152, 105, small_em, amber, .regular);
+    _ = try ctx.text("inverse", 150, 104, small_em, amber, .regular);
+    _ = try ctx.text("transform", 150, 113, small_em, amber, .regular);
 }
 
 // ── Diagram 4: pick bands ───────────────────────────────────────────
 
-const sample_pt = Vec2{ .x = 76, .y = 72 }; // inside the ring, centered in its bands
+/// The sample shared by diagrams 4 and 5: in the ring's left side, so its
+/// rightward ray crosses both contours.
+const sample_pt = Vec2{ .x = 22, .y = 72 };
 
 fn diagramPickBands(ctx: *Ctx) !void {
     try title(ctx, "4. Draw: the pixel footprint picks band spans");
 
     try ctx.panel(.{ .x = 13, .y = 30, .w = 180, .h = 158 });
-    const place = glyphPlace(48, 42, 1.05);
-    const band_count: f32 = 6;
-    const footprint_half = Vec2{ .x = 8, .y = 10.5 };
-    const footprint_lo = Vec2{
-        .x = sample_pt.x - footprint_half.x,
-        .y = sample_pt.y - footprint_half.y,
-    };
-    const footprint_hi = Vec2{
-        .x = sample_pt.x + footprint_half.x,
-        .y = sample_pt.y + footprint_half.y,
-    };
-    const tl = mapPt(place, .{ .x = 0, .y = 0 });
-    const br = mapPt(place, .{ .x = glyph_w, .y = glyph_h });
+    const gb = glyphBounds();
+    const scale: f32 = 1.2;
+    const place = glyphPlace(103 - glyph_cx * scale, 109 - glyph_cy * scale, scale);
+    const tl = mapPt(place, gb.min);
+    const br = mapPt(place, gb.max);
 
-    // Highlight every row and column touched by this deliberately enlarged
-    // record-local pixel footprint. It straddles a boundary on each axis.
-    const hband_first: u32 = @intFromFloat(@floor(footprint_lo.y / glyph_h * band_count));
-    const hband_last: u32 = @intFromFloat(@floor(footprint_hi.y / glyph_h * band_count));
-    const vband_first: u32 = @intFromFloat(@floor(footprint_lo.x / glyph_w * band_count));
-    const vband_last: u32 = @intFromFloat(@floor(footprint_hi.x / glyph_w * band_count));
-    const bh = (br.y - tl.y) / band_count;
-    const bw = (br.x - tl.x) / band_count;
-    for (hband_first..hband_last + 1) |band| {
-        try ctx.fillRect(.{
-            .x = tl.x,
-            .y = tl.y + @as(f32, @floatFromInt(band)) * bh,
-            .w = br.x - tl.x,
-            .h = bh,
-        }, blue_soft);
-    }
-    for (vband_first..vband_last + 1) |band| {
-        try ctx.fillRect(.{
-            .x = tl.x + @as(f32, @floatFromInt(band)) * bw,
-            .y = tl.y,
-            .w = bw,
-            .h = br.y - tl.y,
-        }, teal_soft);
-    }
+    // A pixel's footprint in glyph space, enlarged here to straddle band
+    // edges. Its height picks rows; its width picks columns.
+    const half = Vec2{ .x = 7, .y = 9 };
+    const lo = Vec2{ .x = sample_pt.x - half.x, .y = sample_pt.y - half.y };
+    const hi = Vec2{ .x = sample_pt.x + half.x, .y = sample_pt.y + half.y };
+    const n: f32 = @floatFromInt(band_count);
+    const row_first: u32 = @intFromFloat(@floor((lo.y - gb.min.y) / (gb.max.y - gb.min.y) * n));
+    const row_last: u32 = @intFromFloat(@floor((hi.y - gb.min.y) / (gb.max.y - gb.min.y) * n));
+    const col_first: u32 = @intFromFloat(@floor((lo.x - gb.min.x) / (gb.max.x - gb.min.x) * n));
+    const col_last: u32 = @intFromFloat(@floor((hi.x - gb.min.x) / (gb.max.x - gb.min.x) * n));
 
-    try emBox(ctx, place, 1);
+    var row_wash = blue_soft;
+    row_wash[3] = 0.75;
+    var col_wash = teal_soft;
+    col_wash[3] = 0.75;
+    const rows_y0 = mapPt(place, .{ .x = 0, .y = bandExtent(.rows, row_first)[0] }).y;
+    const rows_y1 = mapPt(place, .{ .x = 0, .y = bandExtent(.rows, row_last)[1] }).y;
+    try ctx.fillRect(.{ .x = tl.x, .y = rows_y0, .w = br.x - tl.x, .h = rows_y1 - rows_y0 }, row_wash);
+    const cols_x0 = mapPt(place, .{ .x = bandExtent(.columns, col_first)[0], .y = 0 }).x;
+    const cols_x1 = mapPt(place, .{ .x = bandExtent(.columns, col_last)[1], .y = 0 }).x;
+    try ctx.fillRect(.{ .x = cols_x0, .y = tl.y, .w = cols_x1 - cols_x0, .h = br.y - tl.y }, col_wash);
+    try outlineRect(ctx, .{ .x = tl.x, .y = tl.y, .w = br.x - tl.x, .h = br.y - tl.y }, 0.6, faint);
     try ctx.glyphStroke(place, 1.2, faint);
 
-    const h_members = bandRange(
-        true,
-        @as(f32, @floatFromInt(hband_first)) * glyph_h / band_count,
-        @as(f32, @floatFromInt(hband_last + 1)) * glyph_h / band_count,
-    );
-    const v_members = bandRange(
-        false,
-        @as(f32, @floatFromInt(vband_first)) * glyph_w / band_count,
-        @as(f32, @floatFromInt(vband_last + 1)) * glyph_w / band_count,
-    );
+    const in_rows = bandMembers(.rows, row_first, row_last);
+    const in_cols = bandMembers(.columns, col_first, col_last);
     var candidates: u32 = 0;
-    for (glyph_segments, h_members, v_members) |q, hm, vm| {
-        if (hm) try ctx.segStroke(q, place, 2.0, blue);
-        if (vm) try ctx.segStroke(q, place, 2.0, teal);
-        if (hm or vm) candidates += 1;
+    for (glyph_segments, in_rows, in_cols) |q, r, c| {
+        if (r) try ctx.segStroke(q, place, 2.2, blue);
+        if (c) try ctx.segStroke(q, place, if (r) 1.0 else 2.2, teal);
+        if (r or c) candidates += 1;
     }
+    const fp_tl = mapPt(place, lo);
+    const fp_br = mapPt(place, hi);
+    try outlineRect(ctx, .{ .x = fp_tl.x, .y = fp_tl.y, .w = fp_br.x - fp_tl.x, .h = fp_br.y - fp_tl.y }, 1.1, amber);
     const sp = mapPt(place, sample_pt);
-    const fp_tl = mapPt(place, footprint_lo);
-    const fp_br = mapPt(place, footprint_hi);
-    try ctx.line(fp_tl, .{ .x = fp_br.x, .y = fp_tl.y }, 1.1, amber);
-    try ctx.line(.{ .x = fp_br.x, .y = fp_tl.y }, fp_br, 1.1, amber);
-    try ctx.line(fp_br, .{ .x = fp_tl.x, .y = fp_br.y }, 1.1, amber);
-    try ctx.line(.{ .x = fp_tl.x, .y = fp_br.y }, fp_tl, 1.1, amber);
     try ctx.fillCircle(sp.x, sp.y, 2.6, amber);
 
     try ctx.panel(.{ .x = 205, .y = 30, .w = 102, .h = 158 });
-    _ = try ctx.text("candidates", 214, 46, label_em, muted, .regular);
+    _ = try ctx.text("rows it spans:", 214, 50, label_em, blue, .regular);
+    _ = try ctx.text("horizontal ray", 214, 61, label_em, blue, .regular);
+    _ = try ctx.text("columns it spans:", 214, 80, label_em, teal, .regular);
+    _ = try ctx.text("vertical ray", 214, 91, label_em, teal, .regular);
     var buf: [32]u8 = undefined;
-    const c1 = try std.fmt.bufPrint(&buf, "{d} of 16 curves", .{candidates});
-    _ = try ctx.text(c1, 214, 62, label_em, ink, .regular);
-    _ = try ctx.text("across every", 214, 73, label_em, ink, .regular);
-    _ = try ctx.text("touched band", 214, 84, label_em, ink, .regular);
-    _ = try ctx.text("duplicates count once", 214, 104, label_em, muted, .regular);
-    _ = try ctx.text("the rest are", 214, 119, label_em, muted, .regular);
-    _ = try ctx.text("never evaluated", 214, 130, label_em, muted, .regular);
+    _ = try ctx.text(try std.fmt.bufPrint(&buf, "{d} of 16 curves", .{candidates}), 214, 118, label_em, ink, .regular);
+    _ = try ctx.text("are candidates", 214, 129, label_em, ink, .regular);
+    _ = try ctx.text("footprint enlarged", 214, 178, small_em, muted, .regular);
 }
 
 // ── Diagram 5: ray roots ────────────────────────────────────────────
 
 fn diagramRoots(ctx: *Ctx) !void {
-    try title(ctx, "5. Draw: solve ray roots per candidate");
+    try title(ctx, "5. Draw: solve candidates along two rays");
 
     try ctx.panel(.{ .x = 13, .y = 30, .w = 294, .h = 158 });
+    const gb = glyphBounds();
     const place = glyphPlace(96, 42, 1.05);
-    const tl = mapPt(place, .{ .x = 0, .y = 0 });
-    const br = mapPt(place, .{ .x = glyph_w, .y = glyph_h });
-    try emBox(ctx, place, 1);
+    const br = mapPt(place, gb.max);
+    const tl = mapPt(place, gb.min);
     try ctx.glyphStroke(place, 1.4, ink);
 
+    // Rays run toward +x and up (+y in font space). Crossings behind the
+    // sample contribute nothing, so they are not drawn.
     const sp = mapPt(place, sample_pt);
-    // Horizontal ray.
-    try ctx.line(.{ .x = tl.x - 14, .y = sp.y }, .{ .x = br.x + 14, .y = sp.y }, 0.9, blue);
-    // Vertical ray.
-    try ctx.line(.{ .x = sp.x, .y = tl.y - 6 }, .{ .x = sp.x, .y = br.y + 6 }, 0.9, teal);
+    try ctx.arrow(sp, .{ .x = br.x + 18, .y = sp.y }, 0.9, blue);
+    try ctx.arrow(sp, .{ .x = sp.x, .y = tl.y - 8 }, 0.9, teal);
     try ctx.fillCircle(sp.x, sp.y, 2.6, amber);
 
-    // Real crossings with signs.
     for (glyph_segments) |q| {
         var tmp: [2]Crossing = undefined;
         const hn = hCrossings(q, sample_pt.y, &tmp);
         for (tmp[0..hn]) |cr| {
+            if (cr.pos.x <= sample_pt.x) continue;
             const m = mapPt(place, cr.pos);
             try ctx.fillCircle(m.x, m.y, 2.2, rose);
-            const s = if (cr.sign > 0) "+1" else "-1";
-            _ = try ctx.text(s, m.x - 3, m.y - 6, small_em, rose, .regular);
+            _ = try ctx.text(if (cr.sign > 0) "+1" else "-1", m.x + 2, m.y - 5, small_em, rose, .regular);
         }
         const vn = vCrossings(q, sample_pt.x, &tmp);
         for (tmp[0..vn]) |cr| {
+            if (cr.pos.y >= sample_pt.y) continue;
             const m = mapPt(place, cr.pos);
             try ctx.fillCircle(m.x, m.y, 2.2, rose);
-            const s = if (cr.sign > 0) "+1" else "-1";
-            _ = try ctx.text(s, m.x + 5, m.y + 3, small_em, rose, .regular);
+            _ = try ctx.text(if (cr.sign > 0) "+1" else "-1", m.x + 5, m.y + 3, small_em, rose, .regular);
         }
     }
     _ = try ctx.text("horizontal ray", 224, 132, label_em, blue, .regular);
     _ = try ctx.text("vertical ray", 224, 145, label_em, teal, .regular);
-    _ = try ctx.text("quadratic roots,", 224, 165, label_em, muted, .regular);
+    _ = try ctx.text("each hit is a root,", 224, 165, label_em, muted, .regular);
     _ = try ctx.text("signed by direction", 224, 176, label_em, muted, .regular);
 }
 
 // ── Diagram 6: winding ──────────────────────────────────────────────
 
 fn diagramWinding(ctx: *Ctx) !void {
-    try title(ctx, "6. Draw: signed roots sum to winding");
+    try title(ctx, "6. Draw: signed crossings sum to winding");
 
     try ctx.panel(.{ .x = 13, .y = 30, .w = 294, .h = 158 });
     const place = glyphPlace(64, 42, 1.05);
@@ -838,20 +978,18 @@ fn diagramWinding(ctx: *Ctx) !void {
     try ctx.glyphFill(place, glyph_fill);
     try ctx.glyphStroke(place, 1.4, ink);
 
-    // Distinct ray heights so the two rays (and their crossing sums) read
-    // separately.
     const a_local = Vec2{ .x = 76, .y = 44 }; // in the ring, upper right
     const b_local = Vec2{ .x = 50, .y = 74 }; // in the hole
     const ray_end_x = br.x + 26;
 
-    for ([_]struct { p: Vec2, color: [4]f32, label: []const u8, ly: f32 }{
-        .{ .p = a_local, .color = amber, .label = "A", .ly = -8 },
-        .{ .p = b_local, .color = teal, .label = "B", .ly = -8 },
+    for ([_]struct { p: Vec2, color: [4]f32, label: []const u8 }{
+        .{ .p = a_local, .color = amber, .label = "A" },
+        .{ .p = b_local, .color = teal, .label = "B" },
     }) |s| {
         const m = mapPt(place, s.p);
-        try ctx.line(m, .{ .x = ray_end_x, .y = m.y }, 0.9, s.color);
+        try ctx.arrow(m, .{ .x = ray_end_x, .y = m.y }, 0.9, s.color);
         try ctx.fillCircle(m.x, m.y, 2.6, s.color);
-        _ = try ctx.text(s.label, m.x - 2.5, m.y + s.ly, label_em, s.color, .bold);
+        _ = try ctx.text(s.label, m.x - 2.5, m.y - 8, label_em, s.color, .bold);
         var w: i32 = 0;
         for (glyph_segments) |q| {
             var tmp: [2]Crossing = undefined;
@@ -861,18 +999,15 @@ fn diagramWinding(ctx: *Ctx) !void {
                 w += cr.sign;
                 const c = mapPt(place, cr.pos);
                 try ctx.fillCircle(c.x, c.y, 2.2, rose);
-                const sign = if (cr.sign > 0) "+1" else "-1";
-                _ = try ctx.text(sign, c.x - 3, c.y - 5, small_em, rose, .regular);
+                _ = try ctx.text(if (cr.sign > 0) "+1" else "-1", c.x + 2, c.y - 5, small_em, rose, .regular);
             }
         }
         std.debug.assert((s.p.x == a_local.x) == (w != 0)); // A filled, B empty
     }
-    _ = try ctx.text("A: crossings sum to w = 1", 196, 84, label_em, ink, .regular);
-    _ = try ctx.text("non-zero: filled", 196, 95, label_em, amber, .regular);
-    _ = try ctx.text("B: +1 and -1 cancel, w = 0", 196, 121, label_em, ink, .regular);
-    _ = try ctx.text("zero: the hole stays empty", 196, 132, label_em, teal, .regular);
-    _ = try ctx.text("h and v estimates are", 196, 158, label_em, muted, .regular);
-    _ = try ctx.text("weighted together", 196, 169, label_em, muted, .regular);
+    _ = try ctx.text("A: w = +1, filled", 196, 90, label_em, amber, .regular);
+    _ = try ctx.text("B: w = -1 +1 = 0, empty", 196, 127, label_em, teal, .regular);
+    _ = try ctx.text("the hole needs no", 196, 158, label_em, muted, .regular);
+    _ = try ctx.text("special handling", 196, 169, label_em, muted, .regular);
 }
 
 // ── Diagram 7: edge coverage ────────────────────────────────────────
@@ -887,42 +1022,86 @@ fn subQuad(q: Quad, t0: f32, t1: f32) Quad {
     return .{ .p0 = p0, .c = .{ .x = p0.x + dx * (t1 - t0), .y = p0.y + dy * (t1 - t0) }, .p1 = p1 };
 }
 
+/// Coverage of the toy glyph per device pixel over a `cols`×`rows` window
+/// whose top-left is `origin` and whose pixels are `unit` local units wide.
+/// snail-raster draws the glyph white over transparent black at exactly
+/// that resolution, so each pixel's alpha is snail's own coverage.
+fn rasterCoverage(ctx: *Ctx, origin: Vec2, unit: f32, comptime cols: u32, comptime rows: u32) ![rows][cols]f32 {
+    const allocator = ctx.allocator;
+    var path = try ctx.glyphPath();
+    defer path.deinit();
+    var prepared = try path.prepare(allocator);
+    defer prepared.deinit();
+    var scratch = std.heap.ArenaAllocator.init(allocator);
+    defer scratch.deinit();
+    var curves = try prepared.fillCurves(allocator, scratch.allocator());
+    defer curves.deinit();
+    const key = snail.record_key.RecordKey{ .namespace = snail.record_key.ns.path_fill, .a = 0 };
+    const entries = [_]snail.AtlasEntry{.{ .geometry = .{
+        .key = key,
+        .curves = curves.view(),
+        .paint = try prepared.paintForDesign(.{ .solid = white }),
+    } }};
+    var atlas = try snail.Atlas.from(allocator, ctx.pool, .{ .entries = &entries });
+    defer atlas.deinit();
+    const to_pixels = Transform2D{ .xx = 1 / unit, .yy = 1 / unit, .tx = -origin.x / unit, .ty = -origin.y / unit };
+    const shapes = [_]snail.Shape{.{ .key = key, .local_transform = prepared.placedBy(to_pixels), .local_color = white }};
+
+    var cache = try raster.DeviceAtlas.init(allocator, ctx.pool, .{
+        .max_bindings = 1,
+        .layer_info_height = 16,
+        .max_images = 1,
+    });
+    defer cache.deinit();
+    var bindings: [1]snail.render.records.Binding = undefined;
+    try cache.upload(allocator, &.{&atlas}, &bindings);
+    var instances: [1]snail.render.records.Instance = undefined;
+    var batches: [1]snail.render.records.DrawBatch = undefined;
+    var ni: usize = 0;
+    var nb: usize = 0;
+    _ = try snail.emit.emit(&instances, &batches, &ni, &nb, bindings[0], &atlas, &shapes, .identity, white);
+
+    var pixels = [_]u8{0} ** (cols * rows * 4);
+    var renderer = try raster.Renderer.init(&pixels, cols, rows, cols * 4, .rgba8_unorm);
+    try raster.draw(
+        &renderer,
+        harness.drawState(cols, rows),
+        .{ .instances = instances[0..ni], .batches = batches[0..nb] },
+        &.{&cache},
+        null,
+    );
+    var out: [rows][cols]f32 = undefined;
+    for (0..rows) |r| {
+        for (0..cols) |c| out[r][c] = @as(f32, @floatFromInt(pixels[(r * cols + c) * 4 + 3])) / 255.0;
+    }
+    return out;
+}
+
 fn diagramCoverage(ctx: *Ctx) !void {
-    try title(ctx, "7. Draw: roots near the pixel = coverage");
+    try title(ctx, "7. Draw: nearby crossings = partial coverage");
 
     try ctx.panel(.{ .x = 13, .y = 30, .w = 294, .h = 158 });
 
-    // Zoom onto a diagonal stretch of the outer edge (upper right): cells
-    // are device pixels, filled with their true (supersampled) coverage.
+    // Zoom onto a diagonal stretch of the outer edge (upper right). Cells
+    // are device pixels, shaded by snail-raster's coverage.
     const cols: u32 = 11;
     const rows: u32 = 5;
     const cell: f32 = 24;
     const gx0: f32 = 26;
     const gy0: f32 = 48;
     const zoom: f32 = 10.0; // logical px per local unit
-    const win_w = @as(f32, @floatFromInt(cols)) * cell / zoom;
-    const win_h = @as(f32, @floatFromInt(rows)) * cell / zoom;
+    const unit = cell / zoom; // local units per device pixel
+    const win_w = @as(f32, @floatFromInt(cols)) * unit;
+    const win_h = @as(f32, @floatFromInt(rows)) * unit;
     const lx0: f32 = 79.8 - win_w / 2.0;
     const ly0: f32 = 32.4 - win_h / 2.0;
     const place = Transform2D{ .xx = zoom, .yy = zoom, .tx = gx0 - lx0 * zoom, .ty = gy0 - ly0 * zoom };
+    const coverage = try rasterCoverage(ctx, .{ .x = lx0, .y = ly0 }, unit, cols, rows);
 
-    var best_cell: ?struct { x: f32, y: f32, alpha: f32 } = null;
+    var best: ?struct { r: usize, c: usize, alpha: f32 } = null;
     for (0..rows) |r| {
         for (0..cols) |c| {
-            const cx0 = lx0 + @as(f32, @floatFromInt(c)) * cell / zoom;
-            const cy0 = ly0 + @as(f32, @floatFromInt(r)) * cell / zoom;
-            var hits: u32 = 0;
-            const n: u32 = 12;
-            for (0..n) |sy| {
-                for (0..n) |sx| {
-                    const p = Vec2{
-                        .x = cx0 + (@as(f32, @floatFromInt(sx)) + 0.5) / @as(f32, @floatFromInt(n)) * cell / zoom,
-                        .y = cy0 + (@as(f32, @floatFromInt(sy)) + 0.5) / @as(f32, @floatFromInt(n)) * cell / zoom,
-                    };
-                    if (insideGlyph(p)) hits += 1;
-                }
-            }
-            const alpha = @as(f32, @floatFromInt(hits)) / @as(f32, @floatFromInt(n * n));
+            const alpha = coverage[r][c];
             const px = gx0 + @as(f32, @floatFromInt(c)) * cell;
             const py = gy0 + @as(f32, @floatFromInt(r)) * cell;
             if (alpha > 0.001) {
@@ -930,14 +1109,10 @@ fn diagramCoverage(ctx: *Ctx) !void {
                 color[3] = alpha;
                 try ctx.fillRect(.{ .x = px, .y = py, .w = cell, .h = cell }, color);
             }
-            // Remember the most fractional cell for annotation.
-            if (alpha > 0.02 and alpha < 0.98) {
-                if (best_cell == null or @abs(alpha - 0.5) < @abs(best_cell.?.alpha - 0.5))
-                    best_cell = .{ .x = px, .y = py, .alpha = alpha };
-            }
+            if (alpha > 0.02 and alpha < 0.98 and (best == null or @abs(alpha - 0.5) < @abs(best.?.alpha - 0.5)))
+                best = .{ .r = r, .c = c, .alpha = alpha };
         }
     }
-    // Pixel grid over the cells.
     for (0..cols + 1) |c| {
         const px = gx0 + @as(f32, @floatFromInt(c)) * cell;
         try ctx.line(.{ .x = px, .y = gy0 }, .{ .x = px, .y = gy0 + @as(f32, @floatFromInt(rows)) * cell }, 0.5, faint);
@@ -965,19 +1140,23 @@ fn diagramCoverage(ctx: *Ctx) !void {
         }
         if (tmax > tmin) try ctx.segStroke(subQuad(q, tmin, tmax), place, 0.13, blue);
     }
-    // Annotate the most fractional pixel.
-    if (best_cell) |bc| {
+
+    // The most fractional pixel: its center sits on the edge.
+    if (best) |b| {
+        const px = gx0 + @as(f32, @floatFromInt(b.c)) * cell;
+        const py = gy0 + @as(f32, @floatFromInt(b.r)) * cell;
         var pth = try support.unitRectPath(ctx.allocator);
         defer pth.deinit();
-        try ctx.strokePath(&pth, 1.6 / cell, amber, support.placeRect(.{ .x = bc.x, .y = bc.y, .w = cell, .h = cell }));
+        try ctx.strokePath(&pth, 1.6 / cell, amber, support.placeRect(.{ .x = px, .y = py, .w = cell, .h = cell }));
+        try ctx.fillCircle(px + cell / 2, py + cell / 2, 2.2, amber);
         var buf: [32]u8 = undefined;
-        const s = try std.fmt.bufPrint(&buf, "\u{03b1} = {d:.2}", .{bc.alpha});
-        _ = try ctx.text(s, bc.x + cell + 6, bc.y + cell * 0.5 + 3, label_em, amber, .regular);
+        const s = try std.fmt.bufPrint(&buf, "\u{03b1} = {d:.2}", .{b.alpha});
+        _ = try ctx.text(s, px + cell + 6, py + cell * 0.5 + 3, label_em, amber, .regular);
     }
 
     const cap_y = gy0 + @as(f32, @floatFromInt(rows)) * cell + 14;
     _ = try ctx.text("one cell = one device pixel", 26, cap_y, label_em, muted, .regular);
-    _ = try ctx.text("paint × coverage = premul", 196, cap_y, label_em, muted, .regular);
+    _ = try ctx.text("partial within ½ px of the edge", 166, cap_y, label_em, muted, .regular);
 }
 
 // ── README hero: a dedicated snail composition, not the demo scene ───
