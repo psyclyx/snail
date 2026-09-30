@@ -624,7 +624,8 @@ fn outlineRect(ctx: *Ctx, r: Rect, w: f32, color: [4]f32) !void {
 fn diagramCurves(ctx: *Ctx) !void {
     try title(ctx, "1. Prepare: outlines stay curves");
 
-    // The outline: every dot is a segment boundary.
+    // The outline: every dot is a segment boundary. One segment is labeled;
+    // the next one (teal) starts where it ends.
     try ctx.panel(.{ .x = 13, .y = 30, .w = 150, .h = 158 });
     const place = glyphPlace(38, 38, 1.0);
     try emBox(ctx, place, 4);
@@ -633,88 +634,117 @@ fn diagramCurves(ctx: *Ctx) !void {
         const p = mapPt(place, q.p0);
         try ctx.fillCircle(p.x, p.y, 1.4, ink);
     }
-    const hi_index = 15;
+    const hi_index = 14;
     const hi = glyph_segments[hi_index];
+    const next = glyph_segments[hi_index + 1];
+    try ctx.segStroke(next, place, 2.4, teal);
     try ctx.segStroke(hi, place, 2.4, blue);
     const p0 = mapPt(place, hi.p0);
     const p1 = mapPt(place, hi.c);
     const p2 = mapPt(place, hi.p1);
+    const next_p1 = mapPt(place, next.c);
     try ctx.line(p0, p1, 0.7, rose);
     try ctx.line(p1, p2, 0.7, rose);
     try ctx.fillCircle(p0.x, p0.y, 2.0, ink);
     try ctx.fillCircle(p2.x, p2.y, 2.0, ink);
     try ctx.ringCircle(p1.x, p1.y, 2.2, 1.2, rose);
-    _ = try ctx.text("p0", p0.x + 3, p0.y - 3, small_em, ink, .regular);
-    _ = try ctx.text("p1", p1.x + 5, p1.y + 3, small_em, rose, .regular);
-    _ = try ctx.text("p2", p2.x + 5, p2.y + 6, small_em, ink, .regular);
-    _ = try ctx.text("16 quadratic segments", 38, 180, label_em, muted, .regular);
+    try ctx.ringCircle(next_p1.x, next_p1.y, 2.2, 1.2, teal);
+    _ = try ctx.text("p0", p0.x - 4, p0.y - 5, small_em, ink, .regular);
+    _ = try ctx.text("p1", p1.x + 1, p1.y - 5, small_em, rose, .regular);
+    _ = try ctx.text("p2", p2.x - 12, p2.y + 7, small_em, ink, .regular);
+    _ = try ctx.text("p1", next_p1.x + 5, next_p1.y + 3, small_em, teal, .regular);
+    _ = try ctx.text("16 segments, 2 contours", 38, 180, small_em, muted, .regular);
 
-    // A stretch of the shared curve texture: this glyph is one contiguous
-    // run of texel pairs between other glyphs' runs.
+    // A stretch of the shared curve texture. This glyph is one run of single
+    // texels: each segment starts one texel after the previous, and each
+    // contour adds one closing texel.
     try ctx.panel(.{ .x = 175, .y = 30, .w = 132, .h = 158 });
     _ = try ctx.text("curve texture", 184, 46, label_em, muted, .regular);
     const other = srgb(.{ 0.90, 0.91, 0.94, 1.0 });
+    const chain_end = srgb(.{ 0.62, 0.72, 0.92, 1.0 });
+    var texel_of: [glyph_segments.len]u32 = undefined;
+    var contour_ends: [2]u32 = undefined;
+    {
+        var t: u32 = 0;
+        for (&texel_of, 0..) |*slot, i| {
+            if (i == inner_arcs.len) {
+                contour_ends[0] = t;
+                t += 1;
+            }
+            slot.* = t;
+            t += 1;
+        }
+        contour_ends[1] = t;
+    }
     const texel: f32 = 7;
-    const pair_step: f32 = 2 * texel + 0.8 + 2.6;
-    const row_step: f32 = 10;
+    const step: f32 = 8.6;
+    const per_row = 12;
+    const run_start = 10; // other glyphs precede this one
     const strip = Vec2{ .x = 184, .y = 54 };
-    const pairs_per_row = 6;
-    const run_start_pair = 4; // other glyphs precede this one in the row
-    var hi_pair: Vec2 = undefined;
-    for (0..pairs_per_row * 4) |pair| {
-        const px = strip.x + @as(f32, @floatFromInt(pair % pairs_per_row)) * pair_step;
-        const py = strip.y + @as(f32, @floatFromInt(pair / pairs_per_row)) * row_step;
-        const seg: isize = @as(isize, @intCast(pair)) - run_start_pair;
-        const color = if (seg == hi_index) blue else if (seg >= 0 and seg < glyph_segments.len) blue_soft else other;
-        if (seg == hi_index) hi_pair = .{ .x = px, .y = py };
+    var hi_loc: Vec2 = undefined;
+    for (0..per_row * 3) |cell| {
+        const px = strip.x + @as(f32, @floatFromInt(cell % per_row)) * step;
+        const py = strip.y + @as(f32, @floatFromInt(cell / per_row)) * 10;
+        const local: isize = @as(isize, @intCast(cell)) - run_start;
+        const in_run = local >= 0 and local <= contour_ends[1];
+        const is_end = in_run and (local == contour_ends[0] or local == contour_ends[1]);
+        const is_hi = in_run and (local == texel_of[hi_index] or local == texel_of[hi_index] + 1);
+        if (in_run and local == texel_of[hi_index]) hi_loc = .{ .x = px, .y = py };
+        const color = if (is_hi) blue else if (is_end) chain_end else if (in_run) blue_soft else other;
         try ctx.fillRect(.{ .x = px, .y = py, .w = texel, .h = texel }, color);
-        try ctx.fillRect(.{ .x = px + texel + 0.8, .y = py, .w = texel, .h = texel }, color);
     }
 
-    // The highlighted segment's two RGBA16F texels, channel by channel.
-    const call_y: f32 = 106;
+    // The labeled segment's two RGBA16F texels, channel by channel. The
+    // second is also the next segment's first.
+    const call_y: f32 = 96;
     const call_h: f32 = 14;
     const chan: f32 = 13;
     const texel_x = [2]f32{ 184, 184 + 4 * chan + 4 };
     const call_r = texel_x[1] + 4 * chan;
-    try ctx.line(.{ .x = hi_pair.x, .y = hi_pair.y + texel }, .{ .x = texel_x[0], .y = call_y - 10 }, 0.4, blue);
-    try ctx.line(.{ .x = hi_pair.x + 2 * texel + 0.8, .y = hi_pair.y + texel }, .{ .x = call_r, .y = call_y - 10 }, 0.4, blue);
-    const slots = [2][2]?struct { name: []const u8, color: [4]f32 }{
+    try ctx.line(.{ .x = hi_loc.x, .y = hi_loc.y + texel }, .{ .x = texel_x[0], .y = call_y - 10 }, 0.4, blue);
+    try ctx.line(.{ .x = hi_loc.x + step + texel, .y = hi_loc.y + texel }, .{ .x = call_r, .y = call_y - 10 }, 0.4, blue);
+    const points = [2][2]struct { name: []const u8, color: [4]f32 }{
         .{ .{ .name = "p0", .color = ink }, .{ .name = "p1", .color = rose } },
-        .{ .{ .name = "p2", .color = ink }, null },
+        .{ .{ .name = "p2", .color = ink }, .{ .name = "p1", .color = teal } },
     };
     const channel_names = [4][]const u8{ "R", "G", "B", "A" };
-    for (texel_x, slots) |tx, texel_slots| {
+    for (texel_x, points) |tx, texel_points| {
         try ctx.fillRect(.{ .x = tx, .y = call_y, .w = 4 * chan, .h = call_h }, white);
         for (channel_names, 0..) |name, ch| {
-            const cx = tx + (@as(f32, @floatFromInt(ch)) + 0.5) * chan;
-            try ctx.textCentered(name, cx, call_y - 2.5, small_em, muted, .regular);
-            if (ch > 0) try ctx.line(.{ .x = tx + @as(f32, @floatFromInt(ch)) * chan, .y = call_y }, .{ .x = tx + @as(f32, @floatFromInt(ch)) * chan, .y = call_y + call_h }, 0.4, faint);
+            const cx = tx + @as(f32, @floatFromInt(ch)) * chan;
+            try ctx.textCentered(name, cx + 0.5 * chan, call_y - 2.5, small_em, muted, .regular);
+            if (ch > 0) try ctx.line(.{ .x = cx, .y = call_y }, .{ .x = cx, .y = call_y + call_h }, 0.4, faint);
         }
         // Each point fills two channels: x, then y.
-        for (texel_slots, 0..) |slot, s| {
+        for (texel_points, 0..) |point, s| {
             const sx = tx + @as(f32, @floatFromInt(s)) * 2 * chan;
-            if (slot) |named| {
-                try ctx.textCentered("x", sx + 0.5 * chan, call_y + call_h / 2 + 2.6, small_em, named.color, .regular);
-                try ctx.textCentered("y", sx + 1.5 * chan, call_y + call_h / 2 + 2.6, small_em, named.color, .regular);
-                const bracket_y = call_y + call_h + 3;
-                try ctx.line(.{ .x = sx + 2, .y = bracket_y }, .{ .x = sx + 2 * chan - 2, .y = bracket_y }, 0.6, named.color);
-                try ctx.textCentered(named.name, sx + chan, bracket_y + 8, small_em, named.color, .regular);
-            } else {
-                try ctx.fillRect(.{ .x = sx, .y = call_y, .w = 2 * chan, .h = call_h }, other);
-            }
+            try ctx.textCentered("x", sx + 0.5 * chan, call_y + call_h / 2 + 2.6, small_em, point.color, .regular);
+            try ctx.textCentered("y", sx + 1.5 * chan, call_y + call_h / 2 + 2.6, small_em, point.color, .regular);
+            try ctx.textCentered(point.name, sx + chan, call_y + call_h + 8, small_em, point.color, .regular);
         }
         try outlineRect(ctx, .{ .x = tx, .y = call_y, .w = 4 * chan, .h = call_h }, 0.8, blue);
     }
-    _ = try ctx.text("channel: one 16-bit float", 184, call_y + call_h + 23, small_em, ink, .regular);
-    _ = try ctx.text("texel: 4 channels = 64 bits", 184, call_y + call_h + 32, small_em, muted, .regular);
-    _ = try ctx.text("segment: 2 texels = 16 bytes", 184, call_y + call_h + 41, small_em, muted, .regular);
+    // What each segment reads: this one spans texel A and p2; the next one
+    // starts on texel B.
+    const this_y = call_y + call_h + 12;
+    const next_y = this_y + 6;
+    try ctx.line(.{ .x = texel_x[0], .y = this_y }, .{ .x = texel_x[1] + 2 * chan, .y = this_y }, 1.2, blue);
+    try ctx.arrow(.{ .x = texel_x[1], .y = next_y }, .{ .x = call_r + 8, .y = next_y }, 1.2, teal);
+    _ = try ctx.text("this segment", texel_x[0], next_y + 1.5, small_em, blue, .regular);
+    _ = try ctx.text("next segment", texel_x[1] + 8, next_y + 9, small_em, teal, .regular);
 
-    const legend_y: f32 = 176;
-    try ctx.fillRect(.{ .x = 184, .y = legend_y - 5, .w = 5, .h = 5 }, blue_soft);
-    _ = try ctx.text("this glyph", 192, legend_y, small_em, muted, .regular);
-    try ctx.fillRect(.{ .x = 238, .y = legend_y - 5, .w = 5, .h = 5 }, other);
-    _ = try ctx.text("other glyphs", 246, legend_y, small_em, muted, .regular);
+    _ = try ctx.text("channel: one 16-bit float", 184, 151, small_em, ink, .regular);
+    _ = try ctx.text("+1 texel per contour", 184, 160, small_em, muted, .regular);
+
+    const legend = [_]struct { color: [4]f32, label: []const u8, x: f32, y: f32 }{
+        .{ .color = blue_soft, .label = "this glyph", .x = 184, .y = 172 },
+        .{ .color = chain_end, .label = "contour end", .x = 236, .y = 172 },
+        .{ .color = other, .label = "other glyphs", .x = 184, .y = 181 },
+    };
+    for (legend) |item| {
+        try ctx.fillRect(.{ .x = item.x, .y = item.y - 5, .w = 5, .h = 5 }, item.color);
+        _ = try ctx.text(item.label, item.x + 7, item.y, small_em, muted, .regular);
+    }
 }
 
 // ── Diagram 2: bands ────────────────────────────────────────────────

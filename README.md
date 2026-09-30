@@ -217,14 +217,14 @@ after their final GPU use completes. The same-pool `compact` convenience
 retains both persistent snapshots and therefore still needs result-sized
 free-page headroom.
 
-Font outlines containing only lines and quadratics use a two-texel dense
-segment format; general paths retain the four-texel format. Page height is a
+Font outlines (lines and quadratics only) store about one texel per segment
+(see [How it works](#how-it-works)); general paths use four. Page height is a
 host budget (`curve_words_per_page` / `band_words_per_page`), not a fixed
 shader dimension. Logical pages are allocated lazily. Array backends bank
 them in groups of 256; flat typed-buffer backends address them with fixed
 page strides. Either path avoids eviction solely because one texture array
 is full. The default packer considers only the 12 most recent pages and
-chooses the tightest fit across both curve and band capacity; set
+chooses the tightest fit across both curve and band capacity;
 `Atlas.Packing{ .recent_page_limit = 1 }` selects tail-only placement. The
 bounded window makes insertion cost independent of total atlas size.
 
@@ -254,19 +254,21 @@ are images.
 
 **1. Prepare: outlines stay curves.** A font outline is a list of line and
 quadratic segments. A quadratic has a start point `p0`, a control point `p1`,
-and an end point `p2`. Each segment is two `RGBA16F` texels (16 bytes) with
-one em-unit coordinate per 16-bit channel: `p0` and `p1` in the first, `p2`
-in the second. A glyph's segments are stored back to back. TrueType outlines
-are already quadratic. Cubics from CFF/CFF2 or paths are split at extrema and
-inflections, then approximated by quadratics certified against a tolerance
-(default `1/8192` em); if `f32` cannot represent a certified result,
-preparation returns a typed error. General paths use four texels per segment
-so they can also record each segment's kind and rational-conic weights.
+and an end point `p2`, stored as em-unit coordinates in `RGBA16F` texels, one
+16-bit float per channel: a segment reads `p0` and `p1` from its texel and
+`p2` from the next. That next texel also holds the following segment's
+control point, so it starts the following segment: a contour of n segments
+takes n + 1 texels. TrueType outlines are already quadratic. Cubics from
+CFF/CFF2 or paths are split at extrema and inflections, then approximated by
+quadratics certified against a tolerance (default `1/8192` em); if `f32`
+cannot represent a certified result, preparation returns a typed error.
+General paths use four texels per segment so they can also record each
+segment's kind and rational-conic weights.
 
 Unhinted and autohint records do not depend on size. TrueType-hinted records
 are prepared per ppem.
 
-<img src="assets/algorithm-curves.png?raw=true" alt="an 'o' outline with its 16 segment boundaries marked and one segment's p0, p1, p2 labeled; beside it, a stretch of the curve texture where the glyph is one run of texel pairs, with the labeled segment's two RGBA16F texels expanded: one coordinate per 16-bit channel, p0 and p1 in the first texel, p2 in the second" width="640">
+<img src="assets/algorithm-curves.png?raw=true" alt="an 'o' outline with its 16 segment boundaries marked and one segment's p0, p1, p2 labeled; beside it, the glyph as one run of single texels in the curve texture, with the labeled segment's two RGBA16F texels expanded: x and y per 16-bit channel, p0 and p1 in the first texel, p2 and the next segment's p1 in the second" width="640">
 
 **2. Prepare: bands index the curves.** The outline's bounds are cut into
 equal horizontal and vertical bands, 1 to 12 per axis depending on the
@@ -305,8 +307,8 @@ crosses a ray, and its direction there gives the crossing's sign. Before any
 root is used, the signs of the three control points relative to the sample
 index Slug's `0x2E74` table, which says whether zero, one, or two roots
 count. snail snaps values within `1/65536` of the ray to zero, so adjacent
-segments agree on their shared endpoint after f16 storage, and solves with a
-cancellation-resistant Vieta form. Lines follow the same rule; rational
+segments meeting on the ray make the same decision, and solves for roots in a
+form that avoids cancellation. Lines follow the same rule; rational
 conics apply it to their weighted control points.
 
 <img src="assets/algorithm-roots.png?raw=true" alt="a sample in the ring of the 'o' with a ray to the right crossing three edges and a ray upward crossing one, each crossing marked +1 or -1" width="640">
@@ -334,26 +336,28 @@ run-algorithm-diagrams` writes them to `zig-out/`.
 
 ### Differences from the public Slug reference
 
-The winding method, `0x2E74` root eligibility, directional coverage
-combination, half-pixel analytic ramp, sorted-curve early-out, `RG16UI` band
-data, and dynamic dilation follow the current public reference.
+snail keeps Slug's core: winding from signed ray crossings, the `0x2E74`
+root-eligibility table, the half-pixel coverage ramp blended across two
+rays, band lists sorted for early exit, `RG16UI` band data, and dynamic quad
+dilation. It differs here:
 
-| Public reference shader | snail |
-|---|---|
-| Selects one horizontal and one vertical band list at the sample center | Visits every band touched by the local pixel footprint and deduplicates shared curves |
-| Evaluates quadratic Béziers | Evaluates lines, quadratics, and rational conics; cubics are lowered on the CPU |
-| Stores a quadratic in two curve texels, often sharing endpoints | Uses two direct texels for font lines/quadratics; general paths use four for kind and conic metadata |
-| Uses raw floating-point sign bits for root eligibility | Snaps values within `1/65536` of the ray to positive zero before using the same table |
-| Uses the direct quadratic formula | Uses a cancellation-resistant, order-preserving Vieta form |
-| Accepts a caller-built bounding polygon | `emit` always produces a simple quad and the vertex shader dilates its four corners |
-| Covers the core GPU quadratic renderer | Adds shaping, fallback, CFF/CFF2, paths and paints, hinting, LCD modes, persistent atlas/upload APIs, and a CPU backend |
+| | Public reference shader | snail |
+|---|---|---|
+| Band lookup | One row and one column, at the pixel center | Every row and column the pixel's footprint spans; a curve listed in several is evaluated once |
+| Curve kinds | Quadratics | Lines, quadratics, and rational conics; cubics become quadratics on the CPU |
+| Curve storage | Two texels per quadratic, the second shared with the next curve | The same for font outlines; paths use four texels per segment to carry kind and conic weights |
+| Root eligibility | Sign bits of the control points | The same table, after rounding values within `1/65536` of the ray to zero so segments meeting on the ray agree |
+| Root solve | Quadratic formula | One root from the formula, arranged to avoid cancellation; the other from the product of the roots |
+| Draw geometry | Caller-supplied bounding polygon | One quad per shape |
 
-The band-span behavior is implemented in
-[`coverage_common.slang`](src/snail/shader/slang/coverage_common.slang) and
-used by regular text, COLRv0, hinted text, subpixel text, sampled text, and
-general paths. The CPU mirror is
-[`src/snail-raster/coverage.zig`](src/snail-raster/coverage.zig). Band
-construction and its 12-band heuristic are in
+Beyond the renderer, snail adds shaping, font fallback, CFF/CFF2 outlines,
+paths and paints, hinting, LCD antialiasing, a persistent atlas, and a CPU
+backend.
+
+Band spans are evaluated in
+[`coverage_common.slang`](src/snail/shader/slang/coverage_common.slang),
+mirrored on the CPU in
+[`coverage.zig`](src/snail-raster/coverage.zig); bands are built in
 [`band_texture.zig`](src/snail/format/band_texture.zig).
 
 ## Text and hinting
