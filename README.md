@@ -421,7 +421,10 @@ Choose a hinting path according to the content:
 
 TrueType bytecode hinting applies only to TrueType outlines and rejects a
 selected variable-font instance. The autohinter is outline-format agnostic
-and supports TrueType, CFF/CFF2, and selected variable instances.
+and supports TrueType, CFF/CFF2, and selected variable instances. It fits
+once per glyph quad under affine placement; a non-affine (perspective)
+placement, or an axis with more than `autohint.max_fit_features` features,
+renders unhinted.
 
 Strong x-axis autohint policies and TrueType hinting need integer
 device-pixel glyph origins. Use `RunSnap.origins` for proportional text or
@@ -519,7 +522,7 @@ Other useful gates include `run-minimal-wgpu`, `run-minimal-d3d11`,
 `run-coverage-parity`, and `run-gamma-probe`. Run `zig build -l` for the full
 list.
 
-With Nix: `nix-build -A demo`, or enter `nix-shell` for the complete
+With Nix: `nix-build` builds the demo package, or enter `nix-shell` for the complete
 development toolchain. `zig build ci` pins the shell's Mesa software stack
 and runs the same scoped gates used by the parallel Linux CI jobs. The
 individual `ci-tests`, `ci-linux-gl`, `ci-linux-vulkan`,

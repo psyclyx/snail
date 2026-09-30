@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.20.0 - 2026-09-30
 
 ### Changed
 
@@ -20,6 +20,12 @@
   features and blue zones per axis on both the CPU and GPU backends; a longer
   run renders that axis unhinted. Previously the CPU fitter accepted 32 and
   the GPU refit such glyphs per fragment.
+- Nix packaging (breaking for Nix consumers): `default.nix` takes
+  `{ sources ? npins, nixpkgs ? sources.nixpkgs, pkgs ? import nixpkgs { }, ... }`
+  and returns `{ packages, overlay, shell, default }`. The demo derivation is
+  `default` / `packages.snail-demo` (formerly the `demo` attribute), is also
+  provided by `overlay`, and scopes its source to the build's inputs so
+  editing entry points or pins no longer changes its hash.
 
 ### Added
 
@@ -27,6 +33,13 @@
   per axis against the fit bound.
 - `snail-perf-glsl` options `--repeat N`, `--autohint-policy NAME`, and
   `--font NAME` for draw-size scaling and policy/font coverage.
+
+### Fixed
+
+- `zig build ci-nix` builds the renamed `default` attribute; it failed after
+  the packaging change above.
+- `nix/snail-demo.nix` reports the release version (it had stayed at 0.18.0).
+- `scripts/perf.sh` no longer runs the removed `text-autohint-fallback` case.
 
 ## 0.19.0 - 2026-08-05
 

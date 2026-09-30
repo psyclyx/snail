@@ -11,7 +11,7 @@
   wayland,
   wayland-protocols,
   pname ? "snail-demo",
-  version ? "0.18.0",
+  version ? "0.20.0",
   optimize ? "fast",
   cpu ? "baseline",
 }:
