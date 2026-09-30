@@ -346,6 +346,30 @@ fn addScreenshotSteps(
     const prop_step = b.step("run-autohint-prop", "Render the autohint policies on a proportional TT-hinted face → zig-out/autohint-prop.tga");
     prop_step.dependOn(&b.addRunArtifact(prop_exe).step);
 
+    // Autohint knot census: per-axis knot counts vs the vertex-fit bound.
+    const census_warp_mod = b.createModule(.{
+        .root_source_file = b.path("src/snail-raster/autohint_warp.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .imports = &.{.{ .name = "snail", .module = release_snail_mod }},
+    });
+    const census_mod = b.createModule(.{
+        .root_source_file = b.path("dev/tools/autohint_census.zig"),
+        .target = config.target,
+        .optimize = .ReleaseFast,
+        .link_libc = true,
+        .imports = &.{
+            .{ .name = "assets", .module = modules.assets },
+            .{ .name = "snail", .module = release_snail_mod },
+            .{ .name = "autohint_warp", .module = census_warp_mod },
+        },
+    });
+    const census_exe = b.addExecutable(.{ .name = "snail-autohint-census", .root_module = census_mod });
+    const run_census = b.addRunArtifact(census_exe);
+    if (b.args) |args| run_census.addArgs(args);
+    const census_step = b.step("run-autohint-census", "Count per-glyph autohint features per axis against the vertex-fit bound (args: [--ppem N] [--chars STR] [FONT[:FACE] ...])");
+    census_step.dependOn(&run_census.step);
+
     // RESEARCH PROBE: TT bytecode ppem-independence analysis (internal types).
     const tt_probe_internal_mod = b.createModule(.{
         .root_source_file = b.path("src/snail/tt_probe_internal.zig"),

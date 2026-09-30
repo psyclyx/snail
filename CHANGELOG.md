@@ -21,6 +21,13 @@
   run renders that axis unhinted. Previously the CPU fitter accepted 32 and
   the GPU refit such glyphs per fragment.
 
+### Added
+
+- `zig build run-autohint-census`: per-font counts of autohint fit features
+  per axis against the fit bound.
+- `snail-perf-glsl` options `--repeat N`, `--autohint-policy NAME`, and
+  `--font NAME` for draw-size scaling and policy/font coverage.
+
 ## 0.19.0 - 2026-08-05
 
 ### Added
