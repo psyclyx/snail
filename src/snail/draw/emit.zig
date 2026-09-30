@@ -167,12 +167,7 @@ fn inspectShape(
     {
         return error.InvalidAtlasRecord;
     }
-    const curve_texels = std.math.mul(
-        u32,
-        rec.curve_count,
-        rec.encoding.texelsPerSegment(),
-    ) catch return error.InvalidAtlasRecord;
-    const curve_end = std.math.add(u32, rec.curve_texel, curve_texels) catch return error.InvalidAtlasRecord;
+    const curve_end = std.math.add(u32, rec.curve_texel, rec.curve_texels) catch return error.InvalidAtlasRecord;
     if (curve_end > page_mod.publishedWords(page).curve / 4 or
         !validInstanceBBox(rec.bbox))
     {

@@ -27,8 +27,8 @@ pub const Word = u16;
 pub const SEGMENT_WORDS_PER_TEXEL: u32 = 4;
 pub const CURVE_SEGMENT_TEXELS: u32 = curve_tex.GENERAL_SEGMENT_TEXELS;
 pub const CURVE_SEGMENT_WORDS: u32 = CURVE_SEGMENT_TEXELS * SEGMENT_WORDS_PER_TEXEL;
-pub const MIN_CURVE_SEGMENT_WORDS: u32 =
-    curve_tex.DENSE_QUADRATIC_SEGMENT_TEXELS * SEGMENT_WORDS_PER_TEXEL;
+/// Smallest curve record: one dense segment, its texel plus the chain end.
+pub const MIN_CURVE_SEGMENT_WORDS: u32 = 2 * SEGMENT_WORDS_PER_TEXEL;
 pub const CURVE_TEX_WIDTH: u32 = curve_tex.TEX_WIDTH;
 pub const BAND_TEX_WIDTH: u32 = band_tex.TEX_WIDTH;
 

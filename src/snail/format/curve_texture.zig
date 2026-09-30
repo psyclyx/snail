@@ -7,28 +7,92 @@ const Vec2 = @import("../math/vec.zig").Vec2;
 
 pub const TEX_WIDTH: u32 = render_abi.atlas_tex_width;
 pub const GENERAL_SEGMENT_TEXELS: u32 = 4;
-/// Direct line/quadratic records need only p0, p1, and p2. Curve kind lives
-/// in every band reference and non-rational segments have implicit unit
-/// weights, so font outlines can omit the two metadata texels.
-pub const DENSE_QUADRATIC_SEGMENT_TEXELS: u32 = 2;
 
-/// Physical curve-record encoding. This is the single source of truth for
-/// curve stride and the dense-format bit carried by band blocks.
+/// Physical curve-record encoding, carried by the band block's prefix.
+///
+/// `general`: four texels per segment, carrying kind and conic weights.
+///
+/// `dense_quadratic`: line/quadratic records chained per contour. Kind lives
+/// in every band reference and weights are unit, so a segment needs only
+/// p0, p1, and p2. Segment i reads texel t = (p0, p1) and texel t + 1, whose
+/// first two channels are its p2. When the next segment starts at that p2
+/// (bit-exact after f16 quantization), texel t + 1 is also that segment's
+/// first texel, (p2 = next p0, next p1): a closed contour of n segments
+/// takes n + 1 texels. A chain ends with (p2, DENSE_CHAIN_END,
+/// DENSE_CHAIN_END), which makes the layout self-describing.
 pub const Encoding = enum(u8) {
     general,
     dense_quadratic,
-
-    pub fn texelsPerSegment(self: Encoding) u32 {
-        return switch (self) {
-            .general => GENERAL_SEGMENT_TEXELS,
-            .dense_quadratic => DENSE_QUADRATIC_SEGMENT_TEXELS,
-        };
-    }
 
     pub fn isDenseQuadratic(self: Encoding) bool {
         return self == .dense_quadratic;
     }
 };
+
+/// f16 quiet NaN in the unused channels of a dense chain's closing texel.
+/// Encoded coordinates are always finite, so it never collides with p1.
+pub const DENSE_CHAIN_END: u16 = 0x7e00;
+
+/// Whether `next` continues `prev`'s dense chain: its start equals `prev`'s
+/// end once both are quantized to f16.
+pub fn denseJoins(prev: CurveSegment, next: CurveSegment) bool {
+    return f32ToF16(prev.p2.x) == f32ToF16(next.p0.x) and
+        f32ToF16(prev.p2.y) == f32ToF16(next.p0.y);
+}
+
+/// Texel offset of each segment of a dense record (written to `out`, one per
+/// segment), returning the record's texel count.
+pub fn denseSegmentTexels(prepared: []const CurveSegment, out: []u32) u32 {
+    std.debug.assert(out.len >= prepared.len);
+    if (prepared.len == 0) return 0;
+    var texel: u32 = 0;
+    for (prepared, 0..) |curve, i| {
+        // A break skips past the previous chain's closing texel.
+        if (i > 0 and !denseJoins(prepared[i - 1], curve)) texel += 1;
+        out[i] = texel;
+        texel += 1;
+    }
+    return texel + 1;
+}
+
+/// Texel count of a dense record for `prepared`.
+pub fn denseTexelCount(prepared: []const CurveSegment) usize {
+    if (prepared.len == 0) return 0;
+    var chains: usize = 1;
+    for (prepared[1..], prepared[0 .. prepared.len - 1]) |curve, prev| {
+        if (!denseJoins(prev, curve)) chains += 1;
+    }
+    return prepared.len + chains;
+}
+
+pub fn isDenseChainEnd(words: []const u16, texel: usize) bool {
+    return words[texel * 4 + 2] == DENSE_CHAIN_END and words[texel * 4 + 3] == DENSE_CHAIN_END;
+}
+
+/// Whether `texel` starts a segment of the dense record `words`: every texel
+/// except a chain's closing one does.
+pub fn isDenseSegmentStart(words: []const u16, texel: usize) bool {
+    return texel < words.len / 4 and !isDenseChainEnd(words, texel);
+}
+
+/// Segment count of a dense record recovered from its chain ends, or null
+/// if `words` is not a well-formed dense record (a trailing open chain, or
+/// an empty one).
+pub fn denseSegmentCount(words: []const u16) ?usize {
+    if (words.len % 4 != 0) return null;
+    var segments: usize = 0;
+    var chain_open = false;
+    for (0..words.len / 4) |texel| {
+        if (isDenseChainEnd(words, texel)) {
+            if (!chain_open) return null;
+            chain_open = false;
+        } else {
+            segments += 1;
+            chain_open = true;
+        }
+    }
+    return if (chain_open) null else segments;
+}
 pub const PACKED_ANCHOR_CHUNK_EXTENT: f32 = 256.0;
 pub const PACKED_POINT_DELTA_LIMIT: f32 = 256.0;
 pub const PACKED_BAND_DILATION: f32 = 1.0;
@@ -236,9 +300,10 @@ pub fn encodeDirectSingleGlyphCurves(
     return buf;
 }
 
-/// Encode a line/quadratic-only glyph using two RGBA16F texels per segment.
-/// These texels are byte-identical to the coordinate portion of the general
-/// direct encoding. Kind comes from the band reference; weights are unit.
+/// Encode a line/quadratic-only glyph as chained dense texels (see
+/// `Encoding.dense_quadratic`). Coordinates are byte-identical to the
+/// general direct encoding. Kind comes from the band reference; weights are
+/// unit. Band references locate segments with `denseSegmentTexels`.
 pub fn encodeDenseQuadraticSingleGlyphCurves(
     allocator: std.mem.Allocator,
     prepared: []const CurveSegment,
@@ -249,29 +314,41 @@ pub fn encodeDenseQuadraticSingleGlyphCurves(
     trusted: bool,
 ) ![]u16 {
     if (!trusted) try validateCurveData(prepared, .zero);
-    const words_per_segment: usize = DENSE_QUADRATIC_SEGMENT_TEXELS * 4;
-    const total_words = std.math.mul(usize, prepared.len, words_per_segment) catch
-        return error.ShapeTooComplex;
-    const buf = try allocator.alloc(u16, total_words);
-    errdefer allocator.free(buf);
-    var cursor: usize = 0;
     for (prepared) |curve| {
         if ((curve.kind != .line and curve.kind != .quadratic) or
             !curveFitsDirectF16(curve))
         {
             return error.InvalidCurveData;
         }
-        buf[cursor + 0] = f32ToF16(curve.p0.x);
-        buf[cursor + 1] = f32ToF16(curve.p0.y);
-        buf[cursor + 2] = f32ToF16(curve.p1.x);
-        buf[cursor + 3] = f32ToF16(curve.p1.y);
-        buf[cursor + 4] = f32ToF16(curve.p2.x);
-        buf[cursor + 5] = f32ToF16(curve.p2.y);
-        buf[cursor + 6] = 0;
-        buf[cursor + 7] = 0;
-        cursor += words_per_segment;
     }
+    const total_words = std.math.mul(usize, denseTexelCount(prepared), 4) catch
+        return error.ShapeTooComplex;
+    const buf = try allocator.alloc(u16, total_words);
+    errdefer allocator.free(buf);
+    var cursor: usize = 0;
+    var chain_open = false;
+    for (prepared, 0..) |curve, i| {
+        if (!chain_open) {
+            writeDenseTexel(buf[cursor..][0..4], curve.p0, f32ToF16(curve.p1.x), f32ToF16(curve.p1.y));
+            cursor += 4;
+        }
+        // The texel holding p2 doubles as the next segment's first texel
+        // when that segment starts there; otherwise it closes the chain.
+        chain_open = i + 1 < prepared.len and denseJoins(curve, prepared[i + 1]);
+        if (chain_open) {
+            const next_p1 = prepared[i + 1].p1;
+            writeDenseTexel(buf[cursor..][0..4], curve.p2, f32ToF16(next_p1.x), f32ToF16(next_p1.y));
+        } else {
+            writeDenseTexel(buf[cursor..][0..4], curve.p2, DENSE_CHAIN_END, DENSE_CHAIN_END);
+        }
+        cursor += 4;
+    }
+    std.debug.assert(cursor == total_words);
     return buf;
+}
+
+fn writeDenseTexel(out: *[4]u16, point: Vec2, z: u16, w: u16) void {
+    out.* = .{ f32ToF16(point.x), f32ToF16(point.y), z, w };
 }
 
 pub fn buildCurveTexture(
@@ -1119,4 +1196,59 @@ test "splitCurvesForPacking bounds per-segment control deltas" {
     for (packable_curves) |curve| {
         try std.testing.expect(curveFitsPackedRange(curve));
     }
+}
+
+fn testQuad(p0: [2]f32, p1: [2]f32, p2: [2]f32) CurveSegment {
+    return CurveSegment.fromQuad(.{
+        .p0 = .{ .x = p0[0], .y = p0[1] },
+        .p1 = .{ .x = p1[0], .y = p1[1] },
+        .p2 = .{ .x = p2[0], .y = p2[1] },
+    });
+}
+
+test "dense encoding chains each contour through shared joints" {
+    // Two closed contours: a triangle of quadratics, then a two-segment loop.
+    const curves = [_]CurveSegment{
+        testQuad(.{ 0, 0 }, .{ 0.5, -0.25 }, .{ 1, 0 }),
+        testQuad(.{ 1, 0 }, .{ 0.75, 0.5 }, .{ 0.5, 1 }),
+        testQuad(.{ 0.5, 1 }, .{ 0.25, 0.5 }, .{ 0, 0 }),
+        testQuad(.{ 2, 2 }, .{ 2.5, 1.5 }, .{ 3, 2 }),
+        testQuad(.{ 3, 2 }, .{ 2.5, 2.5 }, .{ 2, 2 }),
+    };
+    const words = try encodeDenseQuadraticSingleGlyphCurves(std.testing.allocator, &curves, false);
+    defer std.testing.allocator.free(words);
+
+    // n segments + one closing texel per contour.
+    try std.testing.expectEqual(@as(usize, (curves.len + 2) * 4), words.len);
+    try std.testing.expectEqual(@as(?usize, curves.len), denseSegmentCount(words));
+
+    var texels: [curves.len]u32 = undefined;
+    try std.testing.expectEqual(@as(u32, curves.len + 2), denseSegmentTexels(&curves, &texels));
+    try std.testing.expectEqualSlices(u32, &.{ 0, 1, 2, 4, 5 }, &texels);
+
+    // Each segment reads (p0, p1) at its texel and p2 from the next one.
+    for (curves, texels) |curve, t| {
+        try std.testing.expect(isDenseSegmentStart(words, t));
+        const w = words[t * 4 ..][0..6];
+        try std.testing.expectEqualSlices(u16, &.{
+            f32ToF16(curve.p0.x), f32ToF16(curve.p0.y),
+            f32ToF16(curve.p1.x), f32ToF16(curve.p1.y),
+            f32ToF16(curve.p2.x), f32ToF16(curve.p2.y),
+        }, w);
+    }
+    // Chain ends are not segment starts.
+    try std.testing.expect(!isDenseSegmentStart(words, 3));
+    try std.testing.expect(!isDenseSegmentStart(words, 6));
+    try std.testing.expect(!isDenseSegmentStart(words, 7));
+}
+
+test "dense segment count rejects open and empty chains" {
+    const curves = [_]CurveSegment{testQuad(.{ 0, 0 }, .{ 0.5, 1 }, .{ 1, 0 })};
+    const words = try encodeDenseQuadraticSingleGlyphCurves(std.testing.allocator, &curves, false);
+    defer std.testing.allocator.free(words);
+    try std.testing.expectEqual(@as(?usize, 1), denseSegmentCount(words));
+    // Dropping the closing texel leaves the chain open.
+    try std.testing.expectEqual(@as(?usize, null), denseSegmentCount(words[0..4]));
+    // A chain end with no segment before it.
+    try std.testing.expectEqual(@as(?usize, null), denseSegmentCount(words[4..8]));
 }

@@ -11,7 +11,7 @@ pub const FontKey = [16]u8;
 pub const GeometrySourceKey = [16]u8;
 
 /// Format and producer revision mixed into every artifact key.
-pub const producer_version: u32 = 1;
+pub const producer_version: u32 = 2;
 
 /// Opaque, deterministic identity of one prepared producer artifact.
 pub const Key = extern struct {

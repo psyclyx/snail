@@ -41,6 +41,9 @@ pub const AtlasRecord = struct {
     curve_texel: u32,
     /// Number of curve segments.
     curve_count: u16,
+    /// Texels the curve block spans from `curve_texel`. Not derivable from
+    /// `curve_count`: dense records add one closing texel per chain.
+    curve_texels: u32,
     encoding: curve_texture.Encoding = .general,
     /// Band-lookup metadata for the page's band texture.
     bands: GlyphBandEntry,
@@ -54,6 +57,7 @@ test "atlas record is value type" {
         .page_generation = 1,
         .curve_texel = 0,
         .curve_count = 1,
+        .curve_texels = 4,
         .bands = .{
             .glyph_x = 0,
             .glyph_y = 0,

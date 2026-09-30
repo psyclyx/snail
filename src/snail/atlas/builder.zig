@@ -419,6 +419,7 @@ pub const Builder = struct {
         page_generation: u64,
         curve_texel: u32,
         curve_count: u16,
+        curve_texels: u32,
         encoding: curve_tex_format.Encoding,
         bands: GlyphBandEntry,
     };
@@ -429,9 +430,7 @@ pub const Builder = struct {
     fn placeCurves(self: *Builder, curves: GeometryView) InsertError!Placement {
         const curve_words: u32 = @intCast(curves.curve_bytes.len);
         const band_words: u32 = @intCast(curves.band_bytes.len);
-        const segment_words = curves.encoding.texelsPerSegment() * 4;
-        std.debug.assert(curve_words % segment_words == 0);
-        std.debug.assert(curve_words / segment_words == curves.curve_count);
+        std.debug.assert(curve_words % 4 == 0);
 
         const pool_config = self.pool.config();
         if (curve_words > pool_config.curve_words_per_page or
@@ -518,6 +517,7 @@ pub const Builder = struct {
             .page_generation = page_mod.currentGeneration(page),
             .curve_texel = base_curve_texel,
             .curve_count = curves.curve_count,
+            .curve_texels = curve_words / 4,
             .encoding = curves.encoding,
             .bands = .{
                 .glyph_x = @intCast(glyph_band_texel % BAND_TEX_WIDTH),
@@ -845,6 +845,7 @@ pub const Builder = struct {
                 .page_generation = 0,
                 .curve_texel = 0,
                 .curve_count = 0,
+                .curve_texels = 0,
                 .bands = .{
                     .glyph_x = 0,
                     .glyph_y = 0,
@@ -892,6 +893,7 @@ pub const Builder = struct {
             .page_generation = base_placement.page_generation,
             .curve_texel = base_placement.curve_texel,
             .curve_count = base_placement.curve_count,
+            .curve_texels = base_placement.curve_texels,
             .encoding = base_placement.encoding,
             .bands = base_placement.bands,
             .bbox = bbox,
@@ -1028,8 +1030,7 @@ pub const Builder = struct {
         defer scratch.free(local_band);
         extractAndLocalizeBand(src_page, rec, local_band);
 
-        const curve_words: u32 = @as(u32, rec.curve_count) *
-            rec.encoding.texelsPerSegment() * 4;
+        const curve_words: u32 = rec.curve_texels * 4;
         return self.placeCurves(.{
             .curve_bytes = page_mod.curveWordsUsed(src_page)[rec.curve_texel * 4 ..][0..curve_words],
             .band_bytes = local_band,
@@ -1119,6 +1120,7 @@ pub const Builder = struct {
                     .page_generation = 0,
                     .curve_texel = range.texel,
                     .curve_count = range.count,
+                    .curve_texels = range.texels,
                     .encoding = encoding,
                     .bands = src_bands,
                     .bbox = .{ .min = .zero, .max = .zero },
@@ -1193,7 +1195,7 @@ fn curveRangeForBands(
     src_page: *const AtlasPage,
     bands: GlyphBandEntry,
     encoding: curve_tex_format.Encoding,
-) ?struct { texel: u32, count: u16 } {
+) ?struct { texel: u32, texels: u32, count: u16 } {
     const band_data = page_mod.bandWordsUsed(src_page);
     const headers: usize = @as(usize, bands.h_band_count) + @as(usize, bands.v_band_count);
     if (headers == 0) return null;
@@ -1214,9 +1216,25 @@ fn curveRangeForBands(
         min_texel = @min(min_texel, abs_texel);
         max_texel = @max(max_texel, abs_texel);
     }
+    // Every segment is in some band, so the block runs from the lowest
+    // reference through the texels the highest one reads: its dense chain
+    // end, or a whole general segment.
+    const texels = max_texel - min_texel + switch (encoding) {
+        .general => curve_tex_format.GENERAL_SEGMENT_TEXELS,
+        .dense_quadratic => 2,
+    };
+    const count: usize = switch (encoding) {
+        .general => texels / curve_tex_format.GENERAL_SEGMENT_TEXELS,
+        .dense_quadratic => blk: {
+            const words = page_mod.curveWordsUsed(src_page);
+            if (@as(usize, min_texel + texels) * 4 > words.len) return null;
+            break :blk curve_tex_format.denseSegmentCount(words[min_texel * 4 ..][0 .. texels * 4]) orelse return null;
+        },
+    };
     return .{
         .texel = min_texel,
-        .count = @intCast((max_texel - min_texel) / encoding.texelsPerSegment() + 1),
+        .texels = texels,
+        .count = std.math.cast(u16, count) orelse return null,
     };
 }
 

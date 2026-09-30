@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Dense font curve records share each joint between neighbouring segments,
+  as Slug does: a segment reads (p0, p1) from its texel and p2 from the
+  next, which also starts the following segment. A contour of n segments
+  takes n + 1 texels instead of 2n, roughly halving font curve storage.
+  Shaders are unchanged and rendering is bit-identical. Chains end with a
+  marker texel, so records stay self-describing and validation still checks
+  that every band reference starts a segment.
+- `AtlasRecord` gains `curve_texels`, the curve block's texel span, which
+  dense records no longer derive from `curve_count`.
+- `snail.prepared.producer_version` is 2: prepared artifacts from earlier
+  versions miss the cache instead of loading the old layout.
+- The README's comparison with the public Slug reference and its algorithm
+  diagrams describe the layout and evaluator as implemented.
+
 ## 0.20.0 - 2026-09-30
 
 ### Changed

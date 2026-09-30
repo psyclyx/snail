@@ -119,9 +119,9 @@ pub fn classifyPathCurves(curves: []const bezier.CurveSegment) PathCurveClass {
 
 pub const GlyphCurves = struct {
     allocator: std.mem.Allocator,
-    /// Packed curve texture bytes (u16 half-floats): two texels per dense
-    /// line/quadratic segment or four for the general format. The glyph's
-    /// first segment starts at byte zero.
+    /// Packed curve texture bytes (u16 half-floats): chained dense texels
+    /// (see `curve_tex.Encoding`) or four texels per general segment. The
+    /// glyph's first segment starts at word zero.
     curve_bytes: []const u16,
     /// Packed band texture bytes (u16 indices). Each non-empty block starts
     /// with the private self-describing prefix from `format/band_texture.zig`;
@@ -138,8 +138,8 @@ pub const GlyphCurves = struct {
     backing: ?[]u16 = null,
     /// Number of curve segments.
     curve_count: u16,
-    /// Physical curve layout. Dense quadratic records halve font storage by
-    /// omitting metadata already carried by band references.
+    /// Physical curve layout. Dense quadratic records omit metadata already
+    /// carried by band references and share each joint between neighbours.
     encoding: curve_tex.Encoding = .general,
     /// Strongest path evaluator required by the packed segments. `.cubic`
     /// remains the zero-compatible general-path ABI value, but native cubic
@@ -225,10 +225,16 @@ pub const GlyphCurves = struct {
     /// the atlas cannot assume its slices and scalar metadata were emitted by
     /// snail's own packers.
     pub fn validate(self: *const GlyphCurves) ValidationError!void {
-        const segment_texels = self.encoding.texelsPerSegment();
-        const segment_words = segment_texels * 4;
-        const expected_curve_words = @as(usize, self.curve_count) * segment_words;
-        if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
+        switch (self.encoding) {
+            .general => {
+                const expected_curve_words = @as(usize, self.curve_count) * curve_tex.GENERAL_SEGMENT_TEXELS * 4;
+                if (self.curve_bytes.len != expected_curve_words) return error.InvalidCurves;
+            },
+            .dense_quadratic => {
+                const segments = curve_tex.denseSegmentCount(self.curve_bytes) orelse return error.InvalidCurves;
+                if (segments != self.curve_count) return error.InvalidCurves;
+            },
+        }
         if (self.encoding == .general) {
             for (0..self.curve_count) |curve_index| {
                 const curve_texel: u32 = @intCast(curve_index * curve_tex.GENERAL_SEGMENT_TEXELS);
@@ -242,9 +248,14 @@ pub const GlyphCurves = struct {
             }
         } else {
             if (self.path_curve_class != .quadratic) return error.InvalidCurves;
-            for (self.curve_bytes) |word| {
-                const value: f16 = @bitCast(word);
-                if (!std.math.isFinite(value)) return error.InvalidCurves;
+            // Every coordinate is finite; only a chain's closing texel may carry
+            // the end marker in its unused channels.
+            for (0..self.curve_bytes.len / 4) |texel| {
+                const channels: usize = if (curve_tex.isDenseChainEnd(self.curve_bytes, texel)) 2 else 4;
+                for (self.curve_bytes[texel * 4 ..][0..channels]) |word| {
+                    const value: f16 = @bitCast(word);
+                    if (!std.math.isFinite(value)) return error.InvalidCurves;
+                }
             }
         }
 
@@ -320,11 +331,12 @@ pub const GlyphCurves = struct {
                 // this glyph's local curve block.
                 const curve_texel = @as(u32, w1 & 0x3fff) * curve_tex.TEX_WIDTH +
                     @as(u32, w0 & 0x0fff);
-                if (curve_texel % segment_texels != 0 or
-                    curve_texel / segment_texels >= self.curve_count)
-                {
-                    return error.InvalidCurves;
-                }
+                const starts_segment = switch (self.encoding) {
+                    .general => curve_texel % curve_tex.GENERAL_SEGMENT_TEXELS == 0 and
+                        curve_texel / curve_tex.GENERAL_SEGMENT_TEXELS < self.curve_count,
+                    .dense_quadratic => curve_tex.isDenseSegmentStart(self.curve_bytes, curve_texel),
+                };
+                if (!starts_segment) return error.InvalidCurves;
                 const kind = w1 >> 14;
                 if (self.encoding.isDenseQuadratic() and kind != 0 and kind != 3) {
                     return error.InvalidCurves;

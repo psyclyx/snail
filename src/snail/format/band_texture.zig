@@ -325,9 +325,14 @@ comptime {
     }
 }
 
-fn curveRefTexel(entry: curve_tex.GlyphCurveEntry, curve_idx: u16) error{ShapeTooComplex}!u32 {
-    const span = std.math.mul(u32, @as(u32, curve_idx), entry.encoding.texelsPerSegment()) catch
-        return error.ShapeTooComplex;
+/// Record-relative texel of segment `curve_idx`: a fixed stride for general
+/// records, the chained layout's offset table for dense ones.
+fn curveRefTexel(entry: curve_tex.GlyphCurveEntry, dense_texels: ?[]const u32, curve_idx: u16) error{ShapeTooComplex}!u32 {
+    const span = if (dense_texels) |texels|
+        texels[curve_idx]
+    else
+        std.math.mul(u32, @as(u32, curve_idx), curve_tex.GENERAL_SEGMENT_TEXELS) catch
+            return error.ShapeTooComplex;
     return std.math.add(u32, entry.offset, span) catch return error.ShapeTooComplex;
 }
 
@@ -485,10 +490,17 @@ fn packBandLists(
         index_offset += band_len;
     }
 
+    const dense_texels: ?[]u32 = if (curve_entry.encoding.isDenseQuadratic()) blk: {
+        const texels = try allocator.alloc(u32, prepared_curves.len);
+        _ = curve_tex.denseSegmentTexels(prepared_curves, texels);
+        break :blk texels;
+    } else null;
+    defer if (dense_texels) |texels| allocator.free(texels);
+
     var write_pos: u32 = block_prefix_texels + header_count;
     for (0..h_bands) |bi| {
         for (lists.hBand(bi)) |curve_idx| {
-            const curve_texel = try curveRefTexel(curve_entry, curve_idx);
+            const curve_texel = try curveRefTexel(curve_entry, dense_texels, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
             const encoded = try packBandCurveRef(curve_texel, lists.h_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
@@ -499,7 +511,7 @@ fn packBandLists(
 
     for (0..v_bands) |bi| {
         for (lists.vBand(bi)) |curve_idx| {
-            const curve_texel = try curveRefTexel(curve_entry, curve_idx);
+            const curve_texel = try curveRefTexel(curve_entry, dense_texels, curve_idx);
             const kind = prepared_curves[@intCast(curve_idx)].kind;
             const encoded = try packBandCurveRef(curve_texel, lists.v_first_member[@intCast(curve_idx)], kind);
             data[write_pos * 2 + 0] = encoded[0];
