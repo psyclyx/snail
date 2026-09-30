@@ -1,7 +1,7 @@
 // Canonical fragment half of the vertex-fit autohint path. The vertex stage
-// supplies draw-time targets and compact source indices; immutable base
-// positions stay in the analysis record. Oversized/perspective axes use the
-// full fitter.
+// supplies draw-time knot targets per feature slot; immutable base positions
+// stay in the analysis record. Axes the vertex stage could not fit
+// render unhinted.
 module autohint_frag;
 
 import resource_types;
@@ -12,10 +12,6 @@ import coverage_common;
 import text_coverage;
 import autohint_warp;
 
-static const int SNAIL_AH_FRAG_KNOTS = 32;
-static const uint SNAIL_AH_FAST_UNUSED = 255u;
-static const uint SNAIL_AH_FAST_FALLBACK = 254u;
-
 public struct AutohintVaryings {
     public float4 paint;
     public float3 texcoord_layer;
@@ -23,66 +19,73 @@ public struct AutohintVaryings {
     public uint4 policy;
     public float4 x_targets[4];
     public float4 y_targets[4];
-    public uint4 x_sources;
-    public uint4 y_sources;
+    // Per axis: (knot mask, left-knot target bits, record run offset, left
+    // edge bits); see SnailAhAxisFit and snailAhPackFit.
+    public uint4 x_knots;
+    public uint4 y_knots;
 };
 
-uint snailAhFastSource(uint4 words, int idx) {
-    uint word = words[idx >> 2];
-    return (word >> uint((idx & 3) * 8)) & 255u;
-}
-
-float snailAhFastTarget(float4 values[4], int idx) {
-    return values[idx >> 2][idx & 3];
-}
-
-// -1 means use the full fragment fitter; 0..16 is an exact vertex-fit count.
-int snailAhFastCount(uint4 words) {
-    if (snailAhFastSource(words, 0) == SNAIL_AH_FAST_FALLBACK) return -1;
-    int count = 0;
-    for (int i = 0; i < 16; ++i) {
-        if (snailAhFastSource(words, i) == SNAIL_AH_FAST_UNUSED) break;
-        ++count;
-    }
-    return count;
-}
-
-float snailAhFastBase(SnailFloatTexture2D layer_tex, int2 info_base, int run, float left, uint4 sources, int idx) {
-    uint source = snailAhFastSource(sources, idx);
-    return source == uint(SNAIL_AH_LEFT_SOURCE) ? left : snailWarpF(layer_tex, info_base, run + 1 + 4 * int(source), 0);
-}
-
+// Inverse of one axis's piecewise-linear warp. Knots are feature slots marked
+// in the mask (plus an optional left knot preceding them); a force-unrolled
+// scan finds the bracketing pair so slot targets stay constant-indexed.
+// Bases are the features' immutable record positions.
 float snailInverseFastAxis(
     SnailFloatTexture2D layer_tex,
     int2 info_base,
-    int count,
     float4 targets[4],
-    uint4 sources,
-    int run,
-    float left,
+    uint4 knots,
     float hinted,
     out float invSlope
 ) {
     invSlope = 1.0;
-    if (count == 0) return hinted;
-    float firstTarget = snailAhFastTarget(targets, 0);
-    float firstBase = snailAhFastBase(layer_tex, info_base, run, left, sources, 0);
-    if (hinted <= firstTarget) return firstBase + hinted - firstTarget;
-    float lastTarget = snailAhFastTarget(targets, count - 1);
-    float lastBase = snailAhFastBase(layer_tex, info_base, run, left, sources, count - 1);
-    if (hinted >= lastTarget) return lastBase + hinted - lastTarget;
+    uint mask = knots.x;
+    if (mask == 0u) return hinted;
+    bool hasLeft = (mask & SNAIL_AH_LEFT_KNOT) != 0u;
+    int run = int(knots.z);
+    float left = asfloat(knots.w);
 
-    int lo = 0;
-    for (int i = 0; i < 15; ++i) {
-        if (i + 1 >= count || snailAhFastTarget(targets, i + 1) >= hinted) {
-            lo = i;
-            break;
+    // Slot -1 is the left knot. Track the first and last knots and the first
+    // knot after the first whose target reaches `hinted`, with its predecessor.
+    int firstSlot = -1;
+    float firstTarget = asfloat(knots.y);
+    bool haveKnot = hasLeft;
+    int prevSlot = -1;
+    float prevTarget = firstTarget;
+    int loSlot = -1;
+    int hiSlot = -1;
+    float loTarget = 0.0;
+    float hiTarget = 0.0;
+    bool found = false;
+    [ForceUnroll]
+    for (int c = 0; c < SNAIL_AH_KNOT_SLOTS; ++c) {
+        if ((mask & snailAhBit(c)) != 0u) {
+            float t = targets[c >> 2][c & 3];
+            if (!haveKnot) {
+                firstSlot = c;
+                firstTarget = t;
+            } else if (!found && t >= hinted) {
+                found = true;
+                loSlot = prevSlot;
+                loTarget = prevTarget;
+                hiSlot = c;
+                hiTarget = t;
+            }
+            haveKnot = true;
+            prevSlot = c;
+            prevTarget = t;
         }
     }
-    float loTarget = snailAhFastTarget(targets, lo);
-    float hiTarget = snailAhFastTarget(targets, lo + 1);
-    float loBase = snailAhFastBase(layer_tex, info_base, run, left, sources, lo);
-    float hiBase = snailAhFastBase(layer_tex, info_base, run, left, sources, lo + 1);
+
+    if (hinted <= firstTarget) {
+        float firstBase = firstSlot < 0 ? left : snailWarpF(layer_tex, info_base, run + 1 + 4 * firstSlot, 0);
+        return firstBase + hinted - firstTarget;
+    }
+    if (hinted >= prevTarget) {
+        float lastBase = prevSlot < 0 ? left : snailWarpF(layer_tex, info_base, run + 1 + 4 * prevSlot, 0);
+        return lastBase + hinted - prevTarget;
+    }
+    float loBase = loSlot < 0 ? left : snailWarpF(layer_tex, info_base, run + 1 + 4 * loSlot, 0);
+    float hiBase = snailWarpF(layer_tex, info_base, run + 1 + 4 * hiSlot, 0);
     float dt = hiTarget - loTarget;
     float db = hiBase - loBase;
     invSlope = abs(dt) > 1e-6 ? db / dt : 1.0;
@@ -120,50 +123,12 @@ public SnailAutohintWarped snailAutohintWarpSample(
 
     float2 rc = v.texcoord_layer.xy;
     float2 epp = fwidth(rc);
-    float2 scale = float2(1.0 / epp.x, 1.0 / epp.y);
-    int blueCount = 0;
-    int featureXCount = 0;
-    int featureYCount = 0;
-    bool valid = snailAhCount(SNAIL_AH_FRAG_KNOTS, snailWarpF(layer_tex, v.info, 0, 10), blueCount);
-    int xRun = 12 + 2 * blueCount;
-    valid = valid && snailAhCount(SNAIL_AH_FRAG_KNOTS, snailWarpF(layer_tex, v.info, xRun, 0), featureXCount);
-    int yRun = xRun + 1 + 4 * featureXCount;
-    valid = valid && snailAhCount(SNAIL_AH_FRAG_KNOTS, snailWarpF(layer_tex, v.info, yRun, 0), featureYCount);
-
-    int xCount = valid ? snailAhFastCount(v.x_sources) : 0;
-    int yCount = valid ? snailAhFastCount(v.y_sources) : 0;
+    // An axis the vertex stage did not fit (non-affine, over the knot slots,
+    // or invalid) arrives with an empty mask and renders unhinted.
     float slopeX = 1.0;
     float slopeY = 1.0;
-    bool fallbackX = xCount < 0;
-    bool fallbackY = yCount < 0;
-
-    if (valid && (fallbackX || fallbackY)) {
-        // X and Y fitting are sequential; share one scratch set.
-        float bases[SNAIL_AH_FRAG_KNOTS];
-        float targets[SNAIL_AH_FRAG_KNOTS];
-        int sources[SNAIL_AH_FRAG_KNOTS];
-        SnailAutohintPolicy policy;
-        float stdX = snailWarpF(layer_tex, v.info, 0, 8);
-        float stdY = snailWarpF(layer_tex, v.info, 0, 9);
-        valid = snailDecodeAutohintPolicy(v.policy, policy) &&
-            snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0;
-        if (valid && fallbackX) {
-            bool fitValid = snailFitAutohintAxis<SNAIL_AH_FRAG_KNOTS, false>(layer_tex, v.info,
-                0, xRun, blueCount, stdX, snailWarpF(layer_tex, v.info, 0, 11),
-                scale.x, policy, xCount, bases, targets, sources);
-            if (!fitValid) xCount = 0;
-            rc.x = snailInverseWarpAxis<SNAIL_AH_FRAG_KNOTS>(xCount, bases, targets, rc.x, slopeX);
-        }
-        if (valid && fallbackY) {
-            bool fitValid = snailFitAutohintAxis<SNAIL_AH_FRAG_KNOTS, false>(layer_tex, v.info,
-                1, yRun, blueCount, stdY, 0.0,
-                scale.y, policy, yCount, bases, targets, sources);
-            if (!fitValid) yCount = 0;
-            rc.y = snailInverseWarpAxis<SNAIL_AH_FRAG_KNOTS>(yCount, bases, targets, rc.y, slopeY);
-        }
-    }
-    if (!fallbackX) rc.x = snailInverseFastAxis(layer_tex, v.info, xCount, v.x_targets, v.x_sources, xRun, snailWarpF(layer_tex, v.info, 0, 11), rc.x, slopeX);
-    if (!fallbackY) rc.y = snailInverseFastAxis(layer_tex, v.info, yCount, v.y_targets, v.y_sources, yRun, 0.0, rc.y, slopeY);
+    rc.x = snailInverseFastAxis(layer_tex, v.info, v.x_targets, v.x_knots, rc.x, slopeX);
+    rc.y = snailInverseFastAxis(layer_tex, v.info, v.y_targets, v.y_knots, rc.y, slopeY);
 
     w.rc = rc;
     w.epp = epp;

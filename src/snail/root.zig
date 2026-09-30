@@ -160,6 +160,7 @@ pub const autohint = struct {
     pub const FontFeatures = autohint_producer.FontFeatures;
     pub const FeatureEdge = autohint_producer.FeatureEdge;
     pub const max_features_per_axis = autohint_producer.max_features_per_axis;
+    pub const max_fit_features = autohint_producer.max_fit_features;
 };
 
 pub const TtHintVm = @import("font/tt_hint_vm.zig").TtHintVm;

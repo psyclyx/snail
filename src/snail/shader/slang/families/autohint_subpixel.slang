@@ -56,8 +56,8 @@ struct VsOutput {
     [[vk::location(9)]] nointerpolation float4 y_targets1 : TEXCOORD9;
     [[vk::location(10)]] nointerpolation float4 y_targets2 : TEXCOORD10;
     [[vk::location(11)]] nointerpolation float4 y_targets3 : TEXCOORD11;
-    [[vk::location(12)]] nointerpolation uint4 x_sources : TEXCOORD12;
-    [[vk::location(13)]] nointerpolation uint4 y_sources : TEXCOORD13;
+    [[vk::location(12)]] nointerpolation uint4 x_knots : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint4 y_knots : TEXCOORD13;
 };
 
 struct FsOutput {
@@ -81,8 +81,8 @@ FsOutput fragmentMain(VsOutput input) {
     v.y_targets[1] = input.y_targets1;
     v.y_targets[2] = input.y_targets2;
     v.y_targets[3] = input.y_targets3;
-    v.x_sources = input.x_sources;
-    v.y_sources = input.y_sources;
+    v.x_knots = input.x_knots;
+    v.y_knots = input.y_knots;
     SubpixelResult r = snailAutohintSubpixelFragment(v, u_curve_tex, u_band_tex, u_layer_tex,
                                                      pc.page_base, snailAtlasLayout(pc.atlas_page_texels), pc.subpixel_order,
                                                      pc.output_srgb, pc.coverage_exponent);

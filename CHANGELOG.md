@@ -1,5 +1,26 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- GPU autohinted text is ~10× cheaper: 282 → 24 ns/glyph at 11.6k glyphs per
+  draw (RTX 3090, GL 3.3; unhinted text is 13 ns/glyph), with bit-identical
+  output. The per-quad vertex fit keeps its per-feature tables in registers
+  (4-vector selects instead of dynamically indexed arrays, which were placed
+  in local memory and slowed every vertex invocation), sends knots to the
+  fragment stage per feature slot with a mask, and passes each axis's record
+  offset so fragments no longer re-parse the record header. Layer-info
+  addressing uses the new `SNAIL_PAINT_INFO_WIDTH` ABI constant instead of a
+  texture-size query per load.
+- The fragment-stage fallback fitter is gone. Non-affine (perspective)
+  autohint placements now render unhinted rather than refitting per pixel
+  with a per-pixel scale.
+- The draw-time fit accepts at most `snail.autohint.max_fit_features` (16)
+  features and blue zones per axis on both the CPU and GPU backends; a longer
+  run renders that axis unhinted. Previously the CPU fitter accepted 32 and
+  the GPU refit such glyphs per fragment.
+
 ## 0.19.0 - 2026-08-05
 
 ### Added

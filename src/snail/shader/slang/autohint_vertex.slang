@@ -8,10 +8,6 @@ import color_common;
 import vertex;
 import autohint_warp;
 
-public static const int SNAIL_AH_VERTEX_KNOTS = 16;
-static const uint SNAIL_AH_SOURCE_UNUSED = 255u;
-static const uint SNAIL_AH_SOURCE_FALLBACK = 254u;
-
 public struct AutohintVertexResult {
     public float4 position;
     public float4 paint;
@@ -20,8 +16,9 @@ public struct AutohintVertexResult {
     public uint4 policy;
     public float4 x_targets[4];
     public float4 y_targets[4];
-    public uint4 x_sources;
-    public uint4 y_sources;
+    // Per axis: see snailAhPackFit.
+    public uint4 x_knots;
+    public uint4 y_knots;
 };
 
 bool snailAhAffineScale(float4x4 mvp, float2 viewport, float4 xform, out float2 scale) {
@@ -46,53 +43,17 @@ bool snailAhAffineScale(float4x4 mvp, float2 viewport, float4 xform, out float2 
     scale = 1.0 / epp;
     return snailAhFinite(scale.x) && snailAhFinite(scale.y) && scale.x > 0.0 && scale.y > 0.0;
 }
-
-void snailAhPackAxis(
-    int count,
-    float targets[SNAIL_AH_VERTEX_KNOTS],
-    int sources[SNAIL_AH_VERTEX_KNOTS],
-    out float4 packedTargets[4],
-    out uint4 packedSources
-) {
-    for (int i = 0; i < 4; ++i) packedTargets[i] = float4(0.0);
-    packedSources = uint4(0xffffffffu);
-    if (count > SNAIL_AH_VERTEX_KNOTS) {
-        packedSources.x = (packedSources.x & 0xffffff00u) | SNAIL_AH_SOURCE_FALLBACK;
-        return;
-    }
-#if defined(SNAIL_TARGET_D3D11)
-    // Same packing, slang-side unrolled: vkd3d-shader (Wine's
-    // d3dcompiler_47 and its wined3d HLSL front end) has no dynamic
-    // vector-component STORES (E5017 "Non-constant vector addressing on
-    // store"; Wine 11.0's bundled copy crashes outright). [ForceUnroll]
-    // makes every subscript a compile-time constant; the `break` becomes
-    // an `if` guard (identical semantics — the loop is pure writes).
-    [ForceUnroll]
-    for (int i = 0; i < SNAIL_AH_VERTEX_KNOTS; ++i) {
-        if (i < count) {
-            packedTargets[i >> 2][i & 3] = targets[i];
-            int word = i >> 2;
-            int shift = (i & 3) * 8;
-            packedSources[word] = (packedSources[word] & ~(255u << uint(shift))) |
-                ((uint(sources[i]) & 255u) << uint(shift));
-        }
-    }
-#else
-    for (int i = 0; i < SNAIL_AH_VERTEX_KNOTS; ++i) {
-        if (i >= count) break;
-        packedTargets[i >> 2][i & 3] = targets[i];
-        int word = i >> 2;
-        int shift = (i & 3) * 8;
-        packedSources[word] = (packedSources[word] & ~(255u << uint(shift))) |
-            ((uint(sources[i]) & 255u) << uint(shift));
-    }
-#endif
+// Per-axis knot descriptor: (mask, left-knot target bits, record run offset,
+// left edge bits). The run and left edge let the fragment stage look up knot
+// bases without re-parsing the record header.
+void snailAhPackFit(SnailAhAxisFit fit, int run, float left, out float4 targets[4], out uint4 knots) {
+    targets = fit.targets;
+    knots = uint4(fit.mask, asuint(fit.leftTarget), uint(run), asuint(left));
 }
 
-void snailAhMarkFallback(out float4 packedTargets[4], out uint4 packedSources) {
-    for (int i = 0; i < 4; ++i) packedTargets[i] = float4(0.0);
-    packedSources = uint4(0xffffffffu);
-    packedSources.x = (packedSources.x & 0xffffff00u) | SNAIL_AH_SOURCE_FALLBACK;
+void snailAhPackIdentity(out float4 targets[4], out uint4 knots) {
+    for (int i = 0; i < 4; ++i) targets[i] = float4(0.0);
+    knots = uint4(0u);
 }
 
 public AutohintVertexResult snailAutohintVertex(
@@ -114,27 +75,19 @@ public AutohintVertexResult snailAutohintVertex(
     uint gz = input.glyph.x;
     r.info = int2(int(gz & 0xFFFFu), int(gz >> 16u));
     r.policy = packed_policy;
+    snailAhPackIdentity(r.x_targets, r.x_knots);
+    snailAhPackIdentity(r.y_targets, r.y_knots);
 
     // The reference GL index order makes vertex 0 the last (provoking) vertex
     // of both triangles; Vulkan's default convention uses the same vertex as
     // the first. Only that shared vertex needs to execute the flat fit.
-    if (vertex_index != 0u) {
-        for (int i = 0; i < 4; ++i) {
-            r.x_targets[i] = float4(0.0);
-            r.y_targets[i] = float4(0.0);
-        }
-        r.x_sources = uint4(0xffffffffu);
-        r.y_sources = uint4(0xffffffffu);
-        return r;
-    }
+    if (vertex_index != 0u) return r;
     int2 info_base = r.info;
 
+    // Grid-fitting needs a constant pixels-per-em across the glyph; a
+    // non-affine (perspective) placement renders unhinted.
     float2 scale;
-    if (!snailAhAffineScale(mvp, viewport, input.xform, scale)) {
-        snailAhMarkFallback(r.x_targets, r.x_sources);
-        snailAhMarkFallback(r.y_targets, r.y_sources);
-        return r;
-    }
+    if (!snailAhAffineScale(mvp, viewport, input.xform, scale)) return r;
 
     SnailAutohintPolicy decoded_policy;
     int blueCount = 0;
@@ -144,34 +97,20 @@ public AutohintVertexResult snailAutohintVertex(
     float stdY = snailWarpF(layer_tex, info_base, 0, 9);
     bool valid = snailDecodeAutohintPolicy(packed_policy, decoded_policy) &&
         snailAhFinite(stdX) && stdX >= 0.0 && snailAhFinite(stdY) && stdY >= 0.0 &&
-        snailAhCount(SNAIL_AH_VERTEX_KNOTS, snailWarpF(layer_tex, info_base, 0, 10), blueCount);
+        snailAhCount(SNAIL_AH_RECORD_FEATURES, snailWarpF(layer_tex, info_base, 0, 10), blueCount);
     int xRun = 12 + 2 * blueCount;
-    valid = valid && snailAhCount(SNAIL_AH_VERTEX_KNOTS, snailWarpF(layer_tex, info_base, xRun, 0), featureXCount);
+    valid = valid && snailAhCount(SNAIL_AH_RECORD_FEATURES, snailWarpF(layer_tex, info_base, xRun, 0), featureXCount);
     int yRun = xRun + 1 + 4 * featureXCount;
-    valid = valid && snailAhCount(SNAIL_AH_VERTEX_KNOTS, snailWarpF(layer_tex, info_base, yRun, 0), featureYCount);
-    if (!valid) {
-        snailAhMarkFallback(r.x_targets, r.x_sources);
-        snailAhMarkFallback(r.y_targets, r.y_sources);
-        return r;
-    }
+    valid = valid && snailAhCount(SNAIL_AH_RECORD_FEATURES, snailWarpF(layer_tex, info_base, yRun, 0), featureYCount);
+    if (!valid) return r;
 
-    int xCount = 0;
-    int yCount = 0;
-    float xBase[SNAIL_AH_VERTEX_KNOTS];
-    float xTarget[SNAIL_AH_VERTEX_KNOTS];
-    float yBase[SNAIL_AH_VERTEX_KNOTS];
-    float yTarget[SNAIL_AH_VERTEX_KNOTS];
-    int xSource[SNAIL_AH_VERTEX_KNOTS];
-    int ySource[SNAIL_AH_VERTEX_KNOTS];
-    bool xValid = snailFitAutohintAxis<SNAIL_AH_VERTEX_KNOTS, true>(layer_tex, info_base,
-        0, xRun, blueCount, stdX, snailWarpF(layer_tex, info_base, 0, 11),
-        scale.x, decoded_policy, xCount, xBase, xTarget, xSource);
-    bool yValid = snailFitAutohintAxis<SNAIL_AH_VERTEX_KNOTS, true>(layer_tex, info_base,
+    float left = snailWarpF(layer_tex, info_base, 0, 11);
+    SnailAhAxisFit xFit = snailFitAutohintAxis(layer_tex, info_base,
+        0, xRun, blueCount, stdX, left, scale.x, decoded_policy);
+    SnailAhAxisFit yFit = snailFitAutohintAxis(layer_tex, info_base,
         1, yRun, blueCount, stdY, 0.0,
-        scale.y, decoded_policy, yCount, yBase, yTarget, ySource);
-    if (xValid) snailAhPackAxis(xCount, xTarget, xSource, r.x_targets, r.x_sources);
-    else snailAhMarkFallback(r.x_targets, r.x_sources);
-    if (yValid) snailAhPackAxis(yCount, yTarget, ySource, r.y_targets, r.y_sources);
-    else snailAhMarkFallback(r.y_targets, r.y_sources);
+        scale.y, decoded_policy);
+    snailAhPackFit(xFit, xRun, left, r.x_targets, r.x_knots);
+    snailAhPackFit(yFit, yRun, 0.0, r.y_targets, r.y_knots);
     return r;
 }

@@ -45,12 +45,11 @@ const Edge = struct {
     }
 };
 
-/// Upper bound on edges fed to the warp. Glyphs with more horizontal
-/// features than this (dense CJK, ornate display faces) fall back to the
-/// identity warp — they render exactly as they do unhinted, which is the
-/// "don't break non-Latin" guarantee. Kept in lockstep with the shader's
-/// fixed array size.
-pub const max_knots: usize = 32;
+/// Upper bound on edges fed to the warp. Glyphs with more features than this
+/// on an axis fall back to the identity warp there — they render exactly as
+/// they do unhinted, which is the "don't break non-Latin" guarantee. Shared
+/// with the shader's register-resident fit tables.
+pub const max_knots: usize = snail.autohint.max_fit_features;
 
 /// One (base, target) control point of the warp, in the caller's unit.
 pub const Knot = struct {

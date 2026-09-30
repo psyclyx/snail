@@ -28,6 +28,12 @@ pub const FeatureEdge = analysis.FeatureEdge;
 /// preserve every feature the runtime fitter can consume.
 pub const max_features_per_axis: usize = 32;
 
+/// Most features per axis (and blue zones) the draw-time fit accepts; a
+/// longer run renders that axis unhinted. The GPU fits in register-resident
+/// tables of this many slots (SNAIL_AH_KNOT_SLOTS) and the CPU fitter uses the
+/// same bound, so both backends agree.
+pub const max_fit_features: usize = 16;
+
 /// The per-glyph feature facts `analyzeGlyph` produces: em-normalized x and y
 /// `FeatureEdge` slices (borrowing the caller's scratch) plus the glyph's left
 /// side bearing in em units. Everything is ppem-independent.

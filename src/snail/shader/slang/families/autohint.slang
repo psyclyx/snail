@@ -11,7 +11,7 @@
 // varyings (WGSL forbids array-typed entry-point IO, and one shape for all
 // targets keeps the family single-source): 0 paint, 1 texcoord+layer,
 // 2 info (flat), 3 policy (flat), 4..7 x targets (flat),
-// 8..11 y targets (flat), 12/13 packed sources (flat).
+// 8..11 y targets (flat), 12/13 x/y knot descriptors (flat).
 //
 // ── Vertex index ──
 //
@@ -75,8 +75,8 @@ struct VsOutput {
     [[vk::location(9)]] nointerpolation float4 y_targets1 : TEXCOORD9;
     [[vk::location(10)]] nointerpolation float4 y_targets2 : TEXCOORD10;
     [[vk::location(11)]] nointerpolation float4 y_targets3 : TEXCOORD11;
-    [[vk::location(12)]] nointerpolation uint4 x_sources : TEXCOORD12;
-    [[vk::location(13)]] nointerpolation uint4 y_sources : TEXCOORD13;
+    [[vk::location(12)]] nointerpolation uint4 x_knots : TEXCOORD12;
+    [[vk::location(13)]] nointerpolation uint4 y_knots : TEXCOORD13;
 };
 
 #if defined(SNAIL_TARGET_GL)
@@ -133,8 +133,8 @@ VsOutput vertexBody(VsInput input, uint vertex_index) {
     o.y_targets1 = r.y_targets[1];
     o.y_targets2 = r.y_targets[2];
     o.y_targets3 = r.y_targets[3];
-    o.x_sources = r.x_sources;
-    o.y_sources = r.y_sources;
+    o.x_knots = r.x_knots;
+    o.y_knots = r.y_knots;
     return o;
 }
 
@@ -153,8 +153,8 @@ float4 fragmentMain(VsOutput input) : SV_Target {
     v.y_targets[1] = input.y_targets1;
     v.y_targets[2] = input.y_targets2;
     v.y_targets[3] = input.y_targets3;
-    v.x_sources = input.x_sources;
-    v.y_sources = input.y_sources;
+    v.x_knots = input.x_knots;
+    v.y_knots = input.y_knots;
     return snailAutohintFragment(v, u_curve_tex, u_band_tex, u_layer_tex,
                                  pc.page_base, snailAtlasLayout(pc.atlas_page_texels), pc.output_srgb,
                                  pc.coverage_exponent, pc.mask_output);

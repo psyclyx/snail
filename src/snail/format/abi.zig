@@ -239,6 +239,7 @@ test "Slang render ABI constants match Zig constants" {
     const slang = @embedFile("../shader/slang/render_abi.slang");
     try expectSlangConst(slang, "SNAIL_RENDER_ABI_VERSION", version);
     try expectSlangConst(slang, "SNAIL_ATLAS_TEX_WIDTH", atlas_tex_width);
+    try expectSlangConst(slang, "SNAIL_PAINT_INFO_WIDTH", paint_info_width);
     try std.testing.expect(std.mem.indexOf(u8, slang, "public static const uint SNAIL_SPECIAL_GLYPH_MARKER = 0x80000000u;") != null);
     try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_COLR", @intFromEnum(SpecialLayerKind.colr));
     try expectSlangConst(slang, "SNAIL_SPECIAL_KIND_PATH", @intFromEnum(SpecialLayerKind.path));
@@ -260,7 +261,11 @@ test "autohint Slang derives transient targets from immutable features" {
     try std.testing.expect(std.mem.indexOf(u8, slang, "snailDecodeAutohintPolicy") != null);
     try std.testing.expect(std.mem.indexOf(u8, slang, "snailFitAutohintAxis") != null);
     try std.testing.expect(std.mem.indexOf(u8, slang, "storedTarget") == null);
-    try std.testing.expect(std.mem.indexOf(u8, fragment, "SNAIL_AH_FRAG_KNOTS = 32") != null);
+    // The fit runs only in the vertex stage; fragments just invert its knots.
+    try std.testing.expect(std.mem.indexOf(u8, fragment, "snailFitAutohintAxis") == null);
+    const producer = @import("../font/autohint/producer.zig");
+    try expectSlangConst(slang, "SNAIL_AH_KNOT_SLOTS", producer.max_fit_features);
+    try expectSlangConst(slang, "SNAIL_AH_RECORD_FEATURES", producer.max_features_per_axis);
 }
 
 fn expectSlangConst(slang: []const u8, name: []const u8, value: anytype) !void {
