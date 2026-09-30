@@ -133,7 +133,7 @@ for spec in "${raster_cases[@]}"; do
 done
 
 if ((run_gpu)); then
-  gpu_cases=(text-gray text-lcd text-tt-hint text-autohint text-autohint-fallback text-colr path text-sample-8 text-sample-32)
+  gpu_cases=(text-gray text-lcd text-tt-hint text-autohint text-colr path text-sample-8 text-sample-32)
   echo
   echo "GPU timer-query microbenchmarks"
   for case_name in "${gpu_cases[@]}"; do

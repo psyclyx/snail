@@ -31,8 +31,13 @@ pub const FontSet = struct {
     faces: snail.Faces,
 
     pub fn init(allocator: std.mem.Allocator) !FontSet {
+        return initPrimary(allocator, assets.noto_sans_regular);
+    }
+
+    /// The fixture fallback chain behind a caller-chosen primary face.
+    pub fn initPrimary(allocator: std.mem.Allocator, primary: []const u8) !FontSet {
         const data = [_][]const u8{
-            assets.noto_sans_regular,
+            primary,
             assets.noto_sans_arabic,
             assets.noto_sans_devanagari,
             assets.noto_sans_thai,
@@ -199,7 +204,23 @@ pub fn emitScene(
     };
 }
 
+/// Scene knobs beyond the kind. Defaults reproduce the standard fixtures.
+pub const SceneOptions = struct {
+    /// Primary face for text scenes (fallback faces stay fixed).
+    font: []const u8 = assets.noto_sans_regular,
+    autohint_policy: snail.autohint.AutohintPolicy = default_autohint_policy,
+};
+
+pub const default_autohint_policy = snail.autohint.AutohintPolicy{
+    .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } }, .positioning = .relative },
+    .y = .{ .@"align" = .blue_zones, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } } },
+};
+
 pub fn buildScene(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: SceneKind) !Scene {
+    return buildSceneWith(allocator, pool, kind, .{});
+}
+
+pub fn buildSceneWith(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: SceneKind, options: SceneOptions) !Scene {
     var build = SceneBuild.init(allocator);
     errdefer build.deinit();
 
@@ -207,12 +228,12 @@ pub fn buildScene(allocator: std.mem.Allocator, pool: *snail.PagePool, kind: Sce
         .path => try addPaths(&build),
         .colr => try addColr(&build),
         else => {
-            var fonts = try FontSet.init(allocator);
+            var fonts = try FontSet.initPrimary(allocator, options.font);
             defer fonts.deinit();
             switch (kind) {
                 .regular => try addRegularText(&build, &fonts),
                 .tt_hinted => try addTtHintedText(&build, &fonts),
-                .autohint => try addAutohintText(&build, &fonts),
+                .autohint => try addAutohintText(&build, &fonts, options),
                 .mixed => {
                     try addPaths(&build);
                     try addRegularText(&build, &fonts);
@@ -290,11 +311,11 @@ fn addTtHintedText(build: *SceneBuild, fonts: *FontSet) !void {
     }
 }
 
-fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
+fn addAutohintText(build: *SceneBuild, fonts: *FontSet, options: SceneOptions) !void {
     var shaped = try snail.shape(build.allocator, &fonts.faces, paragraph, .{});
     defer shaped.deinit();
     try ensureUnhinted(build, fonts, &shaped);
-    build.autohint_analyzer = try snail.autohint.AutohintAnalyzer.init(build.allocator, assets.noto_sans_regular);
+    build.autohint_analyzer = try snail.autohint.AutohintAnalyzer.init(build.allocator, options.font);
     const analyzer = &build.autohint_analyzer.?;
 
     for (shaped.glyphs) |glyph| {
@@ -319,10 +340,7 @@ fn addAutohintText(build: *SceneBuild, fonts: *FontSet) !void {
         } });
     }
 
-    const policy = snail.autohint.AutohintPolicy{
-        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } }, .positioning = .relative },
-        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } } },
-    };
+    const policy = options.autohint_policy;
     for (0..6) |row| {
         const placed = try snail.placeRunAlloc(build.allocator, &shaped, null, .{
             .baseline = .{ .x = 18, .y = 38 + @as(f32, @floatFromInt(row)) * 54 },

@@ -1,5 +1,6 @@
 const std = @import("std");
 const snail = @import("snail");
+const assets = @import("assets");
 const common = @import("common.zig");
 const fixtures = @import("fixtures.zig");
 
@@ -26,6 +27,47 @@ const Args = struct {
     case: []const u8,
     draws: usize = 16,
     samples: usize = 15,
+    /// Replicate the scene's instances N times within each draw, so per-glyph
+    /// cost can be measured at realistic draw sizes rather than latency-bound.
+    repeat: usize = 1,
+    scene: fixtures.SceneOptions = .{},
+};
+
+/// Named autohint policies for `--autohint-policy`, spanning every fitter
+/// branch (alignment, stem modes, positioning, registration, overshoot, fade).
+const autohint_policies = [_]struct { name: []const u8, policy: snail.autohint.AutohintPolicy }{
+    .{ .name = "default", .policy = fixtures.default_autohint_policy },
+    .{ .name = "y-blue", .policy = .{ .y = .{ .@"align" = .blue_zones, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } } } } },
+    .{ .name = "y-grid-light", .policy = .{ .y = .{ .@"align" = .grid, .stem_width = .{ .light = .{ .std_snap_ratio = 0.10, .max_px = 2.0 } } } } },
+    .{ .name = "x-natural", .policy = .{
+        .x = .{ .@"align" = .grid },
+        .y = .{ .@"align" = .blue_zones, .overshoot = .{ .suppress_below_px = 0.5 } },
+    } },
+    .{ .name = "x-full-registered", .policy = .{
+        .x = .{ .@"align" = .grid, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } }, .registration = .left_round_outline },
+        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } }, .overshoot = .{ .suppress_below_px = 1.0 } },
+    } },
+    .{ .name = "relative-registered-light", .policy = .{
+        .x = .{ .@"align" = .grid, .stem_width = .{ .light = .{ .std_snap_ratio = 0.10, .max_px = 2.0 } }, .positioning = .relative, .registration = .left_round_outline },
+        .y = .{ .@"align" = .blue_zones, .stem_width = .{ .light = .{ .std_snap_ratio = 0.10, .max_px = 2.0 } } },
+    } },
+    .{ .name = "stems-unaligned", .policy = .{
+        .x = .{ .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } } },
+        .y = .{ .stem_width = .{ .full = .{ .std_snap_ratio = 0.10 } } },
+    } },
+    .{ .name = "default-fade", .policy = .{
+        .x = fixtures.default_autohint_policy.x,
+        .y = fixtures.default_autohint_policy.y,
+        .fade = .{ .ppem_range = .{ .start_px = 16, .full_px = 24 } },
+    } },
+};
+
+const scene_fonts = [_]struct { name: []const u8, data: []const u8 }{
+    .{ .name = "noto-sans", .data = assets.noto_sans_regular },
+    .{ .name = "noto-sans-bold", .data = assets.noto_sans_bold },
+    .{ .name = "dejavu-serif", .data = assets.dejavu_serif },
+    .{ .name = "dejavu-sans-mono", .data = assets.dejavu_sans_mono },
+    .{ .name = "source-serif-cff", .data = assets.source_serif_cff },
 };
 
 const slang_gen = @import("snail_shaders");
@@ -89,7 +131,7 @@ pub fn main(init: std.process.Init) !void {
         .band_words_per_page = 1 << 16,
     });
     defer pool.deinit();
-    var scene = try fixtures.buildScene(allocator, pool, kind);
+    var scene = try fixtures.buildSceneWith(allocator, pool, kind, args.scene);
     defer scene.deinit();
     var gpu = try GpuAtlas.init(allocator, pool);
     defer gpu.deinit();
@@ -165,17 +207,21 @@ pub fn main(init: std.process.Init) !void {
         else
             vertex_source;
         program = try linkProgram(selected_vertex_source, fragment_source, dual_source);
-        standard_geometry = initGeometry(emitted.instances[0..emitted.instance_len]);
+        const scene_instances = emitted.instances[0..emitted.instance_len];
+        const replicated = try allocator.alloc(snail.render.records.Instance, scene_instances.len * args.repeat);
+        defer allocator.free(replicated);
+        for (0..args.repeat) |copy| @memcpy(replicated[copy * scene_instances.len ..][0..scene_instances.len], scene_instances);
+        standard_geometry = initGeometry(replicated);
         bindStandardProgram(program, standard_geometry.?.params_ubo, dual_source);
         if (dual_source) {
             c.glBlendFuncSeparate(c.GL_ONE, c.GL_ONE_MINUS_SRC1_COLOR, c.GL_ONE, c.GL_ONE_MINUS_SRC_ALPHA);
         }
+        instance_count = emitted.batches[0].instance_count * args.repeat;
         draw_context = .{ .standard = .{
             .geometry = &standard_geometry.?,
-            .instances = emitted.batches[0].instance_count,
+            .instances = @intCast(instance_count),
         } };
-        instance_count = emitted.batches[0].instance_count;
-        record_bytes = emitted.instance_len * snail.render.records.BYTES_PER_INSTANCE;
+        record_bytes = replicated.len * snail.render.records.BYTES_PER_INSTANCE;
         work_per_draw = instance_count;
         work_unit = "instance";
     }
@@ -302,13 +348,30 @@ fn parseArgs(args: []const [:0]const u8) !Args {
             if (i >= args.len) return error.MissingArgument;
             out.samples = try std.fmt.parseUnsigned(usize, args[i], 10);
             if (out.samples == 0) return error.InvalidSampleCount;
+        } else if (std.mem.eql(u8, args[i], "--repeat")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            out.repeat = try std.fmt.parseUnsigned(usize, args[i], 10);
+            if (out.repeat == 0) return error.InvalidRepeatCount;
+        } else if (std.mem.eql(u8, args[i], "--autohint-policy")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            out.scene.autohint_policy = for (autohint_policies) |entry| {
+                if (std.mem.eql(u8, entry.name, args[i])) break entry.policy;
+            } else return error.UnknownAutohintPolicy;
+        } else if (std.mem.eql(u8, args[i], "--font")) {
+            i += 1;
+            if (i >= args.len) return error.MissingArgument;
+            out.scene.font = for (scene_fonts) |entry| {
+                if (std.mem.eql(u8, entry.name, args[i])) break entry.data;
+            } else return error.UnknownFont;
         } else return error.UnknownArgument;
     }
     return out;
 }
 
 fn printUsage(exe: []const u8) void {
-    std.debug.print("usage: {s} CASE [--draws N] [--samples N]\n       {s} --list\ncases:\n", .{ exe, exe });
+    std.debug.print("usage: {s} CASE [--draws N] [--samples N] [--repeat N] [--autohint-policy NAME] [--font NAME]\n       {s} --list\ncases:\n", .{ exe, exe });
     for (cases) |case| std.debug.print("  {s}\n", .{case});
 }
 
